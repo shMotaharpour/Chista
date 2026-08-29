@@ -1,0 +1,569 @@
+{
+  "ranked": [
+    "farming-score-v3-replay-revised",
+    "farming-score-a-mathematical-approach",
+    "adaptive-shop-guard",
+    "x544-nah-i-d-win",
+    "adaptive-public-state-multi-route",
+    "25-27-strict-future-v27-midgame-meta-reset",
+    "v20-adaptive-r1-multi-route-agent",
+    "v16-rc5-high-score-8c-4s-premium-market-lead",
+    "v21-r1-public-state-route-portfolio",
+    "v111-8c4s-economic-core-premium-lead",
+    "v16-rc5-r5a-high-score-8c-4s-recovery",
+    "precomputed-schedule-policy",
+    "44-46-strict-future-top-30-v22-price-impact",
+    "v3-agent",
+    "v13-r3-top-meta-order-safe-premium-control",
+    "adaptive-replay-agent",
+    "findings-from-zero-to-top-meta",
+    "frontier-the-soil-remembers-rain",
+    "economics-driven-rule-agent-ecobot-v6"
+  ],
+  "games": [
+    {
+      "a": "adaptive-replay-agent",
+      "b": "25-27-strict-future-v27-midgame-meta-reset",
+      "seed": 1001,
+      "ra": 89243.0,
+      "rb": 105182.0,
+      "outcome": "b"
+    },
+    {
+      "a": "adaptive-replay-agent",
+      "b": "25-27-strict-future-v27-midgame-meta-reset",
+      "seed": 1002,
+      "ra": 93977.0,
+      "rb": 114078.0,
+      "outcome": "b"
+    },
+    {
+      "a": "precomputed-schedule-policy",
+      "b": "frontier-the-soil-remembers-rain",
+      "seed": 1003,
+      "ra": 87222.0,
+      "rb": 72472.0,
+      "outcome": "a"
+    },
+    {
+      "a": "precomputed-schedule-policy",
+      "b": "adaptive-replay-agent",
+      "seed": 1004,
+      "ra": 60410.0,
+      "rb": 56020.0,
+      "outcome": "a"
+    },
+    {
+      "a": "precomputed-schedule-policy",
+      "b": "25-27-strict-future-v27-midgame-meta-reset",
+      "seed": 1005,
+      "ra": 93014.0,
+      "rb": 113133.0,
+      "outcome": "b"
+    },
+    {
+      "a": "frontier-the-soil-remembers-rain",
+      "b": "precomputed-schedule-policy",
+      "seed": 1006,
+      "ra": 20443.0,
+      "rb": 25599.0,
+      "outcome": "b"
+    },
+    {
+      "a": "frontier-the-soil-remembers-rain",
+      "b": "adaptive-replay-agent",
+      "seed": 1007,
+      "ra": 76733.0,
+      "rb": 88874.0,
+      "outcome": "b"
+    },
+    {
+      "a": "economics-driven-rule-agent-ecobot-v6",
+      "b": "adaptive-shop-guard",
+      "seed": 1008,
+      "ra": 65386.0,
+      "rb": 115914.0,
+      "outcome": "b"
+    },
+    {
+      "a": "adaptive-shop-guard",
+      "b": "adaptive-replay-agent",
+      "seed": 1009,
+      "ra": 105250.0,
+      "rb": 84517.0,
+      "outcome": "a"
+    },
+    {
+      "a": "adaptive-shop-guard",
+      "b": "precomputed-schedule-policy",
+      "seed": 1010,
+      "ra": 90531.0,
+      "rb": 63927.0,
+      "outcome": "a"
+    },
+    {
+      "a": "adaptive-shop-guard",
+      "b": "25-27-strict-future-v27-midgame-meta-reset",
+      "seed": 1011,
+      "ra": 67189.0,
+      "rb": 61907.0,
+      "outcome": "a"
+    },
+    {
+      "a": "economics-driven-rule-agent-ecobot-v6",
+      "b": "precomputed-schedule-policy",
+      "seed": 1012,
+      "ra": 63419.0,
+      "rb": 101225.0,
+      "outcome": "b"
+    },
+    {
+      "a": "economics-driven-rule-agent-ecobot-v6",
+      "b": "frontier-the-soil-remembers-rain",
+      "seed": 1013,
+      "ra": 52802.0,
+      "rb": 59383.0,
+      "outcome": "b"
+    },
+    {
+      "a": "v3-agent",
+      "b": "adaptive-public-state-multi-route",
+      "seed": 1014,
+      "ra": 69993.0,
+      "rb": 91242.0,
+      "outcome": "b"
+    },
+    {
+      "a": "adaptive-public-state-multi-route",
+      "b": "adaptive-replay-agent",
+      "seed": 1015,
+      "ra": 63996.0,
+      "rb": 43401.0,
+      "outcome": "a"
+    },
+    {
+      "a": "adaptive-public-state-multi-route",
+      "b": "25-27-strict-future-v27-midgame-meta-reset",
+      "seed": 1016,
+      "ra": 111738.0,
+      "rb": 107855.0,
+      "outcome": "a"
+    },
+    {
+      "a": "adaptive-public-state-multi-route",
+      "b": "adaptive-shop-guard",
+      "seed": 1017,
+      "ra": 89211.0,
+      "rb": 102880.0,
+      "outcome": "b"
+    },
+    {
+      "a": "v3-agent",
+      "b": "precomputed-schedule-policy",
+      "seed": 1018,
+      "ra": 95058.0,
+      "rb": 101277.0,
+      "outcome": "b"
+    },
+    {
+      "a": "v3-agent",
+      "b": "frontier-the-soil-remembers-rain",
+      "seed": 1019,
+      "ra": 94989.0,
+      "rb": 84912.0,
+      "outcome": "a"
+    },
+    {
+      "a": "v3-agent",
+      "b": "adaptive-replay-agent",
+      "seed": 1020,
+      "ra": 76130.0,
+      "rb": 69878.0,
+      "outcome": "a"
+    },
+    {
+      "a": "x544-nah-i-d-win",
+      "b": "v20-adaptive-r1-multi-route-agent",
+      "seed": 1021,
+      "ra": 90001.0,
+      "rb": 88698.0,
+      "outcome": "a"
+    },
+    {
+      "a": "x544-nah-i-d-win",
+      "b": "v3-agent",
+      "seed": 1022,
+      "ra": 86130.0,
+      "rb": 81794.0,
+      "outcome": "a"
+    },
+    {
+      "a": "x544-nah-i-d-win",
+      "b": "25-27-strict-future-v27-midgame-meta-reset",
+      "seed": 1023,
+      "ra": 58198.0,
+      "rb": 49430.0,
+      "outcome": "a"
+    },
+    {
+      "a": "x544-nah-i-d-win",
+      "b": "adaptive-public-state-multi-route",
+      "seed": 1024,
+      "ra": 82811.0,
+      "rb": 74502.0,
+      "outcome": "a"
+    },
+    {
+      "a": "x544-nah-i-d-win",
+      "b": "adaptive-shop-guard",
+      "seed": 1025,
+      "ra": 54399.0,
+      "rb": 62959.0,
+      "outcome": "b"
+    },
+    {
+      "a": "v20-adaptive-r1-multi-route-agent",
+      "b": "precomputed-schedule-policy",
+      "seed": 1026,
+      "ra": 78219.0,
+      "rb": 68633.0,
+      "outcome": "a"
+    },
+    {
+      "a": "v20-adaptive-r1-multi-route-agent",
+      "b": "adaptive-public-state-multi-route",
+      "seed": 1027,
+      "ra": 114807.0,
+      "rb": 117097.0,
+      "outcome": "b"
+    },
+    {
+      "a": "v20-adaptive-r1-multi-route-agent",
+      "b": "25-27-strict-future-v27-midgame-meta-reset",
+      "seed": 1028,
+      "ra": 87217.0,
+      "rb": 89517.0,
+      "outcome": "b"
+    },
+    {
+      "a": "farming-score-a-mathematical-approach",
+      "b": "v16-rc5-r5a-high-score-8c-4s-recovery",
+      "seed": 1029,
+      "ra": 145904.0,
+      "rb": 126119.0,
+      "outcome": "a"
+    },
+    {
+      "a": "farming-score-a-mathematical-approach",
+      "b": "precomputed-schedule-policy",
+      "seed": 1030,
+      "ra": 50410.0,
+      "rb": 32822.0,
+      "outcome": "a"
+    },
+    {
+      "a": "farming-score-a-mathematical-approach",
+      "b": "adaptive-public-state-multi-route",
+      "seed": 1031,
+      "ra": 129478.0,
+      "rb": 118195.0,
+      "outcome": "a"
+    },
+    {
+      "a": "farming-score-a-mathematical-approach",
+      "b": "x544-nah-i-d-win",
+      "seed": 1032,
+      "ra": 76588.0,
+      "rb": 64183.0,
+      "outcome": "a"
+    },
+    {
+      "a": "farming-score-a-mathematical-approach",
+      "b": "adaptive-shop-guard",
+      "seed": 1033,
+      "ra": 110741.0,
+      "rb": 110585.0,
+      "outcome": "a"
+    },
+    {
+      "a": "v16-rc5-r5a-high-score-8c-4s-recovery",
+      "b": "v20-adaptive-r1-multi-route-agent",
+      "seed": 1034,
+      "ra": 87335.0,
+      "rb": 90337.0,
+      "outcome": "b"
+    },
+    {
+      "a": "v16-rc5-r5a-high-score-8c-4s-recovery",
+      "b": "adaptive-replay-agent",
+      "seed": 1035,
+      "ra": 89853.0,
+      "rb": 74230.0,
+      "outcome": "a"
+    },
+    {
+      "a": "v16-rc5-r5a-high-score-8c-4s-recovery",
+      "b": "v3-agent",
+      "seed": 1036,
+      "ra": 54566.0,
+      "rb": 38652.0,
+      "outcome": "a"
+    },
+    {
+      "a": "v16-rc5-r5a-high-score-8c-4s-recovery",
+      "b": "precomputed-schedule-policy",
+      "seed": 1037,
+      "ra": 89088.0,
+      "rb": 68434.0,
+      "outcome": "a"
+    },
+    {
+      "a": "44-46-strict-future-top-30-v22-price-impact",
+      "b": "farming-score-v3-replay-revised",
+      "seed": 1038,
+      "ra": 53662.0,
+      "rb": 52709.0,
+      "outcome": "a"
+    },
+    {
+      "a": "44-46-strict-future-top-30-v22-price-impact",
+      "b": "v16-rc5-r5a-high-score-8c-4s-recovery",
+      "seed": 1039,
+      "ra": 87542.0,
+      "rb": 100393.0,
+      "outcome": "b"
+    },
+    {
+      "a": "44-46-strict-future-top-30-v22-price-impact",
+      "b": "adaptive-replay-agent",
+      "seed": 1040,
+      "ra": 112919.0,
+      "rb": 103213.0,
+      "outcome": "a"
+    },
+    {
+      "a": "44-46-strict-future-top-30-v22-price-impact",
+      "b": "v3-agent",
+      "seed": 1041,
+      "ra": 27107.0,
+      "rb": 27107.0,
+      "outcome": "tie"
+    },
+    {
+      "a": "44-46-strict-future-top-30-v22-price-impact",
+      "b": "v3-agent",
+      "seed": 8960,
+      "ra": 96528.0,
+      "rb": 96528.0,
+      "outcome": "tie"
+    },
+    {
+      "a": "farming-score-v3-replay-revised",
+      "b": "v16-rc5-r5a-high-score-8c-4s-recovery",
+      "seed": 1042,
+      "ra": 103811.0,
+      "rb": 90017.0,
+      "outcome": "a"
+    },
+    {
+      "a": "farming-score-v3-replay-revised",
+      "b": "adaptive-public-state-multi-route",
+      "seed": 1043,
+      "ra": 69628.0,
+      "rb": 63190.0,
+      "outcome": "a"
+    },
+    {
+      "a": "farming-score-v3-replay-revised",
+      "b": "adaptive-shop-guard",
+      "seed": 1044,
+      "ra": 101579.0,
+      "rb": 100308.0,
+      "outcome": "a"
+    },
+    {
+      "a": "farming-score-v3-replay-revised",
+      "b": "farming-score-a-mathematical-approach",
+      "seed": 1045,
+      "ra": 124152.0,
+      "rb": 124152.0,
+      "outcome": "tie"
+    },
+    {
+      "a": "farming-score-v3-replay-revised",
+      "b": "farming-score-a-mathematical-approach",
+      "seed": 8964,
+      "ra": 60853.0,
+      "rb": 60853.0,
+      "outcome": "tie"
+    },
+    {
+      "a": "findings-from-zero-to-top-meta",
+      "b": "v13-r3-top-meta-order-safe-premium-control",
+      "seed": 1046,
+      "ra": 94377.0,
+      "rb": 95239.0,
+      "outcome": "b"
+    },
+    {
+      "a": "v13-r3-top-meta-order-safe-premium-control",
+      "b": "v16-rc5-r5a-high-score-8c-4s-recovery",
+      "seed": 1047,
+      "ra": 38900.0,
+      "rb": 66620.0,
+      "outcome": "b"
+    },
+    {
+      "a": "v13-r3-top-meta-order-safe-premium-control",
+      "b": "adaptive-replay-agent",
+      "seed": 1048,
+      "ra": 95248.0,
+      "rb": 94937.0,
+      "outcome": "a"
+    },
+    {
+      "a": "v13-r3-top-meta-order-safe-premium-control",
+      "b": "44-46-strict-future-top-30-v22-price-impact",
+      "seed": 1049,
+      "ra": 62533.0,
+      "rb": 69663.0,
+      "outcome": "b"
+    },
+    {
+      "a": "v13-r3-top-meta-order-safe-premium-control",
+      "b": "v3-agent",
+      "seed": 1050,
+      "ra": 55034.0,
+      "rb": 60090.0,
+      "outcome": "b"
+    },
+    {
+      "a": "findings-from-zero-to-top-meta",
+      "b": "v16-rc5-r5a-high-score-8c-4s-recovery",
+      "seed": 1051,
+      "ra": 103830.0,
+      "rb": 113936.0,
+      "outcome": "b"
+    },
+    {
+      "a": "findings-from-zero-to-top-meta",
+      "b": "v13-r3-top-meta-order-safe-premium-control",
+      "seed": 1052,
+      "ra": 29702.0,
+      "rb": 31566.0,
+      "outcome": "b"
+    },
+    {
+      "a": "findings-from-zero-to-top-meta",
+      "b": "frontier-the-soil-remembers-rain",
+      "seed": 1053,
+      "ra": 131256.0,
+      "rb": 120517.0,
+      "outcome": "a"
+    },
+    {
+      "a": "findings-from-zero-to-top-meta",
+      "b": "adaptive-replay-agent",
+      "seed": 1054,
+      "ra": 91190.0,
+      "rb": 91545.0,
+      "outcome": "b"
+    },
+    {
+      "a": "v111-8c4s-economic-core-premium-lead",
+      "b": "v16-rc5-high-score-8c-4s-premium-market-lead",
+      "seed": 1055,
+      "ra": 73178.0,
+      "rb": 73190.0,
+      "outcome": "b"
+    },
+    {
+      "a": "v16-rc5-high-score-8c-4s-premium-market-lead",
+      "b": "precomputed-schedule-policy",
+      "seed": 1056,
+      "ra": 55978.0,
+      "rb": 30062.0,
+      "outcome": "a"
+    },
+    {
+      "a": "v16-rc5-high-score-8c-4s-premium-market-lead",
+      "b": "adaptive-public-state-multi-route",
+      "seed": 1057,
+      "ra": 33524.0,
+      "rb": 40115.0,
+      "outcome": "b"
+    },
+    {
+      "a": "v16-rc5-high-score-8c-4s-premium-market-lead",
+      "b": "v20-adaptive-r1-multi-route-agent",
+      "seed": 1058,
+      "ra": 82043.0,
+      "rb": 103139.0,
+      "outcome": "b"
+    },
+    {
+      "a": "v16-rc5-high-score-8c-4s-premium-market-lead",
+      "b": "v16-rc5-r5a-high-score-8c-4s-recovery",
+      "seed": 1059,
+      "ra": 96264.0,
+      "rb": 96264.0,
+      "outcome": "tie"
+    },
+    {
+      "a": "v16-rc5-high-score-8c-4s-premium-market-lead",
+      "b": "v16-rc5-r5a-high-score-8c-4s-recovery",
+      "seed": 8978,
+      "ra": 77275.0,
+      "rb": 77275.0,
+      "outcome": "tie"
+    },
+    {
+      "a": "v111-8c4s-economic-core-premium-lead",
+      "b": "v16-rc5-r5a-high-score-8c-4s-recovery",
+      "seed": 1060,
+      "ra": 39883.0,
+      "rb": 39883.0,
+      "outcome": "tie"
+    },
+    {
+      "a": "v111-8c4s-economic-core-premium-lead",
+      "b": "v16-rc5-r5a-high-score-8c-4s-recovery",
+      "seed": 8979,
+      "ra": 69629.0,
+      "rb": 69629.0,
+      "outcome": "tie"
+    },
+    {
+      "a": "v21-r1-public-state-route-portfolio",
+      "b": "v16-rc5-r5a-high-score-8c-4s-recovery",
+      "seed": 1061,
+      "ra": 124982.0,
+      "rb": 109173.0,
+      "outcome": "a"
+    },
+    {
+      "a": "v21-r1-public-state-route-portfolio",
+      "b": "adaptive-public-state-multi-route",
+      "seed": 1062,
+      "ra": 119482.0,
+      "rb": 119502.0,
+      "outcome": "b"
+    },
+    {
+      "a": "v21-r1-public-state-route-portfolio",
+      "b": "v16-rc5-high-score-8c-4s-premium-market-lead",
+      "seed": 1063,
+      "ra": 80541.0,
+      "rb": 81706.0,
+      "outcome": "b"
+    },
+    {
+      "a": "v21-r1-public-state-route-portfolio",
+      "b": "v111-8c4s-economic-core-premium-lead",
+      "seed": 1064,
+      "ra": 83744.0,
+      "rb": 71386.0,
+      "outcome": "a"
+    }
+  ]
+}
