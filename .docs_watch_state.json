@@ -31,9 +31,9 @@
       "sha": "c3f8f8193e5d852060aaab67a9f545df8b05e1fa8f66e744cb77c535d048def0"
     },
     "research/006-mechanics-verification.md": {
-      "size": 5075,
-      "mtime": 1788045827.3110454,
-      "sha": "22a261e6d833c9c7c7f8b5d6905e8c53063f3922e415011f7b006faee20dc915"
+      "size": 7768,
+      "mtime": 1788047166.8787897,
+      "sha": "8595b279fe67910b0a6c216e6676e02521b87229ea5a31ab812f44856f9395cf"
     },
     "research/005-opponent-ladder.md": {
       "size": 9670,
@@ -58,5 +58,5 @@
       "size": 25
     }
   },
-  "updated_at": 1788045929.7635095
+  "updated_at": 1788047249.6691387
 }
