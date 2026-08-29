@@ -1,0 +1,62 @@
+{
+  "fertilizer_melon": {
+    "fertilized_melon_yield": 0,
+    "unfertilized_melon_yield": 0
+  },
+  "watering": {
+    "daily(4d)": {
+      "harvested": 4,
+      "on_tile": 0,
+      "tile_kind": null
+    },
+    "stop_day2": {
+      "harvested": 2,
+      "on_tile": 0,
+      "tile_kind": null
+    },
+    "never": {
+      "harvested": 0,
+      "on_tile": 0,
+      "tile_kind": "WEED"
+    }
+  },
+  "sell_animal": {
+    "money_delta": -300.0,
+    "goose_in_shed": 1,
+    "note": "money_delta == -300 \u2192 sell rejected (animals not sellable via SELL)"
+  },
+  "shed_overflow": {
+    "shed": {
+      "WHEAT": 80,
+      "FERTILIZER": 5
+    },
+    "total": 85,
+    "note": "BUY_PRODUCT respects shedCapacity \u2014 shows which buys were rejected"
+  },
+  "simultaneous": {
+    "both_sell_500_wheat": {
+      "price_after": 26,
+      "inventory_after": 9999,
+      "expected_shift": 1000
+    }
+  },
+  "arbitrage": {
+    "money_path": [
+      5.0,
+      5.0,
+      3009.0,
+      3009.0,
+      3009.0,
+      3009.0
+    ],
+    "wheat_prices": [
+      35,
+      35,
+      26,
+      26,
+      26,
+      26
+    ],
+    "note": "if money rises after selling back at higher price \u2192 arbitrage works"
+  }
+}
