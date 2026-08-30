@@ -16,7 +16,8 @@ import sys
 
 REPLAYS = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
                        "competition_replays", "parquet")
-OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "results")
+OUT = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+                   "docs", "replays Analysis")
 GLOB = os.path.join(REPLAYS, "*", "episodes.parquet")
 
 
