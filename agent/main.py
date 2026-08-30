@@ -229,13 +229,14 @@ def market_orders(obs):
             if sell > 0:
                 orders.append(["SELL", item, sell])
 
-    # 2. HIRE batch (engine spawns each hand the same day)
+    # 2. HIRE batch (engine spawns each hand the same day).
+    # Aggressive: fib cost on early hires is trivial (8 hires = $64 total);
+    # each hand adds 24 actions/day — the real farm bottleneck.
     load = len(build_needs(obs))
     if d < SEASON_LATE - 2:
         while True:
             hired_today = me["hires_today"] + sum(1 for o in orders if o[0] == "HIRE")
-            daily_cap = 2 if d < 8 else MAX_HANDS
-            if hired_today >= daily_cap or hired_today >= MAX_HANDS:
+            if hired_today >= MAX_HANDS:
                 break
             cost = FIB[min(me["hires_today"], len(FIB) - 1)]
             if cost > money * HIRE_FRACTION or load <= (1 + hired_today) * 8:
@@ -244,9 +245,10 @@ def market_orders(obs):
             money -= cost
 
     # 3. Investments: land > goose > cow > seeds (with reserves)
-    reserve = 40 + n_animals(obs) * 10
+    reserve = 40 + n_animals(obs) * 10 + 8 * CROPS["MELON"]["seed"]  # keep melon seed money
     unlocked_extra = len(me["unlocked_quadrants"]) - 1
-    if 3 <= d <= 15 and money >= LAND_PRICES[unlocked_extra] + reserve:
+    # Land: aggressive — 25 more melon tiles per quadrant dwarfs the $1k/2k/4k price.
+    if unlocked_extra < 2 and d <= 15 and money >= LAND_PRICES[unlocked_extra] + reserve * 0.5:
         orders.append(["BUY_LAND"])
         money -= LAND_PRICES[unlocked_extra]
     if 3 <= d <= 8 and n_animals(obs, "GOOSE") == 0 and shed_count(obs, "GOOSE") == 0 \
