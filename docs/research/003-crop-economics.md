@@ -1,6 +1,8 @@
-# Crop Economics — Kaggriculture (V1.1)
+# Crop Economics — Kaggriculture (V1.1, revised per docs/research/006)
 
-> All numbers derived from the environment source and README, verified via `lab/prices.py` (exact match with the live env).
+> All numbers derived from the environment source and README, then re-verified with
+> ground-truth env.steps traces (`lab/verify2.py`) and the mechanics experiments (`lab/verify_mechanics.py`).
+> Supersedes the original version: melon fertilizer value corrected, harvest gating corrected.
 
 ## 1. Price curve — verified against live env ✅
 
@@ -10,19 +12,23 @@
 
 ## 2. Crop economics (net profit / tile / day — at base price)
 
-| Crop | Seed | No fert $/tile/day | Fert $/tile/day | Cycles per season | Liquidity |
+| Crop | Seed | First harvest (day) | No fert $/tile/day | Fert $/tile/day | Fert value |
 |---|---|---|---|---|---|
-| **MELON** | $80 | **$70.8** | **$109.2** 🏆 | 2 | Late (day 11+) |
-| STRAWBERRY | $100 | $22.4 | $50.6 | 1 | Very late (day 11+) |
-| WHEAT | $10 | $18.0 | $28.0 | 6 | Fast (day 3) |
-| CARROT | $20 | $21.3 | $30.0 | 7 | Fast (day 3) |
-| TOMATO | $50 | $15.8 | $35.8 | 2 | Late (day 9) |
+| **MELON** | $80 | **10 (hard gate)** | **$70.8** 🏆 | ≈ same (see below) | ~none |
+| STRAWBERRY | $100 | 10 | $22.4 | $50.6 | +25% to +50% |
+| WHEAT | $10 | 2 | $18.0 | $28.0 | +50% |
+| CARROT | $20 | $21.3 | day 2 | $30.0 | +33% |
+| TOMATO | $50 | 8 | $15.8 | $35.8 | +75% |
 
-**Reading the table:**
-- **MELON with fertilizer is the seasonal profit king** ($109/tile/day) — but locks money until day 11 (later corrected: day 8 with fert, see docs/research/006)
-- **WHEAT/CARROT are the early liquidity engine** — fast turnaround, many cycles
-- **Fertilizer multiplies profit ×1.5–2.2** (within the bonus window) — fertilizer access is critical
-- Strawberry is the weakest unless real (scarcity) prices rise above base
+**Melon fertilizer verdict (corrected):** fertilizer speeds melon to its cap of 6 by day 8 (vs day 10)
+but `first_yield_day=10` blocks harvesting either way, and decay starts day 13 — so with a day-0
+planting **fertilizer on melon is worthless**. Melon economics = the no-fert $70.8/tile/day.
+Fertilizer value is real only for WHEAT (+50%), CARROT (+33%), TOMATO (+75%), STRAWBERRY (+25-50%),
+and only when applied inside the bonus window (from ceil(max_yield_day/2) to max_yield_day).
+
+**Harvest timing (critical):** decay runs at 1 unit per 2 TURNS once max lifespan starts.
+Verified: harvest delay of 1 day after ready loses 25% of yield; 2 days loses everything.
+→ Harvest must happen the same day yield exists.
 
 ## 3. Animal economics (30 days, full care, wheat @$25)
 
@@ -36,12 +42,14 @@
 - **Fertilizer revenue exceeds the product itself!** ($3,000 each) — animals are fertilizer factories
 - COW has the best ROI; GOOSE pays back fastest (first production day 4)
 - Feed = 1 wheat/day — animals require a wheat production line
+- Verified end-to-end (goose lifecycle): eggs=13, fertilizer=9 over 9 days; CARE banks a bonus (`pending_care_bonus`), paid on next production if fed
+- **Animals cannot be resold** (`SELL GOOSE` rejected) — animal purchase is a sunk durable investment
 
 ## 4. Land and labor
 
 - **BUY_LAND almost always pays off:** NE quadrant breakeven ≈ half a working day; even SE ($4k) ≈ 1.5 days
   - Only with best-crop planting — if it locks liquidity it's bad → order: NE day 1-2, SW day 3-5, SE day 6-8
-- **HIRE:** each hand = +1 action/turn = 24 actions/day. With best-action profit (~$100+ mid-game), the fibonacci cost (1,1,2,3,5,8...) is justified up to about n=6-8; beyond that not worth it
+- **HIRE: fibonacci cost verified exactly** — 4 hires = $7 (1+1+2+3); each hand = +1 action/turn = 24 actions/day; justified up to about n=6-8 hires/day
 
 ## 5. Sell impact — why timing matters
 
@@ -59,18 +67,21 @@
 
 **Golden rules:**
 - **WHEAT and EGG are almost insensitive to dump volume** → sell freely anytime
-- **MILK, STRAWBERRY, WOOL, MELON** → large dumps are a disaster (up to 84% loss) → sell drip-wise over multiple days
-- MELON is the interesting exception: up to ~10 units lossless, then a hard crash (sq curve)
+- **MILK, STRAWBERRY, WOOL, MELON** → large dumps are a disaster (up to 84% loss) → sell drip-wise
+- MELON exception: up to ~10 units lossless, then a hard crash (sq curve)
+- Market heals ~$1/day after a dump (town consumption) — time-based spread can profit
+- Fast buy/sell round trips net exactly zero (deliberate anti-arbitrage) — only multi-day spreads work
 
 ## 6. One-page verdict for agent v1
 
 1. **Opening:** carrot/wheat for liquidity days 1-6 (fast cycles)
 2. **Days 2-4:** BUY_LAND ×1 (NE) + first GOOSE (fastest animal, fertilizer factory)
 3. **Days 5-8:** SW + COW as soon as affordable; wheat line for feed
-4. **Planting on free tiles:** MELON with fertilizer wherever possible; else carrot
-5. **Selling:** wheat/eggs freely; milk/strawberry/wool/melon only drip-wise (≤ safe pace)
-6. **Fertilizer sales:** never above 53/day — or consume it yourself
-7. **Day 26+:** no new late plantings; days 29-30 forced sell of everything (even at a loss)
+4. **Planting on free tiles:** MELON (no fert needed, day-0 planting) on free tiles with budget > $300; else carrot
+5. **Fertilizer targets:** wheat/carrot/tomato/strawberry ONLY (in-window); skip melon
+6. **Selling:** wheat/eggs freely; milk/strawberry/wool/melon only drip-wise (≤ safe pace)
+7. **Fertilizer sales:** never above 53/day — or consume it yourself
+8. **Day 26+:** no new late plantings; days 29-30 forced sell of everything (even at a loss)
 
 ## 7. Cross-check vs the #1 ladder opponent
 
@@ -86,4 +97,4 @@ Real game: `farming-score-v3-replay-revised` ($158.6k) vs `ecobot-v6` ($128.8k),
 - ✅ Labor: 282 hires per season ≈ 10/day — hands are the action engine
 - ✅ Land: only 2 purchases — likely preferring melon over extra space
 - ⚠️ Never sold EGG — geese kept as fertilizer factories, not egg sellers
-- ⚠️ Final prices WOOL $5, FERTILIZER $6 → it crashed those markets itself, but late (end of season) — cheap end-of-season selling? A note for V2
+- ⚠️ Final prices WOOL $5, FERTILIZER $6 → it crashed those markets itself, but late — cheap end-of-season selling? A note for V2

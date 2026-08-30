@@ -16,9 +16,9 @@
       "sha": "71dce70166d757855bd8a2e1f8cb5bd5bb2ec187527ab8d7c1a91895f5233a2e"
     },
     "rules/000-project-rules.md": {
-      "size": 1301,
-      "mtime": 1788048846.465682,
-      "sha": "d9ff98e7190c757b9b964d85f8d4bb60369215290addecd03df0c44f4eb33dbb"
+      "size": 1680,
+      "mtime": 1788071104.4485512,
+      "sha": "68a28f2342d462eee93f7e71dac45b485c2a5ea95c400af3fda261ba4cb1dde4"
     },
     "research/000-strategy-plan.md": {
       "size": 2763,
@@ -26,14 +26,14 @@
       "sha": "e7e894caf9e7d4595e00b5578ba72db78dccf193a005a190de662e575f100ea8"
     },
     "research/003-crop-economics.md": {
-      "size": 4972,
-      "mtime": 1788048769.7091062,
-      "sha": "347cfae495a5e703976d424f398817772ef18e20c6f14283e22890c50e72f852"
+      "size": 5907,
+      "mtime": 1788071073.7779236,
+      "sha": "479100eb3674625e705e6980e4daee33494c70ef9cbe49afd8dc7c372bb847ba"
     },
     "research/006-mechanics-verification.md": {
-      "size": 7931,
-      "mtime": 1788050517.2588203,
-      "sha": "d0af7a070c3598f862de1d22a3ba3762956cf65ad7dd56b3d0dc06116f8b69e2"
+      "size": 10466,
+      "mtime": 1788069637.8619015,
+      "sha": "9419495ddb43dd495e787b9f05efc6b3b900efa7023acc1ba6be7a388a61f7a2"
     },
     "research/005-opponent-ladder.md": {
       "size": 9670,
@@ -58,5 +58,5 @@
       "size": 25
     }
   },
-  "updated_at": 1788050551.718512
+  "updated_at": 1788071117.7913308
 }

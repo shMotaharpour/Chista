@@ -9,10 +9,13 @@
 - Two players, 720 turns (24 turns × 30 days), winner = most money in bank.
 - Per turn: one farmer action + hand actions + up to 10 market orders.
 - Plants must be watered daily (2 unwatered days = weed); animals fed wheat daily (2 days = escape).
+- Watering every other day is safe ONLY for ongoing crops (tomato/strawberry); one-time crops need daily watering.
 - Sell prices are dynamic: selling lowers the price — premium products (strawberry, melon, milk, wool) crash hard on oversupply.
-- Harvest the moment yield > 0: decay is 1 unit per 2 TURNS after max lifespan (see docs/research/006).
+- `first_yield_day` hard-gates harvest: no crop can be harvested before it regardless of yield (melon: day 10).
+- Decay after max lifespan = 1 unit per 2 TURNS → harvest the same day yield exists (1-day delay = −25%, 2-day = total loss).
 - Animals cannot be resold — animal purchase is a sunk, durable investment.
-- Fertilizer only helps when applied inside the bonus window (from ceil(max_yield_day/2) to max_yield_day).
+- Fertilizer only helps when applied inside the bonus window (from ceil(max_yield_day/2) to max_yield_day); worthless for day-0 melon planting.
+- HIRE cost is exact fibonacci: 1+1+2+3+5... per day; hands act independently every turn.
 
 ## Workflow
 - Every change committed atomically.
