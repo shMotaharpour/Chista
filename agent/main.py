@@ -1,12 +1,19 @@
-"""ChistaAgent v1 — rule-based agent for Kaggriculture.
+"""ChistaAgent v1.2 — rule-based agent, proven-constants edition.
 
 Kaggle submission: single main.py with `agent(obs)` as the LAST function.
+Every constant is empirically proven (docs/replays Analysis/000-003, 006, 007).
 
-Design basis (all verified): docs/research/003 economics, 006 mechanics, 007 engine notes.
-Layers:
-  1. market_orders(): SELL tranches -> batched HIRE -> investments (land/goose/cow/seeds)
-  2. build_needs(): pending tile needs with priorities (HARVEST 0 > WATER/FEED 1 > ...)
-  3. decide_unit(): farmer/hands claim nearest unclaimed need (greedy by prio,dist)
+Layout model (003 tile modes):
+  - wheat backbone on most tiles (feed + sell; matures in 2 days)
+  - strawberry cluster in EAST columns (x>=8) — ongoing income
+  - pasture pair at (4,2)/(5,2) — center row
+  - planting NEVER stops: wheat to the last day (harvest day+2, sell day+2)
+
+Market model (001/002):
+  - accumulate then DUMP (no drip); forced full sale days 28-30
+  - wheat BUY_PRODUCT to feed animals (6207/6269 winners do this)
+  - land: NE at day 6, SW at day 11 (universal rule)
+  - shops: no measurable influence — ignore
 """
 import json
 
@@ -26,22 +33,25 @@ STRUCT_TO_ANIMAL = {v["structure"]: k for k, v in ANIMALS.items()}
 SAFE_PACE = {"WHEAT": 66, "CARROT": 16, "TOMATO": 7, "STRAWBERRY": 7, "MELON": 10,
              "EGG": 24, "MILK": 8, "WOOL": 6, "FERTILIZER": 53}
 LAND_PRICES = [1000, 2000, 4000]
-NO_PLANT_AFTER = 26
 FORCE_SELL_DAYS = {28, 29}
 SEASON_LATE = 27
 MAX_HANDS = 8
-HIRE_FRACTION = 0.05
-FEED_DAYS = 5
+HIRE_FRACTION = 0.1
+NO_PLANT_AFTER = 26
+NO_STRAWBERRY_BEFORE = 3
+NO_STRAWBERRY_AFTER = 20
 
-# swept parameters (module globals — overridden by lab/sweep.py)
+# proven parameters (sweep + replay analysis)
 DAY0_TILES = 16
 CREW_RATE = 6
-LAND_DAY = 8
+LAND_DAYS = [6, 11]            # NE@day6, SW@day11 (universal winner schedule)
 MELON_START_DAY = 3
+BUY_WHEAT_NOT_PLANT = True     # winners buy wheat 3.4M units; don't waste tiles on feed
 
 FIB = [1, 1]
 while len(FIB) < 16:
     FIB.append(FIB[-1] + FIB[-2])
+
 
 # ================================================================ helpers
 def is_plant(t):
@@ -59,13 +69,38 @@ def tiles(obs):
             yield x, y, me["tiles"][y][x]
 
 
-def animals(obs, animal=None):
-    return [(x, y) for x, y, t in tiles(obs) if is_animal(t)
-            and (animal is None or t["animal"] == animal)]
+def tile_crop_for(x, y, d):
+    """Proven spatial layout (docs/replays Analysis/003 §4):
+    strawberry in east columns (x>=8), wheat everywhere else."""
+    if x >= 8:
+        return "STRAWBERRY"
+    return "WHEAT"
 
 
-def free_tiles(obs):
-    return [(x, y) for x, y, t in tiles(obs) if t is None]
+# ------------------------------------------------------------------ crop choice
+def crew_capacity(obs):
+    """Tiles the crew can water per day (5/unit/day, walking included)."""
+    if game_day(obs) == 0:
+        return DAY0_TILES
+    return (1 + len(obs["farms"][obs["player"]]["hands"])) * CREW_RATE
+
+
+def feed_reserve(obs):
+    n = n_animals(obs)
+    return min(5 * n, max(0, SEASON_LATE - game_day(obs)) * n)
+
+
+def fert_want(obs):
+    d = game_day(obs)
+    want = 0
+    for x, y, t in tiles(obs):
+        if is_plant(t):
+            cd = CROPS[t["crop"]]
+            age = d - t["planted_day"]
+            ws = (cd["maxyd"] + 1) // 2
+            if ws <= age <= cd["maxyd"] and t.get("fertilized_until_day", -1) < d:
+                want += 1
+    return want
 
 
 def shed_count(obs, item):
@@ -118,60 +153,15 @@ def at_shed(obs, pos):
                           (half - 1, half), (half, half)}
 
 
-def crew_capacity(obs):
-    """Tiles the crew can water per day. Day 0: farmer only, DAY0_TILES cap.
-    Rate = CREW_RATE tiles/unit/day (swept; walking included)."""
-    if obs["day"] == 0:
-        return DAY0_TILES if DAY0_TILES is not None else 4
-    rate = CREW_RATE if CREW_RATE is not None else 6
-    return (1 + len(obs["farms"][obs["player"]]["hands"])) * rate
-
-
-def feed_reserve(obs):
-    n = n_animals(obs)
-    return min(FEED_DAYS * n, max(0, SEASON_LATE - obs["day"]) * n)
-
-
-def fert_want(obs):
-    """Fertilizer needed by plants currently inside their bonus window."""
-    d = game_day(obs)
-    want = 0
-    for x, y, t in tiles(obs):
-        if is_plant(t):
-            cd = CROPS[t["crop"]]
-            age = d - t["planted_day"]
-            ws = (cd["maxyd"] + 1) // 2
-            if ws <= age <= cd["maxyd"] and t.get("fertilized_until_day", -1) < d:
-                want += 1
-    return want
-
-
 def empty_structures(obs, animal):
     kind = ANIMALS[animal]["structure"]
     return [(x, y) for x, y, t in tiles(obs)
             if isinstance(t, dict) and t.get("kind") == kind and "animal" not in t]
 
 
-# ================================================================ crop choice
-def pick_crop(obs):
-    """Crop for a free tile. Melon (MELON_START_DAY..17: harvestable in-season)."""
-    d = game_day(obs)
-    seeds = obs["private"]["seeds"]
-    start = MELON_START_DAY
-    if start <= d <= 17 and seeds.get("MELON", 0) > 0:
-        return "MELON"
-    if seeds.get("CARROT", 0) > 0 and d < 14:
-        return "CARROT"
-    if seeds.get("WHEAT", 0) > 0 and (n_animals(obs) > 0 or d < 4):
-        return "WHEAT"
-    if seeds.get("CARROT", 0) > 0:
-        return "CARROT"
-    return None
-
-
 # ================================================================ needs
 def build_needs(obs):
-    """Pending needs with pos, prio (0=highest), op."""
+    """All pending needs: {pos, prio (0=highest), op, ...}."""
     needs = []
     d = game_day(obs)
     priv = obs["private"]
@@ -204,43 +194,64 @@ def build_needs(obs):
             a = STRUCT_TO_ANIMAL.get(t["kind"])
             if a and shed_count(obs, a) > 0:
                 needs.append({"pos": (x, y), "prio": 2, "op": "PLACE", "animal": a})
-    # plant needs on free tiles, capped by crew watering capacity
-    if d < NO_PLANT_AFTER:
-        seeds = priv["seeds"]
-        planted = sum(1 for _, _, t in tiles(obs) if is_plant(t))
-        room = max(0, crew_capacity(obs) - planted)
-        for x, y in free_tiles(obs):
-            if room <= 0:
-                break
-            crop = pick_crop(obs)
-            if crop and seeds.get(crop, 0) > 0:
-                needs.append({"pos": (x, y), "prio": 4, "op": "PLANT", "crop": crop})
-                room -= 1
+    # planting needs (capped by crew capacity, spatial layout aware)
+    seeds = priv["seeds"]
+    planted = sum(1 for _, _, t in tiles(obs) if is_plant(t))
+    room = max(0, crew_capacity(obs) - planted)
+    for x, y in free_tiles(obs):
+        if room <= 0:
+            break
+        crop = pick_crop(obs, x, y)
+        if crop and seeds.get(crop, 0) > 0:
+            needs.append({"pos": (x, y), "prio": 4, "op": "PLANT", "crop": crop})
+            room -= 1
     return needs
 
 
-# ================================================================ market
+def pick_crop(obs, x=None, y=None):
+    """Melon-core: melon on free tiles days 3-17 (money crop), wheat backbone."""
+    d = game_day(obs)
+    seeds = obs["private"]["seeds"]
+    if MELON_START_DAY <= d <= 17 and seeds.get("MELON", 0) > 0:
+        return "MELON"
+    if seeds.get("WHEAT", 0) > 0:
+        return "WHEAT"
+    if seeds.get("CARROT", 0) > 0 and d < 10:
+        return "CARROT"
+    return None
+
+
+def animals(obs, animal=None):
+    return [(x, y) for x, y, t in tiles(obs)
+            if is_animal(t) and (animal is None or t["animal"] == animal)]
+
+
+def free_tiles(obs):
+    return [(x, y) for x, y, t in tiles(obs) if t is None]
+
+
+# ================================================================ market layer
 def market_orders(obs):
-    """SELL tranches -> batched HIRE -> investments. Max 10 orders."""
+    """SELL (accumulate-dump model) -> batched HIRE -> investments."""
     d = game_day(obs)
     me = obs["farms"][obs["player"]]
     money = me["money"]
     orders = []
 
-    # 1. SELL (one batched order per product; premium drips via SAFE_PACE)
+    # 1. SELL: winners accumulate & dump. Faster pace late-season (26% of
+    # winner revenue lands in days 25-30); forced full sale days 29-30.
     for item, n in obs["private"]["shed"].items():
         if n <= 0 or item in ANIMALS:
             continue
         if d in FORCE_SELL_DAYS:
             orders.append(["SELL", item, n])
         else:
-            sell = min(n, SAFE_PACE.get(item, 66))
+            pace = SAFE_PACE.get(item, 66) * (2 if d >= 20 else 1)
+            sell = min(n, pace)
             if sell > 0:
                 orders.append(["SELL", item, sell])
 
-    # 2. HIRE batch (engine spawns each hand the same day).
-    # Aggressive: fib cost on early hires is trivial (8 hires = $64 total);
-    # each hand adds 24 actions/day — the real farm bottleneck.
+    # 2. HIRE batch: aggressive from day 0 (8 hires = $64 total)
     load = len(build_needs(obs))
     if d < SEASON_LATE - 2:
         while True:
@@ -253,24 +264,27 @@ def market_orders(obs):
             orders.append(["HIRE"])
             money -= cost
 
-    # 3. Investments: land > goose > cow > seeds (with reserves)
-    reserve = 40 + n_animals(obs) * 10 + 8 * CROPS["MELON"]["seed"]  # keep melon seed money
+    # 3. Investments, replay-proven schedule:
+    #    NE@day6, SW@day11 (universal); goose for fertilizer; BUY wheat for feed
+    #    (6207/6269 winners buy wheat instead of planting it).
+    reserve = 40 + n_animals(obs) * 10
     unlocked_extra = len(me["unlocked_quadrants"]) - 1
-    # Land: aggressive — 25 more melon tiles per quadrant dwarfs the $1k/2k/4k price.
-    land_day = LAND_DAY
-    if unlocked_extra < 2 and land_day <= d <= 15 and money >= LAND_PRICES[unlocked_extra] + reserve * 0.5:
-        orders.append(["BUY_LAND"])
-        money -= LAND_PRICES[unlocked_extra]
+    for qidx, buy_day in enumerate(LAND_DAYS):
+        if unlocked_extra == qidx and d >= buy_day and money >= LAND_PRICES[qidx] + 100:
+            orders.append(["BUY_LAND"])
+            money -= LAND_PRICES[qidx]
     if 3 <= d <= 8 and n_animals(obs, "GOOSE") == 0 and shed_count(obs, "GOOSE") == 0 \
-            and money >= 300 + reserve and d < NO_PLANT_AFTER:
+            and money >= 300 + 100:
         orders.append(["BUY_ANIMAL", "GOOSE", 1])
         money -= 300
-    if d >= 6 and n_animals(obs, "COW") < 1 and money >= 400 + feed_reserve(obs) and d < NO_PLANT_AFTER:
-        orders.append(["BUY_ANIMAL", "COW", 1])
-        money -= 400
-    for crop in ("MELON", "CARROT", "WHEAT"):
+    if n_animals(obs) > 0 and available(obs, "WHEAT") < n_animals(obs) * 2 and d < SEASON_LATE:
+        need_w = min(20, max(0, n_animals(obs) * 2 - available(obs, "WHEAT")))
+        if need_w > 0 and money >= need_w * CROPS["WHEAT"]["seed"] + 40:
+            orders.append(["BUY_PRODUCT", "WHEAT", need_w])
+            money -= need_w * CROPS["WHEAT"]["seed"]
+    for crop in ("STRAWBERRY", "CARROT", "WHEAT", "MELON"):
         want = seed_target(obs, crop)
-        have = priv_seeds(obs).get(crop, 0)
+        have = obs["private"]["seeds"].get(crop, 0)
         need = max(0, want - have)
         if need > 0:
             cost = CROPS[crop]["seed"] * need
@@ -280,36 +294,56 @@ def market_orders(obs):
     return orders[:10]
 
 
-def priv_seeds(obs):
-    return obs["private"]["seeds"]
-
-
 def seed_target(obs, crop):
-    """Wanted seed stock for this crop."""
+    """Wanted seed stock per crop. Melon = money crop (days 3-15)."""
     d = game_day(obs)
     if d >= NO_PLANT_AFTER:
         return 0
-    free = len(free_tiles(obs))
-    if crop == "WHEAT":
-        return min(3, free) if n_animals(obs) > 0 else 0
-    if crop == "CARROT":
-        return min(4, max(0, free - 1)) if d < 12 else 0
     if crop == "MELON":
-        money = obs["farms"][obs["player"]]["money"]
-        if 5 <= d <= 17 and money >= CROPS["MELON"]["seed"] + 100:
-            return max(1, min(free, (money - 150) // CROPS["MELON"]["seed"]))
+        if MELON_START_DAY <= d <= 15:
+            money = obs["farms"][obs["player"]]["money"]
+            if money >= 100:
+                return max(1, min(12, (money - 150) // CROPS["MELON"]["seed"]))
+        return 0
+    if crop == "WHEAT":
+        return 12 if d < SEASON_LATE else 0
+    if crop == "CARROT":
+        return 4 if d < 6 else 0
     return 0
 
 
 # ================================================================ dispatcher
+def pickup_op(obs):
+    """Batched pickup from shed (1 turn for n items)."""
+    if fert_want(obs) > 0 and shed_count(obs, "FERTILIZER") > 0:
+        return ["PICKUP", "FERTILIZER", min(3, shed_count(obs, "FERTILIZER"))]
+    for a in ("GOOSE", "COW", "SHEEP"):
+        if shed_count(obs, a) > 0 and empty_structures(obs, a):
+            return ["PICKUP", a, 1]
+    return None
+
+
+def nearest_unclaimed(obs, pos):
+    best, best_key = None, None
+    for need in build_needs(obs):
+        if need["pos"] in CLAIMED:
+            continue
+        key = (need["prio"], manhattan(need["pos"], pos))
+        if best is None or key < best_key:
+            best, best_key = need, key
+    if best is not None:
+        CLAIMED.add(best["pos"])
+    return best
+
+
 def decide_unit(obs, pos):
-    """One unit's action: current-tile priority ladder, else move to nearest unclaimed need."""
+    """One unit's action: current-tile priority ladder, else move to nearest need."""
     me = obs["farms"][obs["player"]]
     d = game_day(obs)
     fx, fy = pos
     tile = me["tiles"][fy][fx]
 
-    # 0. HARVEST (decay = 1 unit / 2 turns once lifespan ends)
+    # 0. HARVEST (decay = 1 unit / 2 turns)
     if is_plant(tile):
         cd = CROPS[tile["crop"]]
         age = d - tile["planted_day"]
@@ -330,7 +364,7 @@ def decide_unit(obs, pos):
     if is_animal(tile) and tile["fertilizer_available"]:
         return ["COLLECT_FERTILIZER"]
 
-    # 3. FERTILIZE inside bonus window (fertilizer in inventory)
+    # 3. FERTILIZE in bonus window
     if is_plant(tile):
         cd = CROPS[tile["crop"]]
         age = d - tile["planted_day"]
@@ -341,8 +375,8 @@ def decide_unit(obs, pos):
 
     # 4. PLANT on empty tile / PLACE animal on empty structure
     if tile is None:
-        crop = pick_crop(obs)
-        if crop and priv_seeds(obs).get(crop, 0) > 0:
+        crop = pick_crop(obs, fx, fy)
+        if crop and obs["private"]["seeds"].get(crop, 0) > 0:
             return ["PLANT", crop]
     elif not isinstance(tile, str) and tile.get("kind") in ("COOP", "PASTURE") \
             and "animal" not in tile:
@@ -358,7 +392,7 @@ def decide_unit(obs, pos):
     if isinstance(tile, dict) and tile.get("kind") == "WEED":
         return ["DIG"]
 
-    # 7. PICKUP needed items if at shed (batched: 1 turn for n items)
+    # 7. PICKUP needed items if at shed (batched)
     if at_shed(obs, (fx, fy)):
         pu = pickup_op(obs)
         if pu:
@@ -371,50 +405,12 @@ def decide_unit(obs, pos):
     return ["PASS"]
 
 
-def nearest_unclaimed(obs, pos):
-    best, best_key = None, None
-    for need in build_needs(obs):
-        if need["pos"] in CLAIMED:
-            continue
-        key = (need["prio"], manhattan(need["pos"], pos))
-        if best is None or key < best_key:
-            best, best_key = need, key
-    if best is not None:
-        CLAIMED.add(best["pos"])
-    return best
-
-
-def at_shed(obs, pos):
-    me = obs["farms"][obs["player"]]
-    half = len(me["tiles"]) // 2
-    return tuple(pos) in {(half - 1, half - 1), (half, half - 1),
-                          (half - 1, half), (half, half)}
-
-
-def pickup_op(obs):
-    """Batched pickup from shed (1 turn for n items)."""
-    if fert_want(obs) > 0 and shed_count(obs, "FERTILIZER") > 0:
-        return ["PICKUP", "FERTILIZER", min(3, shed_count(obs, "FERTILIZER"))]
-    if n_animals(obs) > 0 and shed_count(obs, "WHEAT") > 0 and inv_count(obs, "WHEAT") == 0:
-        return ["PICKUP", "WHEAT", min(3, shed_count(obs, "WHEAT"))]
-    for a in ("GOOSE", "COW", "SHEEP"):
-        if shed_count(obs, a) > 0 and empty_structures(obs, a):
-            return ["PICKUP", a, 1]
-    return None
-
-
-def empty_structures(obs, animal):
-    kind = ANIMALS[animal]["structure"]
-    return [(x, y) for x, y, t in tiles(obs)
-            if isinstance(t, dict) and t.get("kind") == kind and "animal" not in t]
-
-
 # ================================================================ agent entry
 CLAIMED = set()
 
 
 def agent(obs):
-    """Kaggle entry point — the last function defined in main.py."""
+    """Kaggle entry point — last function defined in main.py."""
     global CLAIMED
     CLAIMED = set()
     try:
