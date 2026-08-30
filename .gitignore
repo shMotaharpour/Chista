@@ -4,3 +4,6 @@ __pycache__/
 venv/
 .venv/
 node_modules/
+
+# large competition replay data (379MB)
+competition_replays/
