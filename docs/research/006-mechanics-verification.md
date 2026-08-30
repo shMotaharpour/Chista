@@ -105,3 +105,36 @@ Note: without fertilizer, harvesting day 9 (yield=5) is also possible — trade-
 ### Price recovery after a dump ✅
 
 After dumping 400 wheat: price dipped slightly ($25→$26), then town consumption raised it ~$1/day ($33 by day 9) — the market heals quickly; a dump's scar is short-lived. This means time-based spread can profit (buy before an opponent's dump, sell after recovery).
+
+### CORRECTION #2 — `first_yield_day` DOES gate melon harvesting (user caught this)
+
+The user checked the HTML replays: melon reached the shed on day 12 in BOTH games, not day 8.
+Re-verified directly from env.steps (ground truth):
+
+- FERT game: HARVEST attempted day 8 (yield=6) — **silently no-op**. Attempts days 8, 9 all fail.
+- Inventory trace: melon appears in farmer inventory on **day 10** (tile cleared same day),
+  reaches shed day 11 via end-of-day drop.
+- PLAIN game: first successful harvest attempt day 10 → identical shed day 11.
+
+**Truth:** `HARVEST` requires `day - planted_day >= first_yield_day` (source: the env's HARVEST
+branch returns early when `age < first_yield_day`). `first_yield_day=10` for melon absolutely
+blocks earlier harvests regardless of yield_units.
+
+So what DOES fertilizer buy for melon?
+- Not an earlier harvest (day 10 minimum, both cases)
+- The yield path differs: fert y=6 by day 8 vs plain y=6 by day 10 — but harvest waits for day 10
+- Value of melon fertilizer = **insurance against decay** only if max_lifespan would cut in first.
+  Decay starts at `max_lifespan_step = (day + max_yield_day + 1) * turns_per_day` = day 13 for a
+  day-0 planting. Both reach 6 before decay. → For melon, fertilizer has ~zero harvest value;
+  its only value would be if planting late (tight decay window).
+
+**Corrected earlier claim** ("melon harvestable day 8"): WRONG — it was a test artifact (the
+harvest log showed attempts, and shed=6 at the END made it look successful). Lesson: verify
+from env.steps inventory traces, not from attempt logs.
+
+Why did the earlier experiment (EXP A) "show" fert melon = 6 vs plain = 6 with equal totals?
+Both actually harvested day 10 — equal is exactly what first_yield_day gating predicts.
+
+**Melon economics revision:** fertilizer for melon ≈ worthless (day-0 planting). The $109/tile/day
+fert number in 003 should read as the no-fert $70.8 for practical purposes. Fertilizer is for
+WHEAT/CARROT/TOMATO/STRAWBERRY only (+33% to +75%).
