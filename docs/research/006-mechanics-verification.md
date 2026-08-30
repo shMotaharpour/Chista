@@ -1,113 +1,82 @@
-# Mechanics Verification — اثرهای زنجیره‌ای (V1.1.5)
+# Mechanics Verification — Chain-effect experiments (V1.1.5)
 
-> هر ادعا با آزمایش روی env واقعی تست شد — نه حدس. کد: `lab/verify_mechanics.py`
+> Every claim verified against the live env — not assumed. Code: `lab/verify_mechanics.py` + follow-up experiments (in session log).
 
-## نتایج آزمایش‌ها
+## Round 1 — six experiments
 
-### 1. کود روی خربزه — **اثرش متفاوت از چیزی است که فکر می‌کردیم** ⚠️
+### 1. Fertilizer on melon — effect differs from assumption ⚠️
 
-آزمایش A/B دقیق (هم‌seed، هم‌آبیاری):
-- **plain:** روز 8 → yield 4، روز 9 → 5، برداشت روز 10 → **6 واحد**
-- **fertilized (کود روزهای 5,6,7):** روز 8 → **6**، برداشت روز 10 → **6 واحد**
+Careful A/B (same seed, same watering):
+- **plain:** day 8 → yield 4, day 9 → 5, harvest day 10 → **6 units**
+- **fertilized (fert on days 5,6,7):** day 8 → **6**, harvest day 10 → **6 units**
 
-**نتیجه:** کود خربزه را به cap زودتر می‌رساند (تسریع) ولی **سقف همان 6 است** — سود اضافه فقط اگر زودتر برداشت کنی یا تایل را زودتر آزاد کنی. «کود = +50% سود» که در جدول 003 بود **اشتباه بود** — کود یعنی چرخه سریع‌تر، نه محصول بیشتر. برای MELON (2 چرخه در فصل) یعنی شاید چرخه سوم ممکن شود.
+**Result:** fertilizer reaches the cap faster (acceleration) but **the cap stays 6** — extra profit only if you harvest earlier or free the tile earlier. "Fertilizer = +50% profit" from table 003 was **wrong** — fertilizer means a faster cycle, not more product.
 
-**درس بزرگ:** کود باید **همزمان با پنجره بونس** (نیمه دوم رشد) استفاده شود — قبل از آن هدر می‌رود. و تحویلش 2 نوبت تأخیر دارد (خرید → shed → PICKUP → حمل → استفاده).
+**Big lesson:** fertilizer must be applied **during the bonus window** (second half of growth) — before that it is wasted. Also delivery has a 2-turn lag (buy → shed → PICKUP → carry → use).
 
-### 2. آبیاری — **بله روزانه لازم است، با جزئیات مهم** ✅
+### 2. Watering — daily is truly required ✅
 
-| برنامه | برداشت گندم | وضعیت تایل |
+| schedule | wheat harvested | tile state |
 |---|---|---|
-| روزانه (تا برداشت) | 4 | برداشت شد |
-| فقط تا روز 2 | 2 | کم‌محصول |
-| هرگز | 0 | **WEED شد** |
+| daily (4 days) | 4 | harvested |
+| stop at day 2 | 2 | under-yield |
+| never | 0 | **WEED** |
 
-- تایل بدون آب از روز دوم تبدیل به علف هرز می‌شود — از دست رفتن کامل
-- آبیاری نصفه = yield نصفه (بونس پنجره‌ای واقعا پلکانی است)
+- Tile unwatered from day 2 becomes a weed — total loss
+- Half watering = half yield (bonus window is genuinely stepwise)
 
-### 3. فروش حیوان — **نمی‌شود** ❌
+### 3. Selling an animal — **not possible** ❌
 
-- `SELL GOOSE 1` → رد شد (money Δ = −300 دقیقاً قیمت خرید، غاز در shed ماند)
-- **حیوان یک‌بار خرید می‌شود و بادوام است** — فروش فقط محصولش. اگر دیگر نخواستیم: فقط رها کردنش (feed نکردن → 2 روز → فرار می‌کند، ساختار COOP/PASTURE می‌ماند) یا DIG اگر ساختار خالی شود
+- `SELL GOOSE 1` → rejected (money Δ = −300 exactly the buy price, goose stayed in shed)
+- **Animals are buy-once durable assets** — only their product is sold. If unwanted: stop feeding → escapes in 2 days (structure remains) or DIG once empty.
 
-### 4. پر شدن انبار (shed cap = 100) — **خرید رد می‌شود، نه گم شدن** ✅
+### 4. Shed overflow (cap = 100) — **buys are rejected, not lost** ✅
 
-- سفارش `BUY_PRODUCT WHEAT 80 + FERTILIZER 80` → فقط 80 گندم + 5 کود خرید شد (بقیه رد)
-- BUY_PRODUCT ظرفیت shed را چک می‌کند — **پول نمی‌سوزد**
-- اما `DROP` و `PICKUP` سرریز را دور می‌ریزند — ترتیب گم‌شدن = ترتیب پردازش inventory (اول farmer بعد hands به ترتیب index) → کارگرهای دیرتر = ضرر بیشتر
-- **قاعده: قبل از برداشت بزرگ، shed را خالی کن (SELL)**
+- `BUY_PRODUCT WHEAT 80 + FERTILIZER 80` → only 80 wheat + 5 fertilizer bought (rest rejected)
+- BUY_PRODUCT checks shedCapacity — **money is not burned**
+- But `DROP`/`PICKUP` overflow IS discarded — order of loss = inventory processing order (farmer first, then hands by index) → later hands lose more
+- **Rule: empty the shed (SELL) before a big harvest**
 
-### 5. فروش همزمان با حریف — **lockstep واقعی** ✅
+### 5. Simultaneous sell with opponent — **real lockstep** ✅
 
-- هر دو بازیکن 500 گندم فروختند → قیمت بعد = $26، موجودی +1000 نشد چون از I0 بالاتر... (دقیق: قیمت per-unit در هر قدم quote می‌شود، نه قیمت ثابت اولیه)
-- **نتیجه استراتژیک:** اگر همزمان با حریف بریزی، هر دو قیمت‌ها را می‌شکنید — **فروش صبح زود (قبل از حریف) بهتر از همزمانی است**
+- Both players dumped 500 wheat → price quoted per unit in lockstep, not a fixed opening price
+- **Strategic consequence:** dumping at the same time as the opponent breaks prices for both — **selling before the opponent is better than simultaneously**
 
-### 6. آربیتراژ گندم (خرید ارزان/فروش گران) — **جواب نمی‌دهد** ❌
+### 6. Wheat arbitrage (buy low / sell high) — **doesn't work** ❌
 
-- خرید 300 گندم (کشش موجودی → قیمت بالا) → فروش برگشتی: قیمت‌ها مساوی قبل ($26 → $26)
-- چون buy در post-buy inventory قیمت می‌گیرد و sell در pre-sell → **رفت‌وبرگشت خالص صفر** (طراحی عمدی env: anti-arbitrage)
-- ⚠️ ولی: صبر بین خرید و فروش (تا حریف/شهر موجودی را بخورند) می‌تواند سود واقعی بدهد — این همان فروش پیش‌بینانه V2 است، نه آربیتراژ سریع
+- Buy 300 wheat (drains inventory → price up) → sell back: prices equal before/after ($26 → $26)
+- Because buy quotes at post-buy inventory and sell at pre-sell → **round trip nets zero** (deliberate anti-arbitrage design)
+- ⚠️ But: waiting between buy and sell (until opponent/town consume) can yield real profit — that's V2 predictive selling, not fast arbitrage
 
-## تغییرات در قواعد V1.2 نسبت به قبل
+## Round 2 — follow-up questions
 
-1. ❌ حذف «کود = ×1.5-2.2 سود» → کود فقط برای تسریع چرخه MELON/STRAWBERRY به cap، همزمان با پنجره بونس
-2. ✅ آب روزانه الزامی — اولویت WATER بالاتر از هرچیز جز HARVEST
-3. ❌ فروش حیوان ممکن نیست → سرمایه حیوان sunk است؛ تصمیم خرید حیوان باید نهایی باشد
-4. ✅ قبل از برداشت بزرگ SELL بزن (shed space)؛ قبل از BUY بزرگ هم چک کن
-5. ✅ زمان‌بندی فروش نسبت به حریف مهم است — همزمانی = شکستن دوطرفه قیمت
-6. ❌ آربیتراژ سریع ممنوع (round-trip صفر) — فقط spread زمانی با تحمل چندروزه
+### Fertilizer on ALL crops — yes it works, only inside the bonus window ✅ (table 003 was right)
 
-## نتیجه‌های نهایی — آزمایش‌های دوم (با رفع باگ PICKUP)
-
-### 1. کود روی همه محصولات — بله اثر دارد، ولی فقط در پنجره بونس ✅ (جدول قبلی درست بود)
-
-| محصول | بدون کود | با کود (درست‌زمانی) | دلتا |
+| crop | no fert | fert (right timing) | delta |
 |---|---|---|---|
 | WHEAT | 4 | **6** | +50% |
 | CARROT | 3 | **4** | +33% |
-| MELON | 6 | 6 | 0 (تسریع به cap) |
+| MELON | 6 | 6 | 0 (faster to cap) |
 | TOMATO | 4 | **7** | +75% |
-| STRAWBERRY | 2 | **3** | +50% (چرخه اول) |
+| STRAWBERRY | 2 | **3** | +50% (first cycle) |
 
-⚠️ دام مهم: کود فقط وقتی اثر دارد که **فعال‌سازی در پنجره بونس** (نیمه دوم رشد تا max_yield_day) باشد. آزمایش اول که صفر نشان داد، باگ تست بود (فراموشی PICKUP روزانه).
+⚠️ Gotcha: fertilizer only helps when **activated during the bonus window** (from ceil(max_yield_day/2) to max_yield_day). The first experiment showed zero because of a test bug (forgot daily re-PICKUP — inventory returns to shed at end of day).
 
-### 2. آبیاری یک‌روز-درمیان — ❌ فاجعه است
+### Alternating-day watering (including plant day) — ✅ works!
 
-- پرش یک روز از آبیاری (یا حتی از دست دادن روز کاشت) → `consecutive_unwatered=2` → **علف هرز همان شب**
-- plant day خودش unwatered=1 حساب می‌شود → اگر روز کاشت آب ندهی و فردا هم ندهی → مرگ
-- **قاعده: آب باید هر روز بدون استثنا باشد** (بونس پنجره‌ای هم فقط روی روزهای آبیاری محاسبه می‌شود)
+- TOMATO every-other-day: **4 harvests** (days 8,9,10,11) — identical to daily watering
+- STRAWBERRY every-other-day: **4 harvests** (days 10,12,14,16) — identical
+- Why: ongoing productions fall on fixed calendar days; watering every other day never lets unwatered reach 2
+- **Savings: half the watering actions are free for TOMATO/STRAWBERRY** — freed actions = more worker capacity
 
-### 3. بلافاصله بعد از max_yield_day → decay سریع و بی‌رحم ⚠️⚠️
+### Same-day harvest after watering — ✅ yes
 
-کشف مهم: **decay = 1 واحد هر 2 نوبت (نه 2 روز!)**
-- گندم 4 واحدی: روز 5 ساعت 0 شروع decay → ساعت 8 همان روز صفر → WEED
-- یعنی محصول رسیده باید **همان روز برداشت شود** — حتی یک روز تأخیر = از دست دادن همه چیز
-- آبیاری/کود در فاز decay **هیچ اثری ندارد** — مرگ متوقف نمی‌شود
-- STRAWBERRY بعد از تولید چهارم (روز 16) → تا روز ~18 علف هرز (تایل آزاد می‌شود — خودکار)
+- Wheat: water day 4 hour 0 → harvest hour 1 same day → **full 4 units**
+- (Water first, harvest one turn later — can't do both in a single turn.)
 
-**قاعده طلایی جدید: HARVEST بالاترین اولویت مطلق — محصول رسیده همان روزِ همان ساعت اول برداشت شود.**
+### MELON timing — when exactly does it reach 6? (fert applied day 6, bonus-window start)
 
-### 4. بازیابی قیمت بعد از dump ✅
-
-بعد از ریختن 400 گندم: قیمت $25→$26 سقوط جزئی، سپس مصرف شهر قیمت را هر روز بالا آورد ($33 تا روز 9) — بازار به‌سرعت خودش را ترمیم می‌کند؛ زخم dump کوتاه‌مدت است. این یعنی spread زمانی واقعا می‌تواند سود بدهد (خرید قبل از dump حریف، فروش بعد از ترمیم).
-
-## آزمایش‌های سوم — سوالات دنباله‌دار
-
-### گوجه/توت‌فرنگی یک‌روز-درمیان (با آب دادن روز کاشت) — ✅ جواب می‌دهد!
-
-- TOMATO یک‌درمیان: **4 برداشت** (روزهای 8,9,10,11) — دقیقاً برابر آبیاری روزانه
-- STRAWBERRY یک‌درمیان: **4 برداشت** (روزهای 10,12,14,16) — دقیقاً برابر روزانه
-- چرا؟ production های ongoing فقط روزهای زوجِ تقویم رخ می‌دهند و آبِ روز قبل کافی است که unwatered به 2 نرسد
-- **صرفه‌جویی: نصف اکشن‌های آب برای TOMATO/STRAWBERRY رایگان است** — اکشن آزادشده = کار بیشتری برای کارگرها
-
-### برداشت همان روزِ آبیاری — ✅ بله
-
-- گندم: آب روز 4 ساعت 0 → برداشت ساعت 1 همان روز → **4 واحد کامل**
-- (نکته: آب اول، برداشت یک نوبت بعد — نمی‌شود در یک نوبت هر دو کرد)
-
-### زمان دقیق رسیدن MELON به 6 — کود روز 6 (شروع پنجره):
-
-| روز | بدون کود | با کود (روز 6) |
+| day | no fert | fert (day 6) |
 |---|---|---|
 | 6 | 2 | 2 |
 | 7 | 3 | **4** |
@@ -115,4 +84,24 @@
 | 9 | 5 | 6 |
 | 10 | **6** | 6 |
 
-**خلاصه MELON:** بدون کود روز 10 آماده؛ با کود (اعمال در روز 6، فعال تا روز 8) روز 8 آماده — **2 روز زودتر**. چون decay از روز 11 شروع می‌شود، برداشت هر دو حالت = 6 واحد کامل. ارزش کود برای خربزه = آزاد شدن 2 روز زودتر تایل (چرخه سوم در فصل ممکن؟ 8+2=10، دومی 10-20... تقریباً نه — ولی تایل برای کاشت بعدی زودتر آزاد می‌شود).
+**MELON summary:** without fertilizer ready day 10; with fertilizer (applied day 6, active through day 8) ready day 8 — **2 days earlier**. Harvest yield is 6 either way. Value of fertilizer for melon = tile freed 2 days earlier (a 3rd cycle in-season is borderline, but the tile is available for the next planting sooner).
+
+### CORRECTION — melon IS harvestable before day 10! ⚠️
+
+Precise question: "can melon be harvested earlier than day 10?" — direct test:
+
+- Attempted harvest day 8 (fertilized, yield=6): **succeeded — 6 units harvested!** ✅
+- Day 9: success. Day 10: success.
+
+**`first_yield_day=10` does NOT gate harvesting** — the actual harvest condition is only `yield_units > 0`. Fertilizer (applied day 6) brings melon to 6 by day 8 and it can be harvested that same day.
+
+**Fast melon cycle with fertilizer:**
+- Plant day 0, fertilize day 6, harvest day 8 → tile free from day 9!
+- Without fertilizer: harvest day 10 → tile free day 11
+- Over a 30-day season: **~3 melon cycles with fertilizer** instead of 2 — seasonal MELON profit far higher than the $109/tile/day estimate in table 003
+
+Note: without fertilizer, harvesting day 9 (yield=5) is also possible — trade-off: 1 tile-day freed vs 1 unit (~$250) lost.
+
+### Price recovery after a dump ✅
+
+After dumping 400 wheat: price dipped slightly ($25→$26), then town consumption raised it ~$1/day ($33 by day 9) — the market heals quickly; a dump's scar is short-lived. This means time-based spread can profit (buy before an opponent's dump, sell after recovery).
