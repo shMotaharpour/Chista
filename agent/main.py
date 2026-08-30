@@ -30,8 +30,14 @@ NO_PLANT_AFTER = 26
 FORCE_SELL_DAYS = {28, 29}
 SEASON_LATE = 27
 MAX_HANDS = 8
-HIRE_FRACTION = 0.1
+HIRE_FRACTION = 0.05
 FEED_DAYS = 5
+
+# swept parameters (module globals — overridden by lab/sweep.py)
+DAY0_TILES = 16
+CREW_RATE = 6
+LAND_DAY = 8
+MELON_START_DAY = 3
 
 FIB = [1, 1]
 while len(FIB) < 16:
@@ -113,10 +119,12 @@ def at_shed(obs, pos):
 
 
 def crew_capacity(obs):
-    """Tiles the crew can water per day (conservative). Day 0: farmer only."""
+    """Tiles the crew can water per day. Day 0: farmer only, DAY0_TILES cap.
+    Rate = CREW_RATE tiles/unit/day (swept; walking included)."""
     if obs["day"] == 0:
-        return 4
-    return (1 + len(obs["farms"][obs["player"]]["hands"])) * 6
+        return DAY0_TILES if DAY0_TILES is not None else 4
+    rate = CREW_RATE if CREW_RATE is not None else 6
+    return (1 + len(obs["farms"][obs["player"]]["hands"])) * rate
 
 
 def feed_reserve(obs):
@@ -146,10 +154,11 @@ def empty_structures(obs, animal):
 
 # ================================================================ crop choice
 def pick_crop(obs):
-    """Crop for a free tile. Melon (days 5-17: harvestable in-season); carrot early."""
+    """Crop for a free tile. Melon (MELON_START_DAY..17: harvestable in-season)."""
     d = game_day(obs)
     seeds = obs["private"]["seeds"]
-    if 5 <= d <= 17 and seeds.get("MELON", 0) > 0:
+    start = MELON_START_DAY
+    if start <= d <= 17 and seeds.get("MELON", 0) > 0:
         return "MELON"
     if seeds.get("CARROT", 0) > 0 and d < 14:
         return "CARROT"
@@ -248,7 +257,8 @@ def market_orders(obs):
     reserve = 40 + n_animals(obs) * 10 + 8 * CROPS["MELON"]["seed"]  # keep melon seed money
     unlocked_extra = len(me["unlocked_quadrants"]) - 1
     # Land: aggressive — 25 more melon tiles per quadrant dwarfs the $1k/2k/4k price.
-    if unlocked_extra < 2 and d <= 15 and money >= LAND_PRICES[unlocked_extra] + reserve * 0.5:
+    land_day = LAND_DAY
+    if unlocked_extra < 2 and land_day <= d <= 15 and money >= LAND_PRICES[unlocked_extra] + reserve * 0.5:
         orders.append(["BUY_LAND"])
         money -= LAND_PRICES[unlocked_extra]
     if 3 <= d <= 8 and n_animals(obs, "GOOSE") == 0 and shed_count(obs, "GOOSE") == 0 \
