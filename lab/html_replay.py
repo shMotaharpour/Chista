@@ -74,14 +74,16 @@ def build_html() -> str:
         return f'<span>{kind}</span>'
 
     rows = []
-    for (d1, t1, m1), (d2, t2, m2) in zip(a["days"], b["days"]):
+    for da, db in zip(a["days"], b["days"]):
+        d1, t1, m1 = da["day"], da["tile"], da["money"]
+        d2, t2, m2 = db["day"], db["tile"], db["money"]
         rows.append(f"""
         <tr>
           <td class="day">{d1}</td>
           <td>{tile_html(t1)}</td>
-          <td>${m1:.0f}</td>
+          <td>${float(m1):.0f}</td>
           <td>{tile_html(t2)}</td>
-          <td>${m2:.0f}</td>
+          <td>${float(m2):.0f}</td>
         </tr>""")
 
     html = f"""<!DOCTYPE html>
