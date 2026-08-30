@@ -1,0 +1,9 @@
+# analysis env for Kaggriculture replays
+pyarrow>=17
+duckdb>=1.1
+pandas>=2.2
+numpy>=1.26
+seaborn>=0.13
+matplotlib>=3.8
+jupyterlab>=4.2
+ipykernel>=6.29
