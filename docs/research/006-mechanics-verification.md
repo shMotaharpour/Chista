@@ -184,3 +184,19 @@ one-time crops yield in one lump at harvest; the agent harvested day 2 (first_yi
 whatever had accumulated (2 units base). The 4/6-unit totals from the earlier per-crop table
 required waiting for the full bonus window (harvest at max_yield_day), which the delay test
 confirms (delay=0 → 4; the fert A/B in round 2 already covered full-window harvesting).
+
+### V6 - COW and SHEEP full lifecycle traces (10-11 days, fed+care daily)
+
+COW (placed day 3, production day 8: first_yield_day=8, interval 2):
+- day 8: tile yield 6 (1 base + 5 banked care bonus) -> harvested 6
+- day 10: yield 3 (1 base + 2 care bank) -> day 11: total milk 9
+- CARE banking verified: bank grows +1/day while fed+cared, paid in full on production day
+
+SHEEP (interval 3, first yield day 6): productions day 6 (5 units = 1+4 banked), day 9 (4 = 1+3) -> total 9 by day 11
+
+Key findings:
+- CARE bonus is large: 5 extra units on first cow production (5 days of banking) - care is NOT optional
+- Production days: COW days 8,10,12...; SHEEP days 6,9,12... - matches first_yield_day/interval
+- max_held caps tile yield (6 cow, 6 sheep): harvest before cap or production is wasted
+- ESCAPE confirmed: unfed cow disappears (tile -> empty PASTURE) by day 2 (2 unfed days)
+- Fertilizer: 1/day/animal confirmed for cow and sheep (11 in 10-11 days)
