@@ -1,46 +1,46 @@
-# استراتژی بهینه‌سازی ChistaAgent — پلن مرجع (منبع: ایجنت تحقیق)
+# ChistaAgent Optimization Strategy — Reference Plan (source: research agent)
 
-> برداشتی از تحلیل ایجنت دیگر. تصمیم‌های معماری و اولویت‌بندی اجرا.
+> Derived from another agent's analysis. Architecture decisions and execution priority.
 
-## تصمیم کلیدی: RL ممنوع
+## Key decision: RL banned
 
-دینامیک بازی قطعی و مدل‌دار است → **DP/MILP برتر از RL**.
+Game dynamics are deterministic and model-able → **DP/MILP beats RL**.
 
-تنها «یادگیری» مجاز: distillation supervised خروجی بهینه‌ساز به lookup table / درخت تصمیم (بدون torch). پالیسی اجرایی <10ms؛ replan عمیق فقط در مرز روز.
+The only permitted "learning": supervised distillation of the optimizer's output into a lookup table / decision tree (no torch). Executable policy <10ms; deep replanning only at day boundaries.
 
-## معماری — چهار زیرمسئله
+## Architecture — four sub-problems
 
-### (a) میکس/سرمایه = MILP deterministic-equivalent
-- متغیرها: `plant[crop,day]` ~150 int، `land` 3 bin، crew، `sell/stock` ~500 cont
-- ~1200 قید → ناچیز برای HiGHS/CBC
-- قیدها: cash path، 100 tile، ظرفیت اکشن-روز، shed≤100، جذب بازار قطعه‌ای-خطی، قید terminal
-- DP نقدینگی برای land-timing
+### (a) Mix / capital = MILP deterministic-equivalent
+- Variables: `plant[crop,day]` ~150 int, `land` 3 bins, crew, `sell/stock` ~500 cont
+- ~1200 constraints → trivial for HiGHS/CBC
+- Constraints: cash path, 100 tiles, action-per-day capacity, shed≤100, piecewise-linear market absorption, terminal constraint
+- Liquidity DP for land-timing
 
-### (b) زمان‌بندی فروش = LP قطعه‌ای-خطی
-- SELL حجم نامحدود در یک ترن می‌پذیرد → دانه‌بندی روزانه کافی است
-- قید shed=100 سخت
+### (b) Sell timing = piecewise-linear LP
+- SELL accepts unlimited volume in one turn → daily granularity is sufficient
+- Hard constraint: shed = 100
 
-### (c) کار روزانه = VRP-TW
-- تعداد unit را خودش تعیین کند: کمینه h که `tour ≤ 24(h+1)`
-- اعداد قدیمی 6/8/11 از finding 0010 برای mix قدیمی‌اند — اعتبار ندارند
+### (c) Daily labor = VRP-TW
+- The unit count should be self-determined: minimal h such that `tour ≤ 24(h+1)`
+- Old numbers 6/8/11 from finding 0010 belong to an older mix — invalid
 
-### (d) پیش‌بینی حریف
-- شناسایی: nearest-neighbor روی 2-3 روز اول در برابر 20 حریف vendored
-- شبیه‌سازی قطعی؛ عدم قطعیت فقط روی زمان فروش حریف → ۳ سناریو (زودفروش/دیرفروش/انباشتگر)
-- تصمیم با **CVaR** (نه minimax، نه expectation)
+### (d) Opponent prediction
+- Identification: nearest-neighbor on first 2-3 days against 20 vendored opponents
+- Deterministic simulation; uncertainty only on the opponent's sell timing → 3 scenarios (early-seller / late-seller / stockpiler)
+- Decision via **CVaR** (not minimax, not expectation)
 
-## DP کامل ممنوع
-DP دقیق روی بردار کامل tile×age-class انفجاری است.
+## Full DP banned
+Exact DP over the full tile×age-class vector is explosive.
 
-## اولویت‌بندی اجرا: 2 → 3 → 1 → 6 → 4 → 5 → 8 → 7
+## Execution priority: 2 → 3 → 1 → 6 → 4 → 5 → 8 → 7
 
-| # | اولویت | تسک | معیار پذیرش | seed |
-|---|--------|-----|--------------|------|
-| 1 | 🔴 | MILP میکس شرطی به حریف (جانشین اعداد ثابت findings 0004/0005) | ≥+10% money جفت‌شده، p<0.05 | 71 (کشف 18) |
-| 2 | 🔴 | فروش پیش‌بینانه (timing SELL — جابه‌جایی زمانی محصول shelved) | میانگین قیمت فروش premium ≥+25% روی سناریوی حریف انباشتگر | 18 |
-| 3 | 🔴 | Terminal-value: ارزش موجودی پایان فصل صفر؛ کاشت فقط اگر تا روز ~29 قابل فروش؛ فروش اجباری روز 29-30 | residue صفر در 95% اپیزودها؛ ≥+$500 | — |
-| 4 | 🟠 | DP نقدینگی/land-timing (task 1.3) | land سوم تا روز ≤6 در ≥80% اپیزودها بدون cash منفی | — |
-| 5 | 🟠 | Tuning منظم (4.4) با seed جفت‌شده + Wilson CI + holdout league جداگانه (5 حریف بیرون حلقه tuning — ضد overfit به 20 vendored) | — | — |
-| 6 | 🟡 | آزمون فرضیه fertilizer jackpot (A/B با/بدون COLLECT_FERTILIZER) | ≥+$2k جفت‌شده | 18 |
-| 7 | 🟡 | VRP کامل روزانه — فقط بعد از میکس جدید | — | — |
-| 8 | ⚪ | شناسایی حریف (6.3) | دقت ≥90% روی 20 vendored تا روز 3 | — |
+| # | Priority | Task | Acceptance criteria | Seeds |
+|---|---|---|---|---|
+| 1 | 🔴 | Opponent-conditioned MILP mix (replaces fixed numbers of findings 0004/0005) | ≥+10% paired money, p<0.05 | 71 (discovery 18) |
+| 2 | 🔴 | Predictive selling (SELL timing — time-shifting shelved product) | Premium avg sell price ≥+25% vs stockpiler-opponent scenario | 18 |
+| 3 | 🔴 | Terminal-value: end-of-season inventory worth zero; plant only if sellable by ~day 29; forced selling days 29-30 | zero residue in 95% of episodes; ≥+$500 | — |
+| 4 | 🟠 | Liquidity/land-timing DP (task 1.3) | third land by day ≤6 in ≥80% of episodes without negative cash | — |
+| 5 | 🟠 | Systematic tuning (4.4) with paired seeds + Wilson CI + separate holdout league (5 opponents outside the tuning loop — anti-overfit vs 20 vendored) | — | — |
+| 6 | 🟡 | Fertilizer jackpot hypothesis test (A/B with/without COLLECT_FERTILIZER) | ≥+$2k paired | 18 |
+| 7 | 🟡 | Full daily VRP — only after the new mix | — | — |
+| 8 | ⚪ | Opponent identification (6.3) | ≥90% accuracy on 20 vendored by day 3 | — |

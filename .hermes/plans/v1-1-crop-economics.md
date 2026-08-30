@@ -1,4 +1,4 @@
-# Plan — V1.1 Crop Economics (پلن، منتظر تایید)
+# Plan — V1.1 Crop Economics (plan, awaiting approval) — APPROVED & EXECUTED
 
 **Goal:** Build the quantitative economics layer: expected profit per crop/animal, exact market price curves, and revenue-maximizing sell timing — the numbers every later agent decision references. Output: `docs/research/003-crop-economics.md` + a reusable pricing module.
 

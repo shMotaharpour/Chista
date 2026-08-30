@@ -1,35 +1,37 @@
 # ChistaAgent
 
-AI Agent برای بازی **Kaggriculture** — رقابت دوبازیکنه مزرعه‌داری در Kaggle.
+AI Agent for **Kaggriculture** — a two-player farming competition on Kaggle.
 
-## ساختار
+## Layout
 
 ```
 ChistaAgent/
-├── agent/      # کد ایجنت (main.py قابل ارسال به Kaggle)
-├── lab/        # محیط مستقل طراحی/بهینه‌سازی (کتابخانه آزاد: kaggle-environments, ...)
-├── docs/       # داکیومنت‌های پروژه
-│   ├── README.md             # قوانین کامل بازی
-│   ├── AGENT.md              # راهنمای ساخت/ارسال ایجنت
-│   ├── kaggriculture-source.md  # سورس محیط بازی
-│   ├── rules/                # قوانین تعریف‌شده پروژه
-│   └── research/             # یافته‌های تحقیق و توسعه
-└── docker/     # محیط اجرای ایجنت روی ایمیج پایتونی Kaggle
+├── agent/      # Agent code (main.py submittable to Kaggle)
+├── lab/        # Independent design/optimization environment (free deps: kaggle-environments, ...)
+│   ├── opponents/  # 19 vendored top-player opponents (ladder reference)
+│   ├── runner.py   # Paired-seed match runner (sides swapped to cancel first-mover advantage)
+│   ├── ladder.py   # Opponent strength ranking (sorting tournament w/ binary insertion)
+│   ├── prices.py   # Exact port of env market_price() — env-verified
+│   ├── economics.py# Crop/animal/land economics tables
+│   └── sell_impact.py # Price-crash curves per product
+├── docs/       # Project documentation
+│   ├── README.md, AGENT.md, kaggriculture-source.md   # Game docs
+│   ├── rules/    # Project rules
+│   └── research/ # Findings: economics (003), mechanics verification (006),
+│                 # opponent ladder (005), roadmap (004), strategy plan (000)
+└── .hermes/plans/  # Implementation plans
 ```
 
-## دو محیط جدا
+## Two separated environments
 
-1. **Runtime (ایجنت)** — کانتینر داکر بر پایه ایمیج پایتونی Kaggle. ایجنت فقط با امکانات همان ایمیج کار می‌کند (خروجی: `main.py` با تابع `agent(obs)`).
-2. **Lab** — روی میزبان، وابستگی آزاد. اجرای محیط بازی، ارزیابی، تحلیل ریپلی‌ها، بهینه‌سازی استراتژی.
+1. **Runtime (agent)** — Kaggle Python image. The agent only uses what that image provides (output: `main.py` with `agent(obs)`).
+2. **Lab** — on the host, free dependencies. Runs the game env, evaluates, analyzes replays, optimizes strategy.
 
 ## Quick start (lab)
 
 ```bash
-pip install -U kaggle-environments
-python -c "
-from kaggle_environments import make
-env = make('kaggriculture', debug=True)
-env.run(['agent/main.py', 'random'])
-print([(i, s.reward) for i, s in enumerate(env.steps[-1])])
-"
+. .venv/bin/activate
+python -m lab.runner --a starter --b random --seeds 1..5 --out lab/results
+python -m lab.report lab/results/<run-dir>
+python -m lab.ladder          # rank the 19 vendored opponents
 ```

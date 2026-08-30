@@ -16,19 +16,19 @@
       "sha": "71dce70166d757855bd8a2e1f8cb5bd5bb2ec187527ab8d7c1a91895f5233a2e"
     },
     "rules/000-project-rules.md": {
-      "size": 1349,
-      "mtime": 1787994962.7733998,
-      "sha": "e615a4886a130ad6254a0894391413c57715ed5ba9b46d777fcb50a9ab5c28bb"
+      "size": 1301,
+      "mtime": 1788048846.465682,
+      "sha": "d9ff98e7190c757b9b964d85f8d4bb60369215290addecd03df0c44f4eb33dbb"
     },
     "research/000-strategy-plan.md": {
-      "size": 3392,
-      "mtime": 1788002293.3714314,
-      "sha": "d512fa3615a6b3b4f057a32a838691333b1bde04f1c449606fbd485360a22738"
+      "size": 2763,
+      "mtime": 1788048904.603663,
+      "sha": "e7e894caf9e7d4595e00b5578ba72db78dccf193a005a190de662e575f100ea8"
     },
     "research/003-crop-economics.md": {
-      "size": 6349,
-      "mtime": 1788028033.9156685,
-      "sha": "c3f8f8193e5d852060aaab67a9f545df8b05e1fa8f66e744cb77c535d048def0"
+      "size": 4972,
+      "mtime": 1788048769.7091062,
+      "sha": "347cfae495a5e703976d424f398817772ef18e20c6f14283e22890c50e72f852"
     },
     "research/006-mechanics-verification.md": {
       "size": 5911,
@@ -41,14 +41,14 @@
       "sha": "6902ea4abeb490a3054bcfe20cb69e8478e3e53809cc19d0384230ccd93e6983"
     },
     "research/004-roadmap.md": {
-      "size": 4260,
-      "mtime": 1788007347.5334365,
-      "sha": "2cb135c8860cb71f3fd54fa00313baba72d1bb50e6593e0d61a11b00afe16a2a"
+      "size": 3760,
+      "mtime": 1788048801.780854,
+      "sha": "8a3de380a0b563dfac76daf16a2f6f389cc8e355968681e813e4a058c752d246"
     },
     "research/001-project-audit.md": {
-      "size": 3747,
-      "mtime": 1788002742.7039256,
-      "sha": "4f1cec84e2343bffd61a09d18c07f630106202a3f2360fe53d531b9a6e1cadd8"
+      "size": 2852,
+      "mtime": 1788048829.5342317,
+      "sha": "b67d8d7e9b3cce90bf0370b4f4a30ba811bb952cab1221756827f2ab36162f64"
     }
   },
   "deleted": {
@@ -58,5 +58,5 @@
       "size": 25
     }
   },
-  "updated_at": 1788048452.6965141
+  "updated_at": 1788048935.7264562
 }

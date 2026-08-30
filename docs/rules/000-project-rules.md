@@ -1,17 +1,22 @@
-# قوانین پروژه ChistaAgent
+# ChistaAgent Project Rules
 
-## محیط اجرا
-- ایجنت باید در ایمیج پایتونی Kaggle (نسخه V1.63) کار کند؛ فقط کتابخانه‌های موجود در آن ایمیج.
-- Lab مستقل است و هر کتابخانه پایتونی می‌تواند داشته باشد.
-- خروجی نهایی برای ارسال به Kaggle: `main.py` در ریشه با تابع `agent(obs)`.
+## Runtime
+- The agent must run on the Kaggle Python image (V1.63); only libraries available in that image.
+- The lab is independent and may use any Python library.
+- Final submission output for Kaggle: `main.py` at the root with an `agent(obs)` function.
 
-## قوانین بازی (خلاصه)
-- دو بازیکن، 720 نوبت (24 نوبت × 30 روز)، برنده = بیشترین پول در بانک.
-- هر نوبت: یک عمل farmer + عمل‌های hands + تا 10 سفارش بازار.
-- گیاهان باید روزانه آب بخورند (2 روز بی‌آبی = علف هرز)؛ حیوانات روزانه گندم (2 روز = فرار).
-- قیمت فروش داینامیک است: با فروش، قیمت پایین می‌آید — محصولات پریمیوم (توت‌فرنگی، خربزه، شیر، پشم) با oversupply سقوط سخت دارند.
+## Game rules (summary)
+- Two players, 720 turns (24 turns × 30 days), winner = most money in bank.
+- Per turn: one farmer action + hand actions + up to 10 market orders.
+- Plants must be watered daily (2 unwatered days = weed); animals fed wheat daily (2 days = escape).
+- Sell prices are dynamic: selling lowers the price — premium products (strawberry, melon, milk, wool) crash hard on oversupply.
+- Harvest the moment yield > 0: decay is 1 unit per 2 TURNS after max lifespan (see docs/research/006).
+- Animals cannot be resold — animal purchase is a sunk, durable investment.
+- Fertilizer only helps when applied inside the bonus window (from ceil(max_yield_day/2) to max_yield_day).
 
-## فرآیند کار
-- هر تغییر با commit اتمی ثبت شود.
-- داکیومنت‌های تحقیق در `docs/research/`، قوانین جدید در `docs/rules/`.
-- استراتژی ابتدا در lab ارزیابی شود، بعد به `agent/` منتقل گردد.
+## Workflow
+- Every change committed atomically.
+- Research docs in `docs/research/`, new rules in `docs/rules/`.
+- Strategy is evaluated in the lab first, then moved to `agent/`.
+- **All repo files must be written in English only.**
+- Plans are presented step-by-step and implemented only after explicit user approval.

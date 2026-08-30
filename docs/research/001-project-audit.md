@@ -1,46 +1,46 @@
-# وضعیت پروژه — کجاییم (Audit 2026-08-29)
+# Project status — where we are (Audit 2026-08-29)
 
-## آنچه داریم ✅
+## What we have ✅
 
-- **محیط بازی کار می‌کند:** `kaggriculture` داخل `kaggle-environments 1.32.7` رجیستر شده و اجرا می‌شود (نیازی به سورس لوکال نیست)
-- **seed های جفت‌شده قابل بازتولید‌اند:** دو راند با `seed: 42` دقیقاً همان نتیجه را داد → پایه ارزیابی آماری (paired seeds) آماده است
-- **پارامترها:** `episodeSteps`, `boardSize`, `startingMoney`, `seed`, `marketParams` ... همگی قابل تنظیم از configuration
-- **داکیومنت‌ها:** README بازی، AGENT.md، سورس محیط، پلن استراتژی (`docs/research/000-strategy-plan.md`)
-- **زیرساخت:** ریپو گیت + venv + دیسک اختصاصی 100G (`/chista`)
+- **Game env works:** `kaggriculture` is registered inside `kaggle-environments 1.32.7` and runs (no local source needed)
+- **Paired seeds are reproducible:** two runs with `seed: 42` gave identical results → statistical evaluation base (paired seeds) ready
+- **Parameters:** `episodeSteps`, `boardSize`, `startingMoney`, `seed`, `marketParams`... all configurable via configuration
+- **Docs:** game README, AGENT.md, env source, strategy plan (`docs/research/000-strategy-plan.md`)
+- **Infrastructure:** git repo + venv + dedicated 100G disk (`/chista`)
 
-## آنچه نداریم ❌
+## What we don't have ❌
 
-- **هیچ کد ایجنت** — فقط `agent/` خالی؛ baseline های آماده: `pass`, `random`, `starter`
-- **کد lab** — هیچ harness، evaluator، یا ابزار ارزیابی وجود ندارد
-- **پایه‌های عددی قبلی (findings 0004/0005/0010، اعداد 6/8/11)** — از پروژه‌ای گم‌شده بودند؛ باید از صفر بازتولید شوند
-- **حریف‌های vendored** — هنوز شناسایی/دسترسی نداریم (برای پیش‌بینی حریف و holdout league لازم‌اند)
-- **بیلبورد و لاگ‌های رقابت** — باید از Kaggle بگیریم (CLI لازم است)
+- **No agent code** — `agent/` is empty; built-in baselines: `pass`, `random`, `starter`
+- **No lab code** — no harness, evaluator, or evaluation tooling (resolved later same day: harness v0 built)
+- **Old numeric baselines (findings 0004/0005/0010, numbers 6/8/11)** — lost with the previous project; must be regenerated from zero
+- **Vendored opponents** — not yet identified/available (needed for opponent prediction and holdout league) (resolved: 19 opponents installed from user archive)
+- **Leaderboard and competition logs** — must be pulled from Kaggle (CLI needed)
 
-## نقاط مبهم از پلن استراتژی (باید حل شوند)
+## Ambiguities from the strategy plan (to resolve)
 
-- ممنوعیت DP/DL/RL — پلن می‌گوید DP نقدینگی لازم است ولی DP کامل ممنوع؛ مرز دقیقش را بعداً با تست تعیین می‌کنیم
-- اعداد مرجع (کمترین/بهترین میکس، قیمت‌های انتظاری) باید با شبیه‌سازی خودمان ساخته شوند
+- DP/DL/RL ban — the plan requires a liquidity DP while banning full DP; the exact boundary will be determined by testing
+- Reference numbers (best/worst mix, expected prices) must be built with our own simulation
 
-## مسیر اول — خود مسئله (What to beat)
+## Track 1 — the problem itself (what to beat)
 
-1. **Baseline ladder:** `pass` → `random` → `starter` → پروژه ما
-   - `starter` (حلقه هویج تک‌تایل) ~$3400 در 720 گام = مبنا
-2. **اقتصاد بازی:** پیدا کردن سود هر محصول/حیوان (yield/tile/day × قیمت انتظاری − هزینه) با شبیه‌سازی
-3. **دینامیک قیمت:** چطور SELL حجم بالا قیمت را می‌شکند؛ استراتژی spread و timing
-4. **منحنی رشد پول:** چه mix ای چه مسیر نقدینگی‌ای می‌دهد (پاسخ به MILP)
+1. **Baseline ladder:** `pass` → `random` → `starter` → our agent
+   - `starter` (single-tile carrot loop) ~$3400 over 720 turns = baseline (superseded: 19 real opponents, $60k–$158k level)
+2. **Game economics:** profit per product/animal (yield/tile/day × expected price − cost) via simulation
+3. **Price dynamics:** how high-volume SELL breaks prices; spread and timing strategy
+4. **Money growth curve:** which mix gives which liquidity path (input to MILP)
 
-## مسیر دوم — توسعه (How to build)
+## Track 2 — development (how to build)
 
-- v0: **کد lab** — harness اجرای مسابقه، رجیستری ایجنت، پاسخ‌دهی متریک (money, residue, prices)، ذخیره در JSON/CSV، گزارش مقایسه
-- v1: **ایجنت rule-based** (حلقه هویج بهبودیافته + terminal-value ساده) → باید starter را بزند
-- v2: **شبیه‌سازی بازار** در lab برای تصمیم‌های فروش (LP/رگرسیون قطعه‌ای)
-- v3: **MILP میکس** با HiGHS (مطابق پلن استراتژی)
-- v4: **پیش‌بینی حریف + CVaR**
-- هر گام: معیار پذیرش + seed جفت‌شده + گزارش نتایج (مطابق پلن 000-strategy-plan)
+- v0: **lab code** — match runner, agent registry, metric logging (money, residue, prices), JSON storage, comparison report ✅ done
+- v1: **rule-based agent** (improved carrot loop + simple terminal-value) → must beat starter
+- v2: **market simulation** in lab for sell decisions (LP/piecewise regression)
+- v3: **MILP mix** with HiGHS (per strategy plan)
+- v4: **opponent prediction + CVaR**
+- Each step: acceptance criteria + paired seeds + results report (per 000-strategy-plan)
 
-## ترتیب فوری این هفته
+## Immediate order this week
 
-1. ✅ Lab scaffold + harness ارزیابی (paired-seed runner)
-2. ✅ Metric logging: money-path، residue، price-history
-3. ⬜ ایجنت v1 rule-based که starter را شکست دهد
-4. ⬜ گزارش اقتصادی: profit per tile per day برای هر محصول/حیوان با قیمت واقعی بازی
+1. ✅ Lab scaffold + evaluation harness (paired-seed runner)
+2. ✅ Metric logging: money-path, residue, price-history
+3. ⬜ Rule-based agent v1 that beats starter
+4. ✅ Economics report: profit per tile per day per product/animal at real game prices

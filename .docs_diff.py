@@ -113,9 +113,9 @@ def main():
         if res.get("ok"):
             mid = res["result"]["message_id"]
             reg[cap] = {"message_id": mid, "chat_id": CHAT, "thread_id": THREAD, "caption": cap, "path": cur[rel]["full"]}
-            report.append(f"📄 فایل جدید فرستاده شد: {cap}")
+            report.append(f"📄 New file sent: {cap}")
         else:
-            report.append(f"⚠️ خطا در ارسال {cap}: {res.get('description')}")
+            report.append(f"⚠️ Send error {cap}: {res.get('description')}")
     for rel in updated:
         cap = "docs/" + rel
         old_mid = reg.get(cap, {}).get("message_id")
@@ -125,15 +125,15 @@ def main():
         if res.get("ok"):
             mid = res["result"]["message_id"]
             reg[cap] = {"message_id": mid, "chat_id": CHAT, "thread_id": THREAD, "caption": cap, "path": cur[rel]["full"]}
-            report.append(f"🔄 آپدیت شد: {cap}")
+            report.append(f"🔄 Updated: {cap}")
         else:
-            report.append(f"⚠️ خطا در آپدیت {cap}: {res.get('description')}")
+            report.append(f"⚠️ Update error {cap}: {res.get('description')}")
     for rel in gone:
         cap = "docs/" + rel
         deleted[rel] = {"deleted_at": now, "last_seen": prev[rel].get("mtime"), "size": prev[rel].get("size")}
         # remove from registry entirely (file no longer exists; we do NOT delete the Telegram message)
         reg.pop(cap, None)
-        report.append(f"🗑️ فایل پاک شد (در تلگرام حذف نشد): {cap} — زمان حذف: {iso(now)}")
+        report.append(f"🗑️ File deleted (not deleted in Telegram): {cap} — deleted at: {iso(now)}")
 
     new_files = {rel: {"size": cur[rel]["size"], "mtime": cur[rel]["mtime"], "sha": cur[rel]["sha"]} for rel in cur}
     json.dump({"files": new_files, "deleted": deleted, "updated_at": now}, open(SNAP, "w"), indent=2)

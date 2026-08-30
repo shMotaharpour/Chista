@@ -1,77 +1,84 @@
 # Roadmap — ChistaAgent
 
-> فرآیند: هر گام ابتدا به‌صورت پلن (گام‌ها + زیرگام‌ها) ارائه می‌شود؛ پیاده‌سازی فقط با تایید صریح کاربر.
+> Process: each step is first presented as a plan (steps + sub-steps); implementation only after explicit user approval.
 
-## V0 — Lab Harness ✅ (انجام شد)
+## V0 — Lab Harness ✅ (done)
 
 - [x] metrics / registry / paired-seed runner / Wilson CI report
-- [ ] ⬜ Baseline ladder کامل (18 seed، هر سه جفت) → `docs/research/002-baseline-ladder.md`
+- [x] 19 vendored opponents installed + ladder ranking (`docs/research/005-opponent-ladder.md`)
+- [ ] ⬜ Baseline runs vs starter (superseded: ladder vs 19 real opponents is the reference now)
 
 ---
 
-## V1 — ایجنت Rule-Based که starter را بزند
+## V1 — Rule-based agent that beats starter
 
-**هدف:** delta ≥ +$200 مقابل starter در 18 بازی جفت‌شده (p<0.05)
+**Goal:** delta ≥ +$200 vs starter over 18 paired games (p<0.05)
 
-### 1.1 اقتصاد پایه (تحقیق + داکیومنت)
-- 1.1.1 محاسبه سود نظری هر محصول: (yield/tile/day از جدول) × قیمت پایه − هزینه بذر
-- 1.1.2 محاسبه سود حیوانات با احتساب هزینه گندم خوراک (1 wheat/day)
-- 1.1.3 بازتولید جدول قیمت‌ها: پیاده‌سازی `market_price()` سورس در lab و رسم منحنی قیمت-موجودی هر محصول
-- 1.1.4 ثبت نتایج → `docs/research/003-crop-economics.md`
+### 1.1 Base economics (research + doc) ✅
+- 1.1.1 Theoretical profit per crop: (yield/tile/day from table) × base price − seed cost ✅
+- 1.1.2 Animal profit incl. wheat feed cost (1 wheat/day) ✅
+- 1.1.3 Price table reproduction: port `market_price()` into lab + price-inventory curves ✅
+- 1.1.4 Results → `docs/research/003-crop-economics.md` ✅
+- 1.1.5 Mechanics verification (chain effects) → `docs/research/006-mechanics-verification.md` ✅
+  - fertilizer works only inside the bonus window; melon harvestable day 8 with fert (first_yield_day does not gate harvest)
+  - daily watering mandatory; alternating OK for ongoing crops; decay = 1 unit per 2 TURNS (harvest same day!)
+  - animals cannot be sold; shed overflow: buys rejected, DROP/PICKUP overflow discarded
+  - simultaneous selling = lockstep; fast arbitrage nets zero
 
-### 1.2 ایجنت v1
-- 1.2.1 اسکلت `agent/main.py`: ساختار decision ماژولار (بازار / کاشت / مراقبت / برداشت)
-- 1.2.2 منطق کاشت: بهترین crop موجود با توجه به نقدینگی و روز فصل
-- 1.2.3 حلقه مراقبت: آب روزانه همه تایل‌ها (اولویت)، DIG علف‌هرز، برداشت در زمان رسیدن
-- 1.2.4 فروش: فروش کل موجودی shed در پایان هر روز (فعلاً بدون بهینه‌سازی timing)
-- 1.2.5 terminal-value ساده: بعد از روز ~27 کاشت جدید ممنوع؛ فروش اجباری روز 29-30
-- 1.2.6 ارزیابی با harness: 18 paired seed vs starter → گزارش
+### 1.2 Agent v1
+- 1.2.1 Skeleton `agent/main.py`: modular decision structure (market / plant / care / harvest)
+- 1.2.2 Planting logic: best available crop given liquidity and season day
+- 1.2.3 Care loop: watering (priority per 006 findings), DIG weeds, harvest the moment yield > 0
+- 1.2.4 Selling: full shed sale at end of day (no timing optimization yet) with safe-pace caps
+- 1.2.5 Simple terminal-value: no new late plantings after ~day 26; forced selling days 29-30
+- 1.2.6 Evaluate with harness: 18 paired seeds vs starter → report
 
-### 1.3 تکرار بهینه‌سازی rule-based
-- 1.3.1 تحلیل بازی‌های باخته (money-path و residue از JSON های harness)
-- 1.3.2 اصلاح قواعد و ارزیابی مجدد (چرخه تا رسیدن به هدف)
-
----
-
-## V2 — شبیه‌ساز بازار و فروش پیش‌بینانه
-
-**هدف:** میانگین قیمت فروش premium ≥ +25% نسبت به فروش فوری (سناریوی انباشتگر)
-
-- 2.1 پیاده‌سازی price curve در lab (copy از سورس) + تست هم‌ارزی با محیط واقعی
-- 2.2 پیش‌بینی اثر سفارش فروش حجیم روی قیمت (شبیه‌سازی قطعه‌ای)
-- 2.3 زمان‌بندی فروش: فروش تدریجی در پیک‌های قیمتی روزانه/هفتگی
-- 2.4 A/B: v1 + فروش هوشمند vs v1 — 18 seed جفت‌شده
+### 1.3 Rule-based optimization loop
+- 1.3.1 Analyze lost games (money-path and residue from harness JSONs)
+- 1.3.2 Fix rules and re-evaluate (iterate until target)
 
 ---
 
-## V3 — MILP میکس (پلن استراتژی، اولویت 🔴)
+## V2 — Market simulator and predictive selling
 
-**هدف:** ≥ +10% money جفت‌شده، p<0.05، 71 seed
+**Goal:** premium sell price ≥ +25% vs immediate dumping (stockpiler-opponent scenario)
 
-- 3.1 نصب HiGHS در venv (کتابخانه سبک، بدون وابستگی سنگین)
-- 3.2 مدل‌سازی MILP: plant[crop,day]، land bins، sell/stock پیوسته، قیود cash/tile/shed
-- 3.3 حل آفلاین برای پروفایل‌های نقدینگی مختلف → جدول سیاست (lookup)
-- 3.4 distill به rule/lookup قابل اجرا در <10ms داخل ایجنت
-- 3.5 ارزیابی 71 seed vs بهترین نسخه قبلی
-
-## V4 — پیش‌بینی حریف + CVaR
-
-- 4.1 جمع‌آوری حریف‌های vendored از دیتای مسابقه / ریپلی‌ها
-- 4.2 شناسایی nearest-neighbor روی 2-3 روز اول
-- 4.3 سه سناریوی فروش حریف (زود/دیر/انباشت) + انتخاب CVaR
-- 4.4 ارزیابی در برابر هر سه سناریو
-
-## V5 — مورد باقی‌مانده از پلن استراتژی
-
-- DP نقدینگی/land-timing (اولویت 🟠)
-- VRP کامل روزانه (اولویت 🟡)
-- Tuning منظم با holdout league ضد-overfit
+- 2.1 Price curve in lab (copy from source) + equivalence test vs live env ✅ (done in 1.1.3)
+- 2.2 Predict impact of a large sell order on price (piecewise simulation)
+- 2.3 Sell timing: drip selling at daily/weekly price peaks
+- 2.4 A/B: v1 + smart selling vs v1 — 18 paired seeds
 
 ---
 
-## قواعد ثابت هر گام
+## V3 — MILP mix (strategy plan, 🔴 priority)
 
-1. پلن قبل از کد — تایید کاربر لازم است
-2. هر زیرگام = کامیت اتمی
-3. هر تغییر استراتژی = ارزیابی paired-seed + گزارش قبل از merge
-4. داکیومنت‌های یافته در docs/research/ با شماره ترتیبی
+**Goal:** ≥ +10% paired money, p<0.05, 71 seeds
+
+- 3.1 Install HiGHS in venv (light library, no heavy deps)
+- 3.2 MILP modeling: plant[crop,day], land bins, continuous sell/stock, cash/tile/shed constraints
+- 3.3 Solve offline for liquidity profiles → policy table (lookup)
+- 3.4 Distill into a rule/lookup executable in <10ms inside the agent
+- 3.5 Evaluate 71 seeds vs the best previous version
+
+## V4 — Opponent prediction + CVaR
+
+- 4.1 Collect vendored opponents from competition data / replays ✅ (19 in lab/opponents)
+- 4.2 Nearest-neighbor identification on first 2-3 days
+- 4.3 Three opponent sell scenarios (early/late/stockpiler) + CVaR choice
+- 4.4 Evaluate against all three scenarios
+
+## V5 — Remaining strategy-plan items
+
+- Liquidity/land-timing DP (🟠)
+- Full daily VRP (🟡)
+- Systematic tuning with anti-overfit holdout league
+
+---
+
+## Fixed rules for every step
+
+1. Plan before code — user approval required
+2. Every sub-step = atomic commit
+3. Every strategy change = paired-seed evaluation + report before merge
+4. Findings documented in docs/research/ with sequential numbers
+5. **All repo files in English only**
