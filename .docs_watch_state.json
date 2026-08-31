@@ -35,15 +35,20 @@
       "mtime": 1788126145.1196096,
       "sha": "6999bce4da6f113969289f1eacbe638dab1a2e8b0eeb95d33c0b9807ed7292ec"
     },
+    "replays Analysis/004-v12-results.md": {
+      "size": 1690,
+      "mtime": 1788129442.82839,
+      "sha": "ea7aaa1bb6a8f0cb71b1c32d1bd0465d3400223b9654c7b3f1a7c3dbd4b1e7d3"
+    },
     "replays Analysis/001-sell-timing.md": {
       "size": 2906,
       "mtime": 1788117862.7281733,
       "sha": "073a69818eef4fc739a07abfc1735e6738d61860d49e4384ae4c7c545ef72cd5"
     },
     "research/007-engine-notes.md": {
-      "size": 3075,
-      "mtime": 1788073525.7579937,
-      "sha": "fc862d3230af0ef5aac67dd8ffb11918eb4540d561b7a1cf3eea0a0aaef91a20"
+      "size": 4576,
+      "mtime": 1788188254.370117,
+      "sha": "406591c91014fe88c9c1498677ad8dd2f3988ef778c915e507d6291ff7c14f37"
     },
     "research/000-strategy-plan.md": {
       "size": 2763,
@@ -83,5 +88,5 @@
       "size": 25
     }
   },
-  "updated_at": 1788126166.2516253
+  "updated_at": 1788188297.226266
 }
