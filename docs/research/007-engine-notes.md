@@ -60,3 +60,31 @@ most-perishable-value item first (largest revenue-at-risk from price crash).
 3. Town consumption
 4. Plant decay
 5. End-of-day refresh (if last turn of day): plants/animals refresh, inventory drop to shed, hands disappear, hires_today reset
+
+## Hand spawn placement — exact definition (source line 534)
+
+`_spawn_hand(farm, board_size)`:
+
+1. Candidates = the FOUR shed-access tiles only:
+   `_shed_access_tiles(10) = [(4,4), (5,4), (4,5), (5,5)]` in NWSE order
+   (inner corners around the shed, one per quadrant).
+2. Count occupants: farmer + all current hands standing on those tiles.
+3. Sort by `(occupancy, NWSE index)` and take the minimum — i.e. LEAST occupied
+   tile, ties broken NWSE.
+
+Practical consequences:
+- A hire always appears within 1 tile of the shed; it can spawn on a LOCKED
+  tile (spawn ignores locks; only tile ACTIONS no-op on locked, movement is free).
+- Consecutive hires in one turn are computed sequentially: each new hire updates
+  occupancy, so hires spread over the four tiles (1 each, then wrap).
+- The farmer starts on (4,4). First hire of a day therefore takes (5,4) — which
+  is in NE. If NE is not yet bought, that hand stands on locked ground and must
+  spend one turn walking back to owned tiles.
+- Spawn position is fully predictable from the observation (farmer + hands lists),
+  so the agent can pre-plan a fresh hand's route with zero wasted turns.
+
+Assignment insight for the dispatcher: all hands start from the same 4-tile
+cluster, so optimal need-assignment = sort needs by distance from the shed and
+hand them out in order (nearest to the first hand, next to the second, ...).
+Our current greedy per-unit claiming approximates this but a shed-sorted
+assignment would save walking distance.
