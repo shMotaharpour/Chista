@@ -143,3 +143,37 @@ The plan dictates: what/when to PLANT, BUY (seeds/land/animals/wheat), SELL.
 - `lab/milp/` (constants, model, execute, tests)
 - `plan.json` schema: per-day {plant: {crop: n}, sell: {item: n}, buy: {...}, land: bool, hire: n}
 - `docs/replays Analysis/005-milp.md` — predicted vs executed gap report
+
+
+## Amendment 1 — Animal care mechanics (verified) & feeding modes REJECTED
+
+### CARE bonus exact rule (from engine source, _daily_refresh_animals):
+- `pending_care_bonus` banks +1 ONLY on days with BOTH fed AND cared.
+- Missing CARE one day loses only that day's +1; the bank survives.
+- **On a production day, the bank is CONSUMED even if the animal is hungry** (source
+  sets pending_care_bonus = 0 unconditionally inside the production branch) — a hungry
+  production day burns the entire bank AND yields no bonus.
+- Two consecutive unfed days = animal escapes.
+
+### Feeding modes tested (live env, 16 days, seed 70):
+| mode | COW milk | GOOSE eggs | SHEEP wool | alive? |
+|---|---|---|---|---|
+| full_care (feed+care daily) | **15-18** | **25-29** | **17** | yes |
+| keep_alive (feed only on/around production days) | 4 | 0 (escaped) | 0 (escaped) | cow only, 27% yield |
+
+- GOOSE (interval 1): production every day → keep_alive ≡ full_care, but missing ANY day
+  kills it → full_care mandatory.
+- SHEEP (interval 3): alternating feed cannot align with production days 9,12,15
+  (production-day hunger burns bank + no product) → dead.
+- COW (interval 2): odd-day feeding survives but yields only 27% of full_care
+  (no care banking, misses half the bonus).
+
+**Verdict: full_care dominates for all three animals. The MILP model should NOT include
+a feeding-mode decision variable — always feed + care daily (1 action/day/animal each).**
+
+### Shop demand (corrected — per-shop product list, coverage count)
+Each shop consumes 1-4 specific products (single-product shops consume ×2):
+- WHEAT covered by 6 of 8 shops (highest demand coverage, near-guaranteed sell floor)
+- STRAWBERRY by 4; MILK by 3; TOMATO/EGG by 2; CARROT/WOOL by 1 each (×2 consumption)
+Model demand: for unlocked shops s, demand(item) = Σ_units(s) — deterministic from obs.
+Products with widest shop coverage have the most predictable demand.
