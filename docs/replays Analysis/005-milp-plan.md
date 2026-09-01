@@ -177,3 +177,74 @@ Each shop consumes 1-4 specific products (single-product shops consume ×2):
 - STRAWBERRY by 4; MILK by 3; TOMATO/EGG by 2; CARROT/WOOL by 1 each (×2 consumption)
 Model demand: for unlocked shops s, demand(item) = Σ_units(s) — deterministic from obs.
 Products with widest shop coverage have the most predictable demand.
+
+## Amendment 2 — Price-conditioned animal modes (supersedes "full_care dominates")
+
+Amendment 1 concluded "full_care dominates" — **that was wrong**. It treated animal
+upkeep as action-free and ignored that (a) feed is a PURCHASED input (wheat $25-50),
+(b) actions have opportunity cost when the crew is expensive, and (c) fertilizer is
+produced by ANY living animal, even unfed ones (source: fertilizer_available = True
+in _daily_refresh_animals for every surviving animal, fed or not).
+
+### The real per-animal economics (example: GOOSE at low prices)
+
+Given: EGG = $40, WHEAT (feed) = $50, FERTILIZER = $70.
+
+| mode | actions/day | inputs | revenue/day | net | net per action |
+|---|---|---|---|---|---|
+| full_care | 2 (FEED+CARE) | wheat $50 | egg $40 + fert $70 = $110 | $60 | $30 |
+| fert_only (keep alive, skip feed) | 1.5 (COLLECT + feed every 2nd day) | wheat $25 | fert $70 | $45 | **$60** |
+| no_feed_collect (no feed at all, collect until escape) | 1 (COLLECT) | none | fert $70 (2 days, then animal gone) | varies | highest short-term |
+
+When EGG ($40) < WHEAT ($50), feeding is a NET LOSS on the egg alone — the only
+reason to feed is the CARE bank, which is worthless if eggs sell below feed cost.
+
+### Mode hierarchy (price-conditioned, per animal)
+
+Three operating modes, chosen per animal by CURRENT market prices:
+
+1. **PROFIT mode** (feed + care daily): worth it when
+   `product_price + fert_price − wheat_price > 0` AND crew actions are not scarce
+   (i.e. marginal hire cost is cheap). Full yield incl. care bank.
+2. **FERT_ONLY mode** (keep alive: 1 feed every 2nd day + daily COLLECT_FERTILIZER):
+   when product_price < wheat_price but fert_price > wheat_price/2.
+   Yields: fertilizer only (~$70/day/animal at 1 action every other day).
+   Constraint: feed days must never allow 2 consecutive misses (survival), and
+   NEVER let a production day go hungry (bank burn — Amendment 1).
+   GOOSE: impossible (interval 1 → production daily → must feed daily anyway;
+   but CARE can be skipped in low-egg markets → "half_care": feed daily, skip care).
+   COW: feed on production days 9,11,13,... (interval 2 aligns with production).
+   SHEEP: production days 9,12,15,... (interval 3) do NOT align with 2-day feeding
+   cadence → sheep cannot run FERT_ONLY safely → always full_care or sell/skip.
+3. **RETIRE mode** (stop feeding entirely): when even fertilizer doesn't justify
+   the actions. Animal escapes in 2 days; tile freed for crops. Do this when the
+   tile is worth more than the fert income.
+
+### MILP formulation change
+
+Per animal a and day d:
+- `mode[a,d]` ∈ {PROFIT, FERT_ONLY, RETIRE} (integer 1-3, monotone: can only step down)
+- actions_used[a,d] = 2 (PROFIT) | 1.5 (FERT_ONLY) | 0 (RETIRE)
+- yield[a,d] = production schedule × (1 + bank if PROFIT) — bank only accumulates in PROFIT
+- fert[a,d] = 1 per day alive (all modes until escape)
+- survival constraint: no two consecutive days without feed unless RETIRE
+
+Decision drivers (from obs): product price vs wheat price vs fert price, marginal
+crew cost (current FIB hire price), remaining season days (RETIRE near end).
+
+### Worked example (Hossein's scenario)
+
+EGG $40, WHEAT $50, FERT $70 → GOOSE runs FERT_ONLY: 1.5 actions/day → $45 net/day
+≈ $60/action vs full_care $60/day ÷ 2 actions = $30/action. FERT_ONLY wins ×2.
+If EGG rises above WHEAT + care value → switch to PROFIT mode.
+
+### Agent implementation (rule layer, before MILP)
+
+In `decide_unit`, animal branch priority becomes price-aware:
+```
+if fert_available: COLLECT_FERTILIZER            # always, 1 action, pure profit
+if product_price > wheat_price: FEED + CARE       # PROFIT mode
+elif product_price > 0 and wheat cheap: FEED only # half_care (no CARE action)
+else: skip FEED (accept escape countdown if RETIRE decided)
+```
+MELON/wheat planting decisions unchanged.
