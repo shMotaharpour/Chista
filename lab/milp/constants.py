@@ -21,9 +21,9 @@ CROPS = {
 }
 SELLABLE = ["WHEAT", "CARROT", "TOMATO", "STRAWBERRY", "MELON", "EGG", "MILK", "WOOL", "FERTILIZER"]
 ANIMALS = {
-    "GOOSE": {"cost": 300, "first": 4, "interval": 2, "product": "EGG",  "base": 50},
-    "COW":   {"cost": 400, "first": 8, "interval": 2, "product": "MILK", "base": 160},
-    "SHEEP": {"cost": 500, "first": 6, "interval": 3, "product": "WOOL", "base": 200},
+    "GOOSE": {"cost": 300, "first": 4, "interval": 1, "max_held": 4, "product": "EGG",  "base": 50},
+    "COW":   {"cost": 400, "first": 8, "interval": 2, "max_held": 6, "product": "MILK", "base": 160},
+    "SHEEP": {"cost": 500, "first": 6, "interval": 3, "max_held": 6, "product": "WOOL", "base": 200},
 }
 LAND_PRICES = [1000, 2000, 4000]
 LAND_DAYS = [6, 11, 20]

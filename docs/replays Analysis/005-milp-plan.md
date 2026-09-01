@@ -5,11 +5,17 @@
 
 ## Animal model — verified mechanics (user correction + live tests)
 
-| animal | first egg/milk/wool | interval | keep_alive production | full_care production |
+| animal | first yield | interval | max_held | production (verified source) |
 |---|---|---|---|---|
-| GOOSE | day 4 (after 4-day wait) | every 2 days if alternating-fed | 1/2 days (fed days) | 2/day after bank fills (1 base + 1 bank/day) |
-| COW | day 8 | every 2 days | 1 per fed production day | 2/production day (1+bank) |
-| SHEEP | day 6 | every 3 days | 1 per fed production day | 2/production day |
+| GOOSE | day 4 | 1 (DAILY) | 4 eggs on tile | 1 egg/day base; care bank caps at 4 total (max_held) |
+| COW | day 8 | 2 (every other day) | 6 milk on tile | 1 milk/production day base; care bank up to 6 total |
+| SHEEP | day 6 | 3 (every 3rd day) | 6 wool on tile | 1 wool/production day; care bank up to 6 total |
+
+Feeding effect on production: NONE — base production (1/animal/production day) is
+unconditional (source line 828: yield_units += base + bonus, base added regardless).
+Feeding gates ONLY the care bank accumulation (+1/day if fed AND cared).
+GOOSE full_care: egg daily; with care bank up to max_held=4 total per harvest.
+"care دوتاش می‌کنه" = with bank, 2 eggs per production (1 base + 1 bank) capped at 4 on tile.
 
 Key corrections:
 - GOOSE first egg at day 4 (4-day wait). During those 4 days CARE banks +1/day
