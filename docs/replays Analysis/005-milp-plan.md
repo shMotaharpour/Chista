@@ -248,3 +248,47 @@ elif product_price > 0 and wheat cheap: FEED only # half_care (no CARE action)
 else: skip FEED (accept escape countdown if RETIRE decided)
 ```
 MELON/wheat planting decisions unchanged.
+
+## Amendment 3 — Production is UNCONDITIONAL; feeding-mode economics CORRECTED
+
+### Engine fact (source line 828, verified live):
+`yield_units += base(1) + bonus` happens on every production day REGARDLESS of fed state.
+`fed_today` gates ONLY the care bonus, not base production. Survival = no 2 consecutive
+unfed days (consecutive_unfed resets on any fed day).
+
+### Verified per-animal feeding economics (live env):
+
+| mode | GOOSE (interval 1) | COW (interval 2) | SHEEP (interval 3) |
+|---|---|---|---|
+| full_care (feed+care daily) | 8 eggs/8d + bank | 15-18 milk + bank | 17 wool + bank |
+| alternating (feed every 2nd day) | **8 eggs/8d** (survives!) | survives if aligned to prod days | MISALIGNED → escapes |
+| base yield penalty of alternating | ZERO (base unconditional) | zero base penalty, only bank lost | — |
+
+### Corrected model:
+- Survival constraint: feed at least every 2nd day (never 2 consecutive misses).
+- Base production = 1/production-day REGARDLESS of feeding.
+- CARE adds banked bonus (+1 per fed+care day) — an OPTIONAL yield multiplier.
+- GOOSE alternating: feed days 0,2,4... production daily (fed or not) → FULL base eggs.
+  Cost: half feed actions. Loss: care bank only.
+- COW alternating: align feed days to production days (interval 2 aligns with 2-day
+  cadence) → survives, full base, no bank.
+- SHEEP: interval 3 does NOT align with 2-day cadence → production days would go hungry
+  (bank burn + production day base is still paid though!). Sheep CAN run alternating but
+  some production days fall on unfed days — base still produced (engine fact), so sheep
+  survives AND produces base — only the bank is lost on misaligned days.
+
+### Corrected mode economics (GOOSE example: egg $40, wheat $50, fert $70):
+- full_care: 2 actions/day (feed+care), wheat $1/day → egg+daily, bank bonus.
+- alternating: ~1 feed action/day (pickup+feed every 2nd day), wheat $0.5/day,
+  same base eggs, no bank.
+- Per-action efficiency: alternating is ~2x better when actions are scarce.
+- CARE becomes worthwhile only when product price > feed cost (care is pure
+  extra actions for extra banked yield).
+
+### MILP model change (final):
+- `mode[a]` ∈ {FULL_CARE, KEEP_ALIVE} per animal (decision var).
+- KEEP_ALIVE: feed actions = 0.5/day, care actions = 0, base production only.
+- FULL_CARE: feed = 1/day, care = 1/day, base + banked bonus.
+- Survival: both modes satisfy (KEEP_ALIVE feeds every 2nd day = no 2 consecutive misses).
+- Choose by prices: if (product_price − wheat_price) × interval_yield_gain > care_action_cost
+  → FULL_CARE else KEEP_ALIVE.
