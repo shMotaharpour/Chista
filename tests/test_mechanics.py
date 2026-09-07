@@ -1,13 +1,15 @@
-"""Fixture tests for world.mechanics — assert rules match lab evidence.
+"""Fixture tests for world.mechanics — assert rules match the ENGINE and lab evidence.
 
 Run: cd /chista/Chista/ChistaAgent && . .venv/bin/activate && python -m tests.test_mechanics
 """
 from __future__ import annotations
 
+from kaggle_environments.envs.kaggriculture import kaggriculture as engine
+
 from world.mechanics import (
     ANIMALS, CROPS, ONE_TIME_CROPS,
     animal_needs_care, animal_needs_feed, animal_pending_yield,
-    animal_production_due, hire_cost, one_time_yield_at,
+    animal_production_due, hire_cost, market_price, one_time_yield_at,
     plant_mature, plant_needs_water, water_bonus_window,
 )
 
@@ -27,14 +29,25 @@ def goose(placed_day, **kw):
     return t
 
 
-def test_crop_tables_match_engine():
-    assert CROPS["MELON"]["maxyd"] == 12 and CROPS["MELON"]["max_yield"] == 6
-    assert CROPS["WHEAT"]["first"] == 2
-    assert CROPS["STRAWBERRY"]["interval"] == 2 and CROPS["STRAWBERRY"]["ongoing"]
-    assert set(ANIMALS) == {"GOOSE", "COW", "SHEEP"}
+def test_tables_are_the_engine_tables():
+    """The tables must BE the engine's objects (imported, not copied)."""
+    assert CROPS is engine.CROPS
+    assert ANIMALS is engine.ANIMALS
+    assert market_price is engine.market_price
     assert ANIMALS["GOOSE"]["interval"] == 1 and ANIMALS["GOOSE"]["max_held"] == 4
-    assert ANIMALS["COW"]["first"] == 8 and ANIMALS["COW"]["max_held"] == 6
+    assert ANIMALS["COW"]["first_yield_day"] == 8 and ANIMALS["COW"]["max_held"] == 6
     assert ANIMALS["SHEEP"]["interval"] == 3
+    assert CROPS["MELON"]["max_yield_day"] == 12 and CROPS["MELON"]["max_yield"] == 6
+
+
+def test_market_price_matches_engine():
+    """Zero-drift: our re-export must give identical numbers to the engine."""
+    for item in engine.PRODUCTS:
+        for inv in (0, 5000, 10000, 15000, 20000):
+            assert market_price(item, inv) == engine.market_price(item, inv)
+    # known behavior: melon price collapses under oversupply toward the floor
+    assert market_price("MELON", 10000) == 250
+    assert market_price("MELON", 30000) == 1  # floor
 
 
 def test_water_bonus_window():
@@ -71,7 +84,6 @@ def test_plant_water_needs_and_death():
     assert not plant_needs_water(m, day=1)
     dying = crop("MELON", planted_day=0, consecutive_unwatered=2)
     assert not plant_needs_water(dying, day=2)  # dead: no point watering
-    assert not plant_mature(dying, day=12) if False else True
 
 
 def test_goose_schedule_lab_match():
@@ -80,7 +92,6 @@ def test_goose_schedule_lab_match():
     days_with_eggs = [d for d in range(0, 8) if animal_production_due(g, d)]
     assert days_with_eggs == [4, 5, 6, 7], days_with_eggs
     assert animal_pending_yield(g) == 1          # base unconditional, no bank
-    # cared+fed goose: 1 base + bank, capped 4
     g2 = goose(placed_day=0, fed_today=True, pending_care_bonus=2)
     assert animal_pending_yield(g2) == 3
     g3 = goose(placed_day=0, fed_today=True, pending_care_bonus=9)
@@ -104,8 +115,6 @@ def test_animal_needs():
     g = goose(placed_day=0)
     assert animal_needs_feed(g) and animal_needs_care(g)
     assert not animal_needs_feed(goose(placed_day=0, fed_today=True))
-    # escape after 2 consecutive unfed days
-    assert goose(placed_day=0, consecutive_unfed=2)
 
 
 def test_hire_fibonacci():

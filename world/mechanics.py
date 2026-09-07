@@ -1,64 +1,77 @@
 """L0 mechanics — single source of truth for Kaggriculture rules.
 
-Stateless rule tables + query functions. No state is stored here; every
-function takes a state-like mapping (dict/dataclass view of the observation)
-and answers a question. Values are lab-verified against the engine source
-(kaggriculture.py) and docs/research/006-mechanics-verification.md.
+**Derived from the engine, never hand-copied.** The rule tables and the price
+function are imported from `kaggle_environments.envs.kaggriculture` at import
+time, so this module can never drift from the environment the agent actually
+runs in. Query functions add lab-verified *interpretations* (harvest policy,
+care-bank payout, escape thresholds) on top of those engine tables.
 
-Rule provenance (engine source lines):
-- CROPS/ANIMALS tables: kaggriculture.py L12-22
-- one-time crop watering bonus: L440-441 (window = ceil(max_yield_day/2)..max)
-- ongoing crop production: doubled if watered AND fertilized that day
-- animal production: (day - placed - first) >= 0 and % interval == 0; base is
-  unconditional, fed_today gates only the care bank (L~828)
-- decay: one-time crops lose 1 yield every other turn after max_lifespan
-- escape/weed: 2 consecutive unfed/unwatered days
+Provenance of interpretation functions (engine source, kaggriculture.py):
+- animal production gate: L~828 `(day - placed - first) >= 0 and % interval == 0`;
+  base yield unconditional, fed_today gates only the care bank
+- one-time crop watering bonus: L440-441 (window ceil(maxyd/2)..maxyd)
+- lab evidence: docs/research/006-mechanics-verification.md + lab/_g*.py runs
 """
 from __future__ import annotations
 
-CROPS: dict[str, dict] = {
-    "WHEAT":      {"seed": 10,  "first": 2,  "maxyd": 4,  "interval": 0, "max_yield": 6, "ongoing": False, "base": 25},
-    "CARROT":     {"seed": 20,  "first": 2,  "maxyd": 3,  "interval": 0, "max_yield": 4, "ongoing": False, "base": 35},
-    "TOMATO":     {"seed": 50,  "first": 8,  "maxyd": 8,  "interval": 1, "max_yield": 4, "ongoing": True,  "base": 60},
-    "STRAWBERRY": {"seed": 100, "first": 10, "maxyd": 10, "interval": 2, "max_yield": 4, "ongoing": True,  "base": 120},
-    "MELON":      {"seed": 80,  "first": 10, "maxyd": 12, "interval": 0, "max_yield": 6, "ongoing": False, "base": 250},
-}
+from kaggle_environments.envs.kaggriculture.kaggriculture import (
+    ANIMALS as _ENGINE_ANIMALS,
+    CROPS as _ENGINE_CROPS,
+    FARM_HAND_COST_MULT as _ENGINE_FARM_HAND_COST_MULT,
+    LAND_PRICES as _ENGINE_LAND_PRICES,
+    MARKET_I0 as _ENGINE_MARKET_I0,
+    MARKET_PARAMS as _ENGINE_MARKET_PARAMS,
+    PRICE_FLOOR as _ENGINE_PRICE_FLOOR,
+    PRODUCTS as _ENGINE_PRODUCTS,
+    market_price as _engine_market_price,
+)
 
-ANIMALS: dict[str, dict] = {
-    "GOOSE": {"cost": 300, "structure": "COOP",    "first": 4, "interval": 1, "max_held": 4, "product": "EGG",  "product_base": 50},
-    "COW":   {"cost": 400, "structure": "PASTURE", "first": 8, "interval": 2, "max_held": 6, "product": "MILK", "product_base": 160},
-    "SHEEP": {"cost": 500, "structure": "PASTURE", "first": 6, "interval": 3, "max_held": 6, "product": "WOOL", "product_base": 200},
-}
+# ------------------------------------------------------------------
+# Tables straight from the engine (aliased, not copied).
+# ------------------------------------------------------------------
 
-PRODUCT_BASE = {"WHEAT": 25, "CARROT": 35, "TOMATO": 60, "STRAWBERRY": 120,
-                "MELON": 250, "EGG": 50, "MILK": 160, "WOOL": 200, "FERTILIZER": 100}
+CROPS: dict[str, dict] = _ENGINE_CROPS          # seed/first/maxyd/interval/max_yield/ongoing
+ANIMALS: dict[str, dict] = _ENGINE_ANIMALS      # cost/structure/first/interval/max_held/product
+PRODUCTS: tuple[str, ...] = tuple(_ENGINE_PRODUCTS)
+MARKET_I0: int = _ENGINE_MARKET_I0
+PRICE_FLOOR: int = _ENGINE_PRICE_FLOOR
+LAND_PRICES: tuple[int, int, int] = tuple(_ENGINE_LAND_PRICES)   # (NE, SW, SE)
+FARM_HAND_COST_MULT: int = _ENGINE_FARM_HAND_COST_MULT
 
-SELLABLE = list(PRODUCT_BASE)
+PRODUCT_BASE: dict[str, int] = {p: _ENGINE_MARKET_PARAMS[p]["base"] for p in PRODUCTS}
+SELLABLE: tuple[str, ...] = PRODUCTS            # engine lets every product be sold
 
 SEASON_DAYS = 30
 TURNS_PER_DAY = 24
 BOARD = 10          # 10x10 grid, four 5x5 quadrants
 SHED_CAP = 100
 MARKET_ORDERS_PER_TURN = 10
-FARM_HAND_COST_MULT = 1   # nth hire costs mult * fib(n), resets daily
-UNLOCK_COST = {"NE": 1000, "SW": 2000, "SE": 4000}
+UNLOCK_COST = dict(zip(("NE", "SW", "SE"), LAND_PRICES))
 WEED_CHANCE = 0.005
 
-# structure kinds an animal may live in
-ANIMAL_STRUCTURE = {"GOOSE": "COOP", "COW": "PASTURE", "SHEEP": "PASTURE"}
+ONE_TIME_CROPS: tuple[str, ...] = tuple(c for c, d in CROPS.items() if not d["ongoing"])
+ONGOING_CROPS: tuple[str, ...] = tuple(c for c, d in CROPS.items() if d["ongoing"])
 
-# harvest policy: one-time crops must be harvested at/after maxyd (full yield).
-ONE_TIME_CROPS = tuple(c for c, d in CROPS.items() if not d["ongoing"])
-ONGOING_CROPS = tuple(c for c, d in CROPS.items() if d["ongoing"])
+ANIMAL_STRUCTURE = {a: d["structure"] for a, d in ANIMALS.items()}
 
 
-# ---------------------------------------------------------------- queries
+# ------------------------------------------------------------------
+# Price — re-export the ENGINE function itself (zero drift by construction).
+# ------------------------------------------------------------------
+
+market_price = _engine_market_price
+
+
+# ------------------------------------------------------------------
+# Interpretation queries (stateless; take tiles/state, answer questions).
+# These encode lab-verified semantics ON TOP of engine tables.
+# ------------------------------------------------------------------
 
 def water_bonus_window(crop: str) -> tuple[int, int]:
-    """Inclusive day-range in which watering a one-time crop adds +1 yield/day."""
+    """Inclusive day-range in which watering a one-time crop adds +1 yield/day
+    (engine L440-441: window_start = (max_yield_day + 1) // 2)."""
     cd = CROPS[crop]
-    start = (cd["maxyd"] + 1) // 2
-    return start, cd["maxyd"]
+    return (cd["max_yield_day"] + 1) // 2, cd["max_yield_day"]
 
 
 def is_plant(tile) -> bool:
@@ -79,11 +92,11 @@ def crop_of(tile):
 
 
 def one_time_yield_at(crop: str, age: int, watered_days: int, fert_days: int) -> int:
-    """Yield of a one-time crop if harvested at `age` with the given
-    watered/fertilized days inside the bonus window. Fertilizer doubles the
-    watering bonus (never the base). Never exceeds max_yield."""
+    """Yield of a one-time crop harvested at `age` with watered/fertilized days
+    inside the bonus window. Water bonus doubles under fertilizer (engine
+    doubling applies to the watering bonus, not the base); capped at max_yield."""
     cd = CROPS[crop]
-    if age < cd["first"]:
+    if age < cd["first_yield_day"]:
         return 0
     lo, hi = water_bonus_window(crop)
     bonus_days = max(0, min(watered_days, hi - lo + 1))
@@ -93,8 +106,8 @@ def one_time_yield_at(crop: str, age: int, watered_days: int, fert_days: int) ->
 
 
 def plant_needs_water(tile, day: int) -> bool:
-    """A living plant needs water today unless already watered; decayed plants
-    and weeds never do. Plants die after 2 consecutive unwatered days."""
+    """A living plant needs water today unless already watered. Dead plants
+    (2 consecutive unwatered days -> weed) never do."""
     if not is_plant(tile):
         return False
     if tile.get("watered_today"):
@@ -103,22 +116,20 @@ def plant_needs_water(tile, day: int) -> bool:
 
 
 def plant_is_lost(tile) -> bool:
-    """2 consecutive unwatered days -> weed (dead)."""
     return is_plant(tile) and tile.get("consecutive_unwatered", 0) >= 2
 
 
 def plant_mature(tile, day: int) -> bool:
-    """Harvest policy: one-time crops at/after max_yield_day (full yield);
-    ongoing crops whenever yield_units > 0."""
+    """Harvest policy: one-time crops at/after max_yield_day (full yield,
+    lab-verified — early harvest throws away yield); ongoing crops whenever
+    yield_units > 0."""
     if not is_plant(tile):
         return False
-    crop = crop_of(tile)
-    cd = CROPS.get(crop)
+    cd = CROPS.get(crop_of(tile))
     if cd is None:
         return False
-    age = plant_age(tile, day)
     if not cd["ongoing"]:
-        return age >= cd["maxyd"]
+        return plant_age(tile, day) >= cd["max_yield_day"]
     return tile.get("yield_units", 0) > 0
 
 
@@ -127,12 +138,13 @@ def animal_production_due(tile, day: int) -> bool:
     if not is_animal_tile(tile):
         return False
     a = ANIMALS[tile["animal"]]
-    since = day - tile.get("placed_day", day) - a["first"]
+    since = day - tile.get("placed_day", day) - a["first_yield_day"]
     return since >= 0 and since % a["interval"] == 0
 
 
 def animal_pending_yield(tile) -> int:
-    """Base (unconditional) + care bank (paid only on fed production days)."""
+    """Base (unconditional) + care bank, capped at max_held on the tile.
+    The bank pays out only on fed production days (engine L~828)."""
     if not is_animal_tile(tile):
         return 0
     a = ANIMALS[tile["animal"]]
@@ -157,7 +169,7 @@ def animal_fertilizer_ready(tile) -> bool:
 
 
 def hire_cost(hires_today: int) -> int:
-    """Cost of the NEXT hire given hires made today: fib(1,1,2,3,5,...)."""
+    """Cost of the NEXT hire: mult * fib(1,1,2,3,5,...), resets daily."""
     a, b = 1, 1
     for _ in range(hires_today):
         a, b = b, a + b
@@ -165,4 +177,4 @@ def hire_cost(hires_today: int) -> int:
 
 
 def sellable_items() -> tuple:
-    return tuple(SELLABLE)
+    return SELLABLE
