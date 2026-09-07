@@ -91,7 +91,7 @@ def test_pickup_at_shed_present_when_animals_need_feed():
     env.step([{"farmer": ["BUILD_COOP"], "hands": [], "market": []}, P])
     env.step([{"farmer": ["PLACE", "GOOSE"], "hands": [], "market": []}, P])
     s = state_of(env)
-    assert s.animals_needing_feed(), "goose should need feed after placement"
+    assert s.animal_at(4, 4) is not None, "goose should be placed and need feed"
     cands = prune_farmer(s)
     assert any(c[0] == "PICKUP" and c[1] == "WHEAT" for c in cands)
 

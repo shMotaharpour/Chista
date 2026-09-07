@@ -16,63 +16,59 @@ from world import mechanics as M
 from world.tilegraph import at_shed
 
 
-# ---------------------------------------------------------------- helpers
-
-def _on_unlocked_tile(state, x: int, y: int) -> bool:
-    lim = state.unlocked_limit()
-    return 0 <= x < lim and 0 <= y < lim
-
-
 # ---------------------------------------------------------------- farmer ops
 
-def farmer_candidate_tiles(state):
-    """(x, y) tiles where the farmer stands that admit at least one op."""
+def farmer_candidates(state):
+    """Ops the farmer can do ON ITS CURRENT TILE right now (non-illegal,
+    non-inert). Movement and destination choice are L2's job."""
     fx, fy = state.farmer_xy
-    tile = state.tiles[fy][fx]
+    tile = state.tile_at(fx, fy)
     out = []
+
     if M.is_plant(tile):
-        p = next(p for p in state.plants() if (p.x, p.y) == (fx, fy))
+        p = state.plant_at(fx, fy)
         if not p.watered_today and p.consecutive_unwatered < 2:
-            out.append(("WATER", fx, fy))                       # inert if watered
-        tile_raw = state.tiles[fy][fx]
-        if M.plant_mature(tile_raw, state.day):
-            out.append(("HARVEST", fx, fy))                     # inert if yield 0 & ongoing
-        if state.day <= tile_raw.get("fertilized_until_day", -1) is False and False:
-            pass  # FERTILIZE handled by L2 priority (needs fertilizer in hand)
+            out.append(("WATER", fx, fy))               # inert if watered
+        if M.plant_mature(tile, state.day):
+            out.append(("HARVEST", fx, fy))             # inert if yield 0
+        # FERTILIZE: legal with fertilizer in hand; value judgment is L2's
+
     if M.is_animal_tile(tile):
-        a = next(a for a in state.animal_tiles() if (a.x, a.y) == (fx, fy))
-        if a.fed_today is False:
+        a = state.animal_at(fx, fy)
+        if not a.fed_today:
             out.append(("FEED", fx, fy))
-        if a.cared_today is False:
+        if not a.cared_today:
             out.append(("CARE", fx, fy))
         if a.yield_units > 0:
             out.append(("HARVEST", fx, fy))
         if a.fertilizer_available:
             out.append(("COLLECT_FERTILIZER", fx, fy))
-    if tile is None:
-        for crop in M.CROPS:
-            if state.seeds.get(crop, 0) > 0:
+
+    if tile is None and state.is_unlocked_tile(fx, fy):
+        for crop, n in state.seeds.items():
+            if n > 0:
                 out.append(("PLANT", crop, fx, fy))
-        if state.player_has_structure_materials() if hasattr(state, "player_has_structure_materials") else False:
-            pass  # BUILD_* legality depends on engine cost rules — left to L2/L3
+        # BUILD_*: legal on empty unlocked tiles when the matching animal
+        # sits in shed/hand; the "which animal/structure" choice is L2's.
+        for animal, structure in M.ANIMAL_STRUCTURE.items():
+            in_hand = state.inventories()[0].get(animal, 0)
+            in_shed = state.shed.get(animal, 0)
+            if in_hand or in_shed:
+                out.append(("BUILD_" + structure, fx, fy))
     return out
 
 
 def farmer_pickup_candidates(state) -> list:
-    """PICKUP candidates: only at shed tiles, only items the shed has,
-    only if the unit's hand can use them (wheat -> feed needed, animal ->
-    empty structure exists)."""
+    """PICKUP: only at shed tiles (illegal elsewhere), only items the shed
+    has."""
     if not at_shed(state.farmer_xy):
-        return []                                                # illegal elsewhere
+        return []
     out = []
     shed = state.shed
-    wheat = shed.get("WHEAT", 0)
-    if wheat > 0 and state.animals_needing_feed():
-        out.append(("PICKUP", "WHEAT", wheat))
+    if shed.get("WHEAT", 0) > 0:
+        out.append(("PICKUP", "WHEAT", shed["WHEAT"]))
     for animal in M.ANIMALS:
-        if shed.get(animal, 0) > 0 and any(
-                t.get("kind") == M.ANIMAL_STRUCTURE[animal] and not t.get("animal")
-                for row in state.tiles for t in row if isinstance(t, dict)):
+        if shed.get(animal, 0) > 0:
             out.append(("PICKUP", animal, shed[animal]))
     return out
 
@@ -87,11 +83,9 @@ def market_candidates(state) -> list:
     """Market orders — prune only engine-level no-ops, not economics.
     - HIRE: pruned when money < next fib cost (engine rejects unpaid hire)
     - SELL: pruned for zero-quantity items
-    - BUY_SEED / BUY_ANIMAL / BUY_PRODUCT: legal for any n >= 1 the money
-      can cover (economic sense is L1's job)
+    - BUY_*: legal for any n >= 1 (economic sense is L1's job)
     - BUY_LAND: pruned when all quadrants already unlocked
     """
-    from world import mechanics as M
     out = []
     if state.money >= M.hire_cost(state.hires_today):
         out.append(["HIRE"])
@@ -111,7 +105,7 @@ def market_candidates(state) -> list:
 
 def prune_farmer(state) -> list:
     """All non-illegal, non-inert farmer ops for the CURRENT tile."""
-    return farmer_candidate_tiles(state) + farmer_pickup_candidates(state)
+    return farmer_candidates(state) + farmer_pickup_candidates(state)
 
 
 def prune_market(state) -> list:

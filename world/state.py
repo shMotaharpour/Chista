@@ -1,16 +1,24 @@
 """State — read-view over the live kaggle-environments observation.
 
-Not a copy: lazily reads the engine observation dict and exposes typed,
-planner-friendly queries. Serializable-friendly: every accessor returns
-plain data (dicts/lists/scalars), so views can later be flattened for
-tensors/gym without changing this class.
+Design rules (per architecture review):
+- The engine's `tiles[y][x]` is ALREADY a spatial index — this class exposes
+  direct O(1) lookups (tile_at/plant_at/...) instead of whole-grid scans.
+  Callers that need "all X" (portfolio summaries) iterate their OWN lists.
+- Not a copy: lazily reads the engine observation dict.
+- Serializable-friendly: accessors return plain data, so views can later be
+  flattened for tensors/gym without changing this class.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from world import mechanics as M
 from world.rollback import snapshot  # noqa: F401  (re-export convenience)
+
+
+def quadrant_of(x: int, y: int) -> str:
+    """Quadrant name for a tile (engine L127-129 _quadrant_of)."""
+    return ("N" if y < 5 else "S") + ("W" if x < 5 else "E")
 
 
 @dataclass
@@ -42,15 +50,16 @@ class PlantView:
 
 @dataclass
 class State:
-    """Read-view over one player's observation. Build with State.from_obs(obs, player)."""
+    """Read-view over one player's observation. Build with State.from_obs(obs)."""
     obs: dict
     player: int = 0
 
-    # ---- raw access ----
+    # ---- construction ----
     @classmethod
     def from_obs(cls, obs: dict, player: int | None = None) -> "State":
         return cls(obs=obs, player=obs.get("player", 0 if player is None else player))
 
+    # ---- raw access ----
     @property
     def me(self) -> dict:
         return self.obs["farms"][self.player]
@@ -83,11 +92,6 @@ class State:
     def unlocked(self) -> list[str]:
         return list(self.me["unlocked_quadrants"])
 
-    def unlocked_limit(self) -> int:
-        """Max coordinate (exclusive) of the unlocked square. NW quadrant only
-        until a land purchase: 5x5 tiles => limit 5 (x,y in 0..4)."""
-        return 5 if len(self.unlocked) <= 1 else 5 * len(self.unlocked)
-
     @property
     def shed(self) -> dict:
         return self.obs["private"]["shed"]
@@ -115,69 +119,58 @@ class State:
     def inventories(self) -> list[dict]:
         return list(self.obs["private"]["inventories"])
 
-    # ---- derived views (plain data, planner-friendly) ----
+    # ---- spatial O(1) lookups (tiles[y][x] IS the index — use it directly) ----
 
-    def plants(self) -> list[PlantView]:
-        out = []
+    def tile_at(self, x: int, y: int):
+        return self.tiles[y][x]
+
+    def quadrant_of(self, x: int, y: int) -> str:
+        return quadrant_of(x, y)
+
+    def is_unlocked_tile(self, x: int, y: int) -> bool:
+        """Unlocked = its quadrant is in unlocked_quadrants. Land opens per
+        quadrant in fixed order NE->SW->SE (engine L96, L714-721) — so the
+        unlocked region is NOT a growing symmetric square."""
+        return self.quadrant_of(x, y) in self.unlocked
+
+    def plant_at(self, x: int, y: int) -> PlantView | None:
+        t = self.tiles[y][x]
+        if not M.is_plant(t):
+            return None
+        return PlantView(
+            x=x, y=y, crop=t["crop"], planted_day=t["planted_day"],
+            age=M.plant_age(t, self.day),
+            watered_today=t.get("watered_today", False),
+            consecutive_unwatered=t.get("consecutive_unwatered", 0),
+            yield_units=t.get("yield_units", 0),
+            fertilized_until_day=t.get("fertilized_until_day", -1))
+
+    def animal_at(self, x: int, y: int) -> CoopView | None:
+        t = self.tiles[y][x]
+        if not M.is_animal_tile(t):
+            return None
+        return CoopView(
+            x=x, y=y, animal=t["animal"], placed_day=t.get("placed_day", self.day),
+            fed_today=bool(t.get("fed_today")), cared_today=bool(t.get("cared_today")),
+            consecutive_unfed=t.get("consecutive_unfed", 0),
+            yield_units=t.get("yield_units", 0),
+            pending_care_bonus=t.get("pending_care_bonus", 0),
+            fertilizer_available=bool(t.get("fertilizer_available")))
+
+    def empty_at(self, x: int, y: int) -> bool:
+        return self.tiles[y][x] is None and self.is_unlocked_tile(x, y)
+
+    # ---- whole-grid iteration: callers own their lists; these are the ONLY
+    # full scans in L0 and must be called once per turn at most ----
+
+    def iter_plants(self):
         for y, row in enumerate(self.tiles):
             for x, t in enumerate(row):
                 if M.is_plant(t):
-                    out.append(PlantView(
-                        x=x, y=y, crop=t["crop"], planted_day=t["planted_day"],
-                        age=M.plant_age(t, self.day),
-                        watered_today=t.get("watered_today", False),
-                        consecutive_unwatered=t.get("consecutive_unwatered", 0),
-                        yield_units=t.get("yield_units", 0),
-                        fertilized_until_day=t.get("fertilized_until_day", -1)))
-        return out
+                    yield (x, y), t
 
-    def animal_tiles(self) -> list[CoopView]:
-        out = []
+    def iter_animals(self):
         for y, row in enumerate(self.tiles):
             for x, t in enumerate(row):
                 if M.is_animal_tile(t):
-                    out.append(CoopView(
-                        x=x, y=y, animal=t["animal"], placed_day=t.get("placed_day", self.day),
-                        fed_today=bool(t.get("fed_today")),
-                        cared_today=bool(t.get("cared_today")),
-                        consecutive_unfed=t.get("consecutive_unfed", 0),
-                        yield_units=t.get("yield_units", 0),
-                        pending_care_bonus=t.get("pending_care_bonus", 0),
-                        fertilizer_available=bool(t.get("fertilizer_available"))))
-        return out
-
-    def empty_unlocked_tiles(self) -> list[tuple[int, int]]:
-        lim = self.unlocked_limit()
-        return [(x, y) for y, row in enumerate(self.tiles)
-                for x, t in enumerate(row)
-                if t is None and x < lim and y < lim]
-
-    def plants_needing_water(self) -> list[PlantView]:
-        return [p for p in self.plants() if p.consecutive_unwatered < 2
-                and not p.watered_today]
-
-    def animals_needing_feed(self) -> list[CoopView]:
-        return [a for a in self.animal_tiles() if not a.fed_today]
-
-    def animals_needing_care(self) -> list[CoopView]:
-        return [a for a in self.animal_tiles() if not a.cared_today]
-
-    def harvestable_plants(self) -> list[PlantView]:
-        out = []
-        for p in self.plants():
-            tile = self.tiles[p.y][p.x]
-            if M.plant_mature(tile, self.day):
-                out.append(p)
-        return out
-
-    def production_due_today(self) -> list[CoopView]:
-        out = []
-        for a in self.animal_tiles():
-            tile = self.tiles[a.y][a.x]
-            if M.animal_production_due(tile, self.day):
-                out.append(a)
-        return out
-
-    def shed_eggs_milk_wool(self) -> dict:
-        return {k: v for k, v in self.shed.items()
-                if k in ("EGG", "MILK", "WOOL") and v}
+                    yield (x, y), t

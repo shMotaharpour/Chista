@@ -1,4 +1,4 @@
-"""Tests for world.state — State views over the live engine observation.
+"""Tests for world.state — State read-views over the live engine observation.
 
 Run: cd /chista/Chista/ChistaAgent && . .venv/bin/activate && python -m tests.test_state
 """
@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from kaggle_environments import make
 
-from world.state import State
+from world.state import State, quadrant_of
 
 P = {"farmer": ["PASS"], "hands": [], "market": []}
 
@@ -29,51 +29,59 @@ def test_state_reads_live_obs():
     assert s.seeds.get("MELON", 0) == 2
 
 
-def test_plants_and_animals_views():
+def test_quadrant_names():
+    assert quadrant_of(0, 0) == "NW"
+    assert quadrant_of(6, 2) == "NE"
+    assert quadrant_of(2, 7) == "SW"
+    assert quadrant_of(7, 7) == "SE"
+    assert quadrant_of(4, 4) == "NW"   # NW = x<5 and y<5
+
+
+def test_unlocked_per_quadrant_not_symmetric():
+    """Land opens per quadrant in fixed order (NE first) — after buying NE the
+    unlocked set is NW+NE (whole top rows), not a centered square."""
     env = make_env(70)
-    # plant 2 melons manually via market + farmer ops
-    env.step([{"farmer": ["PASS"], "hands": [], "market": [["BUY_SEED", "MELON", 2]]}, P])
-    # farmer at (4,4): PLANT then step off and PLANT again
-    env.step([{"farmer": ["PLANT", "MELON"], "hands": [], "market": []}, P])
-    env.step([{"farmer": ["WEST"], "hands": [], "market": []}, P])
-    env.step([{"farmer": ["PLANT", "MELON"], "hands": [], "market": []}, P])
+    env.step([{"farmer": ["PASS"], "hands": [], "market": [["BUY_LAND"]]}, P])
     s = State.from_obs(env.state[0].observation)
-    plants = s.plants()
-    assert len(plants) == 2, plants
-    assert all(p.crop == "MELON" for p in plants)
-    assert any(p.x == 4 and p.y == 4 for p in plants)
-    assert any(p.x == 3 and p.y == 4 for p in plants)
+    assert s.unlocked == ["NW", "NE"]
+    assert s.is_unlocked_tile(6, 2)     # NE tile
+    assert not s.is_unlocked_tile(2, 6) # SW still locked
+    assert not s.is_unlocked_tile(7, 7) # SE still locked
+    assert s.is_unlocked_tile(4, 4)     # NW
 
 
-def test_animal_views_after_setup():
-    # use the working 3-goose demo to get real coops
-    from lab.goose3_demo import run_goose3
-    env = run_goose3(days=3)
-    o = env.steps[-1][0].observation
-    s = State.from_obs(o)
-    animals = s.animal_tiles()
-    assert len(animals) == 3, animals
-    assert {a.animal for a in animals} == {"GOOSE"}
-    assert s.animals_needing_feed() or all(a.fed_today for a in animals)
-
-
-def test_empty_tiles_respects_unlocked():
-    env = make_env(70)
-    s = State.from_obs(env.state[0].observation)
-    empties = s.empty_unlocked_tiles()
-    assert all(x < 5 and y < 5 for x, y in empties)   # NW only at start
-    assert len(empties) == 25                          # full 5x5 NW incl. spawn
-
-
-def test_watering_views_update():
+def test_spatial_lookups():
     env = make_env(70)
     env.step([{"farmer": ["PASS"], "hands": [], "market": [["BUY_SEED", "MELON", 1]]}, P])
     env.step([{"farmer": ["PLANT", "MELON"], "hands": [], "market": []}, P])
     s = State.from_obs(env.state[0].observation)
-    assert len(s.plants_needing_water()) == 1
+    p = s.plant_at(4, 4)
+    assert p is not None and p.crop == "MELON" and p.age == 0
+    assert s.plant_at(2, 2) is None
+    assert s.empty_at(2, 2)
+    assert not s.empty_at(4, 4)
+    assert not s.empty_at(6, 6)         # locked quadrant: not "empty" for us
+
+
+def test_animal_lookup_after_setup():
+    from lab.goose3_demo import run_goose3
+    env = run_goose3(days=3)
+    o = env.steps[-1][0].observation
+    s = State.from_obs(o)
+    animals = [(xy, s.animal_at(*xy)) for xy, t in s.iter_animals()]
+    assert len(animals) == 3
+    assert all(v.animal == "GOOSE" for _, v in animals)
+
+
+def test_watering_view_updates():
+    env = make_env(70)
+    env.step([{"farmer": ["PASS"], "hands": [], "market": [["BUY_SEED", "MELON", 1]]}, P])
+    env.step([{"farmer": ["PLANT", "MELON"], "hands": [], "market": []}, P])
+    s = State.from_obs(env.state[0].observation)
+    assert s.plant_at(4, 4).watered_today is False
     env.step([{"farmer": ["WATER"], "hands": [], "market": []}, P])
     s2 = State.from_obs(env.state[0].observation)
-    assert len(s2.plants_needing_water()) == 0
+    assert s2.plant_at(4, 4).watered_today is True
 
 
 def test_harvestable_respects_maturity():
@@ -81,8 +89,9 @@ def test_harvestable_respects_maturity():
     env.step([{"farmer": ["PASS"], "hands": [], "market": [["BUY_SEED", "WHEAT", 1]]}, P])
     env.step([{"farmer": ["PLANT", "WHEAT"], "hands": [], "market": []}, P])
     s = State.from_obs(env.state[0].observation)
-    assert len(s.harvestable_plants()) == 0    # day 0: wheat not mature
-    assert len(s.plants()) == 1
+    w = s.plant_at(4, 4)
+    from world import mechanics as M
+    assert not M.plant_mature(s.tile_at(4, 4), s.day)   # day 0: wheat not mature
 
 
 if __name__ == "__main__":
