@@ -10,3 +10,7 @@ competition_replays/
 
 # rendered replays & experiment outputs (large, regenerated)
 lab/results/
+
+# dotfiles & local tooling
+.*
+!.gitignore
