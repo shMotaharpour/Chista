@@ -104,8 +104,8 @@ def farmer_candidates(state, unit_idx: int = 0):
 # =================================================================
 
 def farmer_pickup_candidates(state, unit_idx: int = 0) -> list:
-    """PICKUP guard (L359-360): not shed-adjacent -> return (ILLEGAL).
-    Item must exist in shed with n>0 (L364-368)."""
+    """ENGINE RULE (L359-360, L364-368): PICKUP not at a shed-adjacent tile
+    returns; item must exist in shed with n>0."""
     xy = state.farmer_xy if unit_idx == 0 else tuple(state.hands[unit_idx - 1])
     if not at_shed(xy):
         return []
@@ -117,25 +117,25 @@ def farmer_pickup_candidates(state, unit_idx: int = 0) -> list:
 
 
 def drop_candidates(state, unit_idx: int = 0) -> list:
-    """DROP guard (L343-344): not shed-adjacent -> return (ILLEGAL).
-    At shed: always executes (dumps whole hand; overflow past shed cap is
-    DISCARDED — still a state change if hand non-empty)."""
+    """ENGINE RULE (L343-357): DROP not at a shed-adjacent tile returns;
+    with a non-empty hand it always executes (dumps everything; overflow
+    discarded). Empty hand -> no state change -> inert, not offered."""
     xy = state.farmer_xy if unit_idx == 0 else tuple(state.hands[unit_idx - 1])
     inv = state.inventories()[unit_idx]
     if not at_shed(xy):
         return []
     if any(v > 0 for v in inv.values()):
         return [("DROP", xy)]
-    return []   # empty hand: DROP changes nothing — inert
+    return []
 
 
 # =================================================================
-# Movement — guards at L327-340
+# Movement — guards at L328-339
 # =================================================================
 
 def move_candidates(state, unit_idx: int = 0) -> list:
-    """Engine L328-339: moves always execute unless target is outside the
-    10x10 board. Border-aware: prune moves that would leave the board."""
+    """ENGINE RULE (L328-339): moves execute unless the target is outside
+    the 10x10 board (locked tiles are passable). Border-aware pruning only."""
     x, y = state.farmer_xy if unit_idx == 0 else tuple(state.hands[unit_idx - 1])
     out = [("PASS",)]
     if y > 0:
@@ -195,13 +195,16 @@ def market_candidates(state) -> list:
 # =================================================================
 
 def prune_farmer(state, unit_idx: int = 0) -> list:
+    """Aggregate of the ENGINE RULE mirrors above (L313-540 _apply_unit_action)
+    for one unit: tile ops + shed ops."""
     return (farmer_candidates(state, unit_idx)
             + farmer_pickup_candidates(state, unit_idx)
             + drop_candidates(state, unit_idx))
 
 
 def prune_all(state) -> dict:
-    """Complete pruned action vocabulary for this turn, per unit."""
+    """Complete pruned action vocabulary for this turn, per unit. Aggregate
+    of the ENGINE RULE mirrors above; economic choice is L1/L2's."""
     return {
         "farmer": prune_farmer(state, 0),
         "hands": [prune_farmer(state, i + 1) for i in range(len(state.hands))],

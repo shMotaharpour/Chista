@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from kaggle_environments import make
 
+from world import mechanics as M
 from world.state import State, quadrant_of
 
 P = {"farmer": ["PASS"], "hands": [], "market": []}
@@ -89,9 +90,10 @@ def test_harvestable_respects_maturity():
     env.step([{"farmer": ["PASS"], "hands": [], "market": [["BUY_SEED", "WHEAT", 1]]}, P])
     env.step([{"farmer": ["PLANT", "WHEAT"], "hands": [], "market": []}, P])
     s = State.from_obs(env.state[0].observation)
-    w = s.plant_at(4, 4)
-    from world import mechanics as M
-    assert not M.plant_mature(s.tile_at(4, 4), s.day)   # day 0: wheat not mature
+    # engine HARVEST gate (L449, L453): yield>0 AND age>=first_yield_day
+    t = s.tile_at(4, 4)
+    age = M.plant_age(t, s.day)
+    assert t["yield_units"] > 0 and age < M.CROPS["WHEAT"]["first_yield_day"]
 
 
 if __name__ == "__main__":

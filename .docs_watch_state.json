@@ -36,9 +36,9 @@
       "sha": "07861adac2965600653a6a8d70c38084c82f91d403e29afff23f23577e30645a"
     },
     "replays Analysis/005-milp-plan.md": {
-      "size": 5358,
-      "mtime": 1788287711.5027897,
-      "sha": "84905e3539e1b780a5794b735111c6881fc8ce4136c54475b9503a9af2733ff8"
+      "size": 5783,
+      "mtime": 1788296275.6050515,
+      "sha": "364fec97491072eff8ef46d3994e4412f2d2aaf37525e2eee251b9fdbbf8f2da"
     },
     "replays Analysis/003-shops-crops-corr.md": {
       "size": 3085,
@@ -75,6 +75,11 @@
       "mtime": 1788071378.5750365,
       "sha": "618daaf7f58b1c066293adb3a0d6a346a9e108a1c580924fd9b8facc76e6ec08"
     },
+    "research/008-hierarchical-architecture.md": {
+      "size": 16256,
+      "mtime": 1788788699.4745517,
+      "sha": "d91b026e0b573369cdc700109eb8a21550fdb629ac511f6c2cc4aaba8fe2f585"
+    },
     "research/005-opponent-ladder.md": {
       "size": 9670,
       "mtime": 1788023862.7807677,
@@ -96,7 +101,12 @@
       "deleted_at": 1788039697.0257456,
       "last_seen": 1788039480.5366504,
       "size": 25
+    },
+    "test-watch-tmp.md": {
+      "deleted_at": 1788354934.847972,
+      "last_seen": 1788354764.8633668,
+      "size": 19
     }
   },
-  "updated_at": 1788288817.6197472
+  "updated_at": 1788803433.0686743
 }

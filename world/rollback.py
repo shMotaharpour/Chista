@@ -17,23 +17,25 @@ import copy
 
 
 def snapshot(env):
-    """Deep-copy the engine's full state (both players, observation, status)."""
+    """ENGINE SUPPORT (rollback determinism, engine L871): the interpreter's
+    RNG is day-keyed — Random((seed * 1_000_003) ^ day) — so a deep-copied
+    state fully determines the future. Returns copy.deepcopy(env.state)."""
     return copy.deepcopy(env.state)
 
 
 def restore(env, snap) -> None:
-    """Reinstate a snapshot and truncate env.steps history to match."""
+    """ENGINE SUPPORT (rollback determinism, engine L871 day-keyed RNG):
+    reinstates a snapshot; env.steps is truncated to snap's turn so history
+    stays consistent with state."""
     env.state = copy.deepcopy(snap)
-    # env.steps[-1] corresponds to the state in snap's turn; drop later turns
     step_index = snap[0].observation.step + 1
     if len(env.steps) > step_index:
         env.steps = env.steps[:step_index]
 
 
 def hypothetical(env, snap, actions, n_turns: int = 1):
-    """Run `n_turns` steps from `snap` WITHOUT touching the live env lineage:
-    clones env, installs snap, steps, returns the resulting state. The caller's
-    env object is untouched except temporarily borrowing state (restored)."""
+    """ENGINE SUPPORT: run n_turns from snap without disturbing the live env
+    lineage (relies on the same day-keyed RNG determinism, engine L871)."""
     live = env.state
     env.state = copy.deepcopy(snap)
     try:

@@ -1,4 +1,4 @@
-"""Fixture tests for world.mechanics — assert rules match the ENGINE and lab evidence.
+"""Fixture tests for world.mechanics — every rule compared against the ENGINE.
 
 Run: cd /chista/Chista/ChistaAgent && . .venv/bin/activate && python -m tests.test_mechanics
 """
@@ -6,15 +6,10 @@ from __future__ import annotations
 
 from kaggle_environments.envs.kaggriculture import kaggriculture as engine
 
-from world.mechanics import (
-    ANIMALS, CROPS, ONE_TIME_CROPS,
-    animal_needs_care, animal_needs_feed, animal_pending_yield,
-    animal_production_due, hire_cost, market_price, one_time_yield_at,
-    plant_mature, plant_needs_water, water_bonus_window,
-)
+from world import mechanics as M
 
 
-def crop(crop, planted_day, **kw):
+def plant(crop, planted_day, **kw):
     t = {"kind": "PLANT", "crop": crop, "planted_day": planted_day,
          "watered_today": False, "consecutive_unwatered": 0, "yield_units": 0}
     t.update(kw)
@@ -30,101 +25,102 @@ def goose(placed_day, **kw):
 
 
 def test_tables_are_the_engine_tables():
-    """The tables must BE the engine's objects (imported, not copied)."""
-    assert CROPS is engine.CROPS
-    assert ANIMALS is engine.ANIMALS
-    assert market_price is engine.market_price
-    assert ANIMALS["GOOSE"]["interval"] == 1 and ANIMALS["GOOSE"]["max_held"] == 4
-    assert ANIMALS["COW"]["first_yield_day"] == 8 and ANIMALS["COW"]["max_held"] == 6
-    assert ANIMALS["SHEEP"]["interval"] == 3
-    assert CROPS["MELON"]["max_yield_day"] == 12 and CROPS["MELON"]["max_yield"] == 6
+    assert M.CROPS is engine.CROPS
+    assert M.ANIMALS is engine.ANIMALS
+    assert M.market_price is engine.market_price
+    assert M.ANIMALS["GOOSE"]["interval"] == 1 and M.ANIMALS["GOOSE"]["max_held"] == 4
+    assert M.ANIMALS["COW"]["first_yield_day"] == 8 and M.ANIMALS["COW"]["max_held"] == 6
+    assert M.ANIMALS["SHEEP"]["interval"] == 3
+    assert M.CROPS["MELON"]["max_yield_day"] == 12 and M.CROPS["MELON"]["max_yield"] == 6
 
 
 def test_market_price_matches_engine():
-    """Zero-drift: our re-export must give identical numbers to the engine."""
     for item in engine.PRODUCTS:
         for inv in (0, 5000, 10000, 15000, 20000):
-            assert market_price(item, inv) == engine.market_price(item, inv)
-    # known behavior: melon price collapses under oversupply toward the floor
-    assert market_price("MELON", 10000) == 250
-    assert market_price("MELON", 30000) == 1  # floor
+            assert M.market_price(item, inv) == engine.market_price(item, inv)
+    assert M.market_price("MELON", 30000) == 1   # floor
 
 
-def test_water_bonus_window():
-    assert water_bonus_window("MELON") == (6, 12)   # ceil(12/2)=6
-    assert water_bonus_window("WHEAT") == (2, 4)    # ceil(4/2)=2
-    assert water_bonus_window("CARROT") == (2, 3)
+def test_is_animal_tile_uses_engine_guard():
+    # engine L811: `isinstance(tile, dict) and "animal" in tile` — kind irrelevant
+    fake = {"animal": "GOOSE"}                     # no "kind" key at all
+    assert M.is_animal_tile(fake)
+    assert not M.is_animal_tile({"kind": "COOP"})  # structure without animal
+    assert M.is_animal_tile(goose(0))
 
 
-def test_one_time_yield_full_vs_min():
-    # melon watered every bonus day (6..12 = 7 days): 1 + 7 = 8 -> capped at 6
-    assert one_time_yield_at("MELON", age=12, watered_days=7, fert_days=0) == 6
-    # never watered: base 1
-    assert one_time_yield_at("MELON", age=12, watered_days=0, fert_days=0) == 1
-    # too early: 0
-    assert one_time_yield_at("MELON", age=5, watered_days=7, fert_days=0) == 0
-    # wheat watered days 2-4 (3 days): 1+3=4
-    assert one_time_yield_at("WHEAT", age=4, watered_days=3, fert_days=0) == 4
+def test_water_bonus_window_matches_engine_formula():
+    # engine L440: window_start = (max_yield_day + 1) // 2
+    for crop, cd in engine.CROPS.items():
+        lo, hi = M.water_bonus_window(crop)
+        assert lo == (cd["max_yield_day"] + 1) // 2
+        assert hi == cd["max_yield_day"]
+    assert M.water_bonus_window("MELON") == (6, 12)
+    assert M.water_bonus_window("WHEAT") == (2, 4)
 
 
-def test_plant_maturity_policy():
-    m = crop("MELON", planted_day=0)
-    assert not plant_mature(m, day=11)   # age 11 < maxyd 12
-    assert plant_mature(m, day=12)       # age 12 >= maxyd
-    w = crop("WHEAT", planted_day=0)
-    assert plant_mature(w, day=4)
-    st = crop("STRAWBERRY", planted_day=0, yield_units=2)  # ongoing: yield>0
-    assert plant_mature(st, day=11)
-
-
-def test_plant_water_needs_and_death():
-    m = crop("MELON", planted_day=0)
-    assert plant_needs_water(m, day=1)
-    m["watered_today"] = True
-    assert not plant_needs_water(m, day=1)
-    dying = crop("MELON", planted_day=0, consecutive_unwatered=2)
-    assert not plant_needs_water(dying, day=2)  # dead: no point watering
-
-
-def test_goose_schedule_lab_match():
-    # lab evidence: placed day 0, eggs from day 4, then daily (interval 1)
+def test_production_due_matches_engine_refresh():
+    """Engine L828-829 evaluates at refresh for next_day = day+1:
+    (next_day - placed - first) >= 0 and % interval == 0.
+    Our query with `day` reproduces the production the NEXT refresh grants."""
     g = goose(placed_day=0)
-    days_with_eggs = [d for d in range(0, 8) if animal_production_due(g, d)]
-    assert days_with_eggs == [4, 5, 6, 7], days_with_eggs
-    assert animal_pending_yield(g) == 1          # base unconditional, no bank
-    g2 = goose(placed_day=0, fed_today=True, pending_care_bonus=2)
-    assert animal_pending_yield(g2) == 3
-    g3 = goose(placed_day=0, fed_today=True, pending_care_bonus=9)
-    assert animal_pending_yield(g3) == 4         # max_held cap
-
-
-def test_cow_schedule_lab_match():
-    # lab evidence: cow placed day 0, milk days 8, 10, 12... (interval 2)
+    # end-of-day-3 refresh (next_day=4): first egg
+    assert M.animal_production_due(g, day=3)
+    # and daily after (interval 1)
+    assert M.animal_production_due(g, day=4)
+    assert M.animal_production_due(g, day=5)
+    assert not M.animal_production_due(g, day=2)
+    # cow placed day 0: milk at end-of-day-7 refresh (next_day=8), then every 2
     c = {"kind": "PASTURE", "animal": "COW", "placed_day": 0}
-    due = [d for d in range(0, 14) if animal_production_due(c, d)]
-    assert due == [8, 10, 12], due
-
-
-def test_sheep_schedule_lab_match():
+    due = [d for d in range(0, 14) if M.animal_production_due(c, d)]
+    assert due == [7, 9, 11, 13], due
+    # sheep: first at next_day=6 -> query day 5, then +3
     s = {"kind": "PASTURE", "animal": "SHEEP", "placed_day": 0}
-    due = [d for d in range(0, 14) if animal_production_due(s, d)]
-    assert due == [6, 9, 12], due
+    due = [d for d in range(0, 15) if M.animal_production_due(s, d)]
+    assert due == [5, 8, 11, 14], due
 
 
-def test_animal_needs():
-    g = goose(placed_day=0)
-    assert animal_needs_feed(g) and animal_needs_care(g)
-    assert not animal_needs_feed(goose(placed_day=0, fed_today=True))
+def test_animal_pending_yield_matches_engine_payout():
+    # engine L831-833: min(max_held, yield + 1 + bank if fed)
+    assert M.animal_pending_yield(goose(0)) == 1                    # base only
+    g2 = goose(0, fed_today=True, pending_care_bonus=2)
+    assert M.animal_pending_yield(g2) == 3                          # 0 + 1 + 2
+    g3 = goose(0, fed_today=True, pending_care_bonus=9)
+    assert M.animal_pending_yield(g3) == 4                          # max_held cap
+    g4 = goose(0, fed_today=False, pending_care_bonus=5)
+    assert M.animal_pending_yield(g4) == 1                          # bank not consumed
+    g5 = goose(0, fed_today=True, yield_units=3, pending_care_bonus=1)
+    assert M.animal_pending_yield(g5) == 4                          # 3+1+1, cap 4
 
 
-def test_hire_fibonacci():
-    # lab evidence V5: 4 hires cost 1+1+2+3 = 7
-    assert [hire_cost(n) for n in range(4)] == [1, 1, 2, 3]
-    assert sum(hire_cost(n) for n in range(4)) == 7
+def test_feed_care_gates_match_engine():
+    # engine L505: FEED returns if fed_today; L519: CARE returns if cared_today
+    assert M.animal_needs_feed(goose(0))
+    assert not M.animal_needs_feed(goose(0, fed_today=True))
+    assert M.animal_needs_care(goose(0))
+    assert not M.animal_needs_care(goose(0, cared_today=True))
+
+
+def test_hire_cost_matches_engine_fib():
+    # engine L690-691: mult * fib(n_already_today); _fib(0)=1, _fib(1)=1
+    for n in range(6):
+        assert M.hire_cost(n) == engine._hire_cost(n), n
+    assert [M.hire_cost(n) for n in range(4)] == [1, 1, 2, 3]
+    assert sum(M.hire_cost(n) for n in range(4)) == 7
 
 
 def test_one_time_crops_list():
-    assert set(ONE_TIME_CROPS) == {"WHEAT", "CARROT", "MELON"}
+    assert set(M.ONE_TIME_CROPS) == {"WHEAT", "CARROT", "MELON"}
+
+
+def test_new_plant_facts_we_discovered():
+    """Documented engine behaviors that our earlier imagined model missed:
+    one-time crops START with yield_units=1; planting day counts as unwatered."""
+    p = engine._new_plant("WHEAT", 0, 24)
+    assert p["yield_units"] == 1
+    assert p["consecutive_unwatered"] == 1
+    o = engine._new_plant("STRAWBERRY", 0, 24)
+    assert o["yield_units"] == 0   # ongoing starts at 0
 
 
 if __name__ == "__main__":

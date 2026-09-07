@@ -1,16 +1,13 @@
-"""L0 mechanics — single source of truth for Kaggriculture rules.
+"""L0 mechanics — the engine's rule tables + guard-mirroring queries.
 
-**Derived from the engine, never hand-copied.** The rule tables and the price
-function are imported from `kaggle_environments.envs.kaggriculture` at import
-time, so this module can never drift from the environment the agent actually
-runs in. Query functions add lab-verified *interpretations* (harvest policy,
-care-bank payout, escape thresholds) on top of those engine tables.
+EVERY function here is one of:
+  - a direct import/alias of the engine's own object (zero drift), or
+  - an ENGINE RULE with a source-line citation in its docstring, written in
+    the same shape as the engine's guard.
 
-Provenance of interpretation functions (engine source, kaggriculture.py):
-- animal production gate: L~828 `(day - placed - first) >= 0 and % interval == 0`;
-  base yield unconditional, fed_today gates only the care bank
-- one-time crop watering bonus: L440-441 (window ceil(maxyd/2)..maxyd)
-- lab evidence: docs/research/006-mechanics-verification.md + lab/_g*.py runs
+Anything else (policies, derived models, "when to harvest" opinions) does
+not belong in L0 — that's L1/L2 territory. Enforced by
+tests/test_source_citations.py.
 """
 from __future__ import annotations
 
@@ -29,26 +26,25 @@ from kaggle_environments.envs.kaggriculture.kaggriculture import (
 )
 
 # ------------------------------------------------------------------
-# Tables straight from the engine (aliased, not copied).
+# Tables — imported from the engine, never copied.
 # ------------------------------------------------------------------
 
-CROPS: dict[str, dict] = _ENGINE_CROPS          # seed/first/maxyd/interval/max_yield/ongoing
-ANIMALS: dict[str, dict] = _ENGINE_ANIMALS      # cost/structure/first/interval/max_held/product
+CROPS: dict[str, dict] = _ENGINE_CROPS          # seed/first_yield_day/max_yield_day/interval/max_yield/ongoing
+ANIMALS: dict[str, dict] = _ENGINE_ANIMALS      # cost/structure/first_yield_day/interval/max_held/product
 PRODUCTS: tuple[str, ...] = tuple(_ENGINE_PRODUCTS)
 MARKET_I0: int = _ENGINE_MARKET_I0
 PRICE_FLOOR: int = _ENGINE_PRICE_FLOOR
-LAND_PRICES: tuple[int, int, int] = tuple(_ENGINE_LAND_PRICES)   # (NE, SW, SE)
+LAND_PRICES: tuple[int, int, int] = tuple(_ENGINE_LAND_PRICES)   # (NE, SW, SE) — engine L96
 FARM_HAND_COST_MULT: int = _ENGINE_FARM_HAND_COST_MULT
 
 PRODUCT_BASE: dict[str, int] = {p: _ENGINE_MARKET_PARAMS[p]["base"] for p in PRODUCTS}
-SELLABLE: tuple[str, ...] = PRODUCTS            # engine lets every product be sold
+SELLABLE: tuple[str, ...] = PRODUCTS
 
 SEASON_DAYS = 30
 TURNS_PER_DAY = 24
-BOARD = 10          # 10x10 grid, four 5x5 quadrants
+BOARD = 10
 SHED_CAP = 100
 MARKET_ORDERS_PER_TURN = 10
-UNLOCK_COST = dict(zip(("NE", "SW", "SE"), LAND_PRICES))
 WEED_CHANCE = 0.005
 
 ONE_TIME_CROPS: tuple[str, ...] = tuple(c for c, d in CROPS.items() if not d["ongoing"])
@@ -56,23 +52,33 @@ ONGOING_CROPS: tuple[str, ...] = tuple(c for c, d in CROPS.items() if d["ongoing
 
 ANIMAL_STRUCTURE = {a: d["structure"] for a, d in ANIMALS.items()}
 
-
-# ------------------------------------------------------------------
-# Price — re-export the ENGINE function itself (zero drift by construction).
-# ------------------------------------------------------------------
-
+# The engine's market price function itself — re-exported verbatim.
 market_price = _engine_market_price
 
 
 # ------------------------------------------------------------------
-# Interpretation queries (stateless; take tiles/state, answer questions).
-# These encode lab-verified semantics ON TOP of engine tables.
+# Guard-mirroring queries. Each carries its engine citation.
 # ------------------------------------------------------------------
 
+def is_plant(tile) -> bool:
+    """ENGINE RULE (L341, L410): `isinstance(tile, dict) and tile.get("kind") == "PLANT"`."""
+    return isinstance(tile, dict) and tile.get("kind") == "PLANT"
+
+
+def is_animal_tile(tile) -> bool:
+    """ENGINE RULE (L811): `isinstance(tile, dict) and "animal" in tile`."""
+    return bool(isinstance(tile, dict) and "animal" in tile)
+
+
+def plant_age(tile, day: int) -> int:
+    """ENGINE RULE (L439, L453): `day - tile["planted_day"]`."""
+    return day - tile.get("planted_day", day)
+
+
 def water_bonus_window(crop: str) -> tuple[int, int]:
-    """Inclusive day-range in which watering a one-time crop adds +1 yield/day
-    (engine L440-441: window_start = (max_yield_day + 1) // 2). Cached: the
-    window is a pure function of the crop table, never of game state."""
+    """ENGINE RULE (L440-441): window_start = (max_yield_day + 1) // 2;
+    window = [window_start .. max_yield_day]. Cached: pure function of the
+    crop table."""
     return _water_bonus_window_cached(crop)
 
 
@@ -82,73 +88,9 @@ def _water_bonus_window_cached(crop: str) -> tuple[int, int]:
     return (cd["max_yield_day"] + 1) // 2, cd["max_yield_day"]
 
 
-def is_plant(tile) -> bool:
-    return isinstance(tile, dict) and tile.get("kind") == "PLANT"
-
-
-def is_animal_tile(tile) -> bool:
-    return bool(isinstance(tile, dict) and tile.get("kind") in ("COOP", "PASTURE")
-                and tile.get("animal"))
-
-
-def plant_age(tile, day: int) -> int:
-    return day - tile.get("planted_day", day)
-
-
-def crop_of(tile):
-    return tile.get("crop") if is_plant(tile) else None
-
-
-def one_time_yield_at(crop: str, age: int, watered_days: int, fert_days: int) -> int:
-    """Yield of a one-time crop harvested at `age` with watered/fertilized days
-    inside the bonus window. Water bonus doubles under fertilizer (engine
-    doubling applies to the watering bonus, not the base); capped at max_yield."""
-    cd = CROPS[crop]
-    if age < cd["first_yield_day"]:
-        return 0
-    lo, hi = water_bonus_window(crop)
-    bonus_days = max(0, min(watered_days, hi - lo + 1))
-    return _one_time_yield_cached(crop, bonus_days, bool(fert_days), cd["max_yield"])
-
-
-@lru_cache(maxsize=None)
-def _one_time_yield_cached(crop: str, bonus_days: int, fertilized: bool,
-                           max_yield: int) -> int:
-    if fertilized:
-        return min(1 + 2 * bonus_days, max_yield)
-    return min(1 + bonus_days, max_yield)
-
-
-def plant_needs_water(tile, day: int) -> bool:
-    """A living plant needs water today unless already watered. Dead plants
-    (2 consecutive unwatered days -> weed) never do."""
-    if not is_plant(tile):
-        return False
-    if tile.get("watered_today"):
-        return False
-    return tile.get("consecutive_unwatered", 0) < 2
-
-
-def plant_is_lost(tile) -> bool:
-    return is_plant(tile) and tile.get("consecutive_unwatered", 0) >= 2
-
-
-def plant_mature(tile, day: int) -> bool:
-    """Harvest policy: one-time crops at/after max_yield_day (full yield,
-    lab-verified — early harvest throws away yield); ongoing crops whenever
-    yield_units > 0."""
-    if not is_plant(tile):
-        return False
-    cd = CROPS.get(crop_of(tile))
-    if cd is None:
-        return False
-    if not cd["ongoing"]:
-        return plant_age(tile, day) >= cd["max_yield_day"]
-    return tile.get("yield_units", 0) > 0
-
-
 def animal_production_due(tile, day: int) -> bool:
-    """(day - placed - first) >= 0 and % interval == 0 (engine L~828)."""
+    """ENGINE RULE (L828-829): `(day + 1 - placed_day - first_yield_day) >= 0
+    and % interval == 0`, evaluated at END-of-day refresh for next_day."""
     if not is_animal_tile(tile):
         return False
     a = ANIMALS[tile["animal"]]
@@ -159,39 +101,39 @@ def animal_production_due(tile, day: int) -> bool:
 @lru_cache(maxsize=None)
 def _production_due_cached(animal: str, placed_day: int, day: int,
                            first: int, interval: int) -> bool:
-    since = day - placed_day - first
+    since = (day + 1) - placed_day - first
     return since >= 0 and since % interval == 0
 
 
 def animal_pending_yield(tile) -> int:
-    """Base (unconditional) + care bank, capped at max_held on the tile.
-    The bank pays out only on fed production days (engine L~828)."""
+    """ENGINE RULE (L831-833): on a production day,
+    yield_units = min(max_held, yield_units + 1 + bonus) where bonus is the
+    pending care bank, consumed only if fed_today. This predicts that payout."""
     if not is_animal_tile(tile):
         return 0
     a = ANIMALS[tile["animal"]]
     bank = tile.get("pending_care_bonus", 0) if tile.get("fed_today") else 0
-    return min(a["max_held"], 1 + bank)
+    return min(a["max_held"], tile.get("yield_units", 0) + 1 + bank)
 
 
 def animal_needs_feed(tile) -> bool:
+    """ENGINE RULE (L505): `tile["fed_today"]` -> FEED returns (inert)."""
     return is_animal_tile(tile) and not tile.get("fed_today")
 
 
 def animal_needs_care(tile) -> bool:
+    """ENGINE RULE (L519): `tile["cared_today"]` -> CARE returns (inert)."""
     return is_animal_tile(tile) and not tile.get("cared_today")
 
 
-def animal_is_lost(tile) -> bool:
-    return is_animal_tile(tile) and tile.get("consecutive_unfed", 0) >= 2
-
-
 def animal_fertilizer_ready(tile) -> bool:
+    """ENGINE RULE (L512): `tile["fertilizer_available"]` gate on COLLECT_FERTILIZER."""
     return is_animal_tile(tile) and bool(tile.get("fertilizer_available"))
 
 
 def hire_cost(hires_today: int) -> int:
-    """Cost of the NEXT hire: mult * fib(1,1,2,3,5,...), resets daily.
-    Cached: pure function of an int, called every turn by L2/L3."""
+    """ENGINE RULE (L690-691): mult * fib(n_already_today), fib(0)=1, fib(1)=1.
+    Cached: pure function of an int."""
     return _hire_cost_cached(hires_today)
 
 
