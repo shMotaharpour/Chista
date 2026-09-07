@@ -81,6 +81,16 @@ re-implements it.
   plant), actions that violate monotone-resource sanity. The pruned set is
   the ONLY action vocabulary any planner ever sees.
 
+**State views (planner vs RL/DL)**: L0 exposes ONE `State` class with two
+views. The planner view (`features.py`: exact queries like
+`open_tasks()`, `workload_today()`) serves L1/L2. The tensor/gym view
+(`encoder.py`: `to_tensor()` fixed-shape ndarray, `to_gym()` with
+action_mask) serves future RL/DL and is added later at near-zero cost —
+the action_mask comes directly from `pruning.py`, and the simulator is the
+`gym.step()` backend (enables parallel CPU training off kaggle-environments).
+Design requirement now: `State` must stay serializable and flat-able, and
+the action space must come from the pruned vocabulary.
+
 ### L1 — Economic Planner (per-day, portfolio level)
 
 Question: *what portfolio of crops/animals/land/crew maximizes final money?*
