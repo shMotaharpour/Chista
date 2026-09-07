@@ -68,12 +68,21 @@ L3  DISPATCHER       per-turn executor with reflexes
 Single source of truth for mechanics; everything else queries it, nothing
 re-implements it.
 - `mechanics.py`: production tables, care-bank rules, decay, weeds, shed,
-  town demand — all lab-verified, as code.
-- `market.py`: the price function per product (shape + I0, both sides).
-- `simulator.py`: forward simulator `(state, action) -> state` for
-  verification, workload probing, and plan stress-testing.
+  town demand — imported directly from the engine module (zero drift),
+  plus lab-verified interpretation queries.
+- `market.py`: thin re-export of the engine's `market_price` + expected-
+  price profiles for L1.
 - `tilegraph.py`: travel time between tiles (BFS over unlocked quadrants) —
   what the current MILP is missing.
+- **`rollback.py`**: snapshot/restore helper over the LIVE engine
+  (`copy.deepcopy(env.state)` + `env.state = snap` + history truncation).
+  Verified deterministic: the interpreter's RNG is day-keyed
+  (`Random((seed * 1_000_003) ^ day)`, engine L871), so restoring to turn N
+  reproduces the same future as a fresh episode. Measured: ~0.5ms per
+  snapshot, ~480 hypothetical steps/s — sufficient for L2 search and L1
+  calibration on the real engine. **There is NO custom simulator** — the
+  official engine is the single executor, which eliminates the drift bug
+  class entirely.
 - **`pruning.py` (the harness)**: raw legal action set → pruned candidate
   set. Removes: actions on locked tiles, pointless orders (selling into a
   $1 floor, buying seeds with no plantable tile), no-op sequences
@@ -86,8 +95,10 @@ views. The planner view (`features.py`: exact queries like
 `open_tasks()`, `workload_today()`) serves L1/L2. The tensor/gym view
 (`encoder.py`: `to_tensor()` fixed-shape ndarray, `to_gym()` with
 action_mask) serves future RL/DL and is added later at near-zero cost —
-the action_mask comes directly from `pruning.py`, and the simulator is the
-`gym.step()` backend (enables parallel CPU training off kaggle-environments).
+the action_mask comes directly from `pruning.py`, and the live engine with
+`rollback.py` is the `gym.step()` backend (enables parallel CPU training off
+kaggle-environments — measured ~480 hypothetical steps/s, 8 instances in
+parallel at 0.4s per 24-turn day-roll).
 Design requirement now: `State` must stay serializable and flat-able, and
 the action space must come from the pruned vocabulary.
 
@@ -165,10 +176,11 @@ Output: the action dict for kaggle-environments.
 agent/
   entry.py            # kaggle entry point: obs -> L3 -> action
 world/                # L0
-  mechanics.py        # verified constants + rules
-  market.py           # price function
-  simulator.py        # forward simulator
+  mechanics.py        # engine-derived tables + interpretation queries
+  market.py           # engine market_price re-export + expected prices
+  state.py            # State view over env observation
   tilegraph.py        # distances, travel time
+  rollback.py         # snapshot/restore over the live engine
   pruning.py          # action-pruning harness
 planner/              # L1
   economic.py         # rolling 15-day MILP (SOS2 prices)
@@ -253,19 +265,23 @@ L0 state, L1 season economy, L2 day schedule, L3 turn dispatch.
 
 ## 9. Build order (each step verified before the next)
 
-1. **L0 `world/mechanics.py` + `market.py`** — port lab-verified mechanics
-   and price function into code. Verify: reproduce one known goose day and
-   one melon price series exactly.
-2. **L0 `world/simulator.py` + `tilegraph.py` + `pruning.py`** — forward
-   simulator, travel times, action harness. Verify: simulator replay of a
-   full episode matches engine state per turn (drift = 0); pruning removes
-   only provably-useless actions.
+1. **L0 `world/mechanics.py` + `market.py`** — DONE: tables imported from
+   the engine module (identity-tested), price = engine's `market_price`
+   re-export, lab-verified interpretation queries. 12/12 fixture tests.
+2. **L0 `world/state.py` + `rollback.py` + `tilegraph.py` + `pruning.py`** —
+   State view over the live env observation; snapshot/restore helper
+   (deterministic, day-keyed RNG verified); travel times; action harness.
+   Verify: rollback determinism on 3 seeds (restore to turn N == fresh
+   episode at turn N); pruning never drops a provably useful action on
+   668 replay episodes.
 3. **L2 `schedule/`** — or-tools routing schedule + distilled heuristic,
    given today's playbook as a fixed portfolio. Verify: 100% watering
    coverage on 8 melons + 2 pastures; heuristic ≥95% of OR-Tools baseline.
+   Search runs directly on the live engine via `rollback.py` (~480
+   hypothetical steps/s, 8 parallel instances).
 4. **L1 `planner/`** — rolling MILP with L2-measured workload coefficients
-   and SOS2 prices. Verify: plan survives L0 simulation to end-of-season
-   with money > playbook baseline.
+   and SOS2 prices. Verify: plan survives execution on the live engine to
+   end-of-season with money > playbook baseline.
 5. **L3 `dispatch/`** — port `playbook_agent.py` fieldwork as executor +
    reflexes; wire `agent/entry.py`. Verify: end-to-end season money beats
    current rule agent on 3 seeds.
