@@ -2,11 +2,28 @@
 
 Branch: `hierarchical-architecture`
 
+> **Revision 1** (user corrections):
+> 1. RL/DL are NOT banned. The constraint is: everything must run on CPU
+>    (hardware budget to be defined later).
+> 2. Crew work-division: primary idea is OR-Tools routing (VRP/CP-SAT);
+>    additionally train/derive a learned heuristic that decides well WITHOUT
+>    or_tools at runtime — fast scheduling is a prerequisite for L1, because
+>    long-term planning is meaningless if day-level scheduling is slow/bad.
+> 3. Resource monotonicity: the problem's resources grow incrementally
+>    (land, crew, assets). Upper layers must therefore be *inclusive* of
+>    lower-layer results: a layer's solution is always equal to or better
+>    than the layer below it (monotone improvement guarantee).
+> 4. The world engine already exists (kaggle-environments). But between the
+>    raw legal actions and our intent there must be an intermediate
+>    "harness/pruning layer" that crops useless, wasteful, and pointless
+>    actions — the action space handed to planners is pruned, not raw.
+
 ## 1. Goal restated (single sentence)
 
 **Maximize final coins at end of a 720-turn season by making the best possible
 action every turn, given perfect knowledge of our farm, public market, and
-(observed) opponent state.**
+(observed) opponent state — everything computed on CPU within Kaggle's
+per-turn time budget.**
 
 Not "mimic the winner". Not "solve a static LP". One objective:
 `max E[money_final]`.
