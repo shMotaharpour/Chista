@@ -7,3 +7,6 @@ node_modules/
 
 # large competition replay data (379MB)
 competition_replays/
+
+# rendered replays & experiment outputs (large, regenerated)
+lab/results/
