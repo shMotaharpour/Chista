@@ -54,23 +54,32 @@ def action_turns(action: str, item_types: int = 1) -> int:
     return ONE_OP
 
 
-def spawn_position(occupancy: dict[tuple[int, int], int]) -> tuple[int, int]:
+def spawn_position(unit_positions: list[tuple[int, int]]) -> tuple[int, int]:
     """ENGINE RULE (L533-541 _spawn_hand): a NEW unit spawns on the
-    shed-adjacent tile with MINIMUM current occupancy; ties broken by NWSE
-    order of SHED_ADJACENT. Farmer spawns first at (4,4) (L161-166)."""
-    best = min(SHED_ADJACENT, key=lambda t: (occupancy.get(t, 0),
-                                             SHED_ADJACENT.index(t)))
-    return best
+    shed-adjacent tile with MINIMUM occupancy; ties broken by NWSE order of
+    SHED_ADJACENT. Occupancy counts EVERY unit standing on a shed tile at
+    spawn time — farmer AND hands — units elsewhere are not counted
+    (L537-539: `if pos in occupants`). Farmer does NOT have a special rule:
+    if he stands on a shed tile he counts, if he moved away he doesn't.
 
-
-def units_spawn_positions(n_hands: int) -> list[tuple[int, int]]:
-    """ENGINE RULE derived (L879 farmer first, then L533 per hand): where the
-    farmer + n_hands stand at morning spawn."""
+    `unit_positions` = positions of all current units (farmer first, then
+    hands, in engine order).
+    """
     occ: dict[tuple[int, int], int] = {t: 0 for t in SHED_ADJACENT}
-    positions: list[tuple[int, int]] = [DEFAULT_SPAWN]
-    occ[DEFAULT_SPAWN] += 1
+    for pos in unit_positions:
+        if pos in occ:
+            occ[pos] += 1
+    return min(SHED_ADJACENT, key=lambda t: (occ[t], SHED_ADJACENT.index(t)))
+
+
+def units_spawn_positions(farmer_xy: tuple[int, int],
+                          n_hands: int) -> list[tuple[int, int]]:
+    """ENGINE RULE derived (L879 farmer, then L533 per hand, applied in the
+    turn's market phase): simulates morning spawn for n_hands given the
+    farmer's CURRENT position. Note hands hired this morning spawn during
+    the market phase BEFORE unit actions, so farmer_xy is the position at
+    the moment of hire."""
+    positions = [farmer_xy]
     for _ in range(n_hands):
-        pos = spawn_position(occ)
-        positions.append(pos)
-        occ[pos] += 1
+        positions.append(spawn_position(positions))
     return positions
