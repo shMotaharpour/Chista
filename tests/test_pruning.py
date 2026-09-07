@@ -9,7 +9,7 @@ import copy
 
 from kaggle_environments import make
 
-from world.pruning import prune_all, prune_farmer, prune_market
+from world.pruning import prune_all, prune_farmer, market_candidates as prune_market
 
 P = {"farmer": ["PASS"], "hands": [], "market": []}
 
@@ -70,7 +70,7 @@ def test_harvest_zero_yield_inert():
     env.step([{"farmer": ["PLANT", "WHEAT"], "hands": [], "market": []}, P])
     s = state_of(env)
     cands = prune_farmer(s)
-    assert not any(c[0] == "HARVEST" for c in cands)   # wheat not mature yet
+    assert not any(c[0] == "HARVEST" for c in cands)   # yield 0: engine L446 returns
     assert inert_in_engine(env, {"farmer": ["HARVEST"], "hands": [], "market": []})
 
 
@@ -141,8 +141,8 @@ def test_prune_all_shape():
     env = make_env()
     s = state_of(env)
     v = prune_all(s)
-    assert set(v.keys()) == {"farmer", "moves", "market", "hands"}
-    assert ("PASS",) in v["moves"]
+    assert set(v.keys()) == {"farmer", "hands", "farmer_moves", "market"}
+    assert ("PASS",) in v["farmer_moves"]
 
 
 if __name__ == "__main__":

@@ -1,14 +1,18 @@
-"""Action pruning harness — remove engine-rejected and provably-inert actions.
+"""Action pruning harness — rules extracted VERBATIM from the engine's
+`_apply_unit_action` (kaggriculture.py L313-540) and `_process_market`.
+
+Every `prune` below mirrors an explicit `if ...: return` guard in the engine:
+if the engine's guard would reject, we don't offer the op. If the engine
+would EXECUTE and change state, we keep the op. Nothing else.
 
 Two categories only (docs/research/008 §L0):
-  1. ILLEGAL — the engine silently rejects (no-op): must trace to engine source
-  2. INERT   — engine executes but provably cannot change state
+  1. ILLEGAL — engine guard rejects (silent no-op)
+  2. INERT   — engine executes but provably no state change is possible
 
-Each rule is verified by an in-engine experiment: apply the action, diff
-state before/after == zero change (tests/test_pruning.py).
+Verified per-rule in tests/test_pruning.py: apply action on live engine,
+diff state before/after == zero change for pruned ops.
 
-Economic judgments (sell at floor, buy seeds without tiles, ...) are NOT
-pruned here — they are L1 constraints / L2 objectives.
+Economic judgments are NOT pruned here — L1 constraints / L2 objectives.
 """
 from __future__ import annotations
 
@@ -16,107 +20,191 @@ from world import mechanics as M
 from world.tilegraph import at_shed
 
 
-# ---------------------------------------------------------------- farmer ops
+# =================================================================
+# FARMER/HAND ops — mirrors of _apply_unit_action guards (engine L313+)
+# =================================================================
 
-def farmer_candidates(state):
-    """Ops the farmer can do ON ITS CURRENT TILE right now (non-illegal,
-    non-inert). Movement and destination choice are L2's job."""
-    fx, fy = state.farmer_xy
+def farmer_candidates(state, unit_idx: int = 0):
+    """Ops legal+effective for a unit standing on its current tile.
+
+    Guards mirrored (engine -> here):
+      tile == "LOCKED" -> return                     (L397)
+      PLANT: crop not in CROPS / tile not None / seeds<=0   (L401-407)
+      WATER: tile not PLANT / watered_today          (L410-412)
+      HARVEST: yield_units<=0 / (PLANT and age<first_yield_day)  (L446-456)
+      FERTILIZE: tile not PLANT / no fertilizer in hand  (L472-475)
+      DIG: tile None / placed animal                 (L483-486)
+      BUILD_COOP|PASTURE: tile not None              (L492-500)
+      FEED: tile not animal / fed_today / no wheat in hand  (L503-507)
+      COLLECT_FERTILIZER: not animal / not available  (L510-513)
+      CARE: not animal / cared_today                 (L517-520)
+    """
+    fx, fy = state.farmer_xy if unit_idx == 0 else tuple(state.hands[unit_idx - 1])
     tile = state.tile_at(fx, fy)
+    inv = state.inventories()[unit_idx]
     out = []
 
-    if M.is_plant(tile):
-        p = state.plant_at(fx, fy)
-        if not p.watered_today and p.consecutive_unwatered < 2:
-            out.append(("WATER", fx, fy))               # inert if watered
-        if M.plant_mature(tile, state.day):
-            out.append(("HARVEST", fx, fy))             # inert if yield 0
-        # FERTILIZE: legal with fertilizer in hand; value judgment is L2's
+    locked = tile == "LOCKED"
 
-    if M.is_animal_tile(tile):
-        a = state.animal_at(fx, fy)
-        if not a.fed_today:
-            out.append(("FEED", fx, fy))
-        if not a.cared_today:
-            out.append(("CARE", fx, fy))
-        if a.yield_units > 0:
-            out.append(("HARVEST", fx, fy))
-        if a.fertilizer_available:
-            out.append(("COLLECT_FERTILIZER", fx, fy))
-
-    if tile is None and state.is_unlocked_tile(fx, fy):
+    if tile is None and not locked:
+        # PLANT guard (L401-407)
         for crop, n in state.seeds.items():
             if n > 0:
                 out.append(("PLANT", crop, fx, fy))
-        # BUILD_*: legal on empty unlocked tiles when the matching animal
-        # sits in shed/hand; the "which animal/structure" choice is L2's.
-        for animal, structure in M.ANIMAL_STRUCTURE.items():
-            in_hand = state.inventories()[0].get(animal, 0)
-            in_shed = state.shed.get(animal, 0)
-            if in_hand or in_shed:
-                out.append(("BUILD_" + structure, fx, fy))
+        # BUILD guards (L492-500): tile must be None — structure choice is
+        # still L2's (which animal to house), but BOTH builds are legal ops
+        # here since the engine only checks `tile is not None`.
+        if any(state.shed.get(a, 0) > 0 or inv.get(a, 0) > 0 for a in M.ANIMALS):
+            out.append(("BUILD_COOP", fx, fy))
+            out.append(("BUILD_PASTURE", fx, fy))
+        # DIG on empty tile: engine L483-486 — tile is None -> return (inert)
+        # so not offered.
+
+    if M.is_plant(tile):
+        p = state.plant_at(fx, fy)
+        # WATER guard (L410-412): not PLANT -> return; watered_today -> return
+        if not p.watered_today:
+            out.append(("WATER", fx, fy))
+        # HARVEST guards (L446-457): yield_units<=0 -> return;
+        # age < first_yield_day -> return (even with yield_units>0, which
+        # one-time crops START with — _new_plant gives yield=1 at planting!)
+        cd = M.CROPS[tile["crop"]]
+        if tile.get("yield_units", 0) > 0 and p.age >= cd["first_yield_day"]:
+            out.append(("HARVEST", fx, fy))
+        # FERTILIZE guard (L472-475): needs fertilizer IN HAND
+        if inv.get("FERTILIZER", 0) > 0:
+            out.append(("FERTILIZE", fx, fy))
+        # DIG on a plant: engine executes (removes plant) — keep
+        out.append(("DIG", fx, fy))
+
+    if M.is_animal_tile(tile):
+        a = state.animal_at(fx, fy)
+        # FEED guards (L503-507): fed_today -> return; no wheat in hand -> return
+        if not a.fed_today and inv.get("WHEAT", 0) > 0:
+            out.append(("FEED", fx, fy))
+        # COLLECT_FERTILIZER guards (L510-513): not available -> return
+        if a.fertilizer_available:
+            out.append(("COLLECT_FERTILIZER", fx, fy))
+        # CARE guard (L517-520): cared_today -> return
+        if not a.cared_today:
+            out.append(("CARE", fx, fy))
+        # HARVEST on animal product: yield_units>0 -> executes
+        if tile.get("yield_units", 0) > 0:
+            out.append(("HARVEST", fx, fy))
+        # DIG on structure WITH animal: engine L485 returns — inert, not offered.
+        # DIG on EMPTY structure (no animal): engine executes — keep.
+        if "animal" not in tile:
+            out.append(("DIG", fx, fy))
+
     return out
 
 
-def farmer_pickup_candidates(state) -> list:
-    """PICKUP: only at shed tiles (illegal elsewhere), only items the shed
-    has."""
-    if not at_shed(state.farmer_xy):
+# =================================================================
+# Shed ops — guards at L343 (DROP) / L359 (PICKUP)
+# =================================================================
+
+def farmer_pickup_candidates(state, unit_idx: int = 0) -> list:
+    """PICKUP guard (L359-360): not shed-adjacent -> return (ILLEGAL).
+    Item must exist in shed with n>0 (L364-368)."""
+    xy = state.farmer_xy if unit_idx == 0 else tuple(state.hands[unit_idx - 1])
+    if not at_shed(xy):
         return []
     out = []
-    shed = state.shed
-    if shed.get("WHEAT", 0) > 0:
-        out.append(("PICKUP", "WHEAT", shed["WHEAT"]))
-    for animal in M.ANIMALS:
-        if shed.get(animal, 0) > 0:
-            out.append(("PICKUP", animal, shed[animal]))
+    for item, n in state.shed.items():
+        if n > 0:
+            out.append(("PICKUP", item, n))
     return out
 
 
-def farmer_move_candidates(state) -> list:
-    """Movement is always legal on the 10x10 grid (locked tiles passable).
-    Pruning does NOT judge destinations — that's L2's routing job."""
-    return [("NORTH",), ("SOUTH",), ("EAST",), ("WEST",), ("PASS",)]
+def drop_candidates(state, unit_idx: int = 0) -> list:
+    """DROP guard (L343-344): not shed-adjacent -> return (ILLEGAL).
+    At shed: always executes (dumps whole hand; overflow past shed cap is
+    DISCARDED — still a state change if hand non-empty)."""
+    xy = state.farmer_xy if unit_idx == 0 else tuple(state.hands[unit_idx - 1])
+    inv = state.inventories()[unit_idx]
+    if not at_shed(xy):
+        return []
+    if any(v > 0 for v in inv.values()):
+        return [("DROP", xy)]
+    return []   # empty hand: DROP changes nothing — inert
 
+
+# =================================================================
+# Movement — guards at L327-340
+# =================================================================
+
+def move_candidates(state, unit_idx: int = 0) -> list:
+    """Engine L328-339: moves always execute unless target is outside the
+    10x10 board. Border-aware: prune moves that would leave the board."""
+    x, y = state.farmer_xy if unit_idx == 0 else tuple(state.hands[unit_idx - 1])
+    out = [("PASS",)]
+    if y > 0:
+        out.append(("NORTH",))
+    if y < 9:
+        out.append(("SOUTH",))
+    if x > 0:
+        out.append(("WEST",))
+    if x < 9:
+        out.append(("EAST",))
+    return out
+
+
+# =================================================================
+# Market — mirrors of _parse_order/_commit_unit guards (engine L640+, L663+)
+# =================================================================
 
 def market_candidates(state) -> list:
-    """Market orders — prune only engine-level no-ops, not economics.
-    - HIRE: pruned when money < next fib cost (engine rejects unpaid hire)
-    - SELL: pruned for zero-quantity items
-    - BUY_*: legal for any n >= 1 (economic sense is L1's job)
-    - BUY_LAND: pruned when all quadrants already unlocked
+    """Guards mirrored:
+    - _parse_order (L640-656): n<=0 or malformed -> order dropped (ILLEGAL)
+    - HIRE (L702-708): money < fib(hires_today) -> return
+    - BUY_LAND (L712-721): n_unlocked_extra >= 3 -> return; money < price -> return
+    - SELL (L664-672): shed[item] <= 0 -> commit fails (ILLEGAL)
+    - BUY_PRODUCT (L674-684): money < price -> fails; shed full -> fails
+    - BUY_SEED (L686-690): money < seed price -> fails
+    - BUY_ANIMAL (L692-699): money < cost -> fails; shed full -> fails
+    Prices at quote time depend on both players' orders — L1 decides amounts;
+    here we only offer the op with n=1 as the vocabulary entry.
     """
     out = []
     if state.money >= M.hire_cost(state.hires_today):
         out.append(["HIRE"])
+    if len(state.unlocked) < 4:
+        land_idx = len(state.unlocked) - 1
+        cost = M.LAND_PRICES[land_idx]
+        if state.money >= cost:
+            out.append(["BUY_LAND"])
     for item, n in state.shed.items():
         if n > 0:
             out.append(["SELL", item, n])
-    for crop in M.CROPS:
-        out.append(["BUY_SEED", crop, 1])
-    for animal in M.ANIMALS:
-        out.append(["BUY_ANIMAL", animal, 1])
-    if len(state.unlocked) < 4:
-        out.append(["BUY_LAND"])
+    for crop, cd in M.CROPS.items():
+        if state.money >= cd["seed"]:
+            out.append(["BUY_SEED", crop, 1])
+    for animal, ad in M.ANIMALS.items():
+        if state.money >= ad["cost"] and sum(state.shed.values()) < M.SHED_CAP:
+            out.append(["BUY_ANIMAL", animal, 1])
+    if state.money >= 1 and sum(state.shed.values()) < M.SHED_CAP:
+        # BUY_PRODUCT exists for WHEAT and FERTILIZER only (engine L597-598)
+        for item in ("WHEAT", "FERTILIZER"):
+            if state.money >= M.market_price(item, state.market_inventory[item]):
+                out.append(["BUY_PRODUCT", item, 1])
     return out
 
 
-# ---------------------------------------------------------------- top-level
+# =================================================================
+# Top-level
+# =================================================================
 
-def prune_farmer(state) -> list:
-    """All non-illegal, non-inert farmer ops for the CURRENT tile."""
-    return farmer_candidates(state) + farmer_pickup_candidates(state)
-
-
-def prune_market(state) -> list:
-    return market_candidates(state)
+def prune_farmer(state, unit_idx: int = 0) -> list:
+    return (farmer_candidates(state, unit_idx)
+            + farmer_pickup_candidates(state, unit_idx)
+            + drop_candidates(state, unit_idx))
 
 
 def prune_all(state) -> dict:
-    """The complete pruned action vocabulary for this turn."""
+    """Complete pruned action vocabulary for this turn, per unit."""
     return {
-        "farmer": prune_farmer(state),
-        "moves": farmer_move_candidates(state),
-        "market": prune_market(state),
-        "hands": len(state.hands),
+        "farmer": prune_farmer(state, 0),
+        "hands": [prune_farmer(state, i + 1) for i in range(len(state.hands))],
+        "farmer_moves": move_candidates(state, 0),
+        "market": market_candidates(state),
     }
