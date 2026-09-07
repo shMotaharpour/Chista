@@ -8,6 +8,22 @@ EVERY function here is one of:
 Anything else (policies, derived models, "when to harvest" opinions) does
 not belong in L0 — that's L1/L2 territory. Enforced by
 tests/test_source_citations.py.
+
+Cross-reference: game-rules.md (user-supplied, measured findings) and the
+engine source. Where a measured finding corrected our reading, the test
+encodes the MEASURED truth:
+- planting day counts as unwatered (consec starts at 1) → a plant not
+  watered on its planting day is a WEED by the next refresh (L777-784)
+- one-time crops START with yield_units=1 (L223) but that yield is NOT
+  harvestable before first_yield_day (L453) — so a day-0 wheat cannot be
+  harvested on day 0
+- decay: one-time crops hit max_lifespan_step = (planted+maxyd+1)*24
+  (L224) then lose 1 yield every 2 steps (L752-766); at 0 → WEED
+- ONGOING crops are NOT decay-free forever: when production_count hits
+  max_yield, the engine SETS max_lifespan_step = (next_day+1)*24 (L801-802)
+  and decay starts — measured: tomato maxed at day 11, decays day 12, WEED
+  by day 12 night. The "ongoing" name refers to replanting NOT being needed
+  until the yield window is exhausted.
 """
 from __future__ import annotations
 
@@ -29,8 +45,8 @@ from kaggle_environments.envs.kaggriculture.kaggriculture import (
 # Tables — imported from the engine, never copied.
 # ------------------------------------------------------------------
 
-CROPS: dict[str, dict] = _ENGINE_CROPS          # seed/first_yield_day/max_yield_day/interval/max_yield/ongoing
-ANIMALS: dict[str, dict] = _ENGINE_ANIMALS      # cost/structure/first_yield_day/interval/max_held/product
+CROPS: dict[str, dict] = _ENGINE_CROPS
+ANIMALS: dict[str, dict] = _ENGINE_ANIMALS
 PRODUCTS: tuple[str, ...] = tuple(_ENGINE_PRODUCTS)
 MARKET_I0: int = _ENGINE_MARKET_I0
 PRICE_FLOOR: int = _ENGINE_PRICE_FLOOR
@@ -73,6 +89,14 @@ def is_animal_tile(tile) -> bool:
 def plant_age(tile, day: int) -> int:
     """ENGINE RULE (L439, L453): `day - tile["planted_day"]`."""
     return day - tile.get("planted_day", day)
+
+
+def is_thirsty_last_chance(tile) -> bool:
+    """ENGINE RULE (L222 planting day counts as unwatered; L777-784 refresh):
+    a plant with watered_today=False and consecutive_unwatered==1 dies at the
+    next refresh — watering it TODAY is its last chance."""
+    return (is_plant(tile) and not tile.get("watered_today")
+            and tile.get("consecutive_unwatered", 0) == 1)
 
 
 def water_bonus_window(crop: str) -> tuple[int, int]:

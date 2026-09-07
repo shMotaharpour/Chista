@@ -4,6 +4,8 @@ Run: cd /chista/Chista/ChistaAgent && . .venv/bin/activate && python -m tests.te
 """
 from __future__ import annotations
 
+import copy
+
 from kaggle_environments.envs.kaggriculture import kaggriculture as engine
 
 from world import mechanics as M
@@ -113,14 +115,96 @@ def test_one_time_crops_list():
     assert set(M.ONE_TIME_CROPS) == {"WHEAT", "CARROT", "MELON"}
 
 
-def test_new_plant_facts_we_discovered():
-    """Documented engine behaviors that our earlier imagined model missed:
-    one-time crops START with yield_units=1; planting day counts as unwatered."""
+def test_new_plant_facts_measured():
+    """Measured against the engine (user correction + probe):
+    one-time crops START with yield_units=1 and consec=1 — but that yield is
+    NOT harvestable before first_yield_day; ongoing starts at 0.
+    Planting-day water is MANDATORY: unwatered planting day → WEED next refresh."""
     p = engine._new_plant("WHEAT", 0, 24)
     assert p["yield_units"] == 1
     assert p["consecutive_unwatered"] == 1
     o = engine._new_plant("STRAWBERRY", 0, 24)
     assert o["yield_units"] == 0   # ongoing starts at 0
+
+
+def test_planting_day_water_is_mandatory():
+    """MEASURED: plant day0 unwatered → WEED by day1 (user correction).
+    Planting counts as a day unwatered (consec=1 at birth)."""
+    from kaggle_environments import make
+    P = {"farmer": ["PASS"], "hands": [], "market": []}
+    env = make("kaggriculture", configuration={"episodeSteps": 720, "seed": 70}, debug=False)
+    env.reset(2)
+    env.step([{"farmer": ["PASS"], "hands": [], "market": [["BUY_SEED", "WHEAT", 1]]}, P])
+    env.step([{"farmer": ["PLANT", "WHEAT"], "hands": [], "market": []}, P])
+    while len(env.steps) < 48:
+        env.step([P, P])
+    t = env.steps[47][0].observation.farms[0]["tiles"][4][4]
+    assert t == {"kind": "WEED"}, t
+
+
+def test_harvest_before_first_yield_day_is_noop():
+    """MEASURED: HARVEST on day-0 wheat changes nothing (L453 age<first gate)."""
+    from kaggle_environments import make
+    P = {"farmer": ["PASS"], "hands": [], "market": []}
+    env = make("kaggriculture", configuration={"episodeSteps": 720, "seed": 70}, debug=False)
+    env.reset(2)
+    env.step([{"farmer": ["PASS"], "hands": [], "market": [["BUY_SEED", "WHEAT", 1]]}, P])
+    env.step([{"farmer": ["PLANT", "WHEAT"], "hands": [], "market": []}, P])
+    before = copy.deepcopy(env.state)
+    env.step([{"farmer": ["HARVEST"], "hands": [], "market": []}, P])
+    after = env.state[0].observation
+    b = before[0].observation
+    assert after.farms[0]["tiles"] == b.farms[0]["tiles"]
+    assert dict(after.private["shed"]) == dict(b.private["shed"])
+
+
+def test_decay_bites_after_max_lifespan():
+    """MEASURED: wheat planted day0, watered days 0-4 → yield 4 at end of day4;
+    day5 decay -1 every 2 steps from mls=(0+4+1)*24=120 (4→3→2→1...)."""
+    from kaggle_environments import make
+    P = {"farmer": ["PASS"], "hands": [], "market": []}
+    env = make("kaggriculture", configuration={"episodeSteps": 720, "seed": 70}, debug=False)
+    env.reset(2)
+    env.step([{"farmer": ["PASS"], "hands": [], "market": [["BUY_SEED", "WHEAT", 1]]}, P])
+    env.step([{"farmer": ["PLANT", "WHEAT"], "hands": [], "market": []}, P])
+    env.step([{"farmer": ["WATER"], "hands": [], "market": []}, P])
+    def water_at(day):
+        target = day * 24 + 1
+        while env.state[0].observation["step"] < target:
+            env.step([P, P])
+        env.step([{"farmer": ["WATER"], "hands": [], "market": []}, P])
+    for d in (1, 2, 3, 4):
+        water_at(d)
+    while len(env.steps) < 124:
+        env.step([P, P])
+    assert env.steps[119][0].observation.farms[0]["tiles"][4][4]["yield_units"] == 4
+    assert env.steps[121][0].observation.farms[0]["tiles"][4][4]["yield_units"] == 3
+    assert env.steps[123][0].observation.farms[0]["tiles"][4][4]["yield_units"] == 2
+
+
+def test_ongoing_exhausts_then_decays():
+    """MEASURED (user's 8-collected correction): tomato maxed (4 units by day 11)
+    SETS max_lifespan_step (L801-802) → decay from day 12 → WEED same day.
+    'Ongoing' does not mean immortal."""
+    from kaggle_environments import make
+    P = {"farmer": ["PASS"], "hands": [], "market": []}
+    env = make("kaggriculture", configuration={"episodeSteps": 720, "seed": 70}, debug=False)
+    env.reset(2)
+    env.step([{"farmer": ["PASS"], "hands": [], "market": [["BUY_SEED", "TOMATO", 1]]}, P])
+    env.step([{"farmer": ["PLANT", "TOMATO"], "hands": [], "market": []}, P])
+    env.step([{"farmer": ["WATER"], "hands": [], "market": []}, P])
+    def water_at(day):
+        target = day * 24 + 1
+        while env.state[0].observation["step"] < target:
+            env.step([P, P])
+        env.step([{"farmer": ["WATER"], "hands": [], "market": []}, P])
+    for d in range(1, 12):
+        water_at(d)
+    while len(env.steps) < 12*24+24:
+        env.step([P, P])
+    assert env.steps[11*24+5][0].observation.farms[0]["tiles"][4][4]["yield_units"] == 4
+    assert env.steps[12*24+5][0].observation.farms[0]["tiles"][4][4]["yield_units"] == 1
+    assert env.steps[12*24+23][0].observation.farms[0]["tiles"][4][4] == {"kind": "WEED"}
 
 
 if __name__ == "__main__":
