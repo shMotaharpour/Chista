@@ -24,6 +24,9 @@ encodes the MEASURED truth:
   and decay starts — measured: tomato maxed at day 11, decays day 12, WEED
   by day 12 night. The "ongoing" name refers to replanting NOT being needed
   until the yield window is exhausted.
+- HANDS ARE DAILY HIRES (L880-881): refresh CLEARS farm["hands"] and
+  resets hires_today. Every morning the crew must be re-hired at fresh fib
+  prices — labor is a recurring daily cost, not a one-time purchase.
 """
 from __future__ import annotations
 
@@ -167,6 +170,14 @@ def _hire_cost_cached(hires_today: int) -> int:
     for _ in range(hires_today):
         a, b = b, a + b
     return FARM_HAND_COST_MULT * a
+
+
+def crew_daily_cost(n_hands: int) -> int:
+    """ENGINE RULE derived (L880-881 + L690-691): hands are cleared every
+    night and re-hired at fresh fib prices, so a crew of n costs
+    sum(fib(0..n-1)) EVERY day = fib(n+1) - 1. Labor is recurring, not
+    one-time."""
+    return sum(hire_cost(i) for i in range(n_hands))
 
 
 def sellable_items() -> tuple:

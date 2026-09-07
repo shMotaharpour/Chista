@@ -111,6 +111,42 @@ def test_hire_cost_matches_engine_fib():
     assert sum(M.hire_cost(n) for n in range(4)) == 7
 
 
+def test_hands_are_daily_hires():
+    """MEASURED (engine L880-881): refresh clears farm["hands"] and resets
+    hires_today. Crew must be re-hired every morning at fresh fib prices —
+    labor is a recurring daily cost."""
+    from kaggle_environments import make
+    P = {"farmer": ["PASS"], "hands": [], "market": []}
+    env = make("kaggriculture", configuration={"episodeSteps": 720, "seed": 70}, debug=False)
+    env.reset(2)
+    # hire 4 hands on day 0: costs 1+1+2+3 = 7
+    env.step([{"farmer": ["PASS"], "hands": [], "market": [["HIRE"]] * 4}, P])
+    o = env.state[0].observation
+    assert len(o.farms[0]["hands"]) == 4
+    assert o.farms[0]["money"] == 3000 - 7
+    assert o.farms[0]["hires_today"] == 4
+    # next morning: hands GONE, hires_today reset, money untouched overnight
+    while len(env.steps) < 25:
+        env.step([P, P])
+    o = env.steps[24][0].observation
+    assert o.farms[0]["hands"] == []
+    assert o.farms[0]["hires_today"] == 0
+    assert o.farms[0]["money"] == 2993   # no overnight charge — charge is per hire
+    # crew_daily_cost helper matches the fib identity
+    assert M.crew_daily_cost(4) == 7
+    assert M.crew_daily_cost(5) == 12
+
+
+def test_crew_daily_cost_identity():
+    # sum(fib(0..n-1)) == fib(n+1) - 1
+    assert M.crew_daily_cost(0) == 0
+    assert M.crew_daily_cost(1) == 1
+    assert M.crew_daily_cost(2) == 2
+    assert M.crew_daily_cost(3) == 4
+    assert M.crew_daily_cost(4) == 7
+    assert M.crew_daily_cost(6) == 20
+
+
 def test_one_time_crops_list():
     assert set(M.ONE_TIME_CROPS) == {"WHEAT", "CARROT", "MELON"}
 
