@@ -84,11 +84,21 @@ re-implements it.
   official engine is the single executor, which eliminates the drift bug
   class entirely.
 - **`pruning.py` (the harness)**: raw legal action set → pruned candidate
-  set. Removes: actions on locked tiles, pointless orders (selling into a
-  $1 floor, buying seeds with no plantable tile), no-op sequences
-  (PICKUP away from shed), wasteful repeats (watering an already-watered
-  plant), actions that violate monotone-resource sanity. The pruned set is
-  the ONLY action vocabulary any planner ever sees.
+  set. Two categories only, both derived from the ENGINE (never from
+  player behavior or economic opinion):
+  1. **Illegal / no-op** — the engine silently rejects them: PICKUP away
+     from shed, PLACE on occupied structure, actions on locked tiles,
+     ops for non-existent hands, PLANT without seeds.
+  2. **Inert** — the engine executes them but state provably does not
+     change: WATER on already-watered plants, FEED/CARE on already-fed/
+     cared animals, COLLECT_FERTILIZER when none available, HARVEST with
+     yield 0.
+  Each pruning rule must be traceable to an engine source line AND verified
+  by an in-engine experiment (apply the action, diff state before/after:
+  change = 0). Economic/strategic judgments (sell-at-floor, buy-seed
+  without free tiles, ...) are NOT pruning — they belong to L1 constraints
+  and L2 objectives. The pruned set is the ONLY action vocabulary any
+  planner ever sees.
 
 **State views (planner vs RL/DL)**: L0 exposes ONE `State` class with two
 views. The planner view (`features.py`: exact queries like
@@ -270,10 +280,12 @@ L0 state, L1 season economy, L2 day schedule, L3 turn dispatch.
    re-export, lab-verified interpretation queries. 12/12 fixture tests.
 2. **L0 `world/state.py` + `rollback.py` + `tilegraph.py` + `pruning.py`** —
    State view over the live env observation; snapshot/restore helper
-   (deterministic, day-keyed RNG verified); travel times; action harness.
-   Verify: rollback determinism on 3 seeds (restore to turn N == fresh
-   episode at turn N); pruning never drops a provably useful action on
-   668 replay episodes.
+   (deterministic, day-keyed RNG verified); travel-time atoms (dist,
+   dist_to_shed, action_turns — NO route-level sums; route composition is
+   L2's VRP job); action harness. Pruning verification is per-rule against
+   the ENGINE (apply action in-engine, diff before/after = zero change),
+   NOT statistical against replays. Replay data belongs to L1 (expected
+   market supply profiles), not to pruning.
 3. **L2 `schedule/`** — or-tools routing schedule + distilled heuristic,
    given today's playbook as a fixed portfolio. Verify: 100% watering
    coverage on 8 melons + 2 pastures; heuristic ≥95% of OR-Tools baseline.
