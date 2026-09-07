@@ -14,6 +14,8 @@ Provenance of interpretation functions (engine source, kaggriculture.py):
 """
 from __future__ import annotations
 
+from functools import lru_cache
+
 from kaggle_environments.envs.kaggriculture.kaggriculture import (
     ANIMALS as _ENGINE_ANIMALS,
     CROPS as _ENGINE_CROPS,
@@ -69,7 +71,13 @@ market_price = _engine_market_price
 
 def water_bonus_window(crop: str) -> tuple[int, int]:
     """Inclusive day-range in which watering a one-time crop adds +1 yield/day
-    (engine L440-441: window_start = (max_yield_day + 1) // 2)."""
+    (engine L440-441: window_start = (max_yield_day + 1) // 2). Cached: the
+    window is a pure function of the crop table, never of game state."""
+    return _water_bonus_window_cached(crop)
+
+
+@lru_cache(maxsize=None)
+def _water_bonus_window_cached(crop: str) -> tuple[int, int]:
     cd = CROPS[crop]
     return (cd["max_yield_day"] + 1) // 2, cd["max_yield_day"]
 
@@ -100,9 +108,15 @@ def one_time_yield_at(crop: str, age: int, watered_days: int, fert_days: int) ->
         return 0
     lo, hi = water_bonus_window(crop)
     bonus_days = max(0, min(watered_days, hi - lo + 1))
-    if fert_days:
-        return min(1 + 2 * bonus_days, cd["max_yield"])
-    return min(1 + bonus_days, cd["max_yield"])
+    return _one_time_yield_cached(crop, bonus_days, bool(fert_days), cd["max_yield"])
+
+
+@lru_cache(maxsize=None)
+def _one_time_yield_cached(crop: str, bonus_days: int, fertilized: bool,
+                           max_yield: int) -> int:
+    if fertilized:
+        return min(1 + 2 * bonus_days, max_yield)
+    return min(1 + bonus_days, max_yield)
 
 
 def plant_needs_water(tile, day: int) -> bool:
@@ -138,8 +152,15 @@ def animal_production_due(tile, day: int) -> bool:
     if not is_animal_tile(tile):
         return False
     a = ANIMALS[tile["animal"]]
-    since = day - tile.get("placed_day", day) - a["first_yield_day"]
-    return since >= 0 and since % a["interval"] == 0
+    return _production_due_cached(tile["animal"], tile.get("placed_day", day), day,
+                                  a["first_yield_day"], a["interval"])
+
+
+@lru_cache(maxsize=None)
+def _production_due_cached(animal: str, placed_day: int, day: int,
+                           first: int, interval: int) -> bool:
+    since = day - placed_day - first
+    return since >= 0 and since % interval == 0
 
 
 def animal_pending_yield(tile) -> int:
@@ -169,7 +190,13 @@ def animal_fertilizer_ready(tile) -> bool:
 
 
 def hire_cost(hires_today: int) -> int:
-    """Cost of the NEXT hire: mult * fib(1,1,2,3,5,...), resets daily."""
+    """Cost of the NEXT hire: mult * fib(1,1,2,3,5,...), resets daily.
+    Cached: pure function of an int, called every turn by L2/L3."""
+    return _hire_cost_cached(hires_today)
+
+
+@lru_cache(maxsize=None)
+def _hire_cost_cached(hires_today: int) -> int:
     a, b = 1, 1
     for _ in range(hires_today):
         a, b = b, a + b
