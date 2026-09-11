@@ -11,6 +11,11 @@ Order: **Rules** (`R<NNN>_<slug>.md`) first, then **Findings**
   PyTorch, OR-Tools and scipy for optimization; every agent commit must use
   `~/.local/bin/agent-commit` so the Co-authored-by trailer separates agent
   work from the user's own commits.
+- [R002_import_rules_from_kaggle_environments.md](R002_import_rules_from_kaggle_environments.md) —
+  Import game constants and formulas directly from `kaggle_environments`
+  instead of transcribing them: one source of truth, zero parity-harness
+  maintenance, free at runtime; pinned environment version mitigates private
+  API rename risk.
 
 ## Findings
 
