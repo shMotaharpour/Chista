@@ -16,6 +16,11 @@ Order: **Rules** (`R<NNN>_<slug>.md`) first, then **Findings**
   instead of transcribing them: one source of truth, zero parity-harness
   maintenance, free at runtime; pinned environment version mitigates private
   API rename risk.
+- [R003_simulator_wraps_real_interpreter.md](R003_simulator_wraps_real_interpreter.md) —
+  Fast game simulation calls `kaggriculture.interpreter()` directly on a
+  structify-cloned state instead of reimplementing rules: measured 8.2×
+  faster than `env.run()` with bit-identical rewards, and no second rule
+  implementation to keep in sync.
 
 ## Findings
 
