@@ -18,6 +18,19 @@ The bypass is a single configuration value, not scattered `if` statements:
 validators guard themselves with the flag, so the same code serves both
 modes without maintaining two versions.
 
+## How to use it (project wiring)
+
+- `world.FastSim(sim, validate="dev" | "fast")` is the reference
+  implementation of the switch. Construct with `validate="dev"` while
+  debugging; `validate="fast"` (the constructor default) for bulk runs.
+- In dev mode the action shapes and state invariants are checked on every
+  step; in fast mode they are skipped entirely.
+- A fast run's result is always re-checkable: re-run the same inputs with
+  `validate="dev"` and compare.
+- New wrappers and analysis modules in this repo follow the same pattern:
+  one `validate` config value, validators self-guarded by the flag — never
+  a second, check-free copy of the code.
+
 ## Why
 
 The same code is used twice with different budgets. While developing,
