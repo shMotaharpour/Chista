@@ -14,6 +14,7 @@ always the executor.
 | single-step simulation, what-if branches (DP/MDP), parallel sweeps (RL) | `world.fast_sim` |
 | debugging a new policy | `world.fast_sim` with `validate="dev"` |
 | bulk runs (thousands of episodes) | `world.fast_sim` with `validate="fast"` (default) |
+| playing back a recorded episode file | `world.replay_agent.ReplayAgent` |
 
 Rule of thumb: **evaluation → kaggle_env, computation → fast_sim.** Any
 result used for a decision should be reproducible through the full path.
@@ -99,3 +100,30 @@ results = run_parallel(100, configuration={})       # one record per episode
 - RNG note: the interpreter seeds weed/shop draws per day from the episode
   seed — a cloned sim reproduces the original's future exactly unless you
   change actions (see F045: planting changes tomorrow's prices).
+
+## world.replay_agent — playing back recorded episodes
+
+`EpisodeRecord` loads a single-agent episode file (schema
+`chistaagent.replay.v1`, format documented in
+[REPLAY_SCHEMA.md](REPLAY_SCHEMA.md)); `ReplayAgent(record)` is a callable
+policy that plays it back in any seat, on either engine path. Missing steps
+play PASS; the record is never mutated by the engine (deep copies handed out).
+Validation is a class method (`EpisodeRecord.validate(path, mode="soft"|"hard")`)
+run only on demand — never during an episode (R004).
+
+```py
+from world.replay_agent import EpisodeRecord, ReplayAgent
+
+rec = EpisodeRecord.load("my_episode.json")   # validates first
+agent = ReplayAgent(rec)
+env = kaggle_env.run_episode(["starter", agent],
+                             configuration={"seed": rec.seed,
+                                            **rec.configuration})
+```
+
+Seat-agnostic by construction: the file carries no player identity; the agent
+picks the action purely by `obs["step"]`, so the same record plays at seat 0,
+seat 1, or both seats concurrently. Bit-exactness of a full-match replay
+requires a record per seat, both replayed against each other with the match's
+seed (covered by `tests/test_replay_agent.py`).
+
