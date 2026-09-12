@@ -18,14 +18,18 @@ Order: **Rules** (`R<NNN>_<slug>.md`) first, then **Findings**
   API rename risk.
 - [R003_simulator_wraps_real_interpreter.md](R003_simulator_wraps_real_interpreter.md) —
   Fast game simulation calls `kaggriculture.interpreter()` directly on a
-  structify-cloned state instead of reimplementing rules: measured 8.2×
-  faster than `env.run()` with bit-identical rewards, and no second rule
+  structify-cloned state instead of reimplementing rules: measured 50.6×
+  faster than `env.run()` for `world/fast_sim` (the 8.2× figure in the doc is
+  the earlier prototype module pair) with bit-identical rewards and a
+  bit-identical agent-facing observation stream, and no second rule
   implementation to keep in sync.
 - [R004_configurable_validation_dev_and_fast_modes.md](R004_configurable_validation_dev_and_fast_modes.md) —
   Every module carries a validation config: dev mode runs harness and
   validators; fast mode — the main parse-and-run path for heavy processes
   (DP, RL, MDP) — bypasses all checks via the same config so no time is
-  wasted on validation when speed matters.
+  wasted on validation when speed matters. Dev mode is deliberately stricter
+  than the real harness (junk inner action shapes pass there, raise here) and
+  hands out observation copies instead of live views.
 
 ## Findings
 
@@ -76,3 +80,12 @@ Order: **Rules** (`R<NNN>_<slug>.md`) first, then **Findings**
 - [F045_weed-rng-couples-farms-and-market.md](F045_weed-rng-couples-farms-and-market.md) — _spawn_weeds draws rng.random() once per empty tile on both farms before the same stream picks the town's next shop (weedSpawnChance = 0.005; LOCKED tiles draw nothing). Planting a tile therefore changes tomorrow's prices, and no price path can be precomputed offline.
 - [F046_runtime-budget-one-second-bank.md](F046_runtime-budget-one-second-bank.md) — The budget is 1 free second per turn plus a 60-second bank for the episode. Overrunning bills max(0, duration - 1.0); the harness bills ~35 ms extra, so budget against 0.965 s. An exhausted bank forfeits. A free turn buys ~8.7M Python ops; the competition machine is ~1.95x faster.
 - [F047_silent-operations-catalog.md](F047_silent-operations-catalog.md) — The most expensive mistake class: the engine fails silently. Purse-short orders are refused, hires and land buys no-op, LOCKED tiles spend hours for nothing, the full shed destroys overflow, SELL and FERTILIZE without stock refuse, over-seeded PLANT drops the crop's whole turn, and an 11th order is dropped.
+
+## Tests & benchmarks
+
+Executable checks — `.venv/bin/python -m tests.<module>` (no pytest required; they also run under pytest):
+
+- [../tests/test_world_parity.py](../tests/test_world_parity.py) — full agent-facing parity: same seed + same actions ⇒ identical per-turn observations, money and final rewards on the harness path and `world.fast_sim`.
+- [../tests/test_world_branch_purity.py](../tests/test_world_branch_purity.py) — a clone continued with a suffix equals a from-scratch replay of prefix+suffix, and exploring branches never touches the parent.
+- [../tests/test_import_identity.py](../tests/test_import_identity.py) — R002 name test, no transcribed rule tables, configuration matches the shipped spec, and the pinned kaggle-environments version equals the installed one.
+- [../bench/bench_paths.py](../bench/bench_paths.py) — reproduces the R003 timings on the current machine.

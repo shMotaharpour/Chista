@@ -3,8 +3,11 @@
 **Summary (≤50 words):** Fast game simulation must call
 `kaggle_environments.envs.kaggriculture.kaggriculture.interpreter()` directly
 on a real, structify-cloned state — never reimplement the game rules.
-Measured 8.2× faster than `env.run()` with bit-identical rewards, and no
-second rule implementation to keep in sync.
+Measured 50.6× faster than `env.run()` in `world/fast_sim` (720-step season;
+reproduce with `python -m bench.bench_paths`) with bit-identical rewards and a
+bit-identical agent-facing observation stream (enforced by
+`tests/test_world_parity.py`), and no second rule implementation to keep in
+sync.
 
 ## Decision
 
@@ -23,6 +26,10 @@ for offline sweeps, a reimplementation is pure risk. Measure
 episodes/second first." So it was measured before building either option,
 3 episodes each, playbook vs pass:
 
+First measurement, taken on the earlier prototype pair (the harness against
+`agrioracle.sim.run_episode()`, not `world/fast_sim`) — kept as the original
+evidence for the decision:
+
 | path | s/episode |
 |---|---:|
 | `env.run()` (the harness path `lab/eval/arena.py` already uses) | 5.20 |
@@ -31,6 +38,23 @@ episodes/second first." So it was measured before building either option,
 8.2× faster, with the exact reward the harness produced at the same seed
 (127,425.0000 == 127,425.0000) — not approximately the same, the same
 number, because it is the same code computing it, per R002.
+
+Re-measured on this PR's code (`world/fast_sim`, 720-step season, PASS
+policies, 8-core box, kaggle-environments 1.32.7, median of 3 runs):
+
+| path | s/episode | vs `env.run()` |
+|---|---:|---:|
+| `env.run()` with agents | 1.785 | 1.0× |
+| the same harness with the agent processes removed | 1.138 | 1.6× |
+| `world.fast_sim` (`FastSim.run`) | 0.035 | **50.6×** |
+
+The gap between the first two rows is the harness's per-turn agent
+indirection (process pool + pickling a full observation every turn); the rest
+is its own bookkeeping. Per-turn JSON-schema validation is not a meaningful
+share here: this environment's action schema declares no typed properties, so
+validating it is a no-op. Reproduce the table with
+`python -m bench.bench_paths` (it prints platform, cpu_count and the
+installed version, since the numbers are machine-specific).
 
 A reimplementation was the other option on the table. That buys nothing
 here that wrapping doesn't already have, and costs a real, ongoing risk:

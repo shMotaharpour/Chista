@@ -1,2 +1,10 @@
 __pycache__/
 *.pyc
+
+# Generated artifacts (replays from world.kaggle_env, benchmark output)
+artifacts/
+
+# Local scratch (agent working files, not part of the project)
+.hermes/
+.docs_diff.py
+.docs_watch_state.json

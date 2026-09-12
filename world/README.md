@@ -37,16 +37,21 @@ env, html_path = kaggle_env.run_and_render([my_agent, "random"],
 
 - `configuration` accepts any key of the game's schema (episodeSteps,
   boardSize, startingMoney, marketParams, seed, ...).
-- HTML output defaults to `/tmp/chistaagent/replays/` (ephemeral); pass
-  `output_path=` for a persistent location.
+- HTML output defaults to `artifacts/replays/` inside the repo (gitignored);
+  the name carries the seed, the step count and a state fingerprint, so two
+  episodes sharing a seed no longer overwrite each other's replay. Pass
+  `output_path=` to override.
 - `env.steps`, `env.rewards`, `env.info["seed"]` carry the full record.
 
 ## world.fast_sim — fast path (R003)
 
 Drives `kaggriculture.interpreter()` directly on structify-cloned state,
-skipping only the harness bookkeeping (schema validation per turn,
-stdout/stderr redirection, full-episode snapshot appends). Measured ~8x
-faster than `env.run()` with bit-identical rewards.
+skipping the harness bookkeeping around it. Measured here (720-step season,
+PASS policies, 8-core box): 0.035 s/episode vs 1.785 s for `env.run()` =
+**50.6x** (32.3x against the harness with its agent processes removed).
+Reproduce with `.venv/bin/python -m bench.bench_paths` — the numbers are
+machine-specific, so the script prints platform, cpu_count and the installed
+kaggle-environments version.
 
 ```py
 from world.fast_sim import FastSim, run_parallel
@@ -60,7 +65,8 @@ branch = sim.what_if(action, horizon=48)            # hypothetical branch;
                                                     # sim itself unchanged
 twin = sim.clone()                                  # independent copy point
 
-results = run_parallel(100, configuration={"seed": None})  # multi-core sweep
+results = run_parallel(100, configuration={})       # one record per episode
+                                                    # (fresh seed each)
 ```
 
 - **validate switch (R004):** `FastSim(..., validate="dev")` checks action
@@ -68,8 +74,28 @@ results = run_parallel(100, configuration={"seed": None})  # multi-core sweep
   bypasses all checks for speed-critical runs. Re-run the same inputs in
   dev mode to re-validate any fast result.
 - **Parity contract:** same seed + same action sequence ⇒ bit-identical
-  money across both paths. Verified at commit time; if it breaks, the
-  change is wrong.
+  money, per-turn observations and final rewards across both paths, enforced
+  by `tests/test_world_parity.py` (the full agent-facing observation stream of
+  both agents, every turn — not just money). If it breaks, the change is wrong.
+- **Observation contract:** `observations()` returns detached deep copies in
+  dev mode and LIVE views in fast mode. Fast callers must treat observations
+  as read-only: writing into one mutates the episode — the harness never allows
+  that (each agent gets its own copy), so a policy that writes to its
+  observation can zero the opponent's money or grant itself free seeds. Dev
+  mode hands out copies and raises if a policy mutates one. Cost of the copies:
+  +265 us/turn, i.e. 0.270 s instead of 0.034 s for a 720-step season.
+- **`run_parallel`:** returns one record per episode (`seed`, `rewards`,
+  `money`, `steps`) sorted by seed, so a fixed master seed is reproducible.
+  Worker policies must be importable at module level (they are pickled — no
+  closures). It is a throughput helper, not an evaluator: with one fixed seed
+  every record is the same episode; only the default `seed=None` draws a fresh
+  seed per episode.
+- **Branch purity / RNG invariant:** a `clone()` continued with a suffix equals
+  a from-scratch replay of prefix+suffix, and exploration never touches the
+  parent (`tests/test_world_branch_purity.py`). This holds because the
+  interpreter rebuilds its RNG per day from `(seed, day)`; if a dependency bump
+  ever moves it to a single advancing stream, these tests fail instead of every
+  DP/what-if branch going quietly wrong.
 - RNG note: the interpreter seeds weed/shop draws per day from the episode
   seed — a cloned sim reproduces the original's future exactly unless you
   change actions (see F045: planting changes tomorrow's prices).

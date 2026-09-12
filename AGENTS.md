@@ -43,8 +43,8 @@ ad hoc elsewhere; import one of the two paths:
 
 - **`world.kaggle_env`** — the full, official path. Real harness
   (`make()`), any configuration, agents passed at call time, HTML replay
-  via the environment's own `render()`. Outputs go to
-  `/tmp/chistaagent/replays/` unless a persistent path is passed. Use for
+  via the environment's own `render()`. Outputs go to `artifacts/replays/`
+  (gitignored, in-repo) unless another `output_path` is passed. Use for
   submission-style evaluation and replays.
 - **`world.fast_sim`** — the fast path. `FastSim` drives
   `kaggriculture.interpreter()` directly on structify-cloned state:
@@ -53,8 +53,10 @@ ad hoc elsewhere; import one of the two paths:
   sweeps (RL/evaluation). Construct with `validate="dev"` while debugging
   and `validate="fast"` (default) for bulk runs — R004.
 
-Parity contract: with the same seed and the same action sequence, both
-paths produce bit-identical money. If a change breaks that, the change is
+Parity contract: with the same seed and the same action sequence, both paths
+produce bit-identical money and bit-identical per-turn observations and final
+rewards for both agents — enforced by `tests/test_world_parity.py`, which
+compares the full agent-facing stream. If a change breaks that, the change is
 wrong.
 
 ## Docs
