@@ -8,7 +8,11 @@
 #   uv pip install --python .venv/bin/python -r requirements.txt
 
 # Core: Kaggle environment, optimization, ML
-kaggle-environments>=1.32
+# kaggle-environments is pinned EXACTLY: world/fast_sim.py drives the environment's
+# own interpreter through private APIs, so a version bump can change game behavior
+# under every simulation at once. Bump it together with tests/test_world_parity.py
+# and update this pin in the same commit (R002/R003).
+kaggle-environments==1.32.7
 ortools>=9.15
 scipy>=1.17
 torch>=2.14.0

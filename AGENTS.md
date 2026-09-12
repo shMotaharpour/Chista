@@ -22,12 +22,42 @@ link to the file, followed by only that file's 50-word summary. IDs are
 permanent: never renumber, never reuse. These conventions are hard rules and
 must always be respected.
 
+Before writing any simulation, evaluation, or training code, read the rules
+files — R002 (never transcribe game rules; import from
+`kaggle_environments`), R003 (the simulator wraps the real interpreter, it
+never reimplements it), and R004 (validation is a config switch: dev mode
+validates, fast mode bypasses) — they dictate how `world/` must be used.
+
 ## Environment
 
 Python 3.11 venv at `.venv/`, CPU-only PyTorch, built from `requirements.txt`:
 
 `requirements.txt` lists the core stack (kaggle-environments, ortools, scipy,
 torch CPU) plus analysis/plotting extras.
+
+## Game environment access — `world/`
+
+All interaction with the game goes through the wrappers in `world/` (see
+`world/README.md`). Do not call `kaggle_environments` or the interpreter
+ad hoc elsewhere; import one of the two paths:
+
+- **`world.kaggle_env`** — the full, official path. Real harness
+  (`make()`), any configuration, agents passed at call time, HTML replay
+  via the environment's own `render()`. Outputs go to `artifacts/replays/`
+  (gitignored, in-repo) unless another `output_path` is passed. Use for
+  submission-style evaluation and replays.
+- **`world.fast_sim`** — the fast path. `FastSim` drives
+  `kaggriculture.interpreter()` directly on structify-cloned state:
+  `step()` for single turns, `run()` for episodes, `clone()`/`what_if()`
+  for hypothetical branches (DP/MDP), and `run_parallel()` for multi-core
+  sweeps (RL/evaluation). Construct with `validate="dev"` while debugging
+  and `validate="fast"` (default) for bulk runs — R004.
+
+Parity contract: with the same seed and the same action sequence, both paths
+produce bit-identical money and bit-identical per-turn observations and final
+rewards for both agents — enforced by `tests/test_world_parity.py`, which
+compares the full agent-facing stream. If a change breaks that, the change is
+wrong.
 
 ## Docs
 
