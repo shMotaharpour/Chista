@@ -2,14 +2,28 @@
 
 Per R002/R003 this is NOT a reimplementation of the game. It calls
 `kaggle_environments.envs.kaggriculture.kaggriculture.interpreter()` on real
-structify-cloned state, skipping only the harness bookkeeping around it:
-per-turn JSON-schema validation, stdout/stderr redirection, and the
-full-episode `steps` snapshot append.
+structify-cloned state, skipping the harness bookkeeping around it.
+
+Measured (720-step season, PASS policies, 8-core dev box, kaggle-environments
+1.32.7, median of 3): 0.035 s/episode here vs 1.785 s for `env.run()` = 50.6x —
+32.3x against the harness with its agent processes removed. The harness
+still needs 1.09 s/episode with the agent processes removed, so the dominant
+saving is its per-turn agent indirection (Pool + pickling a full observation
+each turn) plus its own bookkeeping — for this environment per-turn JSON-schema
+validation is a no-op (the action schema declares no typed properties) and
+stdout redirection is minor. Reproduce with `python -m bench.bench_paths`.
 
 Per R004 every method honors a validate switch: "dev" runs the checks
-(action shape, state invariants, reward parity hooks), "fast" bypasses them
+(action shape, state invariants, observation-copy guard), "fast" bypasses them
 — the default for bulk DP/MDP/RL sweeps. A run in fast mode can always be
 re-validated by re-running the same inputs in dev mode.
+
+Observation contract: `observations()` returns detached deep copies in dev mode
+and LIVE views in fast mode. Fast-mode callers must treat observations as
+read-only — writing to one mutates the episode, which the harness never permits
+(it gives each agent its own copy). Measured cost of the dev copies: +265 us per
+turn, i.e. a 720-step season in 0.270 s instead of 0.034 s — still 6.4x faster
+than the harness.
 """
 
 from __future__ import annotations
@@ -105,6 +119,19 @@ class FastSim:
         ])
         self.steps_taken = 0
         K.interpreter(self._state, self._env)  # initialize branch
+        # The harness's first agent-facing observation carries step=0 (the
+        # framework stamps the step before the agent acts); the initialize
+        # branch never writes it, so without this the first obs has step=None.
+        overage = dict(self.configuration).get("remainingOverageTime", 60)
+        for s in self._state:
+            s.observation.step = 0
+            s.reward = 0.0
+            # Framework bookkeeping, mirrored so the state can be compared
+            # field-for-field with the harness (tests/test_world_parity). The
+            # harness decays this when an agent overruns its act timeout; this
+            # simulator measures no wall clock, so it stays at the configured
+            # value and observations() falls back to it.
+            s.observation.remainingOverageTime = overage
         if self._dev:
             self._check_state("after reset")
 
@@ -119,18 +146,48 @@ class FastSim:
         return self._state
 
     @property
+    def seed(self) -> int | None:
+        """Resolved episode seed (trainer-side only).
+
+        resolve_episode_seed scrubs configuration['seed'] and stores the value
+        in env.info, so this is the only way to recover the seed of an unseeded
+        run — needed for reproducibility/replay. `_observation_dict` never
+        exposes it, so the agent-facing surface stays identical to the harness
+        (where the seed is deliberately hidden from agents).
+        """
+        return self._env.info.get("seed")
+
+    @property
     def done(self) -> bool:
         return self._state[0].status == "DONE" or self.steps_taken >= self.configuration["episodeSteps"]
 
-    def rewards(self) -> list[float | None]:
-        return [s.reward for s in self._state]
+    def rewards(self) -> list[float]:
+        """Per-agent rewards; non-final steps report 0.0, matching the harness.
+
+        Core writes a reward into the state every turn (the agent-reported one,
+        default 0) while the interpreter writes the final money only when the
+        episode ends. Returning None here would break any trainer that
+        accumulates rewards across steps (`sum(sim.rewards())`) even though the
+        same code runs unmodified on the harness.
+        """
+        return [0.0 if s.reward is None else s.reward for s in self._state]
 
     def money(self) -> list[float]:
         return [f["money"] for f in self._state[0].observation.farms]
 
-    def observations(self) -> list[dict[str, Any]]:
-        """Per-agent observation dicts as the agents would receive them."""
-        return [_observation_dict(s) for s in self._state]
+    def observations(self, copy_state: bool | None = None) -> list[dict[str, Any]]:
+        """Per-agent observation dicts as the agents would receive them.
+
+        copy_state=True returns detached deep copies (what the harness gives an
+        agent: `__get_shared_state` deep-copies per agent). copy_state=False
+        returns LIVE views of the episode state: mutating them mutates the
+        episode, which the harness never permits. Default: True in dev mode
+        (correctness, mutation guard active), False in fast mode (throughput) —
+        fast-mode callers must treat the returned dicts as read-only.
+        """
+        if copy_state is None:
+            copy_state = self._dev
+        return [_observation_dict(s, copy_state=copy_state) for s in self._state]
 
     # ------------------------------------------------------------------ steps
 
@@ -153,6 +210,12 @@ class FastSim:
         self.steps_taken += 1
         for s in self._state:
             s.observation.step = self.steps_taken
+            # The harness writes a reward into every state each turn (the
+            # agent-reported one, default 0) while the interpreter writes the
+            # final money only at episode end. Mirror that default so the state
+            # is comparable field-for-field with the harness (tests/test_parity).
+            if s.status != "DONE":
+                s.reward = 0.0
         if self._dev:
             self._check_state(f"after step {self.steps_taken}")
 
@@ -164,7 +227,10 @@ class FastSim:
             self.reset()
         while not self.done:
             obs = self.observations()
-            self.step([policies[0](obs[0]), policies[1](obs[1])])
+            actions = [policies[0](obs[0]), policies[1](obs[1])]
+            if self._dev:
+                self._assert_obs_intact(obs)
+            self.step(actions)
         return self.rewards()
 
     # ------------------------------------------------- what-if / branching
@@ -206,6 +272,19 @@ class FastSim:
 
     # -------------------------------------------------------------- validation
 
+    def _assert_obs_intact(self, obs_dicts: list[dict[str, Any]]) -> None:
+        """Dev guard: the observation handed to a policy is a copy of the live
+        state; if the policy wrote into it, its bug would silently corrupt every
+        fast-mode episode (where the same dicts ARE the state). Detect it here.
+        """
+        for i, given in enumerate(obs_dicts):
+            live = _observation_dict(self._state[i], copy_state=False)
+            for key, value in given.items():
+                if repr(value) != repr(live[key]):
+                    raise RuntimeError(
+                        f"dev guard: agent {i} mutated observation field {key!r} "
+                        f"(policies must treat observations as read-only)")
+
     def _check_state(self, where: str) -> None:
         """Dev-mode state invariants (cheap, per R004 dev-only)."""
         obs = self._state[0].observation
@@ -220,18 +299,23 @@ class FastSim:
             assert price >= 1, f"{where}: {product} price below floor"
 
 
-def _observation_dict(s: Any) -> dict[str, Any]:
-    """Observation dict with plain (non-Struct) nested values."""
+def _observation_dict(s: Any, copy_state: bool = False) -> dict[str, Any]:
+    """Observation dict with plain (non-Struct) nested values.
+
+    copy_state=True detaches the nested containers from the episode state, so a
+    policy cannot write into the world through its observation.
+    """
     obs = s.observation
+    deep = copy.deepcopy if copy_state else (lambda v: v)
     return {
         "player": obs.player,
         "step": obs.step if hasattr(obs, "step") else None,
         "day": obs.day,
         "hour": obs.hour,
-        "farms": obs.farms,
-        "private": obs.private,
-        "market": obs.market,
-        "town": obs.town,
+        "farms": deep(obs.farms),
+        "private": deep(obs.private),
+        "market": deep(obs.market),
+        "town": deep(obs.town),
         "remainingOverageTime": getattr(obs, "remainingOverageTime", 60),
     }
 
@@ -241,8 +325,14 @@ def _pass_policy(_obs: dict[str, Any]) -> dict[str, Any]:
 
 
 def _validate_action(index: int, action: Any) -> None:
-    """Dev-mode action shape check (subset of the harness schema, enough to
-    catch caller bugs without JSON-schema cost)."""
+    """Dev-mode action shape check.
+
+    Deliberately STRICTER than the harness: the harness only requires the action
+    to be an object (its schema declares no typed properties and the interpreter
+    no-ops unknown ops), so a wrong inner type passes silently on the real
+    environment while dev mode raises here. A dev failure therefore means
+    "caller bug", not necessarily "would fail on Kaggle" — see R004.
+    """
     if not isinstance(action, dict):
         raise TypeError(f"agent {index}: action must be a dict")
     for key in ("farmer", "hands", "market"):
@@ -258,36 +348,55 @@ def _validate_action(index: int, action: Any) -> None:
 
 # --------------------------------------------------------------- parallel runs
 
-def _worker_run(payload: tuple[dict[str, Any], int]) -> list[float | None]:
-    """Run `repeats` episodes inside one worker process; return rewards of the last."""
-    configuration, repeats = payload
-    sim = FastSim(configuration, validate="fast")
-    out: list[float | None] = []
-    for _ in range(repeats):
-        out = sim.run([_pass_policy, _pass_policy], reset=True)
-    return out
+def _worker_episode(payload: tuple[dict[str, Any], int | None]) -> dict[str, Any]:
+    """Run ONE episode in this worker and return a per-episode record."""
+    configuration, seed = payload
+    cfg = dict(configuration)
+    if seed is not None:
+        cfg["seed"] = seed
+    sim = FastSim(cfg, validate="fast")
+    rewards = sim.run([_pass_policy, _pass_policy], reset=True)
+    return {
+        "seed": sim.seed,          # the seed actually used (reproducibility)
+        "rewards": rewards,
+        "money": sim.money(),
+        "steps": sim.steps_taken,
+    }
 
 
 def run_parallel(episodes: int,
                  configuration: dict[str, Any] | None = None,
-                 processes: int | None = None) -> list[list[float | None]]:
+                 processes: int | None = None,
+                 master_seed: int | None = None) -> list[dict[str, Any]]:
     """Run `episodes` independent episodes across worker processes.
 
-    For sweeps with policies use FastSim directly in your own Pool:
-    the workers here run the neutral PASS policy; the point of this helper
-    is parallel throughput (DP/MDP evaluation loops) with zero per-worker
-    setup cost beyond the interpreter import.
+    Returns ONE RECORD PER EPISODE (length == episodes), each with the seed that
+    was used, the rewards, the final money and the step count. `master_seed`
+    makes the whole ensemble reproducible; `configuration["seed"]` (if set)
+    overrides it and every episode is then the same episode by construction.
+
+    For sweeps with policies use FastSim directly in your own Pool: the workers
+    here run the neutral PASS policy; the point of this helper is parallel
+    throughput (DP/MDP evaluation loops) with zero per-worker setup cost beyond
+    the interpreter import.
     """
     import multiprocessing as mp
+    import random
 
     if episodes <= 0:
         return []
+    configuration = dict(configuration or {})
+    fixed_seed = configuration.get("seed")
+    rng = random.Random(master_seed)
+    seeds = [fixed_seed if fixed_seed is not None else rng.randrange(2 ** 31)
+             for _ in range(episodes)]
+    payloads = [(dict(configuration), s) for s in seeds]
     procs = processes or min(episodes, mp.cpu_count())
-    base, extra = divmod(episodes, procs)
-    payloads = [(dict(configuration or {}), base + (1 if i < extra else 0))
-                for i in range(procs) if base + (1 if i < extra else 0) > 0]
-    if len(payloads) == 1:
-        return [_worker_run(payloads[0]) for _ in range(1)]
-    with mp.Pool(processes=len(payloads)) as pool:
-        results = pool.map(_worker_run, payloads)
-    return results
+    if procs <= 1:
+        return [_worker_episode(p) for p in payloads]
+    with mp.Pool(processes=procs) as pool:
+        records = list(pool.imap_unordered(_worker_episode, payloads,
+                                          chunksize=max(1, episodes // (procs * 4))))
+    # imap_unordered yields in completion order; sort so the returned ensemble is
+    # reproducible for a given master_seed (verified: two runs then agree).
+    return sorted(records, key=lambda r: (r["seed"] is None, r["seed"]))

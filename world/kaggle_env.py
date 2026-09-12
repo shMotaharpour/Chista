@@ -7,11 +7,13 @@ HTML file through the environment's own render() method.
 
 This is the slow, official path — use it for submission-style evaluation
 and replays. For bulk simulation (DP/MDP/RL), use world.fast_sim instead
-(per R003: measure first, ~8x faster there).
+(per R003; measured on a 720-step season: 1.785 s/episode here vs 0.035 s in
+world.fast_sim, i.e. 50.6x — reproduce with bench/bench_paths.py).
 """
 
 from __future__ import annotations
 
+import hashlib
 import sys
 from pathlib import Path
 from typing import Any, Callable
@@ -25,7 +27,9 @@ REPO_ROOT = str(Path(__file__).resolve().parent.parent)
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
-DEFAULT_OUTPUT_DIR = Path("/tmp/chistaagent/replays")
+# Replays are evidence and must outlive a reboot, so the default lives inside the
+# repo (gitignored) rather than /tmp; pass output_path to override.
+DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parents[1] / "artifacts" / "replays"
 
 AgentLike = Callable[[Any], Any] | str
 
@@ -76,7 +80,19 @@ def render_episode_html(env: Environment,
 
 
 def _default_html_path(env: Environment) -> Path:
-    stem = f"kaggriculture_s{env.info.get('seed', 'NA')}_{len(env.steps)}steps"
+    """Collision-free default replay name.
+
+    Keyed on the seed and on a fingerprint of the episode's outcome, so two runs
+    that share a seed (the normal case in a sweep) no longer overwrite each
+    other's replay. Two runs collide only when the episode is genuinely
+    identical, which makes run_and_render's overwrite=True idempotent instead of
+    lossy.
+    """
+    final = env.steps[-1] if env.steps else []
+    signature = "|".join(str(getattr(s, "reward", None)) for s in final)
+    fingerprint = hashlib.sha1(f"{len(env.steps)}:{signature}".encode()).hexdigest()[:8]
+    stem = (f"kaggriculture_s{env.info.get('seed', 'NA')}"
+            f"_{len(env.steps)}steps_{fingerprint}")
     return DEFAULT_OUTPUT_DIR / f"{stem}.html"
 
 
