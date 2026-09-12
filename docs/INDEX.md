@@ -21,6 +21,11 @@ Order: **Rules** (`R<NNN>_<slug>.md`) first, then **Findings**
   structify-cloned state instead of reimplementing rules: measured 8.2×
   faster than `env.run()` with bit-identical rewards, and no second rule
   implementation to keep in sync.
+- [R004_configurable_validation_dev_and_fast_modes.md](R004_configurable_validation_dev_and_fast_modes.md) —
+  Every module carries a validation config: dev mode runs harness and
+  validators; fast mode — the main parse-and-run path for heavy processes
+  (DP, RL, MDP) — bypasses all checks via the same config so no time is
+  wasted on validation when speed matters.
 
 ## Findings
 
