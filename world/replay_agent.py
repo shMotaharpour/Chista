@@ -85,7 +85,7 @@ class EpisodeRecord:
     """A recorded single-agent episode: seed, configuration, turn actions."""
 
     __slots__ = ("schema", "seed", "configuration", "agent_name", "turns",
-                 "source")
+                 "source", "_index")
 
     def __init__(self, data: dict[str, Any], source: str = "<memory>"):
         self.source = source
@@ -102,6 +102,14 @@ class EpisodeRecord:
             raise ReplayValidationError("missing or empty 'turns' list",
                                         where=f"{source}.turns")
         self.turns: list[dict[str, Any]] = turns
+        # O(1) step -> action index built once at construction. The turns
+        # list stays the on-disk canonical form (human-readable, stable
+        # diffs); the index is the play-time structure. With validate=False
+        # and duplicate steps, the LAST entry wins (the validator rejects
+        # duplicates in the default path).
+        self._index: dict[int, dict[str, Any] | None] = {
+            t["step"]: t.get("action") for t in turns if isinstance(t, dict)
+        }
 
     # ------------------------------------------------------------- loading
 
@@ -128,19 +136,8 @@ class EpisodeRecord:
     # ----------------------------------------------------------- accessing
 
     def action_at(self, step: int) -> dict[str, Any] | None:
-        """The recorded action for a step, or None (binary search on order)."""
-        turns = self.turns
-        lo, hi = 0, len(turns) - 1
-        while lo <= hi:
-            mid = (lo + hi) // 2
-            s = turns[mid].get("step")
-            if s == step:
-                return turns[mid].get("action")
-            if s < step:
-                lo = mid + 1
-            else:
-                hi = mid - 1
-        return None
+        """The recorded action for a step, or None. O(1) dict lookup."""
+        return self._index.get(step)
 
     def to_dict(self) -> dict[str, Any]:
         """Plain-dict form (the exact shape SCHEMA.md documents)."""

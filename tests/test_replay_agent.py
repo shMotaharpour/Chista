@@ -199,8 +199,11 @@ def test_missing_step_plays_pass() -> None:
     # beyond the record -> PASS
     assert agent({"player": 0, "step": 10}) == PASS_ACTION
     assert agent({"player": 1, "step": 999}) == PASS_ACTION
-    # gaps inside the record -> PASS
+    # gaps inside the record -> PASS: a turn whose action is EXPLICITLY null.
+    # The record is already indexed, so rewrite the index entry too (this
+    # mirrors what a loader-side mutation of the file would produce).
     rec.turns[5]["action"] = None
+    rec._index[5] = None
     assert agent({"player": 0, "step": 5}) == PASS_ACTION
     # 3 missing so far: steps 10, 999, and the nulled 5
     assert agent.missing_turns == 3
