@@ -107,7 +107,10 @@ results = run_parallel(100, configuration={})       # one record per episode
 `chistaagent.replay.v1`, format documented in
 [REPLAY_SCHEMA.md](REPLAY_SCHEMA.md)); `ReplayAgent(record)` is a callable
 policy that plays it back in any seat, on either engine path. Missing steps
-play PASS; the record is never mutated by the engine (deep copies handed out).
+play PASS. By default the recorded action object is handed out directly
+(zero overhead — neither engine path mutates a submitted action, pinned by
+test); `ReplayAgent(record, copy=True)` deep-copies every handout
+(defensive mode, ~25% slower per season).
 Validation is a class method (`EpisodeRecord.validate(path, mode="soft"|"hard")`)
 run only on demand — never during an episode (R004).
 

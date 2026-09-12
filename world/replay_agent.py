@@ -20,10 +20,16 @@ automatically during an episode):
     and the turn range fits the configuration's episodeSteps. Raises on the
     first defect (with a precise path like turns[37].action.hands[2]).
 
-Playing: the agent hands out deep copies of the recorded actions, so neither
-the engine nor a buggy caller can mutate the record. A missing turn or a
-missing seat falls back to PASS — the episode can never crash (the engine
-itself treats invalid actions as silent no-ops, F047).
+Playing: by default the agent hands out the recorded action object directly
+(share mode, `copy=False`) — the engine and the harness never write into a
+submitted action (verified by probes on both paths, and pinned by
+`test_engine_never_mutates_shared_actions`), so sharing costs ~0 us/turn.
+Pass `copy=True` for defensive copying: measured on this box, deepcopy of
+the real 720-turn action stream costs ~10 ms/season/seat (~21 ms both
+seats, ~25% of a replay season) — worth it only when the caller might
+mutate what it receives. A missing turn falls back to PASS — the episode
+can never crash (the engine itself treats invalid actions as silent
+no-ops, F047).
 """
 
 from __future__ import annotations
@@ -380,14 +386,25 @@ class ReplayAgent:
     Seat-agnostic: the action for obs["step"] is returned regardless of
     which seat the engine assigns. Stateless across calls (pure lookup),
     so any number of instances can run concurrently.
+
+    copy=False (default): the recorded action object is handed out as-is —
+    zero per-turn overhead. Safe because the engine and the harness never
+    write into a submitted action (probed on both paths); the caller must
+    not mutate the returned object either. Note two agents sharing ONE
+    record both receive the SAME object per turn — fine for the engine,
+    wrong if a caller edits what it receives.
+    copy=True: every handout is a fresh deepcopy — defensive mode for
+    callers that might mutate what they receive. Costs ~10 ms per
+    720-turn season per seat (measured); use only when needed.
     """
 
-    __slots__ = ("_record", "_missing", "_replayed")
+    __slots__ = ("_record", "_missing", "_replayed", "_copy")
 
-    def __init__(self, record: EpisodeRecord):
+    def __init__(self, record: EpisodeRecord, copy: bool = False):
         self._record = record
         self._missing = 0
         self._replayed = 0
+        self._copy = copy
 
     @property
     def record(self) -> EpisodeRecord:
@@ -406,7 +423,7 @@ class ReplayAgent:
             self._missing += 1
             return dict(PASS_ACTION)
         self._replayed += 1
-        return copy.deepcopy(action)
+        return copy.deepcopy(action) if self._copy else action
 
     # ------------------------------------------------------------ counters
 

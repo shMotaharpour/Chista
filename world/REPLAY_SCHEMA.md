@@ -108,3 +108,18 @@ rec1 = EpisodeRecord.load("my_episode_p1.json")
 sim = FastSim({"seed": rec.seed, **rec.configuration})
 rewards = sim.run([agent, ReplayAgent(rec1)])
 ```
+
+## Copy semantics
+
+`ReplayAgent(record, copy=False)` (default) hands out the recorded action
+object directly — zero per-turn overhead. This is safe: neither engine path
+(`fast_sim` nor the harness) writes into a submitted action (pinned by
+`test_engine_never_mutates_shared_actions`), but the *caller* must not
+mutate what it receives either. With `copy=True` every handout is a fresh
+deepcopy — defensive mode; measured ~10 ms per 720-turn season per seat
+(~25% of a replay season), so keep it off in bulk runs.
+
+Note: two `ReplayAgent` instances sharing ONE record receive the SAME
+object per turn in share mode — fine for the engine, wrong only if a
+caller edits what it receives.
+

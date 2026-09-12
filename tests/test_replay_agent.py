@@ -208,17 +208,63 @@ def test_missing_step_plays_pass() -> None:
     assert agent.replayed_turns == 0
 
 
-def test_agent_never_hands_out_live_state() -> None:
+def test_agent_copy_modes() -> None:
+    """copy=False shares the recorded object (default); copy=True deep-copies."""
     data = make_record_data(0, steps=4)
     rec = EpisodeRecord(data, source="<t>")
-    agent = ReplayAgent(rec)
-    a = agent({"player": 0, "step": 1})
-    a["farmer"][0] = "MUTATED"
-    a["market"].append(["SELL", "WHEAT", 999])
-    # the record must be untouched
+    recorded = rec.action_at(1)
+
+    # share mode (default): same object identity, zero copies
+    shared_agent = ReplayAgent(rec)
+    a = shared_agent({"player": 0, "step": 1})
+    assert a is recorded
+
+    # copy mode: fresh object every handout, record untouched by mutation
+    copy_agent = ReplayAgent(rec, copy=True)
+    a1 = copy_agent({"player": 0, "step": 1})
+    a2 = copy_agent({"player": 0, "step": 1})
+    assert a1 is not recorded and a2 is not recorded and a1 is not a2
+    a1["farmer"][0] = "MUTATED"
+    a1["market"].append(["SELL", "WHEAT", 999])
     assert rec.action_at(1) == scripted_action(1, 0)
-    # and the next handout is clean
-    assert agent({"player": 0, "step": 1}) == scripted_action(1, 0)
+    assert copy_agent({"player": 0, "step": 1}) == scripted_action(1, 0)
+
+
+def test_engine_never_mutates_shared_actions(tmp_path: Path) -> None:
+    """Share mode is safe: neither engine path writes into the handed-out
+    action object. Probed here with a shared object across a full episode
+    on fast_sim AND the harness (mixed with recorded actions so real ops
+    execute)."""
+    p0 = write_record(tmp_path, 0)
+    p1 = write_record(tmp_path, 1)
+    rec0 = EpisodeRecord.load(p0)
+    rec1 = EpisodeRecord.load(p1)
+
+    shared = {"farmer": ["PICKUP", "WHEAT", 3],
+              "hands": [["WATER"], ["NORTH"]],
+              "market": [["SELL", "WHEAT", 2], ["BUY_PRODUCT", "WHEAT", 1]]}
+    orig = copy.deepcopy(shared)
+
+    class MixedAgent:
+        def __init__(self, record: EpisodeRecord) -> None:
+            self._r = record
+
+        def __call__(self, obs, configuration=None):
+            if obs["step"] % 3 == 0:
+                return shared  # same object every third turn
+            a = self._r.action_at(obs["step"])
+            return copy.deepcopy(a) if a else dict(PASS_ACTION)
+
+    sim = FastSim({"episodeSteps": STEPS, "seed": SEED})
+    sim.run([MixedAgent(rec0), MixedAgent(rec1)])
+    assert shared == orig, "fast_sim mutated a submitted action"
+
+    from world import kaggle_env
+    env = kaggle_env.run_episode(
+        [MixedAgent(rec0), MixedAgent(rec1)],
+        configuration={"episodeSteps": STEPS, "seed": SEED})
+    assert shared == orig, "harness mutated a submitted action"
+    assert all(env.steps[-1][i].status == "DONE" for i in (0, 1))
 
 
 # --------------------------------------------------------------------------- #
