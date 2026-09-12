@@ -6,4 +6,4 @@
 
 - HARVEST takes everything and removes the plant; the tile is empty again and can be replanted the same day.
 
-*Source: "Crops and animals — every rule, numbered" research document.*
+*Source: "Crops and animals — every rule, numbered" research document, project [AgriOracle](https://github.com/shMotaharpour/AgriOracle).*

@@ -10,4 +10,4 @@
 | TOMATO | 50 | day 8 | 1 | 4 | 4 |
 | STRAWBERRY | 100 | day 10 | 2 | 4 | 4 |
 
-*Source: "Crops and animals — every rule, numbered" research document.*
+*Source: "Crops and animals — every rule, numbered" research document, project [AgriOracle](https://github.com/shMotaharpour/AgriOracle).*

@@ -7,4 +7,4 @@
 - `fertilizer_available` is set true every night, for every animal, whether or not it was collected.
 - One COLLECT_FERTILIZER per animal per day.
 
-*Source: "Crops and animals — every rule, numbered" research document.*
+*Source: "Crops and animals — every rule, numbered" research document, project [AgriOracle](https://github.com/shMotaharpour/AgriOracle).*

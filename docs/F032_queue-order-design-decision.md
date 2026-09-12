@@ -7,4 +7,4 @@
 - Queue order is therefore a design decision: land, then sales, then hires, then purchases.
 - Each order settles at its own index; what an earlier order leaves in the purse decides whether later ones land.
 
-*Source: "Kaggriculture — the rules, as we have established them" research document.*
+*Source: "Kaggriculture — the rules, as we have established them" research document, project [AgriOracle](https://github.com/shMotaharpour/AgriOracle).*

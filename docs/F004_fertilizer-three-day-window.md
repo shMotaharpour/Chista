@@ -8,4 +8,4 @@
 - It sets `fertilized_until_day = day + 2`: coverage is three days — today, tomorrow and the day after.
 - A second application inside already-covered days adds nothing (measured on wheat, F006).
 
-*Source: "Crops and animals — every rule, numbered" research document.*
+*Source: "Crops and animals — every rule, numbered" research document, project [AgriOracle](https://github.com/shMotaharpour/AgriOracle).*

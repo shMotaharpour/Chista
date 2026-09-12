@@ -7,4 +7,4 @@
 - There are at most `max_yield` productions — four — and the held stock is capped at four as well.
 - Harvesting between productions empties the stock, so the season's total can reach 8 collected with fertilizer (four productions of two).
 
-*Source: "Crops and animals — every rule, numbered" research document.*
+*Source: "Crops and animals — every rule, numbered" research document, project [AgriOracle](https://github.com/shMotaharpour/AgriOracle).*

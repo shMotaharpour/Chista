@@ -11,4 +11,4 @@
 | COW | 400 | PASTURE | day 8 | 2 | 6 | MILK |
 | SHEEP | 500 | PASTURE | day 6 | 3 | 6 | WOOL |
 
-*Source: "Crops and animals — every rule, numbered" research document.*
+*Source: "Crops and animals — every rule, numbered" research document, project [AgriOracle](https://github.com/shMotaharpour/AgriOracle).*

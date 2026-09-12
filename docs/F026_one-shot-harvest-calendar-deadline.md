@@ -14,4 +14,4 @@
 - Water *before* harvesting on the same day: WATER adds its unit the moment it runs.
 - The deadline is real: from the morning of `planted + max_yield_day + 1` the plant loses one unit every two turns and is a weed within hours. Harvesting a day late is not a small loss, it is most of the tile.
 
-*Source: "Crops and animals — every rule, numbered" research document.*
+*Source: "Crops and animals — every rule, numbered" research document, project [AgriOracle](https://github.com/shMotaharpour/AgriOracle).*

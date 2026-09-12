@@ -9,4 +9,4 @@
 - Orders are walked by queue index, each to completion, so anything behind an empty purse is refused in silence.
 - HIRE and BUY_LAND are atomic: settled at their index, before the per-unit loop, and dropped from the queue.
 
-*Source: "Kaggriculture — the rules, as we have established them" research document.*
+*Source: "Kaggriculture — the rules, as we have established them" research document, project [AgriOracle](https://github.com/shMotaharpour/AgriOracle).*

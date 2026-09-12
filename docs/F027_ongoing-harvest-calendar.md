@@ -11,4 +11,4 @@
 | STRAWBERRY | 10, 12, 14, 16 | day 17 |
 - The stock caps at 4 — exactly four unfertilized productions. Fertilized, each production is 2, so the stock reaches the cap in two productions: **fertilize and you must harvest every other production**.
 
-*Source: "Crops and animals — every rule, numbered" research document.*
+*Source: "Crops and animals — every rule, numbered" research document, project [AgriOracle](https://github.com/shMotaharpour/AgriOracle).*

@@ -12,4 +12,4 @@
 | CARROT | 20 | 2-3 | +1 / +2 | 4 |
 | MELON | 80 | 6-12 | +1 / +2 | 6 |
 
-*Source: "Crops and animals — every rule, numbered" research document.*
+*Source: "Crops and animals — every rule, numbered" research document, project [AgriOracle](https://github.com/shMotaharpour/AgriOracle).*

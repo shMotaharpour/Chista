@@ -7,4 +7,4 @@
 - WATER works once a day; the second one that day is refused — silently.
 - Outside the yield window, watering keeps the plant alive and adds nothing (see F005).
 
-*Source: "Crops and animals — every rule, numbered" research document.*
+*Source: "Crops and animals — every rule, numbered" research document, project [AgriOracle](https://github.com/shMotaharpour/AgriOracle).*

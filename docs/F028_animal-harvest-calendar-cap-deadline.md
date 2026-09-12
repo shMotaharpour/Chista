@@ -12,4 +12,4 @@
 | SHEEP | day 6 | every 3 days: 9, 12, 15, ... | 6 |
 - The cap is a deadline of its own: a goose left uncollected fills its four in four days and everything after that is thrown away; a cow fills six in twelve. With the care bank paying out in a lump (F021) a goose can hit its cap on the first production night — day 4 is a collection day, not a milestone.
 
-*Source: "Crops and animals — every rule, numbered" research document.*
+*Source: "Crops and animals — every rule, numbered" research document, project [AgriOracle](https://github.com/shMotaharpour/AgriOracle).*

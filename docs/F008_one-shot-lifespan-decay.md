@@ -8,4 +8,4 @@
 - From that step the plant loses one unit every two steps and becomes a weed at zero.
 - Measured: wheat planted on day 0 is a weed by night 5, carrot by night 4, melon by night 13.
 
-*Source: "Crops and animals — every rule, numbered" research document.*
+*Source: "Crops and animals — every rule, numbered" research document, project [AgriOracle](https://github.com/shMotaharpour/AgriOracle).*

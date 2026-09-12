@@ -9,4 +9,4 @@
 - There is no liquidation day: what the crew brings in on the last night is dropped into the shed and lost — planning a 30-day season on a 31-day board inflates the figures by more than half.
 - Each turn: every unit acts (farmer, then hands in order) -> the market runs -> the day's refresh happens at the day boundary.
 
-*Source: "Kaggriculture — the rules, as we have established them" research document.*
+*Source: "Kaggriculture — the rules, as we have established them" research document, project [AgriOracle](https://github.com/shMotaharpour/AgriOracle).*

@@ -6,4 +6,4 @@
 
 - Note the shape of the table: GOOSE and SHEEP hold exactly as many units as the days they make you wait (4/4 and 6/6), while **COW holds six against a wait of eight**.
 
-*Source: "Crops and animals — every rule, numbered" research document.*
+*Source: "Crops and animals — every rule, numbered" research document, project [AgriOracle](https://github.com/shMotaharpour/AgriOracle).*

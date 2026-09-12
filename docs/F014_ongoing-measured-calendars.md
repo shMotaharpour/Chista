@@ -8,4 +8,4 @@
 - - TOMATO: first unit on night 7, then 8, 9, 10 — weed on night 12
 - - STRAWBERRY: first unit on night 9, then 11, 13, 15 — dies from day 17
 
-*Source: "Crops and animals — every rule, numbered" research document.*
+*Source: "Crops and animals — every rule, numbered" research document, project [AgriOracle](https://github.com/shMotaharpour/AgriOracle).*

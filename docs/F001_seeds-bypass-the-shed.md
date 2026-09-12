@@ -8,4 +8,4 @@
 - PLANT needs the tile empty and owned.
 - Atomic seed check: if the turn's PLANT requests for one crop exceed the seeds held, **every** PLANT of that crop that turn is dropped, not just the excess — silently.
 
-*Source: "Crops and animals — every rule, numbered" research document.*
+*Source: "Crops and animals — every rule, numbered" research document, project [AgriOracle](https://github.com/shMotaharpour/AgriOracle).*

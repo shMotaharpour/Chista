@@ -7,4 +7,4 @@
 - Two *consecutive* unfed days and the animal escapes, leaving the empty structure.
 - One unfed day is free — including the placement day. Feeding every other day keeps an animal alive indefinitely.
 
-*Source: "Crops and animals — every rule, numbered" research document.*
+*Source: "Crops and animals — every rule, numbered" research document, project [AgriOracle](https://github.com/shMotaharpour/AgriOracle).*

@@ -6,4 +6,4 @@
 
 - HARVEST on an ongoing crop takes the stock and **leaves the plant standing**.
 
-*Source: "Crops and animals — every rule, numbered" research document.*
+*Source: "Crops and animals — every rule, numbered" research document, project [AgriOracle](https://github.com/shMotaharpour/AgriOracle).*
