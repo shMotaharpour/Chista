@@ -79,7 +79,8 @@ def chains_for(kind: str, age: int | None = None,
     """Applicable chains BEFORE pruning, by node kind.
 
     animal_graph=True selects the animal-graph NONE chains (BUILD +
-    BUY + PLACE + FEED) instead of the crop planting chain."""
+    BUY + PLACE + FEED) instead of the crop planting chain.
+    age (crop states) prunes HARVEST chains when age < 0 (F026)."""
     if kind == "NONE":
         if animal_graph:
             return list(NONE_CHAINS_ANIMAL)
@@ -91,5 +92,5 @@ def chains_for(kind: str, age: int | None = None,
     if kind == "EMPTY_STRUCTURE":
         return list(EMPTY_STRUCTURE_CHAINS)
     if age is not None and age < 0:
-        return list(_YOUNG)
+        return [c for c in _YOUNG]
     return list(_CROP_MATURE)

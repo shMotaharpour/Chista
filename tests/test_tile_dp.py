@@ -105,11 +105,14 @@ def test_rescue_watering_exists() -> None:
 
 def test_dominated_fert_harvest_absent() -> None:
     """(FERTILIZE, HARVEST) without water wastes the fertilizer: on a
-    fert-less state it must be pruned by the dominance filter."""
+    fert-less YOUNG state (age<0, no harvest possible) the pair must be
+    pruned by the dominance filter. Mature states can legitimately keep
+    both edges: FERTILIZE before the next cycle's window is a real
+    choice the secretary prices."""
     g = build_graph("CARROT")
     for i in range(g.n_states):
         s = g.state_of(i)
-        if s.kind != "PLANT" or s.fert_left != 0:
+        if s.kind != "PLANT" or s.fert_left != 0 or s.age >= 0:
             continue
         lo, hi = g.edges_of(i)
         chains = [chain_ops(int(g.edge_chain[e])) for e in range(lo, hi)]

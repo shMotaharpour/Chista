@@ -316,6 +316,8 @@ def build_graph(entity: str, progress: bool = False) -> TileGraph:
         _replay_node(sim, state, entity, entity_kind)
 
         for ops in chains_for(state.kind,
+                              age=(state.age
+                                   if state.kind == "PLANT" else None),
                               animal_graph=(entity_kind == "animal")):
             branch = sim.clone()
             try:
