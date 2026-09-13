@@ -30,6 +30,7 @@ from tile_dp.tile_state import (KIND_ANIMAL, KIND_EMPTY_STRUCTURE, KIND_NONE,
 ENGINE_TAG = "tile-dp-v4-fixed"
 LIFE_DAYS = {
     "WHEAT": 7, "CARROT": 6, "TOMATO": 14, "STRAWBERRY": 19,
+    "MELON": 15,
 }
 
 
