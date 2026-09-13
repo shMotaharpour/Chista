@@ -23,7 +23,7 @@ def test_decode_and_pack() -> None:
             "watered_today": True, "consecutive_unwatered": 0,
             "yield_units": 1, "max_lifespan_step": 96,
             "fertilized_until_day": 2}
-    st = decode_tile(tile, day=1)
+    st = decode_tile(tile, day=1)   # day 1 → age -1
     assert st.kind == "PLANT" and st.age == -1
     assert st.fert_left == 2 and st.consec == 0 and st.yield_units == 1
     assert TileState.unpack(st.pack()) == st
@@ -40,7 +40,7 @@ def test_chain_order_canonical() -> None:
 def test_young_plant_cannot_harvest() -> None:
     young = chains_for("PLANT", -1)
     assert all("HARVEST" not in c for c in young)
-    assert all("PLANT" not in c for c in young)
+    assert all("PLANT" not in c for c in young)  # occupied tile
 
 
 def _find(g: TileGraph, **kw) -> int:
@@ -88,8 +88,8 @@ def test_dry_consec1_pass_dies() -> None:
 
 
 def test_rescue_watering_exists() -> None:
-    """Watering TODAY on a consec=1 plant saves it: at least one
-    consec=1 state keeps a WATER edge."""
+    """Watering TODAY on a consec=1 plant saves it (only the SECOND dry
+    night kills): at least one consec=1 state must keep a WATER edge."""
     g = build_graph("CARROT")
     saved = 0
     for i in range(g.n_states):
@@ -105,7 +105,7 @@ def test_rescue_watering_exists() -> None:
 
 def test_dominated_fert_harvest_absent() -> None:
     """(FERTILIZE, HARVEST) without water wastes the fertilizer: on a
-    fert-less state it must be pruned by dominance."""
+    fert-less state it must be pruned by the dominance filter."""
     g = build_graph("CARROT")
     for i in range(g.n_states):
         s = g.state_of(i)

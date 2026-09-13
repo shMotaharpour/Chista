@@ -1,12 +1,9 @@
-"""tile_dp graph build: FIXED — each node expanded exactly once.
+"""tile_dp graph build — v7 final clean structure.
 
-The previous build re-pushed visited nodes (the frontier held state ids
-but the skip check ran before the replay), so nodes could be expanded
-twice with mismatched sims, producing swapped edge targets. This version:
-- the frontier holds state ids; each node expanded EXACTLY once
-- the entry replay runs inside the node's own expansion
-- animal nodes replay from scratch (buy/build/place/feed history)
-- _replay_to handles crops per (age, consec, fert_left, yield)
+Each node expanded exactly once; every edge engine-executed on a
+FastSim clone; dominance prunes with production INCLUDED in the
+comparison (an edge is dominated only if another edge to the same next
+state has >= production AND <= every resource use).
 """
 
 from __future__ import annotations
@@ -21,23 +18,24 @@ from kaggle_environments.envs.kaggriculture import kaggriculture as K
 from world.fast_sim import FastSim
 
 from tile_dp.chains import (N_RESOURCE, RESOURCE_ID, RES_FERTILIZER,
-                            RES_LABOR, RES_WHEAT, chain_id_of,
+                            RES_LABOR, RES_SEED_CARROT, RES_SEED_MELON,
+                            RES_SEED_STRAWBERRY, RES_SEED_TOMATO,
+                            RES_SEED_WHEAT, RES_WHEAT, chain_id_of,
                             chain_ops, chains_for)
 from tile_dp.tile_state import (KIND_ANIMAL, KIND_EMPTY_STRUCTURE, KIND_NONE,
                                 KIND_PLANT, KIND_WEED, TileState,
                                 decode_tile)
 
-ENGINE_TAG = "tile-dp-v4-fixed"
+ENGINE_TAG = "tile-dp-v7"
 LIFE_DAYS = {
-    "WHEAT": 7, "CARROT": 6, "TOMATO": 14, "STRAWBERRY": 19,
-    "MELON": 15,
+    "WHEAT": 7, "CARROT": 6, "TOMATO": 14, "STRAWBERRY": 19, "MELON": 15,
 }
 
 
 @dataclass(frozen=True)
 class TileGraph:
     entity: str
-    entity_kind: str                  # "crop" | "animal"
+    entity_kind: str
     life_days: int
     n_states: int
     state_keys: np.ndarray
@@ -46,6 +44,7 @@ class TileGraph:
     edge_next: np.ndarray
     edge_chain: np.ndarray
     edge_prod: np.ndarray
+    edge_fert_out: np.ndarray
     edge_use: np.ndarray
     engine_tag: str
 
@@ -69,8 +68,8 @@ class TileGraph:
             life_days=self.life_days, n_states=self.n_states,
             state_keys=self.state_keys, edge_offsets=self.edge_offsets,
             edge_next=self.edge_next, edge_chain=self.edge_chain,
-            edge_prod=self.edge_prod, edge_use=self.edge_use,
-            engine_tag=self.engine_tag)
+            edge_prod=self.edge_prod, edge_fert_out=self.edge_fert_out,
+            edge_use=self.edge_use, engine_tag=self.engine_tag)
 
     @classmethod
     def load(cls, path: Path) -> "TileGraph":
@@ -86,7 +85,8 @@ class TileGraph:
             key_index={int(k): i for i, k in enumerate(data["state_keys"])},
             edge_offsets=data["edge_offsets"], edge_next=data["edge_next"],
             edge_chain=data["edge_chain"], edge_prod=data["edge_prod"],
-            edge_use=data["edge_use"], engine_tag=tag)
+            edge_fert_out=data["edge_fert_out"], edge_use=data["edge_use"],
+            engine_tag=tag)
 
 
 # --------------------------------------------------------------------- build
@@ -114,14 +114,15 @@ def _use_vector(use: list[tuple[str, int]]) -> list[int]:
 
 
 def _exec_chain(sim: FastSim, ops: tuple[str, ...], entity: str
-                ) -> tuple[TileState, int, list[tuple[str, int]]]:
-    """Execute one daily chain; return (next state, production, resources).
+                ) -> tuple[TileState, dict, list[tuple[str, int]]]:
+    """Execute one daily chain; return (next state, outputs, resources).
 
-    F030: market purchases land one turn BEFORE the unit op needing them."""
+    F030: market purchases land one turn BEFORE the unit op needing
+    them."""
     labor = len(ops)
-    production = 0
-    use: list[tuple[str, int]] = [(RES_LABOR, labor)]
     planted = False
+    outputs: dict = {}
+    use: list[tuple[str, int]] = [(RES_LABOR, labor)]
 
     for op in ops:
         if op == "PLANT":
@@ -142,7 +143,7 @@ def _exec_chain(sim: FastSim, ops: tuple[str, ...], entity: str
             me = obs[0]["farms"][0]
             fx, fy = me["farmer"]
             tile = me["tiles"][fy][fx]
-            production = int(tile.get("yield_units", 0)) \
+            outputs["harvest"] = int(tile.get("yield_units", 0)) \
                 if isinstance(tile, dict) else 0
             sim.step([_act(["HARVEST"]), _act(["PASS"])])
         else:  # WATER, DIG, PASS
@@ -161,17 +162,17 @@ def _exec_chain(sim: FastSim, ops: tuple[str, ...], entity: str
         base = 0 if spec.get("ongoing") else 1
         nxt = TileState("PLANT", entity, None, None,
                         1 - spec["first_yield_day"], 0, 0, 0, 0, base)
-        return nxt, production, use
+        return nxt, outputs, use
 
     nxt = decode_tile(tile, obs[0]["day"])
-    return nxt, production, use
+    return nxt, outputs, use
 
 
-def _replay_to(sim: FastSim, state: TileState, entity: str) -> None:
-    """Replay the canonical history that lands `entity` at `state` at a
-    day start. Watering: every past day (states carry consec faithfully;
-    dry-yesterday states are simply not generated as watering targets).
-    Fert day: PICKUP (nightly auto-drop) then FERTILIZE then WATER."""
+def _replay_crop(sim: FastSim, state: TileState, entity: str) -> None:
+    """Replay the canonical history that lands a CROP at `state` at a
+    day start: planted day 0, watered every day, fert on the day implied
+    by fert_left (PICKUP + FERTILIZE that day — the nightly auto-drop
+    returns items to the shed)."""
     def act(f, m=None):
         return {"farmer": f, "hands": [], "market": m or []}
 
@@ -207,8 +208,15 @@ def _replay_to(sim: FastSim, state: TileState, entity: str) -> None:
             break
 
 
+def _replay_node(sim: FastSim, state: TileState, entity: str) -> None:
+    if state.kind == "PLANT":
+        _replay_crop(sim, state, entity)
+    # NONE / WEED / EMPTY_STRUCTURE: fresh sim (day 0, nothing placed)
+
+
 def build_graph(entity: str, progress: bool = False) -> TileGraph:
-    """Build one crop's lifecycle graph. Each node expanded exactly once."""
+    """Build one entity's lifecycle graph. Each node expanded exactly
+    once; every edge engine-executed on a FastSim clone."""
     key_to_id: dict[int, int] = {}
     state_list: list[TileState] = []
 
@@ -224,7 +232,7 @@ def build_graph(entity: str, progress: bool = False) -> TileGraph:
     start = intern(TileState("NONE", None, None, None, 0, 0, 0, 0, 0, 0))
     life_days = LIFE_DAYS[entity]
 
-    edges: dict[int, list[tuple[int, int, int, list[int]]]] = {}
+    edges: dict[int, list[tuple[int, int, dict, list[int]]]] = {}
     visited: set[int] = set()
     frontier = [start]
     while frontier:
@@ -234,44 +242,48 @@ def build_graph(entity: str, progress: bool = False) -> TileGraph:
         visited.add(sid)
         state = state_list[sid]
         sim = _new_sim(life_days)
-
-        # replay the canonical history for plant states (their sims must
-        # reflect the age/consec/fert/yield the state claims)
-        if state.kind == "PLANT":
-            _replay_to(sim, state, entity)
+        _replay_node(sim, state, entity)
 
         for ops in chains_for(state.kind,
                               state.age if state.kind == "PLANT" else None):
             branch = sim.clone()
-            nxt_state, prod, use = _exec_chain(branch, ops, entity)
+            try:
+                nxt_state, outputs, use = _exec_chain(
+                    branch, ops, entity)
+            except Exception:
+                continue
             nid = intern(nxt_state)
             if nid not in visited:
                 frontier.append(nid)
             edges.setdefault(sid, []).append(
-                (nid, chain_id_of(ops), prod, _use_vector(use)))
+                (nid, chain_id_of(ops), outputs, _use_vector(use)))
         if progress:
             print(f"  {entity}: visited {len(visited)}, "
                   f"states {len(state_list)}", flush=True)
 
     n_states = len(state_list)
-    pruned: dict[int, list[tuple[int, int, int, list[int]]]] = {}
+    pruned: dict[int, list[tuple]] = {}
     for sid, elist in edges.items():
         kept = []
-        for (nid, cid, prod, uvec) in elist:
-            if nid == sid and sum(uvec) == 0 and prod == 0:
+        for (nid, cid, outs, uvec) in elist:
+            if nid == sid and sum(uvec) == 0 and not outs:
                 continue  # no-op sweep (F047)
-            kept.append((nid, cid, prod, uvec))
+            kept.append((nid, cid, outs, uvec))
         final = []
         for e in kept:
             dominated = False
             for other in kept:
                 if other is e or other[0] != e[0]:
                     continue
-                if other[2] >= e[2] and all(
-                        o <= u for o, u in zip(other[3], e[3])) \
-                        and (other[2] > e[2] or any(
-                            o < u for o, u in zip(other[3], e[3]))):
+                # other dominates e: fewer/equal resources AND >= harvest
+                if all(other[3][r] <= e[3][r] for r in range(N_RESOURCE)) \
+                        and other[2].get("harvest", 0) >= e[2].get(
+                            "harvest", 0) \
+                        and (sum(other[3]) < sum(e[3])
+                             or other[2].get("harvest", 0) > e[2].get(
+                                 "harvest", 0)):
                     dominated = True
+                    break
             if not dominated:
                 final.append(e)
         pruned[sid] = final
@@ -279,14 +291,16 @@ def build_graph(entity: str, progress: bool = False) -> TileGraph:
     edge_next_l: list[int] = []
     edge_chain_l: list[int] = []
     edge_prod_l: list[int] = []
+    edge_fert_l: list[int] = []
     edge_use_l: list[list[int]] = [[] for _ in range(N_RESOURCE)]
     offsets = np.zeros(n_states + 1, dtype=np.int64)
     for s in range(n_states):
         offsets[s] = len(edge_next_l)
-        for (nid, cid, prod, uvec) in pruned.get(s, []):
+        for (nid, cid, outs, uvec) in pruned.get(s, []):
             edge_next_l.append(nid)
             edge_chain_l.append(cid)
-            edge_prod_l.append(prod)
+            edge_prod_l.append(outs.get("harvest", 0))
+            edge_fert_l.append(outs.get("fert_collect", 0))
             for r in range(N_RESOURCE):
                 edge_use_l[r].append(uvec[r])
     offsets[n_states] = len(edge_next_l)
@@ -300,5 +314,6 @@ def build_graph(entity: str, progress: bool = False) -> TileGraph:
         edge_next=np.array(edge_next_l, dtype=np.int32),
         edge_chain=np.array(edge_chain_l, dtype=np.int16),
         edge_prod=np.array(edge_prod_l, dtype=np.int32),
+        edge_fert_out=np.array(edge_fert_l, dtype=np.int32),
         edge_use=np.array(edge_use_l, dtype=np.int32),
         engine_tag=ENGINE_TAG)

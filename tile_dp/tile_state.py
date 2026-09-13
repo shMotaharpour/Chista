@@ -60,7 +60,7 @@ class TileState:
                 | (crop_code << 29)
                 | (animal_code << 34)
                 | (struct_code << 39)
-                | (kind_code << 44))
+                | (kind_code << 47))
 
     @classmethod
     def unpack(cls, key: int) -> "TileState":
@@ -72,8 +72,8 @@ class TileState:
         age = ((key >> 21) & 0xFF) - 64
         crop = _name_from_code((key >> 29) & 0x1F)
         animal = _name_from_code((key >> 34) & 0x1F)
-        structure = _name_from_code((key >> 39) & 0x07)
-        kind_code = (key >> 44) & 0x07
+        structure = _name_from_code((key >> 39) & 0x3F)
+        kind_code = (key >> 47) & 0x07
         kind = {0: KIND_NONE, 1: KIND_WEED, 2: KIND_PLANT, 3: KIND_ANIMAL,
                 4: KIND_EMPTY_STRUCTURE}[kind_code]
         return cls(kind, crop, animal, structure, age, consec, unfed,

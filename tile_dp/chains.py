@@ -1,9 +1,9 @@
 """Daily action chains for all tile contents (crops + animals), canonical
 order, with per-state applicability and resource costs.
 
-Order rule (Hossein): within a day, ops run in canonical order:
+Order rule (Hossein): within one day, ops run in canonical order:
   crops:   PLANT -> FERTILIZE -> WATER -> HARVEST   (+ DIG last)
-  animals: FEED -> CARE -> HARVEST -> COLLECT_FERT  (+ none)
+  animals: FEED -> CARE -> HARVEST -> COLLECT_FERTILIZER
 Only canonical sequences exist (same-day order doesn't change outcomes
 except WATER-before-HARVEST which is physics — F026 — and is enforced by
 the canonical order anyway).
@@ -42,14 +42,14 @@ def _canonical_subsets(ops: list[str]) -> list[tuple[str, ...]]:
 _CROP_SUBSETS: list[tuple[str, ...]] = _canonical_subsets(CROP_OPS)
 _ANIMAL_SUBSETS: list[tuple[str, ...]] = _canonical_subsets(ANIMAL_OPS)
 
-# chains_for: per node kind, before engine-pruning
-#  NONE            : PASS | PLANT,WATER (buy seed + plant + water)
+# chains per node kind (before engine-pruning):
+#  NONE            : PASS | PLANT,WATER (buy seed + plant + water, F002)
 #  WEED            : PASS | DIG
 #  PLANT young     : subsets of {FERTILIZE, WATER}      (no harvest yet)
 #  PLANT mature    : subsets of {FERTILIZE, WATER, HARVEST}
 #  ANIMAL          : subsets of {FEED, CARE, HARVEST, COLLECT_FERT}
-#  EMPTY_STRUCTURE : PASS | PLACE (animal)              (no DIG needed)
-_CROP_MATURE: list[tuple[str, ...]] = [c for c in _CROP_SUBSETS]
+#  EMPTY_STRUCTURE : PASS | PLACE (new animal — no DIG needed, F017)
+_CROP_MATURE: list[tuple[str, ...]] = list(_CROP_SUBSETS)
 _YOUNG: list[tuple[str, ...]] = [c for c in _CROP_SUBSETS
                                  if "HARVEST" not in c]
 
@@ -60,7 +60,7 @@ EMPTY_STRUCTURE_CHAINS: tuple[tuple[str, ...], ...] = (
     ("PASS",), ("PLACE_ANIMAL",))
 
 _REGISTRY: list[tuple[str, ...]] = []
-for c in ([("PASS",), ("DIG",), ("PLANT", "WATER")]
+for c in ([(("PASS",)), (("DIG",)), (("PLANT", "WATER"))]
           + _CROP_SUBSETS + _ANIMAL_SUBSETS + [("PLACE_ANIMAL",)]):
     if c not in _REGISTRY:
         _REGISTRY.append(c)
@@ -70,16 +70,17 @@ CHAIN_ID_OF: dict[tuple[str, ...], int] = {c: i for i, c in enumerate(_REGISTRY)
 
 
 def chain_ops(chain_id: int) -> tuple[str, ...]:
+    """Decode a chain id into its op-name tuple (boundary function)."""
     return CHAIN_NAMES[chain_id]
 
 
 def chain_id_of(ops: tuple[str, ...]) -> int:
+    """Encode an op-name tuple into its registry id (boundary function)."""
     return CHAIN_ID_OF[ops]
 
 
-def chains_for(kind: str, age: int | None = None, ongoing: bool = False
-               ) -> list[tuple[str, ...]]:
-    """Applicable chains before pruning, by node kind."""
+def chains_for(kind: str, age: int | None = None) -> list[tuple[str, ...]]:
+    """Applicable chains BEFORE pruning, by node kind."""
     if kind == "NONE":
         return list(NONE_CHAINS)
     if kind == "WEED":
@@ -88,7 +89,6 @@ def chains_for(kind: str, age: int | None = None, ongoing: bool = False
         return list(ANIMAL_CHAINS)
     if kind == "EMPTY_STRUCTURE":
         return list(EMPTY_STRUCTURE_CHAINS)
-    # PLANT
     if age is not None and age < 0:
         return list(_YOUNG)
     return list(_CROP_MATURE)
