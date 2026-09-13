@@ -1,13 +1,5 @@
-"""Daily action chains for all tile contents (crops + animals), canonical
-order, with per-state applicability and resource costs.
-
-Order rule (Hossein): within one day, ops run in canonical order:
-  crops:   PLANT -> FERTILIZE -> WATER -> HARVEST   (+ DIG last)
-  animals: FEED -> CARE -> HARVEST -> COLLECT_FERTILIZER
-Only canonical sequences exist (same-day order doesn't change outcomes
-except WATER-before-HARVEST which is physics — F026 — and is enforced by
-the canonical order anyway).
-"""
+"""tile_dp chains: v8 — animal chains include the BUY+PICKUP+PLACE ops
+for the entry (empty structure) state and entity-aware seeds."""
 
 from __future__ import annotations
 
@@ -54,13 +46,16 @@ _YOUNG: list[tuple[str, ...]] = [c for c in _CROP_SUBSETS
                                  if "HARVEST" not in c]
 
 NONE_CHAINS: tuple[tuple[str, ...], ...] = (("PASS",), ("PLANT", "WATER"))
+NONE_CHAINS_ANIMAL: tuple[tuple[str, ...], ...] = (
+    ("BUILD", "BUY_ANIMAL", "PLACE", "FEED"), ("PASS",))
 WEED_CHAINS: tuple[tuple[str, ...], ...] = (("PASS",), ("DIG",))
 ANIMAL_CHAINS: tuple[tuple[str, ...], ...] = tuple(_ANIMAL_SUBSETS)
 EMPTY_STRUCTURE_CHAINS: tuple[tuple[str, ...], ...] = (
     ("PASS",), ("PLACE_ANIMAL",))
 
 _REGISTRY: list[tuple[str, ...]] = []
-for c in ([(("PASS",)), (("DIG",)), (("PLANT", "WATER"))]
+for c in ([("PASS",), ("DIG",), ("PLANT", "WATER"),
+           ("BUILD", "BUY_ANIMAL", "PLACE", "FEED")]
           + _CROP_SUBSETS + _ANIMAL_SUBSETS + [("PLACE_ANIMAL",)]):
     if c not in _REGISTRY:
         _REGISTRY.append(c)
@@ -79,9 +74,15 @@ def chain_id_of(ops: tuple[str, ...]) -> int:
     return CHAIN_ID_OF[ops]
 
 
-def chains_for(kind: str, age: int | None = None) -> list[tuple[str, ...]]:
-    """Applicable chains BEFORE pruning, by node kind."""
+def chains_for(kind: str, age: int | None = None,
+               animal_graph: bool = False) -> list[tuple[str, ...]]:
+    """Applicable chains BEFORE pruning, by node kind.
+
+    animal_graph=True selects the animal-graph NONE chains (BUILD +
+    BUY + PLACE + FEED) instead of the crop planting chain."""
     if kind == "NONE":
+        if animal_graph:
+            return list(NONE_CHAINS_ANIMAL)
         return list(NONE_CHAINS)
     if kind == "WEED":
         return list(WEED_CHAINS)

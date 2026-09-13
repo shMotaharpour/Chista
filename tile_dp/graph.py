@@ -1,9 +1,8 @@
-"""tile_dp graph build — v7 final clean structure.
-
-Each node expanded exactly once; every edge engine-executed on a
-FastSim clone; dominance prunes with production INCLUDED in the
-comparison (an edge is dominated only if another edge to the same next
-state has >= production AND <= every resource use).
+"""tile_dp graph build — v11 final: animal states capped at the production
+cycle length (Hossein's convention: age wraps inside the positive
+production range), no runaway growth. States with age beyond
+(max_yield - first_yield + interval) are terminal (collapsed into the
+cycle's top age).
 """
 
 from __future__ import annotations
@@ -26,9 +25,10 @@ from tile_dp.tile_state import (KIND_ANIMAL, KIND_EMPTY_STRUCTURE, KIND_NONE,
                                 KIND_PLANT, KIND_WEED, TileState,
                                 decode_tile)
 
-ENGINE_TAG = "tile-dp-v7"
+ENGINE_TAG = "tile-dp-v11"
 LIFE_DAYS = {
     "WHEAT": 7, "CARROT": 6, "TOMATO": 14, "STRAWBERRY": 19, "MELON": 15,
+    "GOOSE": 10, "COW": 12, "SHEEP": 12,
 }
 
 
@@ -103,6 +103,8 @@ _SEED_RES = {"WHEAT": "SEED_WHEAT", "CARROT": "SEED_CARROT",
              "TOMATO": "SEED_TOMATO", "STRAWBERRY": "SEED_STRAWBERRY",
              "MELON": "SEED_MELON"}
 
+_STRUCTURE_OF = {"GOOSE": "COOP", "COW": "PASTURE", "SHEEP": "PASTURE"}
+
 N_TURNS_PER_DAY = 24
 
 
@@ -113,19 +115,31 @@ def _use_vector(use: list[tuple[str, int]]) -> list[int]:
     return vec
 
 
-def _exec_chain(sim: FastSim, ops: tuple[str, ...], entity: str
-                ) -> tuple[TileState, dict, list[tuple[str, int]]]:
+def _exec_chain(sim: FastSim, ops: tuple[str, ...], entity: str,
+                entity_kind: str) -> tuple[TileState, dict, list]:
     """Execute one daily chain; return (next state, outputs, resources).
 
     F030: market purchases land one turn BEFORE the unit op needing
-    them."""
+    them. FEED's wheat: BUY_PRODUCT WHEAT (market) + PICKUP + FEED = 3
+    turns, 1 wheat consumed."""
     labor = len(ops)
     planted = False
+    placed = False
     outputs: dict = {}
     use: list[tuple[str, int]] = [(RES_LABOR, labor)]
 
     for op in ops:
-        if op == "PLANT":
+        if op == "BUILD":
+            # Buy the animal (market) + build the structure + place the
+            # animal — one day's work for an empty-structure/none tile.
+            structure = _STRUCTURE_OF[entity]
+            sim.step([_act(["PASS"], [["BUY_ANIMAL", entity, 1]]),
+                      _act(["PASS"])])
+            sim.step([_act(["PICKUP", entity, 1]), _act(["PASS"])])
+            sim.step([_act([f"BUILD_{structure}"]), _act(["PASS"])])
+            sim.step([_act(["PLACE", entity]), _act(["PASS"])])
+            placed = True
+        elif op == "PLANT":
             sim.step([_act(["PASS"], [["BUY_SEED", entity, 1]]),
                       _act(["PASS"])])
             sim.step([_act(["PLANT", entity]), _act(["PASS"])])
@@ -146,7 +160,23 @@ def _exec_chain(sim: FastSim, ops: tuple[str, ...], entity: str
             outputs["harvest"] = int(tile.get("yield_units", 0)) \
                 if isinstance(tile, dict) else 0
             sim.step([_act(["HARVEST"]), _act(["PASS"])])
-        else:  # WATER, DIG, PASS
+        elif op == "FEED":
+            sim.step([_act(["PASS"], [["BUY_PRODUCT", "WHEAT", 1]]),
+                      _act(["PASS"])])
+            sim.step([_act(["PICKUP", "WHEAT", 1]), _act(["PASS"])])
+            sim.step([_act(["FEED"]), _act(["PASS"])])
+            use.append((RES_WHEAT, 1))
+            labor += 2
+        elif op == "COLLECT_FERTILIZER":
+            obs = sim.observations()
+            me = obs[0]["farms"][0]
+            fx, fy = me["farmer"]
+            tile = me["tiles"][fy][fx]
+            outputs["fert_collect"] = int(tile.get("fertilizer_available", 0)) \
+                if isinstance(tile, dict) \
+                and "fertilizer_available" in tile else 0
+            sim.step([_act(["COLLECT_FERTILIZER"]), _act(["PASS"])])
+        else:  # WATER, CARE, DIG, PASS
             sim.step([_act([op]), _act(["PASS"])])
 
     for _ in range(max(0, N_TURNS_PER_DAY - labor)):
@@ -162,6 +192,12 @@ def _exec_chain(sim: FastSim, ops: tuple[str, ...], entity: str
         base = 0 if spec.get("ongoing") else 1
         nxt = TileState("PLANT", entity, None, None,
                         1 - spec["first_yield_day"], 0, 0, 0, 0, base)
+        return nxt, outputs, use
+    if placed:
+        spec = K.ANIMALS[entity]
+        nxt = TileState("ANIMAL", None, entity,
+                        _STRUCTURE_OF[entity],
+                        1 - spec["first_yield_day"], 0, 0, 0, 0, 0)
         return nxt, outputs, use
 
     nxt = decode_tile(tile, obs[0]["day"])
@@ -208,15 +244,50 @@ def _replay_crop(sim: FastSim, state: TileState, entity: str) -> None:
             break
 
 
-def _replay_node(sim: FastSim, state: TileState, entity: str) -> None:
+def _replay_animal(sim: FastSim, state: TileState, entity: str) -> None:
+    """Replay the canonical history that lands the ANIMAL at `state` at a
+    day start: bought + placed day 0 (fed + cared), then fed and cared
+    every day since (wheat bought per day)."""
+    def act(f, m=None):
+        return {"farmer": f, "hands": [], "market": m or []}
+
+    today = state.age + K.ANIMALS[entity]["first_yield_day"]
+    sim.step([act(["PASS"], [["BUY_ANIMAL", entity, 1],
+                             ["BUY_PRODUCT", "WHEAT", 12]]), act(["PASS"])])
+    sim.step([act(["PICKUP", entity, 1]), act(["PASS"])])
+    sim.step([act(["PICKUP", "WHEAT", 12]), act(["PASS"])])
+    structure = _STRUCTURE_OF[entity]
+    sim.step([act([f"BUILD_{structure}"]), act(["PASS"])])
+    sim.step([act(["PLACE", entity]), act(["PASS"])])
+
+    for cur in range(0, today):
+        sim.step([act(["PASS"], [["BUY_PRODUCT", "WHEAT", 1]]), act(["PASS"])])
+        sim.step([act(["PICKUP", "WHEAT", 1]), act(["PASS"])])
+        sim.step([act(["FEED"]), act(["PASS"])])
+        sim.step([act(["CARE"]), act(["PASS"])])
+        obs = sim.observations()
+        while obs[0]["day"] == cur and not sim.done:
+            sim.step([act(["PASS"]), act(["PASS"])])
+            obs = sim.observations()
+        if sim.done:
+            break
+
+
+def _replay_node(sim: FastSim, state: TileState, entity: str,
+                 entity_kind: str) -> None:
     if state.kind == "PLANT":
         _replay_crop(sim, state, entity)
+    elif state.kind == "ANIMAL":
+        _replay_animal(sim, state, entity)
     # NONE / WEED / EMPTY_STRUCTURE: fresh sim (day 0, nothing placed)
 
 
 def build_graph(entity: str, progress: bool = False) -> TileGraph:
     """Build one entity's lifecycle graph. Each node expanded exactly
     once; every edge engine-executed on a FastSim clone."""
+    entity_kind = "animal" if entity in ("GOOSE", "COW", "SHEEP") else "crop"
+    life_days = LIFE_DAYS[entity]
+
     key_to_id: dict[int, int] = {}
     state_list: list[TileState] = []
 
@@ -229,8 +300,8 @@ def build_graph(entity: str, progress: bool = False) -> TileGraph:
             state_list.append(state)
         return sid
 
-    start = intern(TileState("NONE", None, None, None, 0, 0, 0, 0, 0, 0))
-    life_days = LIFE_DAYS[entity]
+    start_state = TileState("NONE", None, None, None, 0, 0, 0, 0, 0, 0)
+    start = intern(start_state)
 
     edges: dict[int, list[tuple[int, int, dict, list[int]]]] = {}
     visited: set[int] = set()
@@ -242,14 +313,14 @@ def build_graph(entity: str, progress: bool = False) -> TileGraph:
         visited.add(sid)
         state = state_list[sid]
         sim = _new_sim(life_days)
-        _replay_node(sim, state, entity)
+        _replay_node(sim, state, entity, entity_kind)
 
         for ops in chains_for(state.kind,
-                              state.age if state.kind == "PLANT" else None):
+                              animal_graph=(entity_kind == "animal")):
             branch = sim.clone()
             try:
                 nxt_state, outputs, use = _exec_chain(
-                    branch, ops, entity)
+                    branch, ops, entity, entity_kind)
             except Exception:
                 continue
             nid = intern(nxt_state)
@@ -275,7 +346,6 @@ def build_graph(entity: str, progress: bool = False) -> TileGraph:
             for other in kept:
                 if other is e or other[0] != e[0]:
                     continue
-                # other dominates e: fewer/equal resources AND >= harvest
                 if all(other[3][r] <= e[3][r] for r in range(N_RESOURCE)) \
                         and other[2].get("harvest", 0) >= e[2].get(
                             "harvest", 0) \
@@ -306,7 +376,7 @@ def build_graph(entity: str, progress: bool = False) -> TileGraph:
     offsets[n_states] = len(edge_next_l)
 
     return TileGraph(
-        entity=entity, entity_kind="crop", life_days=life_days,
+        entity=entity, entity_kind=entity_kind, life_days=life_days,
         n_states=n_states,
         state_keys=np.array([s.pack() for s in state_list], dtype=np.int64),
         key_index=key_to_id,
