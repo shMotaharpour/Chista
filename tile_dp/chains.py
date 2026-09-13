@@ -28,10 +28,15 @@ _OP_ORDER = {"FERTILIZE": 0, "WATER": 1, "HARVEST": 2, "DIG": 3}
 RES_LABOR = "LABOR_HOURS"
 RES_SEED_WHEAT = "SEED_WHEAT"
 RES_SEED_CARROT = "SEED_CARROT"
+RES_SEED_TOMATO = "SEED_TOMATO"
+RES_SEED_STRAWBERRY = "SEED_STRAWBERRY"
+RES_SEED_MELON = "SEED_MELON"
 RES_FERTILIZER = "FERTILIZER"
 
 RESOURCE_NAMES: tuple[str, ...] = (RES_LABOR, RES_SEED_WHEAT,
-                                   RES_SEED_CARROT, RES_FERTILIZER)
+                                   RES_SEED_CARROT, RES_FERTILIZER,
+                                   RES_SEED_TOMATO, RES_SEED_STRAWBERRY,
+                                   RES_SEED_MELON)
 RESOURCE_ID: dict[str, int] = {n: i for i, n in enumerate(RESOURCE_NAMES)}
 
 # Precondition tags (symbolic; v1 assumes satisfied — explicit for later)
@@ -73,12 +78,18 @@ CHAINS: tuple[tuple[str, ...], ...] = _make_chains(allow_harvest=True)
 # seed resource; the actual op executed on day d hour 0 is PLANT).
 PLANT_CHAIN_WHEAT: tuple[str, ...] = ("PLANT_WHEAT", "WATER")
 PLANT_CHAIN_CARROT: tuple[str, ...] = ("PLANT_CARROT", "WATER")
+PLANT_CHAIN_TOMATO: tuple[str, ...] = ("PLANT_TOMATO", "WATER")
+PLANT_CHAIN_STRAWBERRY: tuple[str, ...] = ("PLANT_STRAWBERRY", "WATER")
+PLANT_CHAIN_MELON: tuple[str, ...] = ("PLANT_MELON", "WATER")
 
 # The single chain registry — ONE source of ids for the graph builder, the
 # solver, and storage. Order: PASS (0), plant pseudo-chains, then the
 # one-shot op lattice. The graph's _chain_id must use THIS registry.
 _ALL_CHAINS: tuple[tuple[str, ...], ...] = (
-    (("PASS",),) + (PLANT_CHAIN_WHEAT, PLANT_CHAIN_CARROT) + CHAINS)
+    (("PASS",),)
+    + (PLANT_CHAIN_WHEAT, PLANT_CHAIN_CARROT, PLANT_CHAIN_TOMATO,
+       PLANT_CHAIN_STRAWBERRY, PLANT_CHAIN_MELON)
+    + CHAINS)
 
 CHAIN_NAME_TO_ID: dict[tuple[str, ...], int] = {
     c: i for i, c in enumerate(_ALL_CHAINS)}

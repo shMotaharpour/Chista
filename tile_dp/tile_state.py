@@ -20,17 +20,15 @@ import numpy as np
 # Engine constants (R002: imported, never transcribed)
 from kaggle_environments.envs.kaggriculture import kaggriculture as K
 
-CROP_NAMES: tuple[str, ...] = ("WHEAT", "CARROT")  # v1
+CROP_NAMES: tuple[str, ...] = ("WHEAT", "CARROT", "TOMATO", "STRAWBERRY",
+                               "MELON")  # v1 plants (engine order); v2 sweep
 CROP_ID: dict[str, int] = {name: i for i, name in enumerate(CROP_NAMES)}
 
 # Special crop codes for the two non-plant states (negative ids)
 CROP_NONE = -1
 CROP_WEED = -2
 
-_KIND_TO_CROP_ID = {
-    "WHEAT": CROP_ID["WHEAT"],
-    "CARROT": CROP_ID["CARROT"],
-}
+_KIND_TO_CROP_ID = {name: CROP_ID[name] for name in CROP_NAMES}
 
 
 @dataclass(frozen=True)
@@ -109,7 +107,8 @@ def decode_tile(tile: object, day: int) -> TileState:
 
     crop = tile["crop"]
     if crop not in _KIND_TO_CROP_ID:
-        raise ValueError(f"crop {crop!r} not supported in v1 (wheat+carrot)")
+        raise ValueError(f"crop {crop!r} not supported in tile_dp "
+                         f"({sorted(_KIND_TO_CROP_ID)})")
     crop_id = _KIND_TO_CROP_ID[crop]
     spec = K.CROPS[crop]
     age = day - spec["first_yield_day"]

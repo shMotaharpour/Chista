@@ -22,13 +22,15 @@ from kaggle_environments.envs.kaggriculture import kaggriculture as K
 
 from world.fast_sim import FastSim
 
-from tile_dp.chains import (CHAINS, RESOURCE_ID, RES_LABOR, RES_SEED_WHEAT,
-                            RES_SEED_CARROT, RES_FERTILIZER, chain_id_of,
+from tile_dp.chains import (CHAINS, RESOURCE_ID, RESOURCE_NAMES, RES_LABOR,
+                            RES_SEED_WHEAT, RES_SEED_CARROT,
+                            RES_SEED_TOMATO, RES_SEED_STRAWBERRY,
+                            RES_SEED_MELON, RES_FERTILIZER, chain_id_of,
                             encode_chains)
 from tile_dp.tile_state import (CROP_ID, CROP_NAMES, CROP_NONE, CROP_WEED,
                                 TileState, decode_tile)
 
-N_RESOURCE = 4
+N_RESOURCE = len(RESOURCE_NAMES)
 N_TURNS_PER_DAY = 24
 ENGINE_TAG = "kaggriculture-tile-dp-v2"
 
@@ -128,17 +130,15 @@ def _exec_chain(sim: FastSim, ops: tuple[str, ...], crop_name: str
     planted = False
 
     for op in ops:
-        if op == "PLANT_WHEAT":
-            sim.step([_act(["PASS"], [["BUY_SEED", "WHEAT", 1]]),
+        if op.startswith("PLANT_"):
+            crop = op[len("PLANT_"):]
+            sim.step([_act(["PASS"], [["BUY_SEED", crop, 1]]),
                       _act(["PASS"])])
-            sim.step([_act(["PLANT", "WHEAT"]), _act(["PASS"])])
-            use.append((RES_SEED_WHEAT, 1))
-            planted = True
-        elif op == "PLANT_CARROT":
-            sim.step([_act(["PASS"], [["BUY_SEED", "CARROT", 1]]),
-                      _act(["PASS"])])
-            sim.step([_act(["PLANT", "CARROT"]), _act(["PASS"])])
-            use.append((RES_SEED_CARROT, 1))
+            sim.step([_act(["PLANT", crop]), _act(["PASS"])])
+            use.append(({"WHEAT": RES_SEED_WHEAT, "CARROT": RES_SEED_CARROT,
+                         "TOMATO": RES_SEED_TOMATO,
+                         "STRAWBERRY": RES_SEED_STRAWBERRY,
+                         "MELON": RES_SEED_MELON}[crop], 1))
             planted = True
         elif op == "FERTILIZE":
             sim.step([_act(["PASS"], [["BUY_PRODUCT", "FERTILIZER", 1]]),
