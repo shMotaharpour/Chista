@@ -1,16 +1,8 @@
-"""tile_dp: single-tile daily state-action graph (v1: carrot only).
+"""tile_dp: single-tile daily state-action graphs — v3 generalized.
 
-Per Hossein's spec (this branch):
-- State = the tile AT DAY START (hour 0): NONE | WEED | PLANT
-- Edge = one daily action chain (canonical order PLANT -> FERTILIZE ->
-  WATER -> HARVEST, plus DIG) executed by the workers, then idle to the
-  next day start.
-- Edge pruning (engine-driven, no hand tables):
-    a) silent no-op sweep: chain changed nothing and consumed nothing (F047)
-    b) dominance: identical next state AND >= production AND <= every
-       resource use -> the dominated edge is dropped
-- Edge outcomes come from FastSim execution (R003 — engine is the only
-  rule source). Numeric core: numpy; strings only at the boundary.
+Entities: 5 crops (WHEAT, CARROT, TOMATO, STRAWBERRY, MELON) + 3 animals
+(GOOSE, COW, SHEEP). One lifecycle graph per entity; all built with
+engine-verified edges (R003) and engine-driven pruning.
 """
 
 from tile_dp.tile_state import TileState, decode_tile
