@@ -88,5 +88,10 @@ def decode_tile(tile: object, day: int) -> TileState:
     consec = int(tile.get("consecutive_unwatered", 0))
     if consec >= 2:  # engine weed conversion (F002) — decode defensively
         return TileState(KIND_WEED, None, 0, 0, 0, 0)
+    if consec == 1:
+        # yesterday was dry → the fertilizer day cannot have been watered
+        # yesterday → at most 1 covered day can remain today (F004 + the
+        # watered-fert-day coupling verified on the engine)
+        fert_left = min(fert_left, 1)
     return TileState(KIND_PLANT, crop, age, consec, fert_left,
                      int(tile.get("yield_units", 0)))

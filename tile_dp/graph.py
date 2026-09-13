@@ -302,7 +302,12 @@ def _replay_to(sim: FastSim, state: TileState) -> None:
     fert_day = (today + state.fert_left - 1) - 2 if state.fert_left > 0 \
         else None
     if state.fert_left > 0 and fert_day is not None and fert_day < plant_day:
-        raise ValueError("unreachable (fert predates plant)")
+        return None  # unreachable (fert predates plant)
+    if state.consec == 1 and state.fert_left >= 2:
+        # consec=1 means yesterday was dry; the fert day would have been
+        # watered (it must be, to apply) → yesterday cannot be dry with
+        # 2 covered days left. Unreachable — no such day-start state.
+        return None
 
     sim.step([act(["PASS"], [["BUY_SEED", "CARROT", 1],
                              ["BUY_PRODUCT", "FERTILIZER", 2]]), act(["PASS"])])

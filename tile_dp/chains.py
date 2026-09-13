@@ -44,9 +44,12 @@ _ALL_SUBSETS: tuple[tuple[str, ...], ...] = tuple(
 #   PLANT age >= 0 (harvestable):     subsets of {FERTILIZE, WATER, HARVEST}
 _NONE_CHAINS: tuple[tuple[str, ...], ...] = (("PASS",), ("PLANT", "WATER"))
 _WEED_CHAINS: tuple[tuple[str, ...], ...] = (("PASS",), ("DIG",))
+# normalize the empty subset to the explicit PASS chain
 _YOUNG_CHAINS: tuple[tuple[str, ...], ...] = tuple(
-    c for c in _ALL_SUBSETS if "HARVEST" not in c)
-_MATURE_CHAINS: tuple[tuple[str, ...], ...] = _ALL_SUBSETS
+    ('PASS',) if c == () else c
+    for c in _ALL_SUBSETS if "HARVEST" not in c)
+_MATURE_CHAINS: tuple[tuple[str, ...], ...] = tuple(
+    ('PASS',) if c == () else c for c in _ALL_SUBSETS)
 
 # the single registry — stable order:
 #   0: PASS | 1: DIG | 2: PLANT,WATER | 3..: young subsets | then mature
