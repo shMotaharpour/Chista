@@ -1,11 +1,12 @@
 """TileGraph: the per-crop day-transition graph, built BY THE ENGINE (R003).
 
-Reachability-forward construction over (day, state) pairs: start from NONE
-on day 0, expand every applicable chain on a FastSim clone, register the
-outcome as a (day+1, state). Edges are stored per (day, state) — the
-engine's plant decay is anchored to the ABSOLUTE planting day, so the same
-tile state at different days can have different futures (a day-invariant
-graph would be wrong).
+Node identity = (day, TileState) — the same tile situation on different
+days is a DIFFERENT node, because the engine anchors plant decay to the
+absolute planting day (F008): a carrot alive at day 3 and an identical-
+looking carrot alive at day 4 have different remaining lifespans. Edges
+are grouped per (day, from_state) and every edge is a daily chain executed
+on a FastSim clone positioned at that exact (day, state) (R003 — the
+interpreter is the only rule source).
 
 Numeric core: numpy int arrays; strings only at the boundary (DESIGN.md).
 """
@@ -29,17 +30,16 @@ from tile_dp.tile_state import (CROP_ID, CROP_NAMES, CROP_NONE, CROP_WEED,
 
 N_RESOURCE = 4
 N_TURNS_PER_DAY = 24
-ENGINE_TAG = "kaggriculture-tile-dp-v1"
+ENGINE_TAG = "kaggriculture-tile-dp-v2"
 
 
 @dataclass(frozen=True)
 class TileGraph:
     """One crop's day-transition graph in numpy int arrays.
 
-    Edges are grouped per (day, from_state): the edge block for (day d,
-    state s) is edge_offsets[d, s]:edge_offsets[d, s+1]. Days share the
-    same state-id space; a state's outgoing block may be empty on days it
-    is unreachable (or after its planting deadline).
+    Nodes are (day, state) pairs; state_keys holds the distinct TileState
+    pack keys. The edge block for (day d, state s) is
+    edge_offsets[d, s]:edge_offsets[d, s+1] (empty where unreachable).
     """
 
     crop_id: int
@@ -47,7 +47,7 @@ class TileGraph:
     n_states: int
     state_keys: np.ndarray            # int64[n_states] packed TileState keys
     edge_offsets: np.ndarray          # int64[days, states+1]
-    edge_next: np.ndarray             # int32[E]
+    edge_next: np.ndarray             # int32[E]  to-state id (same day+1)
     edge_chain: np.ndarray            # int16[E]
     edge_prod: np.ndarray             # int32[1, E]  (v1: the graph's crop)
     edge_use: np.ndarray              # int32[N_RESOURCE, E]
@@ -107,7 +107,6 @@ class TileGraph:
 # --------------------------------------------------------------------- build
 
 def _new_sim(season_days: int) -> FastSim:
-    # episodeSteps must cover the full expansion window (season + 3-day tail)
     return FastSim({"episodeSteps": (season_days + 3) * 24, "seed": 4242})
 
 
@@ -120,9 +119,8 @@ def _exec_chain(sim: FastSim, ops: tuple[str, ...], crop_name: str
     """Run one daily chain on `sim` (positioned at a day start), then PASS
     the rest of the day. Returns (next TileState, production, resource_use).
 
-    F030 pitfall handled here: unit actions run BEFORE the market within a
-    turn, so every market purchase must land one turn BEFORE the unit op
-    that needs it."""
+    F030 handled: market purchases land one turn BEFORE the unit op that
+    needs them."""
     labor = len(ops)
     production: tuple = ()
     use: list[tuple[str, int]] = [(RES_LABOR, labor)]
@@ -164,17 +162,16 @@ def _exec_chain(sim: FastSim, ops: tuple[str, ...], crop_name: str
         sim.step([_act(["PASS"]), _act(["PASS"])])
 
     if harvest_units:
-        production = ((0, harvest_units),)  # crop_id 0 == the graph's crop
+        production = ((0, harvest_units),)
 
     obs = sim.observations()
     me = obs[0]["farms"][0]
     fx, fy = me["farmer"]
     tile = me["tiles"][fy][fx]
 
-    # Planting chains decode to the CANONICAL next-day state: the chain
-    # consumes a full day (buy + plant + water), so the outcome is the
-    # day+1 state — age = 1 - first_yield_day (origin = first harvest
-    # day), watered on planting day → consec=0, yield=1, no fertilizer.
+    # Planting chains decode to the CANONICAL next-day state: bought seed,
+    # planted and watered today → age = 1 - first_yield_day, consec=0,
+    # yield=1, no fertilizer yet.
     if planted:
         spec = K.CROPS[crop_name]
         nxt = TileState(CROP_ID[crop_name], 1 - spec["first_yield_day"],
@@ -203,7 +200,9 @@ def _chain_for_state(state: TileState, crop_name: str) -> list[tuple[str, ...]]:
 
 def build_graph(crop_id: int, season_days: int = 30,
                 progress: bool = False) -> TileGraph:
-    """Reachability-forward build over (day, state) pairs."""
+    """Reachability-forward build over (day, state) nodes. The node key is
+    (day, state_key) — the same TileState on different days is a different
+    node (decay is anchored to the absolute planting day, F008)."""
     crop_name = CROP_NAMES[crop_id]
 
     key_to_id: dict[int, int] = {}
@@ -220,6 +219,7 @@ def build_graph(crop_id: int, season_days: int = 30,
 
     none_id = intern(TileState(CROP_NONE, 0, 0, 0, 0))
 
+    # node = (day, state_id) -> sim positioned at that day start
     reachable: list[dict[int, FastSim]] = [dict() for _ in range(season_days)]
     reachable[0][none_id] = _new_sim(season_days)
 
@@ -233,31 +233,28 @@ def build_graph(crop_id: int, season_days: int = 30,
                 branch = sim.clone()  # parent must stay at its day start
                 nxt_state, prod, use = _exec_chain(branch, ops, crop_name)
                 nid = intern(nxt_state)
-                if day + 1 < season_days and nid not in reachable[day + 1]:
-                    reachable[day + 1][nid] = branch
+                if day + 1 < season_days:
+                    reachable[day + 1].setdefault(nid, branch)
                 edges.setdefault((day, sid), []).append(
                     (nid, chain_id_of(ops), prod, use))
         if progress:
-            print(f"day {day}: {len(sims)} states, "
+            print(f"day {day}: {len(sims)} nodes, "
                   f"total states {len(state_list)}", flush=True)
 
     n_states = len(state_list)
-    # Canonical state ordering FIRST: sort by packed key and remap both the
-    # edge endpoints AND the (day, from_state) keys, so offsets, state_keys
-    # and edge_next all live in the same (sorted) id space.
+    # Canonical state ordering: sort by packed key (state_id_of uses
+    # binary search) and remap edge endpoints into the sorted id space.
     order = np.argsort([s.pack() for s in state_list], kind="stable")
     old_to_new = np.empty(n_states, dtype=np.int64)
     sorted_states: list[TileState] = []
     for new_id, old_id in enumerate(order):
         old_to_new[old_id] = new_id
         sorted_states.append(state_list[old_id])
-
-    total = sum(len(v) for v in edges.values())
-    # remap the (day, from_state) keys into the sorted id space too
-    edges_remapped: dict[tuple[int, int], list[tuple[int, int, tuple, tuple]]] = {}
-    for (d_old, s_old), elist in edges.items():
-        edges_remapped.setdefault((d_old, int(old_to_new[s_old])), []).extend(elist)
-    edges = edges_remapped
+    # remap the (day, from_state) node keys into the sorted id space too
+    edges = {
+        (d_old, int(old_to_new[s_old])): elist
+        for (d_old, s_old), elist in edges.items()
+    }
 
     offsets = np.zeros((season_days, n_states + 1), dtype=np.int64)
     edge_next_l: list[int] = []

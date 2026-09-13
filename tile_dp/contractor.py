@@ -1,12 +1,8 @@
 """TileContractor: backward DP over the TileGraph, all-int, numpy core.
 
-solve() reads only RAM arrays; the secretary steers via per-day integer
-price/wage vectors. total_profit and all vectors are ints (money units).
-
-Graph CSR is per (day, from_state): edge block for (day d, state s) is
-edge_offsets[d, s]:edge_offsets[d, s+1] — transitions are engine-verified
-per (state, day) because plant decay is anchored to the absolute planting
-day.
+Node = (day, state): the same TileState on different days is a different
+node (decay anchored to absolute planting day, F008). solve() reads only
+RAM arrays; the secretary steers via per-day integer price/wage vectors.
 """
 
 from __future__ import annotations
@@ -41,8 +37,6 @@ class TileContractor:
         self.g = graph
         self._n_crops = graph.edge_prod.shape[0]
         self._n_res = graph.edge_use.shape[0]
-        # the graph's crop prices at prices[crop_id]; its seed costs at
-        # wage[1] (WHEAT) or wage[2] (CARROT)
         self._price_row = int(graph.crop_id)
         self._seed_res = 1 if graph.crop_id == 0 else 2
 
@@ -63,18 +57,15 @@ class TileContractor:
         V = np.zeros((days + 1, g.n_states), dtype=np.int64)
         arg_edge = np.full((days, g.n_states), -1, dtype=np.int64)
 
-        # per-(day, state) edge blocks: build a from-state id array per day
         for d in range(days - 1, -1, -1):
             off = g.edge_offsets[d]
             counts = off[1:] - off[:-1]
             if counts.sum() == 0:
                 continue
             froms = np.repeat(np.arange(g.n_states, dtype=np.int32), counts)
-            # edge global indices for this day
             e_idx = np.concatenate(
                 [np.arange(off[s], off[s + 1]) for s in range(g.n_states)
-                 if off[s + 1] > off[s]]) if counts.sum() else np.array([],
-                                                                        dtype=np.int64)
+                 if off[s + 1] > off[s]])
             pc = int(price_crop[d])
             wl = int(wage_labor[d])
             ws = int(wage_seed[d])
