@@ -1,8 +1,13 @@
-"""TileContractor: backward DP over the TileGraph, all-int, numpy core.
+"""TileContractor: DP over the lifecycle graph, all-int, numpy core.
 
-Node = (day, state): the same TileState on different days is a different
-node (decay anchored to absolute planting day, F008). solve() reads only
-RAM arrays; the secretary steers via per-day integer price/wage vectors.
+The lifecycle graph has NO season inside it — the season layer (this DP)
+walks lifecycle restarts (harvest/clear -> NONE -> replant). solve()
+answers: given a start state and a season window, what is the best chained
+sequence of lifecycle walks, valued at the secretary's per-day prices/wages?
+
+The season DP is a simple backward pass over (season day, state): every
+state's outgoing edges are the lifecycle graph's edges at that state's
+lifecycle day (= age + first_yield_day for plants; 0 for NONE/WEED).
 """
 
 from __future__ import annotations
@@ -13,6 +18,7 @@ import numpy as np
 
 from tile_dp.chains import chain_ops
 from tile_dp.graph import TileGraph
+from tile_dp.tile_state import TileState
 
 
 @dataclass(frozen=True)
@@ -31,7 +37,7 @@ class ContractorSolution:
 
 
 class TileContractor:
-    """Backward DP over one crop's TileGraph (all-int arithmetic)."""
+    """All-int season DP chaining lifecycle walks across the window."""
 
     def __init__(self, graph: TileGraph):
         self.g = graph
@@ -39,78 +45,124 @@ class TileContractor:
         self._n_res = graph.edge_use.shape[0]
         self._price_row = int(graph.crop_id)
         self._seed_res = 1 if graph.crop_id == 0 else 2
+        g = graph
+        # per (life-day, state) edge blocks: life_day -> {state: (lo, hi)}
+        self._blocks: list[dict[int, tuple[int, int]]] = []
+        for d in range(g.life_days):
+            blocks: dict[int, tuple[int, int]] = {}
+            off = g.edge_offsets[d]
+            for s in range(g.n_states):
+                if off[s + 1] > off[s]:
+                    blocks[s] = (int(off[s]), int(off[s + 1]))
+            self._blocks.append(blocks)
+        self._prod = g.edge_prod[0].astype(np.int64)
+        self._use = g.edge_use.astype(np.int64)
+        self._states = [TileState.unpack(int(k)) for k in g.state_keys]
 
-    def solve(self, prices, wage, start_state_id: int,
-              start_day: int = 0) -> ContractorSolution:
+    def solve(self, prices, wage, start_state: TileState,
+              start_day: int = 0, horizon_days: int = 30
+              ) -> ContractorSolution:
         g = self.g
-        days = g.season_days
+        H = horizon_days
         p = {c: np.asarray(v, dtype=np.int64) for c, v in prices.items()}
         w = {r: np.asarray(v, dtype=np.int64) for r, v in wage.items()}
         price_crop = p[self._price_row]
         wage_labor = w[0]
         wage_seed = w[self._seed_res]
         wage_fert = w[3]
+        prod, use = self._prod, self._use
+        states = self._states
 
-        prod = g.edge_prod[0].astype(np.int64)          # [E]
-        use = g.edge_use.astype(np.int64)               # [4, E]
+        import kaggle_environments.envs.kaggriculture.kaggriculture as KK
+        crop_name = ["WHEAT", "CARROT", "TOMATO", "STRAWBERRY",
+                     "MELON"][int(g.crop_id)]
+        fy = KK.CROPS[crop_name]["first_yield_day"]
 
-        V = np.zeros((days + 1, g.n_states), dtype=np.int64)
-        arg_edge = np.full((days, g.n_states), -1, dtype=np.int64)
+        def life_day_of(state: TileState, t: int) -> int | None:
+            """Lifecycle-day of a state at season-day t (plant day implied:
+            t - (age + fy)); None if that history precedes the window."""
+            if state.crop_id < 0:      # NONE / WEED: lifecycle resets
+                return 0
+            plant_day = t - (state.age + fy)
+            if plant_day < start_day:
+                return None            # planted before the window: no chain
+            return state.age + fy
 
-        for d in range(days - 1, -1, -1):
-            off = g.edge_offsets[d]
-            counts = off[1:] - off[:-1]
-            if counts.sum() == 0:
-                continue
-            froms = np.repeat(np.arange(g.n_states, dtype=np.int32), counts)
-            e_idx = np.concatenate(
-                [np.arange(off[s], off[s + 1]) for s in range(g.n_states)
-                 if off[s + 1] > off[s]])
-            pc = int(price_crop[d])
-            wl = int(wage_labor[d])
-            ws = int(wage_seed[d])
-            wf = int(wage_fert[d])
-            val = (prod[e_idx] * pc
-                   - use[0][e_idx] * wl
-                   - (use[1][e_idx] + use[2][e_idx]) * ws
-                   - use[3][e_idx] * wf)
-            cand = val + V[d + 1][g.edge_next[e_idx]]
+        # backward over season days; V[t][sid] = best profit t..H-1
+        V = np.zeros((H + 1, g.n_states), dtype=np.int64)
+        choice: list[dict[int, int]] = [dict() for _ in range(H)]
 
-            best_val = np.full(g.n_states, -(1 << 62), dtype=np.int64)
-            best_edge = np.full(g.n_states, -1, dtype=np.int64)
-            starts = np.nonzero(np.diff(froms, prepend=-1))[0]
-            ends = np.nonzero(np.diff(froms, append=len(froms)))[0]
-            for k in range(len(starts)):
-                lo, hi = starts[k], ends[k]
-                s = froms[starts[k]]
-                j = lo + int(np.argmax(cand[lo:hi]))
-                best_edge[s] = e_idx[j]
-                best_val[s] = cand[j]
-            V[d] = best_val
-            arg_edge[d] = best_edge
+        for t in range(H - 1, -1, -1):
+            pc = int(price_crop[t])
+            wl = int(wage_labor[t])
+            ws = int(wage_seed[t])
+            wf = int(wage_fert[t])
+            day_choice = choice[t]
+            for sid, state in enumerate(states):
+                # life-day of the node this state represents at season day t:
+                # a state's age fixes its lifecycle day ONLY via its plant
+                # day; but the forward walker carries the actual node, so
+                # instead of inferring from age alone we index blocks by the
+                # life-day the walker is at. To keep the DP table simple we
+                # index by state and resolve the block per (t, sid) through
+                # the walker's life-day. For the backward table we compute
+                # V for EVERY plausible life-day by storing per state the
+                # max over its edges at its OWN lifecycle day (age+fy).
+                if state.crop_id < 0:
+                    ld = 0
+                else:
+                    ld = state.age + fy
+                    if not (0 <= ld < g.life_days):
+                        V[t][sid] = 0
+                        continue
+                block = self._blocks[ld].get(sid)
+                if block is None:
+                    # state not alive at this lifecycle day: idle value
+                    V[t][sid] = V[t + 1][sid]
+                    continue
+                lo, hi = block
+                best_v = -(1 << 62)
+                best_e = -1
+                for e in range(lo, hi):
+                    nid = int(g.edge_next[e])
+                    nxt = states[nid]
+                    immediate = (int(prod[e]) * pc
+                                 - int(use[0][e]) * wl
+                                 - (int(use[1][e]) + int(use[2][e])) * ws
+                                 - int(use[3][e]) * wf)
+                    v = immediate + V[t + 1][nid]
+                    if v > best_v:
+                        best_v, best_e = v, e
+                V[t][sid] = best_v
+                day_choice[sid] = best_e
 
-        # forward recovery
+        # forward recovery: walk the season, carrying (state, life-day)
         schedule: list[DailyPlan] = []
-        prod_total = np.zeros((days, self._n_crops), dtype=np.int32)
-        use_total = np.zeros((days, self._n_res), dtype=np.int32)
-        s = start_state_id
+        prod_total = np.zeros((H, self._n_crops), dtype=np.int32)
+        use_total = np.zeros((H, self._n_res), dtype=np.int32)
+        s = g.state_id_of(start_state)
+        state = start_state
         total = 0
-        for d in range(start_day, days):
-            e = int(arg_edge[d][s])
+        for t in range(start_day, H):
+            e = choice[t].get(s, -1)
             if e < 0:
-                schedule.append(DailyPlan(day=d, chain_id=0,
+                schedule.append(DailyPlan(day=t, chain_id=0,
                                           chain=chain_ops(0)))
+                # idle: nothing changes for NONE/WEED; plants decay on
+                # their own only through edges, so idling a plant outside
+                # its edges cannot happen in a well-formed graph.
                 continue
-            schedule.append(DailyPlan(day=d, chain_id=int(g.edge_chain[e]),
+            schedule.append(DailyPlan(day=t, chain_id=int(g.edge_chain[e]),
                                       chain=chain_ops(int(g.edge_chain[e]))))
-            prod_total[d] = g.edge_prod[:, e]
-            use_total[d] = g.edge_use[:, e]
-            total += int((int(g.edge_prod[0][e]) * int(price_crop[d]))
-                         - (int(g.edge_use[0][e]) * int(wage_labor[d]))
-                         - ((int(g.edge_use[1][e]) + int(g.edge_use[2][e]))
-                            * int(wage_seed[d]))
-                         - (int(g.edge_use[3][e]) * int(wage_fert[d])))
+            prod_total[t] = g.edge_prod[:, e]
+            use_total[t] = g.edge_use[:, e]
+            total += int((int(prod[e]) * int(price_crop[t]))
+                         - (int(use[0][e]) * int(wage_labor[t]))
+                         - ((int(use[1][e]) + int(use[2][e]))
+                            * int(wage_seed[t]))
+                         - (int(use[3][e]) * int(wage_fert[t])))
             s = int(g.edge_next[e])
+            state = states[s]
 
         return ContractorSolution(
             schedule=tuple(schedule), production=prod_total,

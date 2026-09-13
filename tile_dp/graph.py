@@ -1,13 +1,14 @@
-"""TileGraph: the per-crop day-transition graph, built BY THE ENGINE (R003).
+"""tile_dp: lifecycle graphs for the TileContractor.
 
-Node identity = (day, TileState) — the same tile situation on different
-days is a DIFFERENT node, because the engine anchors plant decay to the
-absolute planting day (F008): a carrot alive at day 3 and an identical-
-looking carrot alive at day 4 have different remaining lifespans. Edges
-are grouped per (day, from_state) and every edge is a daily chain executed
-on a FastSim clone positioned at that exact (day, state) (R003 — the
-interpreter is the only rule source).
+Per Hossein's correction (2026-09): the graph is PER-CROP-LIFECYCLE, not
+per-season. A state is what the tile looks like AT DAY START (hour 0); an
+edge = one daily action chain applied by the workers, then idle until the
+next day start. Age (relative to first harvest day) is the only time
+coordinate — no absolute days, no season inside the graph. Chaining
+lifecycles across the 30-day season (harvest -> NONE -> replant, weed ->
+DIG -> NONE) happens in the secretary/DP layer by walking this graph.
 
+Node = TileState at a day start; edges = engine-verified chains (R003).
 Numeric core: numpy int arrays; strings only at the boundary (DESIGN.md).
 """
 
@@ -32,27 +33,33 @@ from tile_dp.tile_state import (CROP_ID, CROP_NAMES, CROP_NONE, CROP_WEED,
 
 N_RESOURCE = len(RESOURCE_NAMES)
 N_TURNS_PER_DAY = 24
-ENGINE_TAG = "kaggriculture-tile-dp-v2"
+ENGINE_TAG = "kaggriculture-tile-dp-v3-lifecycle"
 
 
 @dataclass(frozen=True)
 class TileGraph:
-    """One crop's day-transition graph in numpy int arrays.
+    """One crop's LIFECYCLE transition graph in numpy int arrays.
 
-    Nodes are (day, state) pairs; state_keys holds the distinct TileState
-    pack keys. The edge block for (day d, state s) is
-    edge_offsets[d, s]:edge_offsets[d, s+1] (empty where unreachable).
+    A lifecycle = the plant's full existence: planting day through the day
+    after it dies (plus one clear day). The day axis here is LIFECYCLE DAY
+    (0 = planting day), NOT season day. The season layer (secretary/DP)
+    walks this graph, restarting at NONE whenever the tile is harvested or
+    cleared — chaining lifecycles is the season layer's job.
+
+    Edge block for (lifecycle day d, state s):
+        edge_offsets[d, s]:edge_offsets[d, s+1]
+    (empty where a state is unreachable on that lifecycle day).
     """
 
     crop_id: int
-    season_days: int
+    life_days: int                      # lifecycle length (incl. clear day)
     n_states: int
-    state_keys: np.ndarray            # int64[n_states] packed TileState keys
-    edge_offsets: np.ndarray          # int64[days, states+1]
-    edge_next: np.ndarray             # int32[E]  to-state id (same day+1)
-    edge_chain: np.ndarray            # int16[E]
-    edge_prod: np.ndarray             # int32[1, E]  (v1: the graph's crop)
-    edge_use: np.ndarray              # int32[N_RESOURCE, E]
+    state_keys: np.ndarray              # int64[n_states] packed TileState
+    edge_offsets: np.ndarray            # int64[life_days, states+1]
+    edge_next: np.ndarray               # int32[E]
+    edge_chain: np.ndarray              # int16[E]
+    edge_prod: np.ndarray               # int32[1, E]
+    edge_use: np.ndarray                # int32[N_RESOURCE, E]
     chain_ops: tuple[tuple[str, ...], ...]
     engine_tag: str
 
@@ -77,7 +84,7 @@ class TileGraph:
         path.parent.mkdir(parents=True, exist_ok=True)
         np.savez_compressed(
             path,
-            crop_id=self.crop_id, season_days=self.season_days,
+            crop_id=self.crop_id, life_days=self.life_days,
             n_states=self.n_states,
             state_keys=self.state_keys, edge_offsets=self.edge_offsets,
             edge_next=self.edge_next, edge_chain=self.edge_chain,
@@ -94,7 +101,7 @@ class TileGraph:
                              "rebuild the cache")
         return cls(
             crop_id=int(data["crop_id"]),
-            season_days=int(data["season_days"]),
+            life_days=int(data["life_days"]),
             n_states=int(data["n_states"]),
             state_keys=data["state_keys"],
             edge_offsets=data["edge_offsets"],
@@ -108,8 +115,8 @@ class TileGraph:
 
 # --------------------------------------------------------------------- build
 
-def _new_sim(season_days: int) -> FastSim:
-    return FastSim({"episodeSteps": (season_days + 3) * 24, "seed": 4242})
+def _new_sim(life_days: int) -> FastSim:
+    return FastSim({"episodeSteps": (life_days + 3) * 24, "seed": 4242})
 
 
 def _act(farmer, market=None):
@@ -135,10 +142,7 @@ def _exec_chain(sim: FastSim, ops: tuple[str, ...], crop_name: str
             sim.step([_act(["PASS"], [["BUY_SEED", crop, 1]]),
                       _act(["PASS"])])
             sim.step([_act(["PLANT", crop]), _act(["PASS"])])
-            use.append(({"WHEAT": RES_SEED_WHEAT, "CARROT": RES_SEED_CARROT,
-                         "TOMATO": RES_SEED_TOMATO,
-                         "STRAWBERRY": RES_SEED_STRAWBERRY,
-                         "MELON": RES_SEED_MELON}[crop], 1))
+            use.append((_SEED_RES[crop], 1))
             planted = True
         elif op == "FERTILIZE":
             sim.step([_act(["PASS"], [["BUY_PRODUCT", "FERTILIZER", 1]]),
@@ -162,7 +166,7 @@ def _exec_chain(sim: FastSim, ops: tuple[str, ...], crop_name: str
         sim.step([_act(["PASS"]), _act(["PASS"])])
 
     if harvest_units:
-        production = ((0, harvest_units),)
+        production = ((0, harvest_units),)  # crop_id 0 == the graph's crop
 
     obs = sim.observations()
     me = obs[0]["farms"][0]
@@ -171,15 +175,25 @@ def _exec_chain(sim: FastSim, ops: tuple[str, ...], crop_name: str
 
     # Planting chains decode to the CANONICAL next-day state: bought seed,
     # planted and watered today → age = 1 - first_yield_day, consec=0,
-    # yield=1, no fertilizer yet.
+    # yield = base (1 for one-shot, 0 for ongoing), no fertilizer yet.
     if planted:
         spec = K.CROPS[crop_name]
+        base_yield = 0 if spec.get("ongoing") else 1
         nxt = TileState(CROP_ID[crop_name], 1 - spec["first_yield_day"],
-                        0, 0, 1)
+                        0, 0, base_yield)
         return nxt, production, tuple(use)
 
     nxt = decode_tile(tile, obs[0]["day"])
     return nxt, production, tuple(use)
+
+
+_SEED_RES = {
+    "WHEAT": RES_SEED_WHEAT,
+    "CARROT": RES_SEED_CARROT,
+    "TOMATO": RES_SEED_TOMATO,
+    "STRAWBERRY": RES_SEED_STRAWBERRY,
+    "MELON": RES_SEED_MELON,
+}
 
 
 def _chain_for_state(state: TileState, crop_name: str) -> list[tuple[str, ...]]:
@@ -198,12 +212,13 @@ def _chain_for_state(state: TileState, crop_name: str) -> list[tuple[str, ...]]:
     return out
 
 
-def build_graph(crop_id: int, season_days: int = 30,
-                progress: bool = False) -> TileGraph:
-    """Reachability-forward build over (day, state) nodes. The node key is
-    (day, state_key) — the same TileState on different days is a different
-    node (decay is anchored to the absolute planting day, F008)."""
+def build_graph(crop_id: int, progress: bool = False) -> TileGraph:
+    """Build ONE crop's lifecycle graph (day axis = lifecycle day)."""
     crop_name = CROP_NAMES[crop_id]
+    spec = K.CROPS[crop_name]
+    # lifecycle: planting day (0) .. death night, +1 clear day for the
+    # weed/dig tail. death night = max_yield_day + 1 → life_days = that + 1.
+    life_days = spec["max_yield_day"] + 3
 
     key_to_id: dict[int, int] = {}
     state_list: list[TileState] = []
@@ -219,13 +234,12 @@ def build_graph(crop_id: int, season_days: int = 30,
 
     none_id = intern(TileState(CROP_NONE, 0, 0, 0, 0))
 
-    # node = (day, state_id) -> sim positioned at that day start
-    reachable: list[dict[int, FastSim]] = [dict() for _ in range(season_days)]
-    reachable[0][none_id] = _new_sim(season_days)
+    reachable: list[dict[int, FastSim]] = [dict() for _ in range(life_days)]
+    reachable[0][none_id] = _new_sim(life_days)
 
     edges: dict[tuple[int, int], list[tuple[int, int, tuple, tuple]]] = {}
 
-    for day in range(season_days):
+    for day in range(life_days):
         sims = reachable[day]
         for sid, sim in list(sims.items()):
             state = state_list[sid]
@@ -233,36 +247,35 @@ def build_graph(crop_id: int, season_days: int = 30,
                 branch = sim.clone()  # parent must stay at its day start
                 nxt_state, prod, use = _exec_chain(branch, ops, crop_name)
                 nid = intern(nxt_state)
-                if day + 1 < season_days:
+                if day + 1 < life_days:
                     reachable[day + 1].setdefault(nid, branch)
                 edges.setdefault((day, sid), []).append(
                     (nid, chain_id_of(ops), prod, use))
         if progress:
-            print(f"day {day}: {len(sims)} nodes, "
+            print(f"life-day {day}: {len(sims)} nodes, "
                   f"total states {len(state_list)}", flush=True)
 
     n_states = len(state_list)
     # Canonical state ordering: sort by packed key (state_id_of uses
-    # binary search) and remap edge endpoints into the sorted id space.
+    # binary search) and remap edge endpoints + node keys into it.
     order = np.argsort([s.pack() for s in state_list], kind="stable")
     old_to_new = np.empty(n_states, dtype=np.int64)
     sorted_states: list[TileState] = []
     for new_id, old_id in enumerate(order):
         old_to_new[old_id] = new_id
         sorted_states.append(state_list[old_id])
-    # remap the (day, from_state) node keys into the sorted id space too
     edges = {
         (d_old, int(old_to_new[s_old])): elist
         for (d_old, s_old), elist in edges.items()
     }
 
-    offsets = np.zeros((season_days, n_states + 1), dtype=np.int64)
+    offsets = np.zeros((life_days, n_states + 1), dtype=np.int64)
     edge_next_l: list[int] = []
     edge_chain_l: list[int] = []
     edge_prod_l: list[int] = []
     edge_use_l: list[list[int]] = [[] for _ in range(N_RESOURCE)]
 
-    for d in range(season_days):
+    for d in range(life_days):
         for s in range(n_states):
             offsets[d, s] = len(edge_next_l)
             for (nxt, ci, prod, use) in edges.get((d, s), []):
@@ -285,7 +298,7 @@ def build_graph(crop_id: int, season_days: int = 30,
     edge_use = np.array(edge_use_l, dtype=np.int32)
 
     return TileGraph(
-        crop_id=crop_id, season_days=season_days, n_states=n_states,
+        crop_id=crop_id, life_days=life_days, n_states=n_states,
         state_keys=np.array([s.pack() for s in sorted_states], dtype=np.int64),
         edge_offsets=offsets, edge_next=edge_next, edge_chain=edge_chain,
         edge_prod=edge_prod, edge_use=edge_use,

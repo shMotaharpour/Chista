@@ -165,15 +165,15 @@ def _flat_wage(days: int, labor: int, sw: int, sc: int, fert: int
 def test_dp_prefers_harvest_over_abandon() -> None:
     g = build_graph(CROP_ID["WHEAT"])
     c = TileContractor(g)
-    sid = g.state_id_of(TileState(-1, 0, 0, 0, 0))
+    none_state = TileState(-1, 0, 0, 0, 0)
 
     sol = c.solve(_flat_prices(30, 30, 40), _flat_wage(30, 1, 10, 20, 2),
-                  start_state_id=sid, start_day=0)
+                  start_state=none_state, start_day=0, horizon_days=30)
     assert sol.total_profit > 0
     assert sol.production[:, 0].sum() > 0
 
     sol0 = c.solve(_flat_prices(30, 0, 0), _flat_wage(30, 1, 10, 20, 2),
-                   start_state_id=sid, start_day=0)
+                   start_state=none_state, start_day=0, horizon_days=30)
     assert sol0.total_profit <= 0
 
 
@@ -183,13 +183,13 @@ def test_dp_respects_harvest_timing() -> None:
     early costs labor, so the DP replants on the worthwhile schedule.)"""
     g = build_graph(CROP_ID["WHEAT"])
     c = TileContractor(g)
-    sid = g.state_id_of(TileState(-1, 0, 0, 0, 0))
+    none_state = TileState(-1, 0, 0, 0, 0)
 
     prices = _flat_prices(30, 10, 10)
     prices[0][:4] = 0
     prices[0][4:] = 500
     sol = c.solve(prices, _flat_wage(30, 1, 10, 20, 2),
-                  start_state_id=sid, start_day=0)
+                  start_state=none_state, start_day=0, horizon_days=30)
     assert sol.production[:, 0].sum() > 0
     days = np.nonzero(sol.production[:, 0])[0]
     assert (days >= 4).all(), f"harvested on worthless days: {days}"
@@ -198,10 +198,11 @@ def test_dp_respects_harvest_timing() -> None:
 def test_dp_int_exactness() -> None:
     g = build_graph(CROP_ID["CARROT"])
     c = TileContractor(g)
-    sid = g.state_id_of(TileState(-1, 0, 0, 0, 0))
+    none_state = TileState(-1, 0, 0, 0, 0)
     prices = _flat_prices(30, 7, 11)
     wage = _flat_wage(30, 2, 13, 17, 3)
-    sol = c.solve(prices, wage, start_state_id=sid, start_day=0)
+    sol = c.solve(prices, wage, start_state=none_state, start_day=0,
+                  horizon_days=30)
     assert isinstance(sol.total_profit, int)
     labor = int(sol.resource_use[:, 0].sum())
     seed = int(sol.resource_use[:, 1].sum() + sol.resource_use[:, 2].sum())
