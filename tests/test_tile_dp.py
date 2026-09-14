@@ -13,7 +13,8 @@ Contracts under test:
 
 from __future__ import annotations
 
-from tile_dp.chains import CHAIN_NAMES, chain_ops, chains_for
+from tile_dp.chains import (CHAIN_NAMES, NO_ACT, chain_labor, chain_ops,
+                            chains_for)
 from tile_dp.graph import TileGraph, build_graph
 from tile_dp.tile_state import TileState, decode_tile
 
@@ -82,7 +83,7 @@ def test_dry_consec1_pass_dies() -> None:
             lo, hi = g.edges_of(i)
             for e in range(lo, hi):
                 cid = int(g.edge_chain[e])
-                if chain_ops(cid) == ("PASS",):
+                if chain_ops(cid) == (NO_ACT,):
                     nxt = g.state_of(int(g.edge_next[e]))
                     assert nxt.kind != "PLANT", (s.describe(), nxt.describe())
 
@@ -133,6 +134,29 @@ def test_no_zero_cost_self_loops() -> None:
             assert not (nid == i and total_use == 0
                         and int(g.edge_prod[e]) == 0), (
                 f"zero-cost self-loop on state {i}")
+
+
+def test_chain_one_day_contract() -> None:
+    """v13: NO_ACT costs 0 hours; every daily chain fits exactly one day."""
+    from tile_dp.graph import LIFE_DAYS, _exec_chain, _new_sim
+
+    assert chain_labor((NO_ACT,)) == 0
+    assert chain_labor(("PLANT", "WATER")) == 2
+    assert chain_labor(("BUILD", "PLACE", "FEED")) == 3
+    for ops in list(chains_for("NONE")) + list(chains_for("PLANT", 1)):
+        sim = _new_sim(LIFE_DAYS["CARROT"])
+        day0 = int(sim.observations()[0]["day"])
+        hops: list[int] = []
+        raw = sim.step
+
+        def wrap(actions, *a, **k):
+            hops.append(1)
+            return raw(actions, *a, **k)
+
+        sim.step = wrap
+        _exec_chain(sim, ops, "CARROT", "crop")
+        assert len(hops) == 24, (ops, len(hops))
+        assert int(sim.observations()[0]["day"]) == day0 + 1, ops
 
 
 if __name__ == "__main__":

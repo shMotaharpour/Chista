@@ -31,7 +31,7 @@ from tile_dp.tile_state import (KIND_ANIMAL, KIND_EMPTY_STRUCTURE, KIND_NONE,
                                 KIND_PLANT, KIND_WEED, TileState,
                                 crop_age_origin, decode_tile)
 
-ENGINE_TAG = "tile-dp-v12"
+ENGINE_TAG = "tile-dp-v13"
 LIFE_DAYS = {
     "WHEAT": 7, "CARROT": 6, "TOMATO": 14, "STRAWBERRY": 19, "MELON": 15,
     "GOOSE": 10, "COW": 12, "SHEEP": 12,
@@ -121,29 +121,54 @@ def _use_vector(use: list[tuple[str, int]]) -> list[int]:
     return vec
 
 
+from .chains import MARKET_OPS, NO_ACT, RES_ANIMAL, chain_labor  # v13 model
+
+
+class ChainSpansDays(RuntimeError):
+    """A daily chain needed more than one game day (cost-model bug)."""
+
+
+class ChainNotRealised(RuntimeError):
+    """A chain's op did not land on the tile (the engine refused it)."""
+
+
 def _exec_chain(sim: FastSim, ops: tuple[str, ...], entity: str,
                 entity_kind: str) -> tuple[TileState, dict, list]:
     """Execute one daily chain; return (next state, outputs, resources).
 
-    F030: market purchases land one turn BEFORE the unit op needing
-    them. FEED's wheat: BUY_PRODUCT WHEAT (market) + PICKUP + FEED = 3
-    turns, 1 wheat consumed."""
-    labor = len(ops)
+    v13 contract: labour = worker ops only (market buys are the market's
+    action; PICKUPs belong to the secretary layer). NO_ACT = the worker does
+    nothing on this tile while the day still passes. One chain = one day: the
+    sim is stepped until the day rolls over, and a chain that would span more
+    than one day raises ChainSpansDays instead of silently bleeding into day+1.
+    """
+    day0 = int(sim.observations()[0]["day"])
+    labor = chain_labor(ops)
     planted = False
     placed = False
+    built = False
     outputs: dict = {}
     use: list[tuple[str, int]] = [(RES_LABOR, labor)]
 
     for op in ops:
-        if op == "BUILD":
-            # Buy the animal (market) + build the structure + place the
-            # animal — one day's work for an empty-structure/none tile.
-            structure = _STRUCTURE_OF[entity]
+        if op in MARKET_OPS:
+            continue        # the market buys it inside the op that needs it
+        if op == NO_ACT:
+            # Nothing on this tile: the worker idles, the day still passes.
+            sim.step([_act(["PASS"]), _act(["PASS"])])
+        elif op == "BUILD":
+            # BUILD = one worker action: a NONE tile becomes a structure.
+            # The animal itself is bought later (by PLACE, secretary stand-in).
+            sim.step([_act([f"BUILD_{_STRUCTURE_OF[entity]}"]),
+                      _act(["PASS"])])
+            built = True
+        elif op in ("PLACE", "PLACE_ANIMAL"):
+            # Secretary stand-in: buy the animal, carry it, place it.
             sim.step([_act(["PASS"], [["BUY_ANIMAL", entity, 1]]),
                       _act(["PASS"])])
             sim.step([_act(["PICKUP", entity, 1]), _act(["PASS"])])
-            sim.step([_act([f"BUILD_{structure}"]), _act(["PASS"])])
             sim.step([_act(["PLACE", entity]), _act(["PASS"])])
+            use.append((RES_ANIMAL, 1))
             placed = True
         elif op == "PLANT":
             sim.step([_act(["PASS"], [["BUY_SEED", entity, 1]]),
@@ -157,7 +182,6 @@ def _exec_chain(sim: FastSim, ops: tuple[str, ...], entity: str,
             sim.step([_act(["PICKUP", "FERTILIZER", 1]), _act(["PASS"])])
             sim.step([_act(["FERTILIZE"]), _act(["PASS"])])
             use.append((RES_FERTILIZER, 1))
-            labor += 1
         elif op == "HARVEST":
             obs = sim.observations()
             me = obs[0]["farms"][0]
@@ -172,7 +196,6 @@ def _exec_chain(sim: FastSim, ops: tuple[str, ...], entity: str,
             sim.step([_act(["PICKUP", "WHEAT", 1]), _act(["PASS"])])
             sim.step([_act(["FEED"]), _act(["PASS"])])
             use.append((RES_WHEAT, 1))
-            labor += 2
         elif op == "COLLECT_FERTILIZER":
             obs = sim.observations()
             me = obs[0]["farms"][0]
@@ -185,36 +208,56 @@ def _exec_chain(sim: FastSim, ops: tuple[str, ...], entity: str,
         else:  # WATER, CARE, DIG, PASS
             sim.step([_act([op]), _act(["PASS"])])
 
-    for _ in range(max(0, N_TURNS_PER_DAY - labor)):
+    # ---- one chain = one day: fill the day, then verify the boundary ------
+    steps = 0
+    while int(sim.observations()[0]["day"]) == day0 and not sim.done:
         sim.step([_act(["PASS"]), _act(["PASS"])])
+        steps += 1
+        if steps > N_TURNS_PER_DAY:
+            raise ChainSpansDays(ops, entity)
+    if int(sim.observations()[0]["day"]) > day0 + 1:
+        raise ChainSpansDays(ops, entity)
 
     obs = sim.observations()
     me = obs[0]["farms"][0]
     fx, fy = me["farmer"]
     tile = me["tiles"][fy][fx]
 
+    actual = decode_tile(tile, obs[0]["day"])
+    expect: str | None = None
     if planted:
         spec = K.CROPS[entity]
         base = 0 if spec.get("ongoing") else 1
         nxt = TileState("PLANT", entity, None, None,
                         1 - crop_age_origin(spec), 0, 0, 0, 0, base)
-        return nxt, outputs, use
-    if placed:
+        expect = "PLANT"
+    elif placed:
         spec = K.ANIMALS[entity]
         nxt = TileState("ANIMAL", None, entity,
                         _STRUCTURE_OF[entity],
                         1 - spec["first_yield_day"], 0, 0, 0, 0, 0)
-        return nxt, outputs, use
+        expect = "ANIMAL"
+    elif built:
+        # BUILD alone leaves an empty structure for the next animal.
+        nxt = TileState("EMPTY_STRUCTURE", None, None,
+                        _STRUCTURE_OF[entity], 0, 0, 0, 0, 0, 0)
+        expect = "EMPTY_STRUCTURE"
+    else:
+        nxt = actual
 
-    nxt = decode_tile(tile, obs[0]["day"])
+    if expect is not None and actual.kind != expect:
+        # The op did not land on the tile: never trust a chain that the engine
+        # silently refused (blocked prerequisite, no stock, wrong tile ...).
+        raise ChainNotRealised(ops, entity, actual.kind)
     return nxt, outputs, use
 
 
 def _replay_crop(sim: FastSim, state: TileState, entity: str) -> None:
     """Replay the canonical history that lands a CROP at `state` at a
-    day start: planted day 0, watered every day, fert on the day implied
-    by fert_left (PICKUP + FERTILIZE that day — the nightly auto-drop
-    returns items to the shed)."""
+    day start: planted day 0, watered every day except the node's own dry
+    streak (the last `consec` days), fert on the day implied by fert_left
+    (PICKUP + FERTILIZE that day — the nightly auto-drop returns items to
+    the shed)."""
     def act(f, m=None):
         return {"farmer": f, "hands": [], "market": m or []}
 
@@ -240,7 +283,11 @@ def _replay_crop(sim: FastSim, state: TileState, entity: str) -> None:
                 sim.step([act(["PICKUP", "FERTILIZER", 1]), act(["PASS"])])
                 sim.step([act(["FERTILIZE"]), act(["PASS"])])
                 fert_done = True
-            sim.step([act(["WATER"]), act(["PASS"])])
+            # Reproduce the node's dry streak: the last `consec` days before
+            # the node's day start were not watered.
+            dry_today = state.consec > 0 and cur >= today - state.consec
+            if not dry_today:
+                sim.step([act(["WATER"]), act(["PASS"])])
 
         obs = sim.observations()
         while obs[0]["day"] == cur and not sim.done:
@@ -279,13 +326,29 @@ def _replay_animal(sim: FastSim, state: TileState, entity: str) -> None:
             break
 
 
+def _replay_structure(sim: FastSim, entity: str) -> None:
+    """Replay an EMPTY_STRUCTURE tile: the structure is built on day 0 and the
+    tile is then left alone (the structure does not age)."""
+    def act(f, m=None):
+        return {"farmer": f, "hands": [], "market": m or []}
+
+    sim.step([act([f"BUILD_{_STRUCTURE_OF[entity]}"]), act(["PASS"])])
+    obs = sim.observations()
+    cur = int(obs[0]["day"])
+    while obs[0]["day"] == cur and not sim.done:
+        sim.step([act(["PASS"]), act(["PASS"])])
+        obs = sim.observations()
+
+
 def _replay_node(sim: FastSim, state: TileState, entity: str,
                  entity_kind: str) -> None:
     if state.kind == "PLANT":
         _replay_crop(sim, state, entity)
     elif state.kind == "ANIMAL":
         _replay_animal(sim, state, entity)
-    # NONE / WEED / EMPTY_STRUCTURE: fresh sim (day 0, nothing placed)
+    elif state.kind == "EMPTY_STRUCTURE":
+        _replay_structure(sim, entity)
+    # NONE / WEED: fresh sim (day 0, nothing placed)
 
 
 def build_graph(entity: str, progress: bool = False) -> TileGraph:
@@ -329,7 +392,14 @@ def build_graph(entity: str, progress: bool = False) -> TileGraph:
             try:
                 nxt_state, outputs, use = _exec_chain(
                     branch, ops, entity, entity_kind)
-            except Exception:
+            except (ChainSpansDays, ChainNotRealised):
+                # Loud on purpose: a chain that cannot be realised inside one
+                # day (or whose op the engine refused) must be investigated.
+                raise
+            except Exception as exc:
+                if progress:
+                    print(f"  {entity}: chain {ops} skipped: {exc!r}",
+                          flush=True)
                 continue
             nid = intern(nxt_state)
             if nid not in visited:
