@@ -3,8 +3,12 @@ animals. Independent state dims (no coupling — engine-verified).
 
 Crops: (crop, age, consec, fert_left, yield)
 Animals: (animal, age, unfed, care_bank, yield)
-Kinds: NONE | WEED | PLANT | ANIMAL | EMPTY_STRUCTURE (coop/pasture with
-no animal — PLACE a new animal without DIG).
+Kinds: NONE | WEED | PLANT | ANIMAL | EMPTY_COOP | EMPTY_PASTURE (a structure
+with no animal - PLACE a new animal without DIG). The two empty structures are
+separate kinds (2026-09-14): only a COOP holds a GOOSE and only a PASTURE holds
+a COW/SHEEP, and BUILD_COOP / BUILD_PASTURE need a NONE tile (they refuse any
+other tile) while DIG turns a plant, a weed or an empty structure back into
+NONE (kaggriculture.py:484-503).
 
 Age origins (Hossein's convention, 2026-09-14):
 - one-shot crop: age 0 = START OF THE GOLDEN WINDOW = (max_yield_day + 1) // 2;
@@ -29,14 +33,28 @@ KIND_NONE = "NONE"
 KIND_WEED = "WEED"
 KIND_PLANT = "PLANT"
 KIND_ANIMAL = "ANIMAL"
-KIND_EMPTY_STRUCTURE = "EMPTY_STRUCTURE"
+# An empty structure is its own kind per structure type (decision 2026-09-14):
+# a COOP with no animal and a PASTURE with no animal differ in what they can
+# PLACE (GOOSE vs COW/SHEEP), so they are separate graph nodes.
+KIND_EMPTY_COOP = "EMPTY_COOP"
+KIND_EMPTY_PASTURE = "EMPTY_PASTURE"
+EMPTY_KINDS: tuple[str, ...] = (KIND_EMPTY_COOP, KIND_EMPTY_PASTURE)
+EMPTY_KIND_OF_STRUCTURE: dict[str, str] = {"COOP": KIND_EMPTY_COOP,
+                                           "PASTURE": KIND_EMPTY_PASTURE}
+KIND_CODES: tuple[str, ...] = (KIND_NONE, KIND_WEED, KIND_PLANT, KIND_ANIMAL,
+                               KIND_EMPTY_COOP, KIND_EMPTY_PASTURE)
 
-CROP_NAMES: tuple[str, ...] = ("WHEAT", "CARROT", "TOMATO", "STRAWBERRY",
-                               "MELON")
-ANIMAL_NAMES: tuple[str, ...] = ("GOOSE", "COW", "SHEEP")
+# Name vocabulary, read from the engine tables themselves (2026-09-14): a crop
+# or animal added to kaggriculture.py widens the packed key by itself instead
+# of silently colliding with an existing name code.
+CROP_NAMES: tuple[str, ...] = tuple(K.CROPS)
+ANIMAL_NAMES: tuple[str, ...] = tuple(K.ANIMALS)
 
-# Engine step granularity: one day is 24 steps. The single definition in
-# tile_dp: graph.py imports TURNS_PER_DAY from here (v16).
+# Engine step granularity: `turns_per_day` of the interpreter, whose own
+# default is 24 (kaggriculture.py:864, `get(cfg, "turnsPerDay", 24)`); the
+# engine stamps `max_lifespan_step` with it, so the decoder below compares
+# engine steps against it. A run that overrides `turnsPerDay` breaks this
+# constant (TODO: read the run's own configuration).
 TURNS_PER_DAY = 24
 
 # Fixed vocabulary of the name fields in `pack` (crops, then animals, then the
@@ -55,11 +73,64 @@ def crop_age_origin(spec: dict) -> int:
     return (int(spec["max_yield_day"]) + 1) // 2
 
 
+def crop_last_day(spec: dict) -> int:
+    """Last day of life on which a crop is still a PLANT (engine table).
+
+    one-shot: the harvest deadline itself, the night after it the tile is WEED
+    (kaggriculture.py:224). ongoing: the last production day, max_yield_day +
+    (max_yield - 1) * interval (kaggriculture.py:789-801).
+    """
+    if spec["ongoing"]:
+        return (int(spec["max_yield_day"])
+                + (int(spec["max_yield"]) - 1) * max(1, int(spec["interval"])))
+    return int(spec["max_yield_day"])
+
+
+# --- packed tile key (2026-09-14) ---
+# Widths COMPUTED from the table or constant that defines the range, never
+# typed in; shifts are cumulative and pack() range-checks every field, so a
+# too-wide value raises instead of spilling into its neighbour.
+_DRY_LIMIT = 2      # engine: a second dry night makes the tile WEED; a second
+                    # unfed night makes the animal escape (lines 783, 817);
+                    # verify_engine_constants() re-checks both live
+_FERT_DAYS = 3      # engine: a dose covers its own day plus two more
+_CROP_SPECS = tuple(K.CROPS.values())
+_AGE_LO = -max(crop_age_origin(s) for s in _CROP_SPECS)
+_AGE_HI = max(crop_last_day(s) - crop_age_origin(s) for s in _CROP_SPECS)
+_YIELD_MAX = max([int(s["max_yield"]) for s in _CROP_SPECS]
+                 + [int(s["max_held"]) for s in K.ANIMALS.values()])
+_CARE_MAX = max(int(s["max_held"]) for s in K.ANIMALS.values())
+_NAME_MAX = len(_VOCAB)
+_KIND_MAX = len(KIND_CODES) - 1
+AGE_BIAS = -_AGE_LO
+
+
+def _bits(hi: int) -> int:
+    """Bits needed for the range 0..hi (at least one)."""
+    return max(1, int(hi).bit_length())
+
+
+KEY_FIELDS: tuple[tuple[str, int], ...] = (
+    ("yield_units", _bits(_YIELD_MAX)),
+    ("fert_left", _bits(_FERT_DAYS - 1)),
+    ("consec", _bits(_DRY_LIMIT - 1)),
+    ("unfed", _bits(_DRY_LIMIT - 1)),
+    ("care_bank", _bits(_CARE_MAX)),
+    ("age", _bits(_AGE_HI + AGE_BIAS)),
+    ("crop_code", _bits(_NAME_MAX)),
+    ("animal_code", _bits(_NAME_MAX)),
+    ("structure_code", _bits(_NAME_MAX)),
+    ("kind_code", _bits(_KIND_MAX)),
+)
+KEY_BITS = sum(width for _, width in KEY_FIELDS)
+
+
 @dataclass(frozen=True)
 class TileState:
     """Day-start state of ONE tile (any crop/animal v2)."""
 
-    kind: str                     # NONE | WEED | PLANT | ANIMAL | EMPTY_STRUCTURE
+    kind: str                     # NONE | WEED | PLANT | ANIMAL | EMPTY_COOP
+                                  # | EMPTY_PASTURE
     crop: str | None              # plant crop name
     animal: str | None            # animal species name
     structure: str | None         # COOP | PASTURE (for animal/empty)
@@ -71,52 +142,48 @@ class TileState:
     yield_units: int              # 0..cap
 
     def pack(self) -> int:
-        kind_code = {"NONE": 0, "WEED": 1, "PLANT": 2, "ANIMAL": 3,
-                     "EMPTY_STRUCTURE": 4}[self.kind]
-        crop_code = _name_code(self.crop)
-        animal_code = _name_code(self.animal)
-        struct_code = _name_code(self.structure)
-        # Bit layout (50 of 64 bits used): yield_units 0..7, fert_left 8..10,
-        # consec 11..12, unfed 13..14, care_bank 15..20, age+64 21..28,
-        # crop 29..33, animal 34..38, structure 39..44, kind 47..49.
-        # KNOWN LIMITATION (documented, owner 2026-09-14: guard not wanted yet):
-        # no range check - a value wider than its field spills silently into the
-        # next one, so two different states could share a key; only the engine's
-        # own ranges keep this safe today.
-        return (int(self.yield_units)
-                | (self.fert_left << 8)
-                | (self.consec << 11)
-                | (self.unfed << 13)
-                | (self.care_bank << 15)
-                | ((self.age + 64) << 21)
-                | (crop_code << 29)
-                | (animal_code << 34)
-                | (struct_code << 39)
-                | (kind_code << 47))
+        # Layout and widths live in KEY_FIELDS: the shift of every field is
+        # derived from the widths, never hand-written, so fields cannot overlap.
+        key = 0
+        shift = 0
+        for name, width in KEY_FIELDS:
+            value = _field_value(self, name)
+            if not 0 <= value < (1 << width):
+                raise ValueError(
+                    f"tile field {name}={value} does not fit in {width} bits "
+                    f"({self.describe()})")
+            key |= value << shift
+            shift += width
+        return key
 
     @classmethod
     def unpack(cls, key: int) -> "TileState":
-        y = key & 0xFF
-        fert = (key >> 8) & 0x07
-        consec = (key >> 11) & 0x03
-        unfed = (key >> 13) & 0x03
-        bank = (key >> 15) & 0x3F
-        age = ((key >> 21) & 0xFF) - 64
-        crop = _name_from_code((key >> 29) & 0x1F)
-        animal = _name_from_code((key >> 34) & 0x1F)
-        structure = _name_from_code((key >> 39) & 0x3F)
-        kind_code = (key >> 47) & 0x07
-        kind = {0: KIND_NONE, 1: KIND_WEED, 2: KIND_PLANT, 3: KIND_ANIMAL,
-                4: KIND_EMPTY_STRUCTURE}[kind_code]
-        return cls(kind, crop, animal, structure, age, consec, unfed,
-                   fert, bank, y)
+        """Inverse of `pack` (a key outside the layout raises)."""
+        if not 0 <= key < (1 << KEY_BITS):
+            raise ValueError(f"tile key {key} is outside the {KEY_BITS}-bit "
+                             "layout")
+        field: dict[str, int] = {}
+        shift = 0
+        for name, width in KEY_FIELDS:
+            field[name] = (key >> shift) & ((1 << width) - 1)
+            shift += width
+        kind_code = field["kind_code"]
+        if kind_code >= len(KIND_CODES):
+            raise ValueError(f"packed key {key} names kind code {kind_code}, "
+                             f"but only {len(KIND_CODES)} kinds exist")
+        return cls(KIND_CODES[kind_code],
+                   _name_from_code(field["crop_code"]),
+                   _name_from_code(field["animal_code"]),
+                   _name_from_code(field["structure_code"]),
+                   field["age"] - AGE_BIAS, field["consec"], field["unfed"],
+                   field["fert_left"], field["care_bank"], field["yield_units"])
 
     def describe(self) -> str:
         if self.kind == KIND_NONE:
             return "NONE"
         if self.kind == KIND_WEED:
             return "WEED"
-        if self.kind == KIND_EMPTY_STRUCTURE:
+        if self.kind in EMPTY_KINDS:
             return f"EMPTY {self.structure}"
         if self.kind == KIND_ANIMAL:
             return (f"{self.animal} age={self.age} unfed={self.unfed} "
@@ -126,16 +193,47 @@ class TileState:
 
 
 def _name_code(name: str | None) -> int:
-    """Code of a name in the fixed vocabulary order (0 = none / unknown)."""
-    if name is None or name not in _VOCAB:
+    """Code of a name in the fixed vocabulary order (0 = none).
+
+    An unknown name RAISES instead of packing as "none" (owner, 2026-09-14):
+    the old version returned 0 for a typo, so a misspelled crop or structure
+    silently shared the "empty" code with no name at all and no one noticed.
+    """
+    if name is None:
         return 0
+    if name not in _VOCAB:
+        raise ValueError(
+            f"unknown name {name!r} is not in the tile vocabulary {_VOCAB}; a "
+            "name that is not in the vocabulary must never pack as 'none'")
     return _VOCAB.index(name) + 1
 
 
 def _name_from_code(code: int) -> str | None:
+    """Inverse of `_name_code` (0 = none; an out-of-range code raises)."""
     if code == 0:
         return None
+    if not 0 < code <= len(_VOCAB):
+        raise ValueError(f"vocabulary code {code} is out of range 0.."
+                         f"{len(_VOCAB)}")
     return _VOCAB[code - 1]
+
+
+def _field_value(state: "TileState", name: str) -> int:
+    """Non-negative value of one packed field (KEY_FIELDS layout)."""
+    if name == "kind_code":
+        if state.kind not in KIND_CODES:
+            raise ValueError(f"unknown kind {state.kind!r}: not one of "
+                             f"{KIND_CODES}")
+        return KIND_CODES.index(state.kind)
+    if name == "age":
+        return state.age + AGE_BIAS
+    if name == "crop_code":
+        return _name_code(state.crop)
+    if name == "animal_code":
+        return _name_code(state.animal)
+    if name == "structure_code":
+        return _name_code(state.structure)
+    return int(getattr(state, name))
 
 
 def decode_tile(tile: object, day: int) -> TileState:
@@ -168,9 +266,7 @@ def decode_tile(tile: object, day: int) -> TileState:
         age = day - (tile.get("planted_day", day) + crop_age_origin(spec))
         fert_left = max(0, tile.get("fertilized_until_day", -1) - day + 1)
         consec = int(tile.get("consecutive_unwatered", 0))
-        # MAGIC NUMBER (engine, kaggriculture.py:783): two dry days turn the
-        # plant into a weed. TODO - pin it with a probe test (owner 2026-09-14).
-        if consec >= 2:
+        if consec >= _DRY_LIMIT:      # engine: a second dry night = WEED
             return TileState(KIND_WEED, None, None, None, 0, 0, 0, 0, 0, 0)
         return TileState(KIND_PLANT, crop, None, None, age, consec, 0,
                          fert_left, 0, int(tile.get("yield_units", 0)))
@@ -178,8 +274,8 @@ def decode_tile(tile: object, day: int) -> TileState:
     if kind in ("COOP", "PASTURE"):
         animal = tile.get("animal")
         if animal is None:
-            return TileState(KIND_EMPTY_STRUCTURE, None, None, kind, 0,
-                             0, 0, 0, 0, 0)
+            return TileState(EMPTY_KIND_OF_STRUCTURE[kind], None, None, kind,
+                             0, 0, 0, 0, 0, 0)
         spec = K.ANIMALS[animal]
         placed = tile.get("placed_day", day)
         # age < 0: growing up (placement day is intra-day, so the range is
