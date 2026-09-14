@@ -1,4 +1,4 @@
-"""tile_dp tests: the merged tile graph (v16).
+"""tile_dp tests: the merged tile graph.
 
 Run:  .venv/bin/python -m tests.test_tile_dp
 
@@ -13,7 +13,7 @@ Contracts under test:
   with a componentwise->= produce prunes. Nothing is netted.
 - CARE is never offered without FEED (a no-op on its own).
 - Rescue watering on consec=1 states exists (F002 second-night rule).
-- v16 vocabulary/cost contracts: 18 resource names with no duplicate, NO_ACT
+- vocabulary/cost contracts: 18 resource names with no duplicate, NO_ACT
   only ever a whole chain, no chain longer than 24 labour hours, and cost /
   produce as two separate 18-int vectors per edge.
 """
@@ -22,7 +22,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from tile_dp.chains import (CHAIN_NAMES, N_RESOURCE, NO_ACT, RES_CARROT,
+from tile_dp.chains import (ANIMAL_OPS, CHAIN_NAMES, CROP_OPS, N_RESOURCE,
+                            NO_ACT, RES_CARROT,
                             RES_FERTILIZER, RES_LABOR, RES_MELON,
                             RES_SEED_CARROT, RES_SEED_WHEAT, RES_WHEAT,
                             RESOURCE_ID, RESOURCE_NAMES,
@@ -30,6 +31,18 @@ from tile_dp.chains import (CHAIN_NAMES, N_RESOURCE, NO_ACT, RES_CARROT,
 from tile_dp.graph import (Edge, TileGraph, _dominates, _exec_chain, _new_sim,
                            build_graph)
 from tile_dp.tile_state import KIND_NONE, TileState, decode_tile
+
+_CARROT: TileGraph | None = None
+
+
+def _carrot() -> TileGraph:
+    """The carrot graph: built once per run, shared by the tests that need it
+    (owner's item 13: five independent builds cost the suite ~0.8 s)."""
+    global _CARROT
+    if _CARROT is None:
+        _CARROT = build_graph("CARROT")
+    return _CARROT
+
 
 def test_decode_and_pack() -> None:
     tile = {"kind": "PLANT", "crop": "CARROT", "planted_day": 0,
@@ -45,19 +58,37 @@ def test_decode_and_pack() -> None:
 
 
 def test_chain_order_canonical() -> None:
+    """The op order inside a chain is an order the engine can run in one day.
+
+    Two invariants (the WATER-before-HARVEST rule of the old version is the
+    second one, and it stays true only until a DIG separates the two): every
+    chain is drawn from one canonical op list without repeating an op, and
+    WATER comes before HARVEST while no DIG stands between them - watering the
+    plant you harvest the same day is what the +1 yield of F009 pays for, while
+    (HARVEST, DIG, PLANT, WATER) waters the NEXT plant (owner's item 4).
+    """
     for ops in CHAIN_NAMES:
-        if "WATER" in ops and "HARVEST" in ops:
+        if ops == (NO_ACT,):
+            continue
+        assert any(all(op in src for op in ops)
+                   for src in (CROP_OPS, ANIMAL_OPS)), ops
+        assert len(set(ops)) == len(ops), ops
+        if "WATER" in ops and "HARVEST" in ops and "DIG" not in ops:
             assert ops.index("WATER") < ops.index("HARVEST"), ops
 
 
 def test_young_plant_cannot_harvest() -> None:
+    """A young plant is not harvested, and nothing is planted into an occupied
+    tile: a chain may only PLANT after it DIGs that tile free (owner's item 4).
+    """
     young = chains_for("PLANT", -1)
     assert all("HARVEST" not in c for c in young)
-    assert all("PLANT" not in c for c in young)  # occupied tile
+    assert all(c[0] != "PLANT" for c in young)
+    assert any(c[0] == "DIG" and "PLANT" in c for c in young)
 
 
 def test_registry_contracts() -> None:
-    """v16: the registry's own invariants (brief part 2, item 1)."""
+    """The registry's own invariants (brief part 2, item 1)."""
     assert len(RESOURCE_NAMES) == 18
     assert len(set(RESOURCE_NAMES)) == 18
     assert [c for c in CHAIN_NAMES if NO_ACT in c] == [(NO_ACT,)]
@@ -121,7 +152,7 @@ def _prod_of(g: TileGraph, sid: int, chain, res: str = RES_CARROT) -> int | None
 def test_graph_calendars() -> None:
     """F009: (age 1, consec 0, fert 2, y 3) + (WATER, HARVEST) = 4; the
     no-fert sibling (y 2) + (WATER, HARVEST) = 3."""
-    g = build_graph("CARROT")
+    g = _carrot()
     n = _find(g, kind="PLANT", age=1, consec=0, fert_left=2, yield_units=3)
     assert _prod_of(g, n, ("WATER", "HARVEST")) == 4
     n2 = _find(g, kind="PLANT", age=1, consec=0, fert_left=0, yield_units=2)
@@ -130,7 +161,7 @@ def test_graph_calendars() -> None:
 
 def test_dry_consec1_pass_dies() -> None:
     """consec=1 + PASS → the plant is gone next morning (F002)."""
-    g = build_graph("CARROT")
+    g = _carrot()
     for i in range(g.n_states):
         s = g.state_of(i)
         if s.kind == "PLANT" and s.consec == 1:
@@ -143,7 +174,7 @@ def test_dry_consec1_pass_dies() -> None:
 def test_rescue_watering_exists() -> None:
     """Watering TODAY on a consec=1 plant saves it (only the SECOND dry
     night kills): at least one consec=1 state must keep a WATER edge."""
-    g = build_graph("CARROT")
+    g = _carrot()
     saved = 0
     for i in range(g.n_states):
         s = g.state_of(i)
@@ -160,7 +191,7 @@ def test_dominated_fert_harvest_absent() -> None:
     pruned by the dominance filter. Mature states can legitimately keep
     both edges: FERTILIZE before the next cycle's window is a real
     choice the secretary prices."""
-    g = build_graph("CARROT")
+    g = _carrot()
     for i in range(g.n_states):
         s = g.state_of(i)
         if s.kind != "PLANT" or s.fert_left != 0 or s.age >= 0:
@@ -174,7 +205,7 @@ def test_dominated_fert_harvest_absent() -> None:
 
 
 def test_no_zero_cost_self_loops() -> None:
-    g = build_graph("CARROT")
+    g = _carrot()
     for i in range(g.n_states):
         for edge in g.edges_from(i):
             assert not (edge.to_id == i and not any(edge.cost)
@@ -183,11 +214,11 @@ def test_no_zero_cost_self_loops() -> None:
 
 
 def test_chain_one_day_contract() -> None:
-    """v16: NO_ACT costs 0 hours; every daily chain fits exactly one day.
+    """NO_ACT costs 0 hours; every daily chain fits exactly one day.
 
     The chain is executed from the bare-tile state (a fresh sim), so the ops
     that need a plant/an animal are engine no-ops here - what is under test is
-    the day boundary, and the v16 successor assertion that has to accept them.
+    the day boundary, and the successor assertion that has to accept them.
     """
     assert chain_labor((NO_ACT,)) == 0
     assert chain_labor(("PLANT", "WATER")) == 2
@@ -228,7 +259,7 @@ def _all_edges(g: TileGraph):
 
 
 def test_merged_vectors_are_two_18_vectors() -> None:
-    """v16 decision 2: cost and produce are separate, int, 18 entries long."""
+    """The cost and produce vectors are separate, int, 18 entries long."""
     g = _merged()
     assert g.edge_cost.shape == (g.n_edges, N_RESOURCE)
     assert g.edge_produce.shape == (g.n_edges, N_RESOURCE)

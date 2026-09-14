@@ -76,6 +76,24 @@ def test_installed_version_matches_the_requirements_pin() -> None:
     )
 
 
+def test_tile_dp_tables_come_from_the_engine() -> None:
+    """R002 for tile_dp (owner's item 9): the vocabulary is read from the shipped
+    module, and the artifact identity is the live engine's."""
+    from hashlib import sha1
+
+    from tile_dp import chains, tile_state
+
+    for module in (chains, tile_state):
+        copied = [n for n in RULE_TABLES if n in vars(module)]
+        assert not copied, f"{module.__name__} defines its own {copied} (R002)"
+    assert tuple(tile_state.CROP_NAMES) == tuple(K.CROPS)
+    assert tuple(tile_state.ANIMAL_NAMES) == tuple(K.ANIMALS)
+    live = sha1(Path(K.__file__).read_bytes()).hexdigest()[:8]
+    assert chains.engine_fingerprint() == live, (
+        "the engine moved: the tile artifact has to be rebuilt")
+    assert live in chains.contract_id()
+
+
 def main() -> int:
     failures = 0
     for name, fn in sorted(globals().items()):
