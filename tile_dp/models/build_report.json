@@ -1,0 +1,88 @@
+{
+  "engine_tag": "tile-dp-v15",
+  "entities": {
+    "TILE": {
+      "nodes": 675,
+      "edges": 14422,
+      "kinds": {
+        "NONE": 1,
+        "PLANT": 392,
+        "EMPTY_STRUCTURE": 2,
+        "ANIMAL": 279,
+        "WEED": 1
+      }
+    },
+    "WHEAT": {
+      "nodes": 26,
+      "edges": 110,
+      "kinds": {
+        "NONE": 1,
+        "PLANT": 24,
+        "WEED": 1
+      }
+    },
+    "CARROT": {
+      "nodes": 13,
+      "edges": 52,
+      "kinds": {
+        "NONE": 1,
+        "PLANT": 11,
+        "WEED": 1
+      }
+    },
+    "TOMATO": {
+      "nodes": 83,
+      "edges": 547,
+      "kinds": {
+        "NONE": 1,
+        "PLANT": 81,
+        "WEED": 1
+      }
+    },
+    "STRAWBERRY": {
+      "nodes": 165,
+      "edges": 1176,
+      "kinds": {
+        "NONE": 1,
+        "PLANT": 163,
+        "WEED": 1
+      }
+    },
+    "MELON": {
+      "nodes": 115,
+      "edges": 789,
+      "kinds": {
+        "NONE": 1,
+        "PLANT": 113,
+        "WEED": 1
+      }
+    },
+    "GOOSE": {
+      "nodes": 29,
+      "edges": 126,
+      "kinds": {
+        "NONE": 1,
+        "EMPTY_STRUCTURE": 1,
+        "ANIMAL": 27
+      }
+    },
+    "COW": {
+      "nodes": 117,
+      "edges": 497,
+      "kinds": {
+        "NONE": 1,
+        "EMPTY_STRUCTURE": 1,
+        "ANIMAL": 115
+      }
+    },
+    "SHEEP": {
+      "nodes": 139,
+      "edges": 690,
+      "kinds": {
+        "NONE": 1,
+        "EMPTY_STRUCTURE": 1,
+        "ANIMAL": 137
+      }
+    }
+  }
+}
