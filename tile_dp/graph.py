@@ -63,9 +63,9 @@ from kaggle_environments.envs.kaggriculture import kaggriculture as K
 from world.fast_sim import FastSim
 
 from tile_dp.chains import (CONSTRUCTIVE_OPS, ENTITY_CODE, ENTITY_NAMES,
-                            MARKET_OPS, N_RESOURCE, NO_ACT, RESOURCE_ID,
-                            chain_id_of, chain_name, chain_ops, chains_for,
-                            contract_id, cost_vector, domain_ok,
+                            MARKET_OPS, N_RESOURCE, NO_ACT, OP_STEPS,
+                            RESOURCE_ID, chain_id_of, chain_name, chain_ops,
+                            chains_for, contract_id, cost_vector, domain_ok,
                             entity_code_of, entity_of_code, is_animal,
                             produce_vector, registry_fingerprint)
 from tile_dp.tile_state import (EMPTY_KIND_OF_STRUCTURE, EMPTY_KINDS,
@@ -353,6 +353,51 @@ def verify_engine_constants() -> None:
         raise RuntimeError(
             f"dry limit mismatch: an unwatered MELON became {dry!r} after one "
             f"day; the decoder expects WEED after the second dry night")
+
+
+def verify_op_steps() -> None:
+    """Measure each op's engine-step cost instead of trusting `OP_STEPS`.
+
+    `OP_STEPS` (chains.py) hand-writes how many engine steps the executor
+    spends per op - the buy rides a PASS, a PICKUP is its own step, the act is
+    the last. That table bounds the one-day contract, so a drifted value lets
+    an overlong chain through the registry guard silently. This probe runs
+    each op once on a scratch sim (a bare tile; ops that need a target are
+    engine-refused, but the refusal still costs its steps), counts the
+    `sim.step` calls up to and including the op's own action, and compares
+    with the table - a mismatch raises at build time.
+    """
+    probe_ops = ("PLANT", "FERTILIZE", "FEED", "PLACE", "PLACE_ANIMAL")
+    for op in probe_ops:
+        sim = _new_sim()
+        hops = 0
+        raw = sim.step
+
+        def wrap(actions, *a, **k):
+            nonlocal hops
+            hops += 1
+            return raw(actions, *a, **k)
+
+        sim.step = wrap
+        entity = "CARROT" if op == "PLANT" else "COW"
+        if op == "PLANT":
+            sim.step([_act(["PASS"], [["BUY_SEED", entity, 1]]), _act(["PASS"])])
+            sim.step([_act(["PLANT", entity]), _act(["PASS"])])
+        elif op in ("FERTILIZE", "FEED"):
+            res = "FERTILIZER" if op == "FERTILIZE" else "WHEAT"
+            sim.step([_act(["PASS"], [["BUY_PRODUCT", res, 1]]), _act(["PASS"])])
+            sim.step([_act(["PICKUP", res, 1]), _act(["PASS"])])
+            sim.step([_act([op]), _act(["PASS"])])
+        else:
+            sim.step([_act(["PASS"], [["BUY_ANIMAL", entity, 1]]), _act(["PASS"])])
+            sim.step([_act(["PICKUP", entity, 1]), _act(["PASS"])])
+            sim.step([_act([op, entity]), _act(["PASS"])] if op == "PLACE"
+                     else [_act([op]), _act(["PASS"])])
+        want = OP_STEPS.get(op, 1)
+        if hops != want:
+            raise RuntimeError(
+                f"op {op} consumed {hops} engine steps in the executor, "
+                f"OP_STEPS says {want}: the step table drifted, fix it")
 
 
 def _next_age(state: TileState) -> int:
@@ -721,6 +766,7 @@ def build_graph(entity: str | None = None, progress: bool = False) -> TileGraph:
     the build loudly instead of being skipped.
     """
     verify_engine_constants()
+    verify_op_steps()
     spec = BuildSpec(entity=entity, progress=progress)
     key_to_id: dict[int, int] = {}
     state_list: list[TileState] = []

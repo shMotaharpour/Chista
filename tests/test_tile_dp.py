@@ -319,6 +319,26 @@ def test_no_care_without_feed_in_graph() -> None:
     assert not bad, bad[:3]
 
 
+def test_build_is_deterministic() -> None:
+    """Two builds of the same restricted graph agree edge for edge.
+
+    The build walks a seeded sim and a deterministic BFS, so a second run
+    must intern the same states in the same order and produce the same CSR
+    arrays; anything else means hidden state (an RNG read, dict ordering)
+    leaked into the artifact. Byte-level: the packed keys and the cost /
+    produce matrices, not just the counts.
+    """
+    a = build_graph("CARROT")
+    b = build_graph("CARROT")
+    assert (a.state_keys == b.state_keys).all()
+    assert (a.edge_offsets == b.edge_offsets).all()
+    assert (a.edge_next == b.edge_next).all()
+    assert (a.edge_chain == b.edge_chain).all()
+    assert (a.edge_entity == b.edge_entity).all()
+    assert (a.edge_cost == b.edge_cost).all()
+    assert (a.edge_produce == b.edge_produce).all()
+
+
 if __name__ == "__main__":
     failures = 0
     tests = [(k, v) for k, v in sorted(globals().items())

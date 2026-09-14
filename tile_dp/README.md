@@ -219,7 +219,7 @@ The model and its report are written by `tile_dp/build.py`:
 .venv/bin/python -m tile_dp.build
 ```
 
-It builds the merged graph, the 8 restricted views, writes
+It builds the merged graph, writes
 `tile_dp/models/build_report.json` and reloads the `.npz` it just wrote —
 in place, so a rebuild with unchanged code leaves the tracked model bytes
 identical.

@@ -284,8 +284,13 @@ def decode_tile(tile: object, day: int) -> TileState:
         cycle_age = day - placed - spec["first_yield_day"]
         if cycle_age >= 0:
             cycle_age %= int(spec["interval"])
-        # care_bank is a contract cap (Hossein): the engine can bank more
-        # than max_held before the first production, the model caps it.
+        # care_bank is a contract cap (Hossein, probed 2026-09-14): the engine
+        # can bank more than max_held (a COW fed+cared nightly banks 7 before
+        # its day-8 production), but the first production consumes min(max_held,
+        # yield + 1 + bank), so any bank >= max_held - 1 is decision-equivalent
+        # to a larger one - the cap merges states with identical futures. The
+        # bank also BURNS on an unfed production night (engine zeroes it even
+        # when unfed, kaggriculture.py:826-828), which the cap keeps in range.
         bank = min(int(tile.get("pending_care_bonus", 0)),
                    int(spec["max_held"]))
         return TileState(KIND_ANIMAL, None, animal, kind, cycle_age, 0,
