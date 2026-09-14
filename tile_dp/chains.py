@@ -1,8 +1,8 @@
-"""tile_dp chains: v15 - per-tile daily action chains (DIG-layered).
+"""tile_dp chains: v16 - per-tile daily action chains (DIG-layered).
 
 A chain is the ordered tuple of WORKER ops applied on one tile in one day.
 
-Resource vocabulary (v15, contract 2026-09-14): 18 names, exactly one id per
+Resource vocabulary (v16, contract 2026-09-14): 18 names, exactly one id per
 physical item - LABOR_HOURS, FERTILIZER, WHEAT, SEED_WHEAT, SEED_CARROT,
 SEED_TOMATO, SEED_STRAWBERRY, SEED_MELON, CARROT, TOMATO, STRAWBERRY, MELON,
 EGG, MILK, WOOL, ANIMAL_GOOSE, ANIMAL_COW, ANIMAL_SHEEP. RES_WHEAT is the
@@ -50,7 +50,7 @@ graph.py now does both ends of this: it prices every chain through
 `cost_vector` / `produce_vector` and passes each node's own age and yield_units
 to `chains_for`.
 
-Entity (v15, decision 10): `ENTITY_NAMES` / `ENTITY_CODE` give each entity a small
+Entity (v16, decision 10): `ENTITY_NAMES` / `ENTITY_CODE` give each entity a small
 int code (1..8, 0 = none) for the artifact's `entity_code` field and
 `CONSTRUCTIVE_OPS` names the ops that parameterise a chain by entity (PLANT /
 BUILD / PLACE / PLACE_ANIMAL). `domain_ok` is the domain filter: a crop entity
@@ -94,18 +94,18 @@ SEED_RES = {"WHEAT": RES_SEED_WHEAT, "CARROT": RES_SEED_CARROT,
             "TOMATO": RES_SEED_TOMATO, "STRAWBERRY": RES_SEED_STRAWBERRY,
             "MELON": RES_SEED_MELON}
 
-# The one product name per entity (v15, decision 3): a crop keeps its own name,
+# The one product name per entity (v16, decision 3): a crop keeps its own name,
 # an animal yields the engine's product id.
 PRODUCT_RES: dict[str, str] = {c: K.CROPS[c].get("product", c) for c in K.CROPS}
 PRODUCT_RES.update({a: K.ANIMALS[a]["product"] for a in K.ANIMALS})
 
-# The one entity vocabulary of the artifact (v15, decision 10): crops then
+# The one entity vocabulary of the artifact (v16, decision 10): crops then
 # animals, 1..8 in that order, 0 = no entity.
 ENTITY_NAMES: tuple[str, ...] = tuple(K.CROPS) + tuple(K.ANIMALS)
 ENTITY_CODE: dict[str, int] = {n: i + 1 for i, n in enumerate(ENTITY_NAMES)}
 ENTITY_OF_CODE: dict[int, str] = {code: n for n, code in ENTITY_CODE.items()}
 
-# 18 names, exactly one id per physical item (v15, decision 3).
+# 18 names, exactly one id per physical item (v16, decision 3).
 RESOURCE_NAMES: tuple[str, ...] = (RES_LABOR, RES_FERTILIZER, RES_WHEAT,
                                    RES_SEED_WHEAT, RES_SEED_CARROT,
                                    RES_SEED_TOMATO, RES_SEED_STRAWBERRY,
@@ -129,13 +129,13 @@ WORKER_OPS = frozenset(("PLANT", "WATER", "FERTILIZE", "HARVEST", "DIG",
 
 CROP_OPS = ("FERTILIZE", "WATER", "HARVEST")
 ANIMAL_OPS = ("FEED", "CARE", "HARVEST", "COLLECT_FERTILIZER")
-# Ops the two domains do NOT share (v15, decision 9 domain filter): HARVEST is
+# Ops the two domains do NOT share (v16, decision 9 domain filter): HARVEST is
 # the only op both kinds have, so these are exactly the ones one side must never
 # run. PLANT is the only crop-only op (an animal tile holds its animal).
 ANIMAL_ONLY_OPS = frozenset(("BUILD", "PLACE", "PLACE_ANIMAL", "FEED", "CARE",
                             "COLLECT_FERTILIZER"))
 CROP_ONLY_OPS = frozenset(("PLANT",))
-# Constructive ops (v15, decision 10): the ops that name the entity a chain
+# Constructive ops (v16, decision 10): the ops that name the entity a chain
 # creates, so they are what `entity_code` is read from. A chain has at most one
 # domain's worth of them (the domain filter guarantees the match).
 CONSTRUCTIVE_OPS = ("PLANT", "BUILD", "PLACE", "PLACE_ANIMAL")
@@ -149,7 +149,12 @@ def _canonical_subsets(ops: tuple[str, ...]) -> list[tuple[str, ...]]:
 
 
 _CROP_SUBSETS: list[tuple[str, ...]] = _canonical_subsets(CROP_OPS)
-_ANIMAL_SUBSETS: list[tuple[str, ...]] = _canonical_subsets(ANIMAL_OPS)
+# CARE is a no-op without FEED on the same day: the engine consumes
+# `cared_today` only together with `fed_today` (kaggriculture.py:826-829), so the
+# subset list never offers CARE alone (2026-09-14).
+_ANIMAL_SUBSETS: list[tuple[str, ...]] = [
+    c for c in _canonical_subsets(ANIMAL_OPS)
+    if not ("CARE" in c and "FEED" not in c)]
 
 # chains per node kind, explicit (before the graph search prunes them). Every
 # kind except NONE and ANIMAL is then DIG-layered (see below):
@@ -161,7 +166,8 @@ _ANIMAL_SUBSETS: list[tuple[str, ...]] = _canonical_subsets(ANIMAL_OPS)
 #  WEED            : NO_ACT | DIG              (+ the DIG layering)
 #  PLANT           : subsets of {FERTILIZE, WATER, HARVEST} (+ the layering);
 #                    HARVEST is dropped for age < 0 (F026) by the filter
-#  ANIMAL          : subsets of {FEED, CARE, HARVEST, COLLECT_FERTILIZER}
+#  ANIMAL          : subsets of {FEED, CARE, HARVEST, COLLECT_FERTILIZER};
+#                    CARE only together with FEED (no-op otherwise)
 #  EMPTY_STRUCTURE : NO_ACT | PLACE_ANIMAL     (+ the DIG layering)
 NONE_CHAINS_CROP: tuple[tuple[str, ...], ...] = (
     (NO_ACT,), ("PLANT", "WATER"))
@@ -303,7 +309,7 @@ def chain_requirements(entity: str | None,
             key = SEED_RES.get(entity)
             if key is None:
                 raise ValueError(f"chain {ops} plants, but entity {entity!r} "
-                                 "is not a crop (v15: no silent fallback)")
+                                 "is not a crop (v16: no silent fallback)")
             req[key] = req.get(key, 0) + 1
         elif op == "FERTILIZE":
             req[RES_FERTILIZER] = req.get(RES_FERTILIZER, 0) + 1
@@ -319,12 +325,12 @@ def chain_requirements(entity: str | None,
 
 
 def is_animal(entity: str) -> bool:
-    """True when `entity` is one of the three animal species (v15)."""
+    """True when `entity` is one of the three animal species (v16)."""
     return entity in K.ANIMALS
 
 
 def domain_ok(ops: tuple[str, ...], entity: str) -> bool:
-    """False when `entity` must not run `ops` (v15, decision 9 domain filter).
+    """False when `entity` must not run `ops` (v16, decision 9 domain filter).
 
     A crop entity never builds / places / feeds / cares for an animal; an animal
     entity never plants. HARVEST belongs to both domains.
@@ -335,7 +341,7 @@ def domain_ok(ops: tuple[str, ...], entity: str) -> bool:
 
 
 def entity_code_of(entity: str | None) -> int:
-    """Small int code of an entity name (0 = none; v15, decision 10)."""
+    """Small int code of an entity name (0 = none; v16, decision 10)."""
     return 0 if entity is None else ENTITY_CODE[entity]
 
 
@@ -345,7 +351,7 @@ def entity_of_code(code: int) -> str | None:
 
 
 def cost_vector(entity: str | None, ops: tuple[str, ...]) -> list[int]:
-    """`chain_requirements` as an N_RESOURCE cost vector (v15).
+    """`chain_requirements` as an N_RESOURCE cost vector (v16).
 
     The cost side of an edge: LABOR_HOURS plus every input the chain consumes.
     """
@@ -357,7 +363,7 @@ def cost_vector(entity: str | None, ops: tuple[str, ...]) -> list[int]:
 
 def produce_vector(entity: str | None, harvest: int,
                    fert_collect: int) -> list[int]:
-    """The produce side of a chain as an N_RESOURCE vector (v15).
+    """The produce side of a chain as an N_RESOURCE vector (v16).
 
     Harvest units of the entity's product (PRODUCT_RES) plus the fertilizer a
     COLLECT_FERTILIZER op picked up. Kept separate from the cost vector on
@@ -384,6 +390,8 @@ def ops_of_name(name: str) -> tuple[str, ...]:
 def _applicable(ops: tuple[str, ...], age: int | None,
                 yield_units: int | None) -> bool:
     """False when the chain is a guaranteed no-op on the node (2026-09-14)."""
+    if "CARE" in ops and "FEED" not in ops:
+        return False    # CARE only counts with FEED (fed_today and cared_today)
     if age is not None and age < -2 and "FERTILIZE" in ops:
         return False        # a 3-day fertilize effect cannot reach the window
     if "HARVEST" in ops:

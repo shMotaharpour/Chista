@@ -1,4 +1,4 @@
-"""tile_dp tests: the merged tile graph (v15).
+"""tile_dp tests: the merged tile graph (v16).
 
 Run:  .venv/bin/python -m tests.test_tile_dp
 
@@ -8,8 +8,12 @@ Contracts under test:
   edges (3 by day-3 start no-fert; WATER,HARVEST = 4 with fert).
 - Pruning: no zero-cost self-loops; dominated edges absent (no
   FERTILIZE->HARVEST with bare-HARVEST production on fert-less states).
+- Dominance is componentwise on BOTH vectors (2026-09-14): a difference in one
+  cost or one produce component keeps both edges; only a componentwise-<= cost
+  with a componentwise->= produce prunes. Nothing is netted.
+- CARE is never offered without FEED (a no-op on its own).
 - Rescue watering on consec=1 states exists (F002 second-night rule).
-- v15 vocabulary/cost contracts: 18 resource names with no duplicate, NO_ACT
+- v16 vocabulary/cost contracts: 18 resource names with no duplicate, NO_ACT
   only ever a whole chain, no chain longer than 24 labour hours, and cost /
   produce as two separate 18-int vectors per edge.
 """
@@ -19,9 +23,12 @@ from __future__ import annotations
 import numpy as np
 
 from tile_dp.chains import (CHAIN_NAMES, N_RESOURCE, NO_ACT, RES_CARROT,
-                            RES_WHEAT, RESOURCE_ID, RESOURCE_NAMES,
+                            RES_FERTILIZER, RES_LABOR, RES_MELON,
+                            RES_SEED_CARROT, RES_SEED_WHEAT, RES_WHEAT,
+                            RESOURCE_ID, RESOURCE_NAMES,
                             chain_labor, chains_for, domain_ok)
-from tile_dp.graph import TileGraph, _exec_chain, _new_sim, build_graph
+from tile_dp.graph import (Edge, TileGraph, _dominates, _exec_chain, _new_sim,
+                           build_graph)
 from tile_dp.tile_state import KIND_NONE, TileState, decode_tile
 
 def test_decode_and_pack() -> None:
@@ -50,11 +57,45 @@ def test_young_plant_cannot_harvest() -> None:
 
 
 def test_registry_contracts() -> None:
-    """v15: the registry's own invariants (brief part 2, item 1)."""
+    """v16: the registry's own invariants (brief part 2, item 1)."""
     assert len(RESOURCE_NAMES) == 18
     assert len(set(RESOURCE_NAMES)) == 18
     assert [c for c in CHAIN_NAMES if NO_ACT in c] == [(NO_ACT,)]
     assert max(chain_labor(c) for c in CHAIN_NAMES) <= 24
+    # CARE without FEED is a no-op: it must not even be a registry entry
+    assert not [c for c in CHAIN_NAMES if "CARE" in c and "FEED" not in c]
+    assert ("FEED", "CARE") in CHAIN_NAMES      # the legal pair stays
+
+
+def _edge(to_id: int, cost: dict[str, int], produce: dict[str, int]) -> Edge:
+    """Synthetic edge for the dominance unit tests (order = RESOURCE_ID)."""
+    c = [0] * N_RESOURCE
+    p = [0] * N_RESOURCE
+    for name, units in cost.items():
+        c[RESOURCE_ID[name]] = units
+    for name, units in produce.items():
+        p[RESOURCE_ID[name]] = units
+    return Edge(0, to_id, 0, 0, tuple(c), tuple(p))
+
+
+def test_dominance_compares_components() -> None:
+    """A difference in ONE component keeps both edges (2026-09-14): 1 wheat is
+    not 1 melon, a carrot seed is not a wheat seed, one collected fertilizer is
+    not nothing. Only componentwise-<= cost with componentwise->= produce prunes.
+    """
+    t = 7
+    wheat = _edge(t, {RES_LABOR: 1}, {RES_WHEAT: 1})
+    melon = _edge(t, {RES_LABOR: 1}, {RES_MELON: 1})
+    assert not _dominates(wheat, melon) and not _dominates(melon, wheat)
+    cseed = _edge(t, {RES_SEED_CARROT: 1}, {RES_CARROT: 1})
+    wseed = _edge(t, {RES_SEED_WHEAT: 1}, {RES_WHEAT: 1})
+    assert not _dominates(cseed, wseed) and not _dominates(wseed, cseed)
+    collect = _edge(t, {RES_LABOR: 1}, {RES_FERTILIZER: 1})
+    idle = _edge(t, {}, {})
+    assert not _dominates(idle, collect) and not _dominates(collect, idle)
+    assert _dominates(idle, _edge(t, {RES_LABOR: 1}, {}))          # cheaper
+    assert _dominates(_edge(t, {RES_LABOR: 1}, {RES_WHEAT: 2}),    # more yield
+                      _edge(t, {RES_LABOR: 1}, {RES_WHEAT: 1}))
 
 
 def _find(g: TileGraph, **kw) -> int:
@@ -142,11 +183,11 @@ def test_no_zero_cost_self_loops() -> None:
 
 
 def test_chain_one_day_contract() -> None:
-    """v15: NO_ACT costs 0 hours; every daily chain fits exactly one day.
+    """v16: NO_ACT costs 0 hours; every daily chain fits exactly one day.
 
     The chain is executed from the bare-tile state (a fresh sim), so the ops
     that need a plant/an animal are engine no-ops here - what is under test is
-    the day boundary, and the v15 successor assertion that has to accept them.
+    the day boundary, and the v16 successor assertion that has to accept them.
     """
     assert chain_labor((NO_ACT,)) == 0
     assert chain_labor(("PLANT", "WATER")) == 2
@@ -187,7 +228,7 @@ def _all_edges(g: TileGraph):
 
 
 def test_merged_vectors_are_two_18_vectors() -> None:
-    """v15 decision 2: cost and produce are separate, int, 18 entries long."""
+    """v16 decision 2: cost and produce are separate, int, 18 entries long."""
     g = _merged()
     assert g.edge_cost.shape == (g.n_edges, N_RESOURCE)
     assert g.edge_produce.shape == (g.n_edges, N_RESOURCE)
@@ -199,6 +240,25 @@ def test_merged_vectors_are_two_18_vectors() -> None:
     assert both, ("no edge both eats and harvests wheat: netting the cost and "
                   "produce vectors would go unnoticed")
     assert g.n_edges == sum(1 for _ in _all_edges(g))
+
+
+def test_fert_collect_edges_survive() -> None:
+    """F023: one COLLECT_FERTILIZER per animal per day is real produce, so the
+    shipped graph must carry edges whose fertilizer produce is 1."""
+    g = _merged()
+    fert = RESOURCE_ID[RES_FERTILIZER]
+    collect = [e for e in _all_edges(g)
+               if "COLLECT_FERTILIZER" in e.ops and e.produce[fert] > 0]
+    assert collect, "no edge collects fertilizer"
+    assert all(e.produce[fert] == 1 for e in collect)
+
+
+def test_no_care_without_feed_in_graph() -> None:
+    """No edge may run CARE without FEED in the same chain (a one-hour no-op)."""
+    g = _merged()
+    bad = [e.ops for e in _all_edges(g)
+           if "CARE" in e.ops and "FEED" not in e.ops]
+    assert not bad, bad[:3]
 
 
 if __name__ == "__main__":

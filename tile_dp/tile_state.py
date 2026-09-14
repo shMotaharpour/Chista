@@ -36,7 +36,7 @@ CROP_NAMES: tuple[str, ...] = ("WHEAT", "CARROT", "TOMATO", "STRAWBERRY",
 ANIMAL_NAMES: tuple[str, ...] = ("GOOSE", "COW", "SHEEP")
 
 # Engine step granularity: one day is 24 steps. The single definition in
-# tile_dp: graph.py imports TURNS_PER_DAY from here (v15).
+# tile_dp: graph.py imports TURNS_PER_DAY from here (v16).
 TURNS_PER_DAY = 24
 
 # Fixed vocabulary of the name fields in `pack` (crops, then animals, then the

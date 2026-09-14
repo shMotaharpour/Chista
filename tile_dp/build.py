@@ -5,7 +5,7 @@ Run from the repo root:
     .venv/bin/python -m tile_dp.build
 
 Writes `tile_dp/models/graph_tile_lifecycle.npz` (the merged graph, engine tag
-`tile-dp-v15`) and `tile_dp/models/build_report.json` (node / edge / kind counts
+`tile-dp-v16`) and `tile_dp/models/build_report.json` (node / edge / kind counts
 for the merged graph and the 8 restricted per-entity views), then reloads the
 written file to prove the tag-guarded round-trip works.
 """

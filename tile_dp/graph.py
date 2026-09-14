@@ -1,4 +1,4 @@
-"""tile_dp graph build — v15: ONE tile graph, built by simulation inheritance.
+"""tile_dp graph build — v16: ONE tile graph, built by simulation inheritance.
 
 One graph covers the whole tile: every crop and every animal (a bare tile can
 start any of them), the DIG bridges between them and the weed / empty-structure
@@ -63,8 +63,8 @@ from kaggle_environments.envs.kaggriculture import kaggriculture as K
 from world.fast_sim import FastSim
 
 from tile_dp.chains import (CONSTRUCTIVE_OPS, ENTITY_CODE, ENTITY_NAMES,
-                            MARKET_OPS, N_RESOURCE, NO_ACT, RES_FERTILIZER,
-                            RESOURCE_ID, chain_id_of, chain_name, chain_ops,
+                            MARKET_OPS, N_RESOURCE, NO_ACT, RESOURCE_ID,
+                            chain_id_of, chain_name, chain_ops,
                             chains_for, cost_vector, domain_ok,
                             entity_code_of, entity_of_code, is_animal,
                             produce_vector)
@@ -72,7 +72,7 @@ from tile_dp.tile_state import (KIND_ANIMAL, KIND_EMPTY_STRUCTURE, KIND_NONE,
                                 KIND_PLANT, KIND_WEED, TURNS_PER_DAY, TileState,
                                 crop_age_origin, decode_tile)
 
-ENGINE_TAG = "tile-dp-v15"
+ENGINE_TAG = "tile-dp-v16"
 
 # Which structure an entity lives in (engine data: BUILD needs it, and it is
 # how the EMPTY_STRUCTURE candidates are decided). Crops are absent on purpose.
@@ -145,14 +145,6 @@ class Edge:
     @property
     def entity(self) -> str | None:
         return entity_of_code(self.entity_code)
-
-    @property
-    def harvest_units(self) -> int:
-        """Product units of the edge: the entity's yield, fertilizer excluded.
-
-        This is the scalar the dominance pruning compares.
-        """
-        return sum(self.produce) - self.produce[RESOURCE_ID[RES_FERTILIZER]]
 
 
 @dataclass(frozen=True)
@@ -613,17 +605,20 @@ def _is_noop_edge(state_id: int, edge: Edge) -> bool:
 def _dominates(better: Edge, worse: Edge) -> bool:
     """Dominance rule, between the two edges of one state's same target.
 
-    `better` dominates `worse` when it needs no more of any resource, harvests no
-    less, and is strictly better on one of the two. Equal-cost twins survive.
+    `better` dominates `worse` only when it needs no more of ANY resource and
+    produces no less of ANY resource: both vectors are compared component by
+    component and are never netted, so a difference in a single component keeps
+    both edges (1 wheat is not 1 melon, a carrot seed is not a wheat seed, one
+    collected fertilizer is not nothing). One strict component is required;
+    equal twins survive.
     """
     if better.to_id != worse.to_id:
         return False
     if any(better.cost[r] > worse.cost[r] for r in range(N_RESOURCE)):
         return False
-    if better.harvest_units < worse.harvest_units:
+    if any(better.produce[r] < worse.produce[r] for r in range(N_RESOURCE)):
         return False
-    return (sum(better.cost) < sum(worse.cost)
-            or better.harvest_units > worse.harvest_units)
+    return better.cost != worse.cost or better.produce != worse.produce
 
 
 def _prune(state_id: int, edges: list[Edge]) -> tuple[list[Edge], int]:
