@@ -475,6 +475,13 @@ def _assert_successor(state: TileState, child: TileState, ops: tuple[str, ...],
     violation = _successor_violation(state, child, ops, entity)
     if violation is None:
         return
+    if child.pack() == state.pack():
+        # The engine reflected the day-start tile: the chain did nothing. A
+        # species on the other structure, a build on an occupied tile and a
+        # place with no structure are refused silently (kaggriculture.py:493-503,
+        # probed 2026-09-14). That is not a phantom promise: the edge interns as
+        # a self-loop, which the no-op sweep drops when its produce is empty.
+        return
     expected = _expected_next(state, ops, entity)
     if expected is not None and child.kind != expected.kind:
         # The constructive op did not land (no stock, no money, occupied tile,
