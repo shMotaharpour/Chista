@@ -39,12 +39,18 @@ the purchases inline as a stand-in. When the secretary appears, this is where
 the split happens.
 
 Applicability (2026-09-14): `chains_for` drops chains that can do nothing on the
-node:
-  * FERTILIZE for age < -2: the engine's fertilize effect covers the day itself
-    plus two more (kaggriculture.py: fertilized_until_day = day + 2), so an
-    earlier dose cannot reach the start of the effective window.
-  * HARVEST for age < 0 (nothing produced before the first yield day) and when
-    yield_units == 0 (harvesting zero units only burns the hour).
+node, and the age windows come from the engine's own crop tables (owner's items
+2 and 8), not from a constant:
+  * HARVEST only from `first_yield_day - crop_age_origin` on: the engine refuses
+    it before the first yield day, and for MELON the golden window opens four
+    days earlier than that first yield day.
+  * FERTILIZE only inside `_fert_window`: the dose covers its own day plus two
+    (kaggriculture.py:481) and must be able to reach an effective day - the
+    golden window for a one-shot crop, a production night for an ongoing one
+    (whose first night is the night of age -1, so age -3 is still useful).
+  * HARVEST is dropped when `yield_units == 0` (it would only burn the hour).
+  * CARE only together with FEED (the engine consumes `cared_today` with
+    `fed_today`: a CARE-only chain is a one-hour no-op).
 
 graph.py now does both ends of this: it prices every chain through
 `cost_vector` / `produce_vector` and passes each node's own age and yield_units
@@ -60,11 +66,15 @@ never runs an animal op, an animal entity never plants.
 from __future__ import annotations
 
 from itertools import combinations
+from pathlib import Path
 
 from kaggle_environments.envs.kaggriculture import kaggriculture as K
 
-from tile_dp.tile_state import (KIND_ANIMAL, KIND_EMPTY_STRUCTURE, KIND_NONE,
-                                KIND_PLANT, KIND_WEED)
+from tile_dp.tile_state import (EMPTY_KIND_OF_STRUCTURE, EMPTY_KINDS,
+                                KIND_ANIMAL, KIND_EMPTY_COOP,
+                                KIND_EMPTY_PASTURE, KIND_NONE, KIND_PLANT,
+                                KIND_WEED, KEY_BITS, TURNS_PER_DAY,
+                                crop_age_origin)
 
 RES_LABOR = "LABOR_HOURS"
 RES_FERTILIZER = "FERTILIZER"
@@ -168,7 +178,13 @@ _ANIMAL_SUBSETS: list[tuple[str, ...]] = [
 #                    HARVEST is dropped for age < 0 (F026) by the filter
 #  ANIMAL          : subsets of {FEED, CARE, HARVEST, COLLECT_FERTILIZER};
 #                    CARE only together with FEED (no-op otherwise)
-#  EMPTY_STRUCTURE : NO_ACT | PLACE_ANIMAL     (+ the DIG layering)
+#  EMPTY_COOP      : NO_ACT | PLACE_ANIMAL     (+ the DIG layering); only the
+#                    GOOSE candidates are tried on it
+#  EMPTY_PASTURE   : NO_ACT | PLACE_ANIMAL     (+ the DIG layering); only the
+#                    COW / SHEEP candidates are tried on it
+# BUILD_* need a NONE tile and DIG frees any of these back to NONE
+# (kaggriculture.py:484-503, probed 2026-09-14): a structure appears only on a
+# bare tile and disappears into one.
 NONE_CHAINS_CROP: tuple[tuple[str, ...], ...] = (
     (NO_ACT,), ("PLANT", "WATER"))
 NONE_CHAINS_ANIMAL: tuple[tuple[str, ...], ...] = (
@@ -185,64 +201,83 @@ NONE_CHAINS: tuple[tuple[str, ...], ...] = (NONE_CHAINS_CROP
 # convert a tile from one kind to another (owner's rule). DIG never touches a
 # tile that holds an animal (kaggriculture.py: DIG returns early then) and DIG
 # on a bare tile is a no-op.
-_KIND_AFTER: dict[str, dict[str, str]] = {
-    KIND_NONE: {"PLANT": KIND_PLANT, "BUILD": KIND_EMPTY_STRUCTURE},
-    KIND_PLANT: {"DIG": KIND_NONE},
-    KIND_WEED: {"DIG": KIND_NONE},
-    KIND_EMPTY_STRUCTURE: {"DIG": KIND_NONE, "PLACE": KIND_ANIMAL,
-                           "PLACE_ANIMAL": KIND_ANIMAL},
-    KIND_ANIMAL: {},
-}
+# DIG turns exactly these kinds back into NONE: the engine's DIG removes a
+# plant, a weed or an EMPTY coop/pasture, refuses a tile that holds an animal
+# and does nothing on a NONE tile (kaggriculture.py:484-491).
+DIGGABLE_KINDS: frozenset[str] = frozenset((KIND_PLANT, KIND_WEED,
+                                           KIND_EMPTY_COOP,
+                                           KIND_EMPTY_PASTURE))
 
 
-def _kind_after(kind: str, ops: tuple[str, ...]) -> str:
-    """Tile kind after running `ops` on `kind` (known transitions only)."""
+def _kind_after(kind: str, ops: tuple[str, ...],
+                entity: str | None = None) -> str:
+    """Tile kind after running `ops` on `kind` (known transitions only).
+
+    A structure's kind follows the entity (BUILD_COOP vs BUILD_PASTURE), so the
+    transition needs the entity that a constructive op names.
+    """
     for op in ops:
-        kind = _KIND_AFTER.get(kind, {}).get(op, kind)
+        if op == "PLANT":
+            kind = KIND_PLANT
+        elif op == "BUILD":
+            if entity in K.ANIMALS:
+                kind = EMPTY_KIND_OF_STRUCTURE[K.ANIMALS[entity]["structure"]]
+        elif op in ("PLACE", "PLACE_ANIMAL"):
+            kind = KIND_ANIMAL
+        elif op == "DIG":
+            kind = KIND_NONE
     return kind
 
 
-def _dig_tail(kind: str, head: tuple[str, ...]) -> list[tuple[str, ...]]:
+def _dig_tail(kind: str, head: tuple[str, ...],
+              entity: str | None = None) -> list[tuple[str, ...]]:
     """Variants that put DIG after `head` (empty head = DIG is the first op).
 
-    Each variant ends with DIG (tile -> NONE) or with one full NONE chain; a
-    follow-up that rebuilds the kind the tile had before DIG is dropped.
+    Each variant ends with DIG (tile -> NONE) or with one full NONE chain.
+    Nothing is dropped here for "the kind does not change" any more (owner
+    2026-09-14): digging a crop and planting the same crop again is a real
+    option (it restarts the lifecycle, which matters for a crop past its golden
+    window), and digging an empty COOP to build a COOP again is a real cost. The
+    variants that truly add nothing are removed by the graph's Pareto rule
+    instead - same next state, componentwise no more cost - which is where the
+    decision belongs.
     """
-    if "DIG" not in _KIND_AFTER.get(kind, {}):
+    if kind not in DIGGABLE_KINDS:
         return []
-    before = _kind_after(kind, head)
-    if "DIG" not in _KIND_AFTER.get(before, {}):
+    before = _kind_after(kind, head, entity)
+    if before not in DIGGABLE_KINDS:
         return []
     out: list[tuple[str, ...]] = [head + ("DIG",)]
     for follow in NONE_CHAINS:
         if follow == (NO_ACT,):
             continue
-        # Same-kind rebuild is pointless (dig a plant, replant the same crop),
-        # except an empty structure may change: COOP <-> PASTURE is legal
-        # (owner 2026-09-14). The graph drops the identical-structure case.
-        if (_kind_after(KIND_NONE, follow) == before
-                and not (before == KIND_EMPTY_STRUCTURE and "BUILD" in follow)):
-            continue                      # nothing changes: pointless variant
         out.append(head + ("DIG",) + follow)
     return out
 
 
-def _layer(kind: str, base: tuple[tuple[str, ...], ...]
-           ) -> tuple[tuple[str, ...], ...]:
+def _layer(kind: str, base: tuple[tuple[str, ...], ...],
+           entity: str | None = None) -> tuple[tuple[str, ...], ...]:
     """Base chains plus every legal DIG layering of them (dedup, order kept)."""
     out: list[tuple[str, ...]] = list(base)
-    out += _dig_tail(kind, ())                    # DIG as the first op
+    out += _dig_tail(kind, (), entity)            # DIG as the first op
     for chain in base:
         if chain and chain[-1] == "HARVEST":      # DIG right after HARVEST
-            out += _dig_tail(kind, chain)
+            out += _dig_tail(kind, chain, entity)
     return tuple(dict.fromkeys(out))
 
 # Every kind below is layered with DIG (`_layer`): base chains + DIG first +
 # DIG right after HARVEST, with their NONE follow-ups.
 WEED_CHAINS: tuple[tuple[str, ...], ...] = _layer(
     KIND_WEED, ((NO_ACT,), ("DIG",)))
-EMPTY_STRUCTURE_CHAINS: tuple[tuple[str, ...], ...] = _layer(
-    KIND_EMPTY_STRUCTURE, ((NO_ACT,), ("PLACE_ANIMAL",)))
+# An empty structure takes an animal of ITS OWN structure only (the graph's
+# candidates do that filter) and can be dug back to NONE; BUILD is absent here
+# on purpose, the engine builds on a NONE tile only.
+EMPTY_STRUCTURE_BASE: tuple[tuple[str, ...], ...] = ((NO_ACT,),
+                                                    ("PLACE_ANIMAL",))
+EMPTY_COOP_CHAINS: tuple[tuple[str, ...], ...] = _layer(KIND_EMPTY_COOP,
+                                                        EMPTY_STRUCTURE_BASE)
+EMPTY_PASTURE_CHAINS: tuple[tuple[str, ...], ...] = _layer(
+    KIND_EMPTY_PASTURE, EMPTY_STRUCTURE_BASE)
 CROP_CHAINS: tuple[tuple[str, ...], ...] = _layer(
     KIND_PLANT, tuple(_CROP_SUBSETS))
 CROP_CHAINS_YOUNG: tuple[tuple[str, ...], ...] = _layer(
@@ -258,12 +293,14 @@ CHAINS_BY_KIND: dict[str, tuple[tuple[str, ...], ...]] = {
     KIND_WEED: WEED_CHAINS,
     KIND_PLANT: CROP_CHAINS,
     KIND_ANIMAL: ANIMAL_CHAINS,
-    KIND_EMPTY_STRUCTURE: EMPTY_STRUCTURE_CHAINS,
+    KIND_EMPTY_COOP: EMPTY_COOP_CHAINS,
+    KIND_EMPTY_PASTURE: EMPTY_PASTURE_CHAINS,
 }
 
 _REGISTRY: list[tuple[str, ...]] = []
 for c in (NONE_CHAINS_CROP + NONE_CHAINS_ANIMAL + WEED_CHAINS
-          + EMPTY_STRUCTURE_CHAINS + CROP_CHAINS + ANIMAL_CHAINS):
+          + EMPTY_COOP_CHAINS + EMPTY_PASTURE_CHAINS + CROP_CHAINS
+          + ANIMAL_CHAINS):
     if c not in _REGISTRY:
         _REGISTRY.append(c)
 
@@ -272,7 +309,17 @@ CHAIN_ID_OF: dict[tuple[str, ...], int] = {c: i for i, c in enumerate(_REGISTRY)
 
 
 def chain_ops(chain_id: int) -> tuple[str, ...]:
-    """Decode a chain id into its op-name tuple (boundary function)."""
+    """Decode a chain id into its op-name tuple (boundary function).
+
+    An id outside the registry RAISES with the range in the message (owner's
+    item 7): the id is a position in `CHAIN_NAMES`, so an artifact built with
+    another registry would otherwise decode into a wrong chain or die with a
+    bare IndexError far from the cause.
+    """
+    if not 0 <= chain_id < len(CHAIN_NAMES):
+        raise ValueError(f"chain id {chain_id} outside the registry "
+                         f"(0..{len(CHAIN_NAMES) - 1}): artifact and registry "
+                         "disagree, rebuild it")
     return CHAIN_NAMES[chain_id]
 
 
@@ -289,6 +336,78 @@ def _worker_hours(ops: tuple[str, ...]) -> int:
 def chain_labor(ops: tuple[str, ...]) -> int:
     """Worker hours of a chain (thin view of `chain_requirements`)."""
     return _worker_hours(ops)
+
+
+# Engine steps one op costs the executor: a market buy rides along with a PASS,
+# a PICKUP is its own step and the act itself is the last one. Ops absent here
+# cost exactly one step (WATER, CARE, DIG, HARVEST, COLLECT_FERTILIZER); NO_ACT
+# is the idle chain and asks no worker for anything, so it costs none.
+OP_STEPS: dict[str, int] = {"PLANT": 2, "FERTILIZE": 3, "FEED": 3,
+                            "PLACE": 3, "PLACE_ANIMAL": 3, NO_ACT: 0}
+
+
+def chain_steps(ops: tuple[str, ...]) -> int:
+    """Engine steps a chain needs, i.e. the turns it fills within one day.
+
+    Owner's item 14: the registry contract has to bound the DAY the chain
+    occupies, not only the worker-hour count - the engine gives a farmer
+    `turns_per_day` turns and a chain that needs more steps than that can never
+    be run in one day.
+    """
+    return sum(OP_STEPS.get(op, 1) for op in ops if op not in MARKET_OPS)
+
+
+def registry_fingerprint() -> str:
+    """Fingerprint of the chain registry (owner's item 7).
+
+    Chain ids are positions in `CHAIN_NAMES`, so they shift whenever a list
+    changes (they did, twice, while this file was being fixed). An artifact
+    stores ids, so it is only readable together with the exact registry that
+    produced it: `TileGraph.save` writes this fingerprint and `load` refuses a
+    mismatch instead of decoding the ids into the wrong chains.
+    """
+    from hashlib import sha256
+    joined = "\n".join(chain_name(c) for c in CHAIN_NAMES)
+    return sha256(joined.encode()).hexdigest()[:16]
+
+
+def engine_fingerprint() -> str:
+    """Fingerprint of the engine source this graph decodes against.
+
+    The rules the graph encodes (harvest windows, fertilizer dose, day length,
+    dry limit) live in kaggriculture.py: if that file changes, an artifact built
+    from the old rules must not be reused. Hashing it turns that into a
+    mechanical check instead of a promise.
+    """
+    from hashlib import sha1
+    return sha1(Path(K.__file__).read_bytes()).hexdigest()[:8]
+
+
+def contract_id() -> str:
+    """What an artifact IS, computed - never a hand-typed version.
+
+    v15/v16/v17 were labels bumped by hand at every edit: they said nothing
+    about the content and could not detect a mismatch by themselves (owner,
+    2026-09-14: why mint a version while the first state is still unfinished - a
+    version is a property of the product, not of an iteration).
+    Instead, an artifact carries the fingerprint of everything it depends on -
+    the chain registry, the engine source, the day length and the key layout -
+    so a changed input makes an old artifact unusable by construction. The first
+    product (this tile lifecycle graph) is unfinished, so nothing is stamped
+    with a version number yet.
+    """
+    return (f"tile-dp/reg={registry_fingerprint()}"
+            f"+eng={engine_fingerprint()}+tpd={TURNS_PER_DAY}+pb={KEY_BITS}")
+
+
+# Contract: every chain fits one engine day (owner's item 14). The guard that
+# only looked at worker hours (8 at most, `chain_labor`) could never fire: the
+# engine's own limit is the number of turns a day has.
+_OVERLONG_CHAINS = tuple(c for c in CHAIN_NAMES
+                         if chain_steps(c) > TURNS_PER_DAY)
+if _OVERLONG_CHAINS:
+    raise AssertionError(f"chains needing more than {TURNS_PER_DAY} steps "
+                         f"(one day): {_OVERLONG_CHAINS}")
 
 
 def chain_requirements(entity: str | None,
@@ -341,13 +460,26 @@ def domain_ok(ops: tuple[str, ...], entity: str) -> bool:
 
 
 def entity_code_of(entity: str | None) -> int:
-    """Small int code of an entity name (0 = none; v16, decision 10)."""
-    return 0 if entity is None else ENTITY_CODE[entity]
+    """Small int code of an entity name (0 = none).
+
+    An unknown entity RAISES (owner, 2026-09-14): silently coding it as 0 mixed
+    it up with "no entity at all".
+    """
+    if entity is None:
+        return 0
+    if entity not in ENTITY_CODE:
+        raise ValueError(f"unknown entity {entity!r}: not one of {ENTITY_NAMES}")
+    return ENTITY_CODE[entity]
 
 
 def entity_of_code(code: int) -> str | None:
-    """Inverse of `entity_code_of` (0 = none)."""
-    return ENTITY_OF_CODE.get(code)
+    """Inverse of `entity_code_of` (0 = none; an unknown code raises)."""
+    if code == 0:
+        return None
+    if not 0 < code <= len(ENTITY_NAMES):
+        raise ValueError(f"entity code {code} is out of range 0.."
+                         f"{len(ENTITY_NAMES)}")
+    return ENTITY_OF_CODE[code]
 
 
 def cost_vector(entity: str | None, ops: tuple[str, ...]) -> list[int]:
@@ -387,16 +519,50 @@ def ops_of_name(name: str) -> tuple[str, ...]:
     return tuple(name.split("+"))
 
 
-def _applicable(ops: tuple[str, ...], age: int | None,
-                yield_units: int | None) -> bool:
+def _fert_window(spec: dict) -> tuple[int, int]:
+    """Ages where a FERTILIZE can still reach an effective day (engine tables).
+
+    The dose covers its own day plus two (kaggriculture.py:481). A one-shot crop
+    earns it only through WATER inside its golden window, so the useful ages run
+    from -2 up to the window's end. An ongoing crop earns it on the production
+    nights, which sit at ages k * interval - 1 for k = 1..max_yield: the first
+    one is the night of age -1, so the first useful age is -3 (owner's item 8:
+    the old -2 bound dropped a real dose) and the last is the last such night.
+    """
+    if spec.get("ongoing"):
+        last_night = (int(spec["max_yield"]) - 1) * int(spec["interval"]) - 1
+        return -3, last_night
+    return -2, int(spec["max_yield_day"]) - crop_age_origin(spec)
+
+
+def _harvest_min_age(spec: dict) -> int:
+    """First age at which the engine lets HARVEST succeed (kaggriculture.py:453).
+
+    The engine refuses HARVEST while `day - planted_day < first_yield_day`, but
+    the model's age counts from `crop_age_origin`, which for a one-shot crop is
+    the START OF THE GOLDEN WINDOW: MELON's window opens on day 6 while its
+    first yield day is 10, so ages 0..3 were "harvestable" in the model and
+    refused by the engine (owner's item 2: 278 of the 377 MELON harvest edges
+    were phantom).
+    """
+    return int(spec["first_yield_day"]) - crop_age_origin(spec)
+
+
+def _applicable(ops: tuple[str, ...], age: int | None, yield_units: int | None,
+                entity: str | None = None) -> bool:
     """False when the chain is a guaranteed no-op on the node (2026-09-14)."""
     if "CARE" in ops and "FEED" not in ops:
         return False    # CARE only counts with FEED (fed_today and cared_today)
-    if age is not None and age < -2 and "FERTILIZE" in ops:
-        return False        # a 3-day fertilize effect cannot reach the window
+    spec = K.CROPS.get(entity) if entity is not None else None
+    if "FERTILIZE" in ops and age is not None and spec is not None:
+        lo, hi = _fert_window(spec)
+        if not lo <= age <= hi:
+            return False    # the 3-day dose cannot reach an effective day
     if "HARVEST" in ops:
-        if age is not None and age < 0:
+        if age is not None and spec is not None and age < _harvest_min_age(spec):
             return False    # nothing produced before the first yield day
+        if age is not None and spec is None and age < 0:
+            return False    # an animal produces from cycle age 0 on
         if yield_units is not None and yield_units <= 0:
             return False    # harvesting zero units only burns the hour
     return True
@@ -404,12 +570,14 @@ def _applicable(ops: tuple[str, ...], age: int | None,
 
 def chains_for(kind: str, age: int | None = None,
                animal_graph: bool = False,
-               yield_units: int | None = None) -> list[tuple[str, ...]]:
+               yield_units: int | None = None,
+               entity: str | None = None) -> list[tuple[str, ...]]:
     """Applicable chains of a node kind BEFORE pruning, after the filters.
 
     `animal_graph=True` only SELECTS the animal subset of the single NONE list
     (NONE is one state; the graph decides which start chains it may run).
-    `age` / `yield_units` prune chains that would do nothing (see module doc).
+    `entity` picks the crop / animal spec the age windows come from, so a MELON
+    node is not harvested before its own first yield day (owner's items 2, 8).
     """
     if kind == KIND_NONE:
         base = NONE_CHAINS_ANIMAL if animal_graph else NONE_CHAINS_CROP
@@ -420,8 +588,8 @@ def chains_for(kind: str, age: int | None = None,
         base = ANIMAL_CHAINS
     elif kind == KIND_WEED:
         base = WEED_CHAINS
-    elif kind == KIND_EMPTY_STRUCTURE:
-        base = EMPTY_STRUCTURE_CHAINS
+    elif kind in EMPTY_KINDS:
+        base = CHAINS_BY_KIND[kind]
     else:
         return []
-    return [c for c in base if _applicable(c, age, yield_units)]
+    return [c for c in base if _applicable(c, age, yield_units, entity)]
