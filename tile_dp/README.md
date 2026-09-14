@@ -20,6 +20,9 @@ idle to the next day start.
 Counts are `build_graph()` output with `ENGINE_TAG = tile-dp-v13`
 (`artifacts/tile_dp/build_report.json`). Animal graphs now carry one
 `EMPTY_STRUCTURE` node each (the `BUILD` chain, v13).
+The chain registry has since moved to **v14** (DIG layering), so these numbers
+are still the v13 build: the graphs must be rebuilt (edge counts will grow) in
+the graph's turn.
 
 ## Known issue — canonical replay vs node label
 
@@ -80,7 +83,7 @@ replay exists), (b) crop `y` is off by one on some fert histories, (c) animal
     production; the model caps the state at max_held.
   - `yield`: units on the animal (0..max_held).
 
-## Action chains (v13)
+## Action chains (v14)
 
 Within one day, ops run in canonical order (Hossein's rule):
 - crops: `PLANT → FERTILIZE → WATER → HARVEST` (+ DIG last for clearing)
@@ -90,24 +93,56 @@ A chain is the set of WORKER ops applied on one tile in one day. `NO_ACT` = the
 worker does nothing on this tile (0 hours); the day still passes and the state
 advances. The engine's `PASS` (1 hour) is never used in chain definitions.
 
-Chain tables (hand-written, before pruning): `NONE` crop: `NO_ACT | PLANT,WATER`;
-`NONE` animal: `NO_ACT | BUILD | BUILD,PLACE | BUILD,PLACE,FEED`; `WEED`:
-`NO_ACT | DIG`; `EMPTY_STRUCTURE`: `NO_ACT | PLACE_ANIMAL`; mature crop/animal
-states: every subset of their op set; young crop: subsets without HARVEST
-(F026). `BUILD` is a single worker action that turns `NONE` into a structure, so
+Per-kind chains (explicit lists in `chains.py`, before pruning). `NONE` is ONE
+state for crops and animals; the two selections are what the graphs pick from:
+
+| kind | chains | what |
+|---|---|---|
+| `NONE` crop | 2 | `NO_ACT`, `PLANT+WATER` (F002) |
+| `NONE` animal | 5 | `NO_ACT`, `BUILD`, `BUILD+PLACE`, `BUILD+PLACE+FEED`, `BUILD+PLACE+FEED+CARE` |
+| `WEED` | 7 | `NO_ACT`, `DIG` + the DIG layering |
+| `PLANT` mature | 33 | subsets of {FERTILIZE, WATER, HARVEST} + the layering |
+| `PLANT` young | 9 | the same without HARVEST (F026) |
+| `ANIMAL` | 16 | subsets of {FEED, CARE, HARVEST, COLLECT_FERTILIZER}, no DIG |
+| `EMPTY_STRUCTURE` | 8 | `NO_ACT`, `PLACE_ANIMAL` + the layering |
+
+`BUILD` is a single worker action that turns `NONE` into a structure, so
 `EMPTY_STRUCTURE` is a real state again (`NONE → EMPTY_STRUCTURE → ANIMAL`, and
 an escape lands back in `EMPTY_STRUCTURE` because the structure remains).
+Registry: **54** chains (`CHAIN_NAMES`), 26 of them carry `DIG`. Chain names are
+stable (`chain_name` / `ops_of_name`), ids are internal, and the registry is one
+flat list — a layered chain may cross domains (a `DIG` follow-up can `BUILD`),
+so the graph selects the subset of its own domain.
 
-Cost model (contract, 2026-09-14):
-- `LABOR_HOURS` = number of worker ops. Market buys are not worker actions and
-  PICKUPs are not modelled here, so `(BUILD, PLACE, FEED)` = 3 hours.
-- Requirements are per op and summed by the chain: `PLANT` 1 seed,
-  `FERTILIZE` 1 fertilizer, `FEED` 1 wheat, `PLACE` 1 animal.
+**DIG layering (2026-09-14, Hossein's rule):** a chain may START with `DIG` or
+put `DIG` right after `HARVEST`, and may then run one full `NONE` chain, so a
+single day can convert a tile from one kind to another. Rules (`chains.py`:
+`_layer` / `_dig_tail`): one DIG per chain; DIG only where the tile is diggable
+(never on an occupied animal tile — the engine's `DIG` returns early there); the
+follow-up must not rebuild the kind the tile had before DIG, except an empty
+structure (COOP ↔ PASTURE is legal; the graph drops the identical-structure
+case). The longest chain is 8 hours
+(`FERTILIZE+WATER+HARVEST+DIG+BUILD+PLACE+FEED+CARE`) — nothing tops the day.
+
+Cost model (contract, 2026-09-14) — `chain_requirements` is the single source:
+- `LABOR_HOURS` = number of ops in the `WORKER_OPS` allow-list. Market buys
+  (`BUY_*`) are the market's action and a `PICKUP` is a carry of the secretary
+  layer, so both cost 0 hours: `(BUILD, PLACE, FEED)` = 3, `(PICKUP,)` = 0.
+- Inputs per op, summed by the chain: `PLANT` 1 seed of the entity's crop,
+  `FERTILIZE` 1 fertilizer, `FEED` 1 wheat, and `PLACE` / `PLACE_ANIMAL` 1
+  animal of the entity's species (`ANIMAL_GOOSE` / `ANIMAL_COW` /
+  `ANIMAL_SHEEP`).
 - Money is NOT in the state (out of scope by design); the shed is not modelled.
 - **One chain = exactly one day**: after the ops the sim is stepped until the
   day rolls over. A chain that would span more than one day raises
   `ChainSpansDays`, and an op the engine silently refuses raises
   `ChainNotRealised` — both are loud, never dropped.
+
+Applicability filters in `chains_for` (2026-09-14): `FERTILIZE` is dropped for
+`age < -2` (the engine's fertilize effect covers the day itself plus two, so an
+earlier dose cannot reach the window) and `HARVEST` for `age < 0` or
+`yield_units == 0`. These filters need `age` (for ANIMAL too) and `yield_units`
+from the caller, which `graph.py` does not pass yet — pending, graph's turn.
 
 **Secretary gap (open):** the inputs (seed / fertilizer / wheat / animal) have
 to be bought and carried by a secretary layer that does NOT exist yet; until

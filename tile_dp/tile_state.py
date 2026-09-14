@@ -35,7 +35,14 @@ CROP_NAMES: tuple[str, ...] = ("WHEAT", "CARROT", "TOMATO", "STRAWBERRY",
                                "MELON")
 ANIMAL_NAMES: tuple[str, ...] = ("GOOSE", "COW", "SHEEP")
 
+# Engine step granularity: one day is 24 steps. This is the single definition
+# in tile_dp; graph.py still carries its own N_TURNS_PER_DAY copy (TODO: import
+# this one in the graph's turn, owner 2026-09-14).
 TURNS_PER_DAY = 24
+
+# Fixed vocabulary of the name fields in `pack` (crops, then animals, then the
+# two structures); the bit field stores index + 1 so 0 means "no name".
+_VOCAB: tuple[str, ...] = CROP_NAMES + ANIMAL_NAMES + ("COOP", "PASTURE")
 
 
 def crop_age_origin(spec: dict) -> int:
@@ -47,12 +54,6 @@ def crop_age_origin(spec: dict) -> int:
     if spec.get("ongoing"):
         return int(spec["max_yield_day"])
     return (int(spec["max_yield_day"]) + 1) // 2
-
-_SEED_RES: dict[str, str] = {
-    "WHEAT": "SEED_WHEAT", "CARROT": "SEED_CARROT",
-    "TOMATO": "SEED_TOMATO", "STRAWBERRY": "SEED_STRAWBERRY",
-    "MELON": "SEED_MELON",
-}
 
 
 @dataclass(frozen=True)
@@ -76,6 +77,13 @@ class TileState:
         crop_code = _name_code(self.crop)
         animal_code = _name_code(self.animal)
         struct_code = _name_code(self.structure)
+        # Bit layout (50 of 64 bits used): yield_units 0..7, fert_left 8..10,
+        # consec 11..12, unfed 13..14, care_bank 15..20, age+64 21..28,
+        # crop 29..33, animal 34..38, structure 39..44, kind 47..49.
+        # KNOWN LIMITATION (documented, owner 2026-09-14: guard not wanted yet):
+        # no range check - a value wider than its field spills silently into the
+        # next one, so two different states could share a key; only the engine's
+        # own ranges keep this safe today.
         return (int(self.yield_units)
                 | (self.fert_left << 8)
                 | (self.consec << 11)
@@ -119,22 +127,19 @@ class TileState:
 
 
 def _name_code(name: str | None) -> int:
-    if name is None:
+    """Code of a name in the fixed vocabulary order (0 = none / unknown)."""
+    if name is None or name not in _VOCAB:
         return 0
-    # stable small code from a fixed vocabulary order
-    vocab = list(CROP_NAMES) + list(ANIMAL_NAMES) + ["COOP", "PASTURE"]
-    return vocab.index(name) + 1 if name in vocab else 0
+    return _VOCAB.index(name) + 1
 
 
 def _name_from_code(code: int) -> str | None:
     if code == 0:
         return None
-    vocab = list(CROP_NAMES) + list(ANIMAL_NAMES) + ["COOP", "PASTURE"]
-    return vocab[code - 1]
+    return _VOCAB[code - 1]
 
 
-def decode_tile(tile: object, day: int, placed_day: int | None = None
-                ) -> TileState:
+def decode_tile(tile: object, day: int) -> TileState:
     """Engine tile value at day start -> TileState."""
     if tile is None:
         return TileState(KIND_NONE, None, None, None, 0, 0, 0, 0, 0, 0)
@@ -157,11 +162,15 @@ def decode_tile(tile: object, day: int, placed_day: int | None = None
         # one-shot crops, on the night the last unit is produced for
         # ongoing ones) is decoded as WEED: the project never plans on it.
         mls = int(tile.get("max_lifespan_step", -1) or -1)
+        # MAGIC NUMBER (engine, kaggriculture.py:226/800): TODO - pin it with a
+        # probe test against the engine instead of trusting this copy.
         if mls > 0 and day * TURNS_PER_DAY >= mls:
             return TileState(KIND_WEED, None, None, None, 0, 0, 0, 0, 0, 0)
         age = day - (tile.get("planted_day", day) + crop_age_origin(spec))
         fert_left = max(0, tile.get("fertilized_until_day", -1) - day + 1)
         consec = int(tile.get("consecutive_unwatered", 0))
+        # MAGIC NUMBER (engine, kaggriculture.py:783): two dry days turn the
+        # plant into a weed. TODO - pin it with a probe test (owner 2026-09-14).
         if consec >= 2:
             return TileState(KIND_WEED, None, None, None, 0, 0, 0, 0, 0, 0)
         return TileState(KIND_PLANT, crop, None, None, age, consec, 0,

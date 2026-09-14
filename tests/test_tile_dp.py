@@ -143,7 +143,14 @@ def test_chain_one_day_contract() -> None:
     assert chain_labor((NO_ACT,)) == 0
     assert chain_labor(("PLANT", "WATER")) == 2
     assert chain_labor(("BUILD", "PLACE", "FEED")) == 3
-    for ops in list(chains_for("NONE")) + list(chains_for("PLANT", 1)):
+    # The registry is one global list: a DIG follow-up may cross domains (build a
+    # structure after digging a crop). The graph selects its domain, so this crop
+    # test only runs the chains a crop entity can execute (2026-09-14).
+    animal_ops = {"BUILD", "PLACE", "PLACE_ANIMAL", "FEED", "CARE",
+                  "COLLECT_FERTILIZER"}
+    todo = [c for c in list(chains_for("NONE")) + list(chains_for("PLANT", 1))
+            if not set(c) & animal_ops]
+    for ops in todo:
         sim = _new_sim(LIFE_DAYS["CARROT"])
         day0 = int(sim.observations()[0]["day"])
         hops: list[int] = []
