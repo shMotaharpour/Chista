@@ -1,8 +1,14 @@
-"""tile_dp graph build — v11 final: animal states capped at the production
-cycle length (Hossein's convention: age wraps inside the positive
-production range), no runaway growth. States with age beyond
-(max_yield - first_yield + interval) are terminal (collapsed into the
-cycle's top age).
+"""tile_dp graph build — v12: Hossein's age conventions are now enforced
+in the decode that labels every edge.
+
+Crops: age 0 = START OF THE GOLDEN WINDOW for one-shot crops
+((max_yield_day + 1) // 2) and max_yield_day for ongoing crops; the day
+the plant starts turning into a weed (the engine's max_lifespan_step day)
+decodes as WEED, so it is never a planned PLANT day.
+
+Animals: the positive age is the production phase 0..interval-1 (it
+wraps); the negative range 1-first_yield_day..-1 is growing up.
+care_bank is capped at max_held (contract).
 """
 
 from __future__ import annotations
@@ -23,9 +29,9 @@ from tile_dp.chains import (N_RESOURCE, RESOURCE_ID, RES_FERTILIZER,
                             chain_ops, chains_for)
 from tile_dp.tile_state import (KIND_ANIMAL, KIND_EMPTY_STRUCTURE, KIND_NONE,
                                 KIND_PLANT, KIND_WEED, TileState,
-                                decode_tile)
+                                crop_age_origin, decode_tile)
 
-ENGINE_TAG = "tile-dp-v11"
+ENGINE_TAG = "tile-dp-v12"
 LIFE_DAYS = {
     "WHEAT": 7, "CARROT": 6, "TOMATO": 14, "STRAWBERRY": 19, "MELON": 15,
     "GOOSE": 10, "COW": 12, "SHEEP": 12,
@@ -191,7 +197,7 @@ def _exec_chain(sim: FastSim, ops: tuple[str, ...], entity: str,
         spec = K.CROPS[entity]
         base = 0 if spec.get("ongoing") else 1
         nxt = TileState("PLANT", entity, None, None,
-                        1 - spec["first_yield_day"], 0, 0, 0, 0, base)
+                        1 - crop_age_origin(spec), 0, 0, 0, 0, base)
         return nxt, outputs, use
     if placed:
         spec = K.ANIMALS[entity]
@@ -213,7 +219,7 @@ def _replay_crop(sim: FastSim, state: TileState, entity: str) -> None:
         return {"farmer": f, "hands": [], "market": m or []}
 
     spec = K.CROPS[entity]
-    today = state.age + spec["first_yield_day"]
+    today = state.age + crop_age_origin(spec)
     fert_day = (today + state.fert_left - 1) - 2 if state.fert_left > 0 \
         else None
     if fert_day is not None and fert_day < 0:

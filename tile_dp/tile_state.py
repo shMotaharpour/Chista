@@ -2,9 +2,21 @@
 animals. Independent state dims (no coupling — engine-verified).
 
 Crops: (crop, age, consec, fert_left, yield)
-Animals: (animal, cycle_age, unfed, care_bank, yield)
+Animals: (animal, age, unfed, care_bank, yield)
 Kinds: NONE | WEED | PLANT | ANIMAL | EMPTY_STRUCTURE (coop/pasture with
 no animal — PLACE a new animal without DIG).
+
+Age origins (Hossein's convention, 2026-09-14):
+- one-shot crop: age 0 = START OF THE GOLDEN WINDOW = (max_yield_day + 1) // 2;
+  the last planned day is max_yield_day, and the day the plant starts
+  turning into a weed (engine max_lifespan_step) is decoded as WEED.
+- ongoing crop: age 0 = max_yield_day; the last planned day is the last
+  production day (max_yield_day + (max_yield - 1) * interval); the next
+  day (the weed day) is decoded as WEED.
+- animal: age 0 = first_yield_day (placement day itself is intra-day, so
+  the negative range is 1 - first_yield_day .. -1) and the positive range
+  is the production phase 0 .. interval - 1 (it wraps: the calendar age is
+  not a decision variable).
 """
 
 from __future__ import annotations
@@ -22,6 +34,19 @@ KIND_EMPTY_STRUCTURE = "EMPTY_STRUCTURE"
 CROP_NAMES: tuple[str, ...] = ("WHEAT", "CARROT", "TOMATO", "STRAWBERRY",
                                "MELON")
 ANIMAL_NAMES: tuple[str, ...] = ("GOOSE", "COW", "SHEEP")
+
+TURNS_PER_DAY = 24
+
+
+def crop_age_origin(spec: dict) -> int:
+    """Crop day whose age is 0 (Hossein's convention).
+
+    one-shot: START OF GOLDEN WINDOW = (max_yield_day + 1) // 2.
+    ongoing:  max_yield_day.
+    """
+    if spec.get("ongoing"):
+        return int(spec["max_yield_day"])
+    return (int(spec["max_yield_day"]) + 1) // 2
 
 _SEED_RES: dict[str, str] = {
     "WHEAT": "SEED_WHEAT", "CARROT": "SEED_CARROT",
@@ -127,12 +152,14 @@ def decode_tile(tile: object, day: int, placed_day: int | None = None
     if kind == "PLANT":
         crop = tile["crop"]
         spec = K.CROPS[crop]
-        # age origin = FIRST HARVEST DAY (Hossein's convention):
-        # age = day - planted_day - (first_yield_day - 1)... precisely:
-        # the first harvest day (planted_day + first_yield_day) is age 0,
-        # so age = day - (planted_day + first_yield_day).
-        age = day - (tile.get("planted_day", day)
-                     + spec["first_yield_day"])
+        # The day the plant STARTS turning into a weed (the engine stamps
+        # max_lifespan_step for exactly that day: once at plant time for
+        # one-shot crops, on the night the last unit is produced for
+        # ongoing ones) is decoded as WEED: the project never plans on it.
+        mls = int(tile.get("max_lifespan_step", -1) or -1)
+        if mls > 0 and day * TURNS_PER_DAY >= mls:
+            return TileState(KIND_WEED, None, None, None, 0, 0, 0, 0, 0, 0)
+        age = day - (tile.get("planted_day", day) + crop_age_origin(spec))
         fert_left = max(0, tile.get("fertilized_until_day", -1) - day + 1)
         consec = int(tile.get("consecutive_unwatered", 0))
         if consec >= 2:
@@ -147,10 +174,19 @@ def decode_tile(tile: object, day: int, placed_day: int | None = None
                              0, 0, 0, 0, 0)
         spec = K.ANIMALS[animal]
         placed = tile.get("placed_day", day)
+        # age < 0: growing up (placement day is intra-day, so the range is
+        # 1 - first_yield_day .. -1); age >= 0: the production phase, which
+        # wraps inside 0 .. interval - 1.
         cycle_age = day - placed - spec["first_yield_day"]
+        if cycle_age >= 0:
+            cycle_age %= int(spec["interval"])
+        # care_bank is a contract cap (Hossein): the engine can bank more
+        # than max_held before the first production, the model caps it.
+        bank = min(int(tile.get("pending_care_bonus", 0)),
+                   int(spec["max_held"]))
         return TileState(KIND_ANIMAL, None, animal, kind, cycle_age, 0,
                          int(tile.get("consecutive_unfed", 0)), 0,
-                         int(tile.get("pending_care_bonus", 0)),
+                         bank,
                          int(tile.get("yield_units", 0)))
 
     raise ValueError(f"unsupported tile kind {kind!r}")
