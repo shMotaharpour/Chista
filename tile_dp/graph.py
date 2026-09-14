@@ -1,20 +1,60 @@
-"""tile_dp graph build — v12: Hossein's age conventions are now enforced
-in the decode that labels every edge.
+"""tile_dp graph build — v15: ONE tile graph, built by simulation inheritance.
 
+One graph covers the whole tile: every crop and every animal (a bare tile can
+start any of them), the DIG bridges between them and the weed / empty-structure
+states. `build_graph()` builds that merged graph; `build_graph(entity)` runs the
+same search restricted to one entity's chains (test scaffolding: the
+per-entity views the tests build, not artifacts).
+
+Node = the tile state at a day start, key = TileState.pack() (day-invariant: the
+day is a DP dimension and prices are a DP input, so neither is in the artifact).
+Edge = exactly one day, with `from`, `to`, `chain_id`, `entity_code`, `cost[]`
+and `produce[]`. `cost` = inputs consumed + LABOR_HOURS; `produce` = harvest
+units of the entity's product + collected fertilizer. The two are SEPARATE
+18-vectors and are never netted: wheat is both the FEED input and the WHEAT
+crop's product.
+
+Simulation inheritance (decision 6): a node is expanded with the SAME sim that
+produced it (`dict[state_id, FastSim]`), so its edges are computed from the true
+state of the tile that reached it; only the root (NONE, day 0) gets a fresh sim.
+The earlier builder replayed a hand-written canonical history per node instead,
+which regularly landed on another day-start state - measured 184/394 nodes on
+the current chains (186/456 on the older build) - so every edge of such a node
+was computed from the wrong state. `_replay_crop` / `_replay_animal` /
+`_replay_structure` / `_replay_node` and the `replay_mismatch` script were
+deleted, and no older-version artifact or test remains in the tree.
+
+Hossein's age conventions, enforced by the decode that labels every edge.
 Crops: age 0 = START OF THE GOLDEN WINDOW for one-shot crops
-((max_yield_day + 1) // 2) and max_yield_day for ongoing crops; the day
-the plant starts turning into a weed (the engine's max_lifespan_step day)
-decodes as WEED, so it is never a planned PLANT day.
+((max_yield_day + 1) // 2) and max_yield_day for ongoing crops; the day the plant
+starts turning into a weed (the engine's max_lifespan_step day) decodes as WEED,
+so it is never a planned PLANT day. Animals: the positive age is the production
+phase 0..interval-1 (it wraps); the negative range 1-first_yield_day..-1 is
+growing up. care_bank is capped at max_held (contract).
 
-Animals: the positive age is the production phase 0..interval-1 (it
-wraps); the negative range 1-first_yield_day..-1 is growing up.
-care_bank is capped at max_held (contract).
+Assertions (decision 8): a wrong edge must fail the build, never be stored.
+  * before expanding a node, its own sim must decode to the node's state - the
+    invariant sim inheritance rests on;
+  * after every edge the branch sim's tile is decoded and compared with the
+    expected next state: a chain that changes the tile (PLANT / BUILD / PLACE /
+    PLACE_ANIMAL / DIG) must land exactly on the modelled state, full TileState
+    equality, else StateMismatch with both describe() strings;
+  * a growth day (no kind change) must carry the tile's identity one day forward
+    - same kind/crop/animal/structure, age advanced exactly one day, and the
+    engine-independent day bookkeeping implied by the ops (consec / unfed /
+    fert_left). The growth dims themselves (yield_units, care_bank) and the
+    engine's destroy paths (weed death, a one-shot crop harvested away, an
+    escaped animal) are the engine's own answer: they are read from
+    `decode_tile`, because this repo never re-implements the game (R003);
+  * NO_ACT is a whole-chain op: NO_ACT inside a multi-op chain is rejected.
 """
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Iterator
 
 import numpy as np
 
@@ -22,37 +62,132 @@ from kaggle_environments.envs.kaggriculture import kaggriculture as K
 
 from world.fast_sim import FastSim
 
-from tile_dp.chains import (N_RESOURCE, RESOURCE_ID, RES_FERTILIZER,
-                            RES_LABOR, RES_SEED_CARROT, RES_SEED_MELON,
-                            RES_SEED_STRAWBERRY, RES_SEED_TOMATO,
-                            RES_SEED_WHEAT, RES_WHEAT, chain_id_of,
-                            chain_ops, chains_for)
+from tile_dp.chains import (CONSTRUCTIVE_OPS, ENTITY_CODE, ENTITY_NAMES,
+                            MARKET_OPS, N_RESOURCE, NO_ACT, RES_FERTILIZER,
+                            RESOURCE_ID, chain_id_of, chain_name, chain_ops,
+                            chains_for, cost_vector, domain_ok,
+                            entity_code_of, entity_of_code, is_animal,
+                            produce_vector)
 from tile_dp.tile_state import (KIND_ANIMAL, KIND_EMPTY_STRUCTURE, KIND_NONE,
-                                KIND_PLANT, KIND_WEED, TileState,
+                                KIND_PLANT, KIND_WEED, TURNS_PER_DAY, TileState,
                                 crop_age_origin, decode_tile)
 
-ENGINE_TAG = "tile-dp-v13"
-LIFE_DAYS = {
-    "WHEAT": 7, "CARROT": 6, "TOMATO": 14, "STRAWBERRY": 19, "MELON": 15,
-    "GOOSE": 10, "COW": 12, "SHEEP": 12,
-}
+ENGINE_TAG = "tile-dp-v15"
+
+# Which structure an entity lives in (engine data: BUILD needs it, and it is
+# how the EMPTY_STRUCTURE candidates are decided). Crops are absent on purpose.
+_STRUCTURE_OF = {name: K.ANIMALS[name]["structure"] for name in K.ANIMALS}
+
+
+@dataclass(frozen=True)
+class BuildSpec:
+    """What a build asks for: the merged tile graph or one entity's graph."""
+
+    entity: str | None = None
+    progress: bool = False
+
+    @property
+    def entity_kind(self) -> str:
+        """'tile' for the merged graph, else 'crop' / 'animal'."""
+        if self.entity is None:
+            return "tile"
+        return "animal" if is_animal(self.entity) else "crop"
+
+
+@dataclass(frozen=True)
+class BuildReport:
+    """Build metadata kept beside the artifact (no `life_days`: a horizon guess
+    the merged graph does not have any more)."""
+
+    spec: BuildSpec
+    n_states: int
+    n_edges: int
+    n_expanded: int
+    n_noop_edges: int
+    kinds: dict[str, int]
+
+    def describe(self) -> str:
+        return (f"{self.spec.entity or 'TILE'}: states {self.n_states}, "
+                f"edges {self.n_edges}, expanded {self.n_expanded}, "
+                f"no-op edges dropped {self.n_noop_edges}")
+
+
+@dataclass(frozen=True)
+class ChainOutcome:
+    """What one executed chain produced (decision 11)."""
+
+    next_state: TileState
+    harvest: int
+    fert_collect: int
+    cost: list[int]
+    produce: list[int]
+
+
+@dataclass(frozen=True)
+class Edge:
+    """One CSR edge, decoded: `from_id -> to_id` by `chain_id`, for `entity_code`."""
+
+    from_id: int
+    to_id: int
+    chain_id: int
+    entity_code: int
+    cost: tuple[int, ...]
+    produce: tuple[int, ...]
+
+    @property
+    def ops(self) -> tuple[str, ...]:
+        return chain_ops(self.chain_id)
+
+    @property
+    def name(self) -> str:
+        return chain_name(self.ops)
+
+    @property
+    def entity(self) -> str | None:
+        return entity_of_code(self.entity_code)
+
+    @property
+    def harvest_units(self) -> int:
+        """Product units of the edge: the entity's yield, fertilizer excluded.
+
+        This is the scalar the dominance pruning compares.
+        """
+        return sum(self.produce) - self.produce[RESOURCE_ID[RES_FERTILIZER]]
 
 
 @dataclass(frozen=True)
 class TileGraph:
-    entity: str
-    entity_kind: str
-    life_days: int
+    """One tile's lifecycle graph: day-invariant states, one-day edges (CSR).
+
+    `edge_cost` / `edge_produce` are (n_edges, N_RESOURCE) int matrices and are
+    never netted. State `s` owns the edge slice
+    [edge_offsets[s], edge_offsets[s + 1]).
+    """
+
+    spec: BuildSpec
+    report: BuildReport
     n_states: int
     state_keys: np.ndarray
     key_index: dict[int, int]
     edge_offsets: np.ndarray
     edge_next: np.ndarray
     edge_chain: np.ndarray
-    edge_prod: np.ndarray
-    edge_fert_out: np.ndarray
-    edge_use: np.ndarray
+    edge_entity: np.ndarray
+    edge_cost: np.ndarray
+    edge_produce: np.ndarray
     engine_tag: str
+
+    @property
+    def entity(self) -> str | None:
+        return self.spec.entity
+
+    @property
+    def entity_kind(self) -> str:
+        return self.spec.entity_kind
+
+    @property
+    def n_edges(self) -> int:
+        return int(self.edge_offsets[-1])
 
     def state_id_of(self, state: TileState) -> int:
         pos = self.key_index.get(state.pack())
@@ -64,65 +199,74 @@ class TileGraph:
         return TileState.unpack(int(self.state_keys[state_id]))
 
     def edges_of(self, state_id: int) -> tuple[int, int]:
-        return int(self.edge_offsets[state_id]), int(self.edge_offsets[state_id + 1])
+        return (int(self.edge_offsets[state_id]),
+                int(self.edge_offsets[state_id + 1]))
+
+    def cost_of(self, edge: int, res: str) -> int:
+        """Cost units of one edge, by resource name."""
+        return int(self.edge_cost[edge][RESOURCE_ID[res]])
+
+    def produce_of(self, edge: int, res: str) -> int:
+        """Produced units of one edge, by resource name."""
+        return int(self.edge_produce[edge][RESOURCE_ID[res]])
+
+    def edge_at(self, state_id: int, row: int) -> Edge:
+        """Decode CSR row `row` (a global edge index) of `state_id`."""
+        return Edge(state_id, int(self.edge_next[row]),
+                    int(self.edge_chain[row]), int(self.edge_entity[row]),
+                    tuple(int(v) for v in self.edge_cost[row]),
+                    tuple(int(v) for v in self.edge_produce[row]))
+
+    def edges_from(self, state_id: int) -> Iterator[Edge]:
+        lo, hi = self.edges_of(state_id)
+        return (self.edge_at(state_id, row) for row in range(lo, hi))
 
     def save(self, path: Path) -> None:
+        """Write the artifact: CSR arrays, cost/produce matrices, metadata."""
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         np.savez_compressed(
-            path, entity=self.entity, entity_kind=self.entity_kind,
-            life_days=self.life_days, n_states=self.n_states,
+            path, entity=self.spec.entity or "",
+            merged=bool(self.spec.entity is None),
+            entity_kind=self.entity_kind, n_states=self.n_states,
             state_keys=self.state_keys, edge_offsets=self.edge_offsets,
             edge_next=self.edge_next, edge_chain=self.edge_chain,
-            edge_prod=self.edge_prod, edge_fert_out=self.edge_fert_out,
-            edge_use=self.edge_use, engine_tag=self.engine_tag)
+            edge_entity=self.edge_entity, edge_cost=self.edge_cost,
+            edge_produce=self.edge_produce, engine_tag=self.engine_tag,
+            n_expanded=self.report.n_expanded,
+            n_noop_edges=self.report.n_noop_edges)
 
     @classmethod
     def load(cls, path: Path) -> "TileGraph":
+        """Read an artifact written by `save` (the engine tag must match)."""
         data = np.load(Path(path), allow_pickle=True)
         tag = str(data["engine_tag"])
         if tag != ENGINE_TAG:
             raise ValueError(f"graph engine tag {tag!r} != {ENGINE_TAG!r}; "
                              "rebuild the cache")
+        entity = str(data["entity"]) or None
+        keys = data["state_keys"]
+        kinds: dict[str, int] = {}
+        for key in keys:
+            kind = TileState.unpack(int(key)).kind
+            kinds[kind] = kinds.get(kind, 0) + 1
+        spec = BuildSpec(entity=entity)
         return cls(
-            entity=str(data["entity"]), entity_kind=str(data["entity_kind"]),
-            life_days=int(data["life_days"]), n_states=int(data["n_states"]),
-            state_keys=data["state_keys"],
-            key_index={int(k): i for i, k in enumerate(data["state_keys"])},
+            spec=spec,
+            report=BuildReport(spec=spec, n_states=int(data["n_states"]),
+                               n_edges=int(data["edge_offsets"][-1]),
+                               n_expanded=int(data["n_expanded"]),
+                               n_noop_edges=int(data["n_noop_edges"]),
+                               kinds=kinds),
+            n_states=int(data["n_states"]), state_keys=keys,
+            key_index={int(k): i for i, k in enumerate(keys)},
             edge_offsets=data["edge_offsets"], edge_next=data["edge_next"],
-            edge_chain=data["edge_chain"], edge_prod=data["edge_prod"],
-            edge_fert_out=data["edge_fert_out"], edge_use=data["edge_use"],
+            edge_chain=data["edge_chain"], edge_entity=data["edge_entity"],
+            edge_cost=data["edge_cost"], edge_produce=data["edge_produce"],
             engine_tag=tag)
 
 
-# --------------------------------------------------------------------- build
-
-def _new_sim(life_days: int) -> FastSim:
-    return FastSim({"episodeSteps": (life_days + 10) * 24, "seed": 4242})
-
-
-def _act(farmer, market=None):
-    return {"farmer": farmer, "hands": [], "market": market or []}
-
-
-_SEED_RES = {"WHEAT": "SEED_WHEAT", "CARROT": "SEED_CARROT",
-             "TOMATO": "SEED_TOMATO", "STRAWBERRY": "SEED_STRAWBERRY",
-             "MELON": "SEED_MELON"}
-
-_STRUCTURE_OF = {"GOOSE": "COOP", "COW": "PASTURE", "SHEEP": "PASTURE"}
-
-N_TURNS_PER_DAY = 24
-
-
-def _use_vector(use: list[tuple[str, int]]) -> list[int]:
-    vec = [0] * N_RESOURCE
-    for (res, units) in use:
-        vec[RESOURCE_ID[res]] = units
-    return vec
-
-
-from .chains import MARKET_OPS, NO_ACT, RES_ANIMAL, chain_labor  # v13 model
-
+# ------------------------------------------------------- sim + state helpers
 
 class ChainSpansDays(RuntimeError):
     """A daily chain needed more than one game day (cost-model bug)."""
@@ -132,62 +276,213 @@ class ChainNotRealised(RuntimeError):
     """A chain's op did not land on the tile (the engine refused it)."""
 
 
-def _exec_chain(sim: FastSim, ops: tuple[str, ...], entity: str,
-                entity_kind: str) -> tuple[TileState, dict, list]:
-    """Execute one daily chain; return (next state, outputs, resources).
+class StateMismatch(RuntimeError):
+    """Decision 8: the engine's next state is not the one the chain promises."""
 
-    v13 contract: labour = worker ops only (market buys are the market's
-    action; PICKUPs belong to the secretary layer). NO_ACT = the worker does
-    nothing on this tile while the day still passes. One chain = one day: the
-    sim is stepped until the day rolls over, and a chain that would span more
-    than one day raises ChainSpansDays instead of silently bleeding into day+1.
+
+def _new_sim() -> FastSim:
+    """Fresh tile sim (decision 7): one 30-day season, fixed seed, no weeds.
+
+    The builder walks one day per edge, so 30 days bounds the walk and keeps a
+    node's sim inside its episode. weedSpawnChance 0.0 keeps a bare tile bare: a
+    random WEED would make a tile's next state a function of the RNG instead of
+    the player's chain.
     """
-    day0 = int(sim.observations()[0]["day"])
-    labor = chain_labor(ops)
-    planted = False
-    placed = False
-    built = False
-    outputs: dict = {}
-    use: list[tuple[str, int]] = [(RES_LABOR, labor)]
+    return FastSim({"episodeSteps": 30 * 24, "seed": 4242,
+                    "weedSpawnChance": 0.0})
 
+
+def _act(farmer: list, market: list | None = None) -> dict:
+    """One agent's action dict; the second agent always idles."""
+    return {"farmer": farmer, "hands": [], "market": market or []}
+
+
+def _tile_and_day(sim: FastSim) -> tuple[object, int]:
+    """(tile the worker stands on, current day) - live view, read-only."""
+    obs = sim.observations()
+    me = obs[0]["farms"][0]
+    fx, fy = me["farmer"]
+    return me["tiles"][fy][fx], int(obs[0]["day"])
+
+
+def _state_of(sim: FastSim) -> TileState:
+    """Day-start state of the sim's own tile."""
+    return decode_tile(*_tile_and_day(sim))
+
+
+def _next_age(state: TileState) -> int:
+    """Age of the same tile one day later (crop age / animal cycle age)."""
+    if state.kind == KIND_PLANT:
+        return state.age + 1
+    nxt = state.age + 1
+    return nxt % int(K.ANIMALS[state.animal]["interval"]) if state.age >= 0 \
+        else nxt
+
+
+def _expected_next(state: TileState, ops: tuple[str, ...],
+                   entity: str | None) -> TileState | None:
+    """The state a tile-changing chain must land on, None for a growth day.
+
+    Only the chains that change the tile are modelled here - they are exactly
+    the ones where expanding the wrong parent state silently invents a node. A
+    growth day's yield / care_bank bookkeeping is the engine's own answer and is
+    not re-modelled (the graph is engine truth; R003).
+    """
+    if "PLANT" in ops:
+        spec = K.CROPS[entity]
+        base = 0 if spec.get("ongoing") else 1
+        return TileState(KIND_PLANT, entity, None, None,
+                         1 - crop_age_origin(spec), 0, 0, 0, 0, base)
+    if "PLACE" in ops or "PLACE_ANIMAL" in ops:
+        spec = K.ANIMALS[entity]
+        # Placement day, then the nightly refresh: FEED keeps the animal fed,
+        # CARE together with FEED banks one care day (engine
+        # _daily_refresh_animals).
+        unfed = 0 if "FEED" in ops else 1
+        bank = 1 if ("CARE" in ops and "FEED" in ops) else 0
+        return TileState(KIND_ANIMAL, None, entity, _STRUCTURE_OF[entity],
+                         1 - spec["first_yield_day"], 0, unfed, 0,
+                         min(bank, int(spec["max_held"])), 0)
+    if "BUILD" in ops:
+        return TileState(KIND_EMPTY_STRUCTURE, None, None,
+                         _STRUCTURE_OF[entity], 0, 0, 0, 0, 0, 0)
+    if "DIG" in ops:
+        return TileState(KIND_NONE, None, None, None, 0, 0, 0, 0, 0, 0)
+    return None
+
+
+def _assert_sim_at(sim: FastSim, state: TileState, where: str) -> None:
+    """Decision 8, before an edge: the sim that reached a node must hold it."""
+    got = _state_of(sim)
+    if got.pack() != state.pack():
+        raise StateMismatch(f"{where}: the sim is at {got.describe()}, "
+                            f"the node is {state.describe()}")
+
+
+def _growth_day_violation(state: TileState, child: TileState,
+                          ops: tuple[str, ...]) -> str | None:
+    """Why `child` is not the tile one growth day later, or None.
+
+    A chain that changes no kind must carry the tile's identity forward, advance
+    the age by exactly one day and apply the engine-independent day bookkeeping
+    of its ops.
+    """
+    if child.kind != state.kind:
+        # The engine's destroy paths are legal here and are its own answer: a
+        # dry streak or the lifespan end turns a plant into WEED, harvesting a
+        # one-shot crop clears the tile, a second unfed night frees the animal
+        # (the structure stays). Anything else is a broken chain.
+        if child.kind in (KIND_WEED, KIND_NONE, KIND_EMPTY_STRUCTURE):
+            return None
+        return (f"edge {chain_name(ops)} on {state.describe()}: the engine gave "
+                f"{child.describe()}")
+    if (child.crop, child.animal, child.structure) != \
+            (state.crop, state.animal, state.structure):
+        return (f"edge {chain_name(ops)} on {state.describe()}: the tile changed "
+                f"identity to {child.describe()}")
+    if state.kind in (KIND_PLANT, KIND_ANIMAL) and child.age != _next_age(state):
+        return (f"edge {chain_name(ops)} on {state.describe()}: one day must "
+                f"make the age {_next_age(state)}, the engine gave "
+                f"{child.describe()}")
+    if state.kind == KIND_PLANT:
+        want = (0 if "WATER" in ops else state.consec + 1,
+                2 if "FERTILIZE" in ops else max(0, state.fert_left - 1))
+        if (child.consec, child.fert_left) != want:
+            return (f"edge {chain_name(ops)} on {state.describe()}: expected "
+                    f"consec={want[0]} fert_left={want[1]}, the engine gave "
+                    f"{child.describe()}")
+    elif state.kind == KIND_ANIMAL:
+        want_unfed = 0 if "FEED" in ops else state.unfed + 1
+        if child.unfed != want_unfed:
+            return (f"edge {chain_name(ops)} on {state.describe()}: expected "
+                    f"unfed={want_unfed}, the engine gave {child.describe()}")
+        # The care bank only grows on a fed+cared day (engine
+        # _daily_refresh_animals); the animal's production day spends it.
+        cap = state.care_bank + (1 if ("CARE" in ops and "FEED" in ops) else 0)
+        if child.care_bank > cap:
+            return (f"edge {chain_name(ops)} on {state.describe()}: the care "
+                    f"bank cannot pass {cap}, the engine gave {child.describe()}")
+    return None
+
+
+def _successor_violation(state: TileState, child: TileState,
+                         ops: tuple[str, ...],
+                         entity: str | None) -> str | None:
+    """Why `child` cannot be the successor of `state` under `ops`, else None.
+
+    The tile-changing chains are compared with `_expected_next` (full TileState
+    equality); the rest with `_growth_day_violation`. Decision 8 raises on a
+    violation.
+    """
+    expected = _expected_next(state, ops, entity)
+    if expected is None:
+        return _growth_day_violation(state, child, ops)
+    if child.pack() == expected.pack():
+        return None
+    return (f"edge {chain_name(ops)} on {state.describe()}: the engine gave "
+            f"{child.describe()}, the chain promises {expected.describe()}")
+
+
+def _assert_successor(state: TileState, child: TileState, ops: tuple[str, ...],
+                      entity: str | None) -> None:
+    """Decision 8, after an edge: the decoded next state must be the promised one."""
+    violation = _successor_violation(state, child, ops, entity)
+    if violation is None:
+        return
+    expected = _expected_next(state, ops, entity)
+    if expected is not None and child.kind != expected.kind:
+        # The constructive op did not land (no stock, no money, occupied tile,
+        # wrong structure ...): the engine refused it silently.
+        raise ChainNotRealised(violation)
+    raise StateMismatch(violation)
+
+
+# ----------------------------------------------------------- chain execution
+
+def _exec_chain(sim: FastSim, state: TileState, ops: tuple[str, ...],
+                entity: str | None) -> ChainOutcome:
+    """Execute one daily chain on `sim` (mutated in place) and price it.
+
+    Every chain supplies its own prerequisites (buy + carry) as the secretary
+    layer's stand-in, and `cost_vector` counts them. One chain is exactly one
+    day: the day is filled and a chain that would bleed into day+1 raises
+    ChainSpansDays. `entity` is None only for a chain that names no constructive
+    op on a state that owns no entity (a bare / weed tile) - such a chain builds
+    nothing, so it never needs one.
+    """
+    if NO_ACT in ops and len(ops) > 1:
+        raise ValueError(f"NO_ACT is a whole-chain op, got {ops}")
+    day0 = int(sim.observations()[0]["day"])
+    harvest = 0
+    fert_collect = 0
     for op in ops:
         if op in MARKET_OPS:
-            continue        # the market buys it inside the op that needs it
+            continue        # the market buys inside the op that needs it
         if op == NO_ACT:
             # Nothing on this tile: the worker idles, the day still passes.
             sim.step([_act(["PASS"]), _act(["PASS"])])
         elif op == "BUILD":
-            # BUILD = one worker action: a NONE tile becomes a structure.
-            # The animal itself is bought later (by PLACE, secretary stand-in).
+            # BUILD = one worker action: a NONE tile becomes a structure. The
+            # animal itself is bought later (by PLACE, secretary stand-in).
             sim.step([_act([f"BUILD_{_STRUCTURE_OF[entity]}"]),
                       _act(["PASS"])])
-            built = True
         elif op in ("PLACE", "PLACE_ANIMAL"):
-            # Secretary stand-in: buy the animal, carry it, place it.
             sim.step([_act(["PASS"], [["BUY_ANIMAL", entity, 1]]),
                       _act(["PASS"])])
             sim.step([_act(["PICKUP", entity, 1]), _act(["PASS"])])
             sim.step([_act(["PLACE", entity]), _act(["PASS"])])
-            use.append((RES_ANIMAL, 1))
-            placed = True
         elif op == "PLANT":
             sim.step([_act(["PASS"], [["BUY_SEED", entity, 1]]),
                       _act(["PASS"])])
             sim.step([_act(["PLANT", entity]), _act(["PASS"])])
-            use.append((_SEED_RES[entity], 1))
-            planted = True
         elif op == "FERTILIZE":
             sim.step([_act(["PASS"], [["BUY_PRODUCT", "FERTILIZER", 1]]),
                       _act(["PASS"])])
             sim.step([_act(["PICKUP", "FERTILIZER", 1]), _act(["PASS"])])
             sim.step([_act(["FERTILIZE"]), _act(["PASS"])])
-            use.append((RES_FERTILIZER, 1))
         elif op == "HARVEST":
-            obs = sim.observations()
-            me = obs[0]["farms"][0]
-            fx, fy = me["farmer"]
-            tile = me["tiles"][fy][fx]
-            outputs["harvest"] = int(tile.get("yield_units", 0)) \
+            tile, _ = _tile_and_day(sim)
+            harvest = int(tile.get("yield_units", 0)) \
                 if isinstance(tile, dict) else 0
             sim.step([_act(["HARVEST"]), _act(["PASS"])])
         elif op == "FEED":
@@ -195,273 +490,245 @@ def _exec_chain(sim: FastSim, ops: tuple[str, ...], entity: str,
                       _act(["PASS"])])
             sim.step([_act(["PICKUP", "WHEAT", 1]), _act(["PASS"])])
             sim.step([_act(["FEED"]), _act(["PASS"])])
-            use.append((RES_WHEAT, 1))
         elif op == "COLLECT_FERTILIZER":
-            obs = sim.observations()
-            me = obs[0]["farms"][0]
-            fx, fy = me["farmer"]
-            tile = me["tiles"][fy][fx]
-            outputs["fert_collect"] = int(tile.get("fertilizer_available", 0)) \
-                if isinstance(tile, dict) \
-                and "fertilizer_available" in tile else 0
+            tile, _ = _tile_and_day(sim)
+            fert_collect = int(tile.get("fertilizer_available", 0)) \
+                if isinstance(tile, dict) and "fertilizer_available" in tile \
+                else 0
             sim.step([_act(["COLLECT_FERTILIZER"]), _act(["PASS"])])
-        else:  # WATER, CARE, DIG, PASS
+        else:               # WATER, CARE, DIG
             sim.step([_act([op]), _act(["PASS"])])
 
-    # ---- one chain = one day: fill the day, then verify the boundary ------
+    # ---- one chain = one day: fill the day, then verify the day boundary ----
     steps = 0
     while int(sim.observations()[0]["day"]) == day0 and not sim.done:
         sim.step([_act(["PASS"]), _act(["PASS"])])
         steps += 1
-        if steps > N_TURNS_PER_DAY:
+        if steps > TURNS_PER_DAY:
             raise ChainSpansDays(ops, entity)
-    if int(sim.observations()[0]["day"]) > day0 + 1:
+    day = int(sim.observations()[0]["day"])
+    if sim.done and day == day0:
+        raise ChainSpansDays(f"{ops}: the sim ran out of episode on day {day0}")
+    if day > day0 + 1:
         raise ChainSpansDays(ops, entity)
 
-    obs = sim.observations()
-    me = obs[0]["farms"][0]
-    fx, fy = me["farmer"]
-    tile = me["tiles"][fy][fx]
-
-    actual = decode_tile(tile, obs[0]["day"])
-    expect: str | None = None
-    if planted:
-        spec = K.CROPS[entity]
-        base = 0 if spec.get("ongoing") else 1
-        nxt = TileState("PLANT", entity, None, None,
-                        1 - crop_age_origin(spec), 0, 0, 0, 0, base)
-        expect = "PLANT"
-    elif placed:
-        spec = K.ANIMALS[entity]
-        nxt = TileState("ANIMAL", None, entity,
-                        _STRUCTURE_OF[entity],
-                        1 - spec["first_yield_day"], 0, 0, 0, 0, 0)
-        expect = "ANIMAL"
-    elif built:
-        # BUILD alone leaves an empty structure for the next animal.
-        nxt = TileState("EMPTY_STRUCTURE", None, None,
-                        _STRUCTURE_OF[entity], 0, 0, 0, 0, 0, 0)
-        expect = "EMPTY_STRUCTURE"
-    else:
-        nxt = actual
-
-    if expect is not None and actual.kind != expect:
-        # The op did not land on the tile: never trust a chain that the engine
-        # silently refused (blocked prerequisite, no stock, wrong tile ...).
-        raise ChainNotRealised(ops, entity, actual.kind)
-    return nxt, outputs, use
+    child = _state_of(sim)
+    _assert_successor(state, child, ops, entity)
+    # HARVEST collects the product of the tile STANDING there, which in a
+    # rotation chain (harvest the crop, then DIG/BUILD/PLACE an animal the same
+    # day) is not the chain's entity: the produce side follows the parent tile.
+    harvested = state.crop or state.animal or entity
+    return ChainOutcome(child, harvest, fert_collect,
+                        cost_vector(entity, ops),
+                        produce_vector(harvested, harvest, fert_collect))
 
 
-def _replay_crop(sim: FastSim, state: TileState, entity: str) -> None:
-    """Replay the canonical history that lands a CROP at `state` at a
-    day start: planted day 0, watered every day except the node's own dry
-    streak (the last `consec` days), fert on the day implied by fert_left
-    (PICKUP + FERTILIZE that day — the nightly auto-drop returns items to
-    the shed)."""
-    def act(f, m=None):
-        return {"farmer": f, "hands": [], "market": m or []}
+# --------------------------------------------------------------- search plan
 
-    spec = K.CROPS[entity]
-    today = state.age + crop_age_origin(spec)
-    fert_day = (today + state.fert_left - 1) - 2 if state.fert_left > 0 \
-        else None
-    if fert_day is not None and fert_day < 0:
-        raise ValueError("unreachable (fert predates plant)")
+def _own_entity(state: TileState, restrict: str | None) -> str | None:
+    """The entity a state itself belongs to (decision 10).
 
-    sim.step([act(["PASS"], [["BUY_SEED", entity, 1],
-                             ["BUY_PRODUCT", "FERTILIZER", 2]]), act(["PASS"])])
-    sim.step([act(["PICKUP", "FERTILIZER", 2]), act(["PASS"])])
-    fert_done = False
-    for cur in range(0, today):
-        if cur == 0:
-            sim.step([act(["PLANT", entity]), act(["PASS"])])
-            sim.step([act(["WATER"]), act(["PASS"])])
-        else:
-            fert_today = (not fert_done and fert_day is not None
-                          and cur == fert_day)
-            if fert_today:
-                sim.step([act(["PICKUP", "FERTILIZER", 1]), act(["PASS"])])
-                sim.step([act(["FERTILIZE"]), act(["PASS"])])
-                fert_done = True
-            # Reproduce the node's dry streak: the last `consec` days before
-            # the node's day start were not watered.
-            dry_today = state.consec > 0 and cur >= today - state.consec
-            if not dry_today:
-                sim.step([act(["WATER"]), act(["PASS"])])
-
-        obs = sim.observations()
-        while obs[0]["day"] == cur and not sim.done:
-            sim.step([act(["PASS"]), act(["PASS"])])
-            obs = sim.observations()
-        if sim.done:
-            break
+    A chain that names no constructive op is attributed to the state's own
+    entity (0 = none for a bare / weed tile). A restricted build attributes it
+    to its own entity instead, which is what makes one entity's graph readable
+    on its own.
+    """
+    if restrict is not None:
+        return restrict
+    if state.kind == KIND_PLANT:
+        return state.crop
+    if state.kind == KIND_ANIMAL:
+        return state.animal
+    if state.kind == KIND_EMPTY_STRUCTURE:
+        for name in ENTITY_NAMES:
+            if _STRUCTURE_OF.get(name) == state.structure:
+                return name
+        return None
+    return None                 # NONE / WEED own no entity
 
 
-def _replay_animal(sim: FastSim, state: TileState, entity: str) -> None:
-    """Replay the canonical history that lands the ANIMAL at `state` at a
-    day start: bought + placed day 0 (fed + cared), then fed and cared
-    every day since (wheat bought per day)."""
-    def act(f, m=None):
-        return {"farmer": f, "hands": [], "market": m or []}
-
-    today = state.age + K.ANIMALS[entity]["first_yield_day"]
-    sim.step([act(["PASS"], [["BUY_ANIMAL", entity, 1],
-                             ["BUY_PRODUCT", "WHEAT", 12]]), act(["PASS"])])
-    sim.step([act(["PICKUP", entity, 1]), act(["PASS"])])
-    sim.step([act(["PICKUP", "WHEAT", 12]), act(["PASS"])])
-    structure = _STRUCTURE_OF[entity]
-    sim.step([act([f"BUILD_{structure}"]), act(["PASS"])])
-    sim.step([act(["PLACE", entity]), act(["PASS"])])
-
-    for cur in range(0, today):
-        sim.step([act(["PASS"], [["BUY_PRODUCT", "WHEAT", 1]]), act(["PASS"])])
-        sim.step([act(["PICKUP", "WHEAT", 1]), act(["PASS"])])
-        sim.step([act(["FEED"]), act(["PASS"])])
-        sim.step([act(["CARE"]), act(["PASS"])])
-        obs = sim.observations()
-        while obs[0]["day"] == cur and not sim.done:
-            sim.step([act(["PASS"]), act(["PASS"])])
-            obs = sim.observations()
-        if sim.done:
-            break
+def _candidates(state: TileState, restrict: str | None) -> tuple[str, ...]:
+    """Every entity the builder must try on a state (decision 10)."""
+    if restrict is not None:
+        return (restrict,)
+    if state.kind in (KIND_NONE, KIND_WEED):
+        return ENTITY_NAMES      # a bare tile may start any of the eight
+    if state.kind == KIND_PLANT:
+        # Its own crop first (the maintenance chains), then every entity again
+        # for the DIG follow-up: dig the crop, then build / plant elsewhere.
+        crop = state.crop
+        if crop is None:
+            raise ValueError(f"PLANT state without a crop: {state.describe()}")
+        return (crop,) + tuple(n for n in ENTITY_NAMES if n != crop)
+    if state.kind == KIND_ANIMAL:
+        animal = state.animal
+        if animal is None:
+            raise ValueError(f"ANIMAL state without an animal: {state.describe()}")
+        return (animal,)
+    if state.kind == KIND_EMPTY_STRUCTURE:
+        return tuple(n for n in ENTITY_NAMES
+                     if _STRUCTURE_OF.get(n) == state.structure)
+    raise ValueError(f"unsupported state kind {state.kind!r}")
 
 
-def _replay_structure(sim: FastSim, entity: str) -> None:
-    """Replay an EMPTY_STRUCTURE tile: the structure is built on day 0 and the
-    tile is then left alone (the structure does not age)."""
-    def act(f, m=None):
-        return {"farmer": f, "hands": [], "market": m or []}
+def _plan(state: TileState, restrict: str | None
+          ) -> list[tuple[str | None, tuple[str, ...], int]]:
+    """(entity to execute with, ops, entity_code) for a state's edges.
 
-    sim.step([act([f"BUILD_{_STRUCTURE_OF[entity]}"]), act(["PASS"])])
-    obs = sim.observations()
-    cur = int(obs[0]["day"])
-    while obs[0]["day"] == cur and not sim.done:
-        sim.step([act(["PASS"]), act(["PASS"])])
-        obs = sim.observations()
+    The entity of a chain with a constructive op is the candidate entity itself;
+    a chain without one is run once, with the state's own entity (decision 10).
+    Chains are deduped by (entity_code, ops), so trying the extra candidates a
+    PLANT node allows cannot duplicate an edge.
+    """
+    own = _own_entity(state, restrict)
+    own_code = entity_code_of(own)
+    age = state.age if state.kind in (KIND_PLANT, KIND_ANIMAL) else None
+    plan: list[tuple[str | None, tuple[str, ...], int]] = []
+    seen: set[tuple[int, tuple[str, ...]]] = set()
+    for ent in _candidates(state, restrict):
+        for ops in chains_for(state.kind, age=age, animal_graph=is_animal(ent),
+                              yield_units=state.yield_units):
+            if not domain_ok(ops, ent):
+                continue         # domain filter (decision 9)
+            if any(op in CONSTRUCTIVE_OPS for op in ops):
+                run_entity, code = ent, ENTITY_CODE[ent]
+            else:
+                run_entity, code = own, own_code
+            key = (code, ops)
+            if key in seen:
+                continue
+            seen.add(key)
+            plan.append((run_entity, ops, code))
+    return plan
 
 
-def _replay_node(sim: FastSim, state: TileState, entity: str,
-                 entity_kind: str) -> None:
-    if state.kind == "PLANT":
-        _replay_crop(sim, state, entity)
-    elif state.kind == "ANIMAL":
-        _replay_animal(sim, state, entity)
-    elif state.kind == "EMPTY_STRUCTURE":
-        _replay_structure(sim, entity)
-    # NONE / WEED: fresh sim (day 0, nothing placed)
+# ------------------------------------------------------------------- pruning
+
+def _is_noop_edge(state_id: int, edge: Edge) -> bool:
+    """F047 sweep: a self-loop that costs nothing and produces nothing."""
+    return (edge.to_id == state_id and not any(edge.cost)
+            and not any(edge.produce))
 
 
-def build_graph(entity: str, progress: bool = False) -> TileGraph:
-    """Build one entity's lifecycle graph. Each node expanded exactly
-    once; every edge engine-executed on a FastSim clone."""
-    entity_kind = "animal" if entity in ("GOOSE", "COW", "SHEEP") else "crop"
-    life_days = LIFE_DAYS[entity]
+def _dominates(better: Edge, worse: Edge) -> bool:
+    """Dominance rule, between the two edges of one state's same target.
 
+    `better` dominates `worse` when it needs no more of any resource, harvests no
+    less, and is strictly better on one of the two. Equal-cost twins survive.
+    """
+    if better.to_id != worse.to_id:
+        return False
+    if any(better.cost[r] > worse.cost[r] for r in range(N_RESOURCE)):
+        return False
+    if better.harvest_units < worse.harvest_units:
+        return False
+    return (sum(better.cost) < sum(worse.cost)
+            or better.harvest_units > worse.harvest_units)
+
+
+def _prune(state_id: int, edges: list[Edge]) -> tuple[list[Edge], int]:
+    """No-op sweep + dominance pruning (decision 9 keeps these rules)."""
+    kept = [e for e in edges if not _is_noop_edge(state_id, e)]
+    final = [e for e in kept
+             if not any(_dominates(other, e) for other in kept
+                        if other is not e)]
+    return final, len(edges) - len(kept)
+
+
+# --------------------------------------------------------------------- build
+
+def build_graph(entity: str | None = None, progress: bool = False) -> TileGraph:
+    """Build the tile graph (decisions 1 and 12).
+
+    `entity=None` builds the merged tile graph over all eight entities;
+    `entity="CARROT"` runs the same search restricted to that entity's chains.
+
+    Breadth-first over day-start states: every node is expanded exactly once,
+    with the sim that reached it, and every edge is one real engine day on a
+    clone of that sim. Assertions are on, so a chain that cannot be realised in
+    one day - or that lands on a state other than the one it promises - fails
+    the build loudly instead of being skipped.
+    """
+    spec = BuildSpec(entity=entity, progress=progress)
     key_to_id: dict[int, int] = {}
     state_list: list[TileState] = []
 
     def intern(state: TileState) -> int:
-        k = state.pack()
-        sid = key_to_id.get(k)
+        key = state.pack()
+        sid = key_to_id.get(key)
         if sid is None:
             sid = len(state_list)
-            key_to_id[k] = sid
+            key_to_id[key] = sid
             state_list.append(state)
         return sid
 
-    start_state = TileState("NONE", None, None, None, 0, 0, 0, 0, 0, 0)
-    start = intern(start_state)
-
-    edges: dict[int, list[tuple[int, int, dict, list[int]]]] = {}
+    root = intern(TileState(KIND_NONE, None, None, None, 0, 0, 0, 0, 0, 0))
+    # state_id -> the sim that reached it (decision 6): a node is expanded with
+    # the sim that produced it, so its edges see the true tile.
+    sims: dict[int, FastSim] = {root: _new_sim()}
+    edges: dict[int, list[Edge]] = {}
     visited: set[int] = set()
-    frontier = [start]
+    n_edges = 0
+    frontier = deque([root])
     while frontier:
-        sid = frontier.pop()
+        # BFS, so a node's sim sits at the node's SHORTEST day: the search can
+        # never walk past the episode horizon while a shorter path exists.
+        sid = frontier.popleft()
         if sid in visited:
             continue
         visited.add(sid)
         state = state_list[sid]
-        sim = _new_sim(life_days)
-        _replay_node(sim, state, entity, entity_kind)
-
-        for ops in chains_for(state.kind,
-                              age=(state.age
-                                   if state.kind == "PLANT" else None),
-                              animal_graph=(entity_kind == "animal")):
+        sim = sims[sid]
+        _assert_sim_at(sim, state, f"state {sid}")
+        for run_entity, ops, code in _plan(state, entity):
             branch = sim.clone()
-            try:
-                nxt_state, outputs, use = _exec_chain(
-                    branch, ops, entity, entity_kind)
-            except (ChainSpansDays, ChainNotRealised):
-                # Loud on purpose: a chain that cannot be realised inside one
-                # day (or whose op the engine refused) must be investigated.
-                raise
-            except Exception as exc:
-                if progress:
-                    print(f"  {entity}: chain {ops} skipped: {exc!r}",
-                          flush=True)
-                continue
-            nid = intern(nxt_state)
+            outcome = _exec_chain(branch, state, ops, run_entity)
+            nid = intern(outcome.next_state)
+            sims.setdefault(nid, branch)   # first sim to reach the node wins
             if nid not in visited:
                 frontier.append(nid)
             edges.setdefault(sid, []).append(
-                (nid, chain_id_of(ops), outputs, _use_vector(use)))
+                Edge(sid, nid, chain_id_of(ops), code,
+                     tuple(outcome.cost), tuple(outcome.produce)))
+            n_edges += 1
         if progress:
-            print(f"  {entity}: visited {len(visited)}, "
-                  f"states {len(state_list)}", flush=True)
+            print(f"  {spec.entity or 'TILE'}: expanded {len(visited)}, "
+                  f"states {len(state_list)}, edges {n_edges}", flush=True)
 
     n_states = len(state_list)
-    pruned: dict[int, list[tuple]] = {}
-    for sid, elist in edges.items():
-        kept = []
-        for (nid, cid, outs, uvec) in elist:
-            if nid == sid and sum(uvec) == 0 and not outs:
-                continue  # no-op sweep (F047)
-            kept.append((nid, cid, outs, uvec))
-        final = []
-        for e in kept:
-            dominated = False
-            for other in kept:
-                if other is e or other[0] != e[0]:
-                    continue
-                if all(other[3][r] <= e[3][r] for r in range(N_RESOURCE)) \
-                        and other[2].get("harvest", 0) >= e[2].get(
-                            "harvest", 0) \
-                        and (sum(other[3]) < sum(e[3])
-                             or other[2].get("harvest", 0) > e[2].get(
-                                 "harvest", 0)):
-                    dominated = True
-                    break
-            if not dominated:
-                final.append(e)
-        pruned[sid] = final
-
-    edge_next_l: list[int] = []
-    edge_chain_l: list[int] = []
-    edge_prod_l: list[int] = []
-    edge_fert_l: list[int] = []
-    edge_use_l: list[list[int]] = [[] for _ in range(N_RESOURCE)]
+    edge_next: list[int] = []
+    edge_chain: list[int] = []
+    edge_entity: list[int] = []
+    cost_rows: list[list[int]] = []
+    produce_rows: list[list[int]] = []
     offsets = np.zeros(n_states + 1, dtype=np.int64)
-    for s in range(n_states):
-        offsets[s] = len(edge_next_l)
-        for (nid, cid, outs, uvec) in pruned.get(s, []):
-            edge_next_l.append(nid)
-            edge_chain_l.append(cid)
-            edge_prod_l.append(outs.get("harvest", 0))
-            edge_fert_l.append(outs.get("fert_collect", 0))
-            for r in range(N_RESOURCE):
-                edge_use_l[r].append(uvec[r])
-    offsets[n_states] = len(edge_next_l)
+    n_noop = 0
+    for sid in range(n_states):
+        offsets[sid] = len(edge_next)
+        kept, dropped = _prune(sid, edges.get(sid, []))
+        n_noop += dropped
+        for edge in kept:
+            edge_next.append(edge.to_id)
+            edge_chain.append(edge.chain_id)
+            edge_entity.append(edge.entity_code)
+            cost_rows.append(list(edge.cost))
+            produce_rows.append(list(edge.produce))
+    offsets[n_states] = len(edge_next)
 
+    kinds: dict[str, int] = {}
+    for state in state_list:
+        kinds[state.kind] = kinds.get(state.kind, 0) + 1
+    report = BuildReport(spec=spec, n_states=n_states, n_edges=len(edge_next),
+                         n_expanded=len(visited), n_noop_edges=n_noop,
+                         kinds=kinds)
     return TileGraph(
-        entity=entity, entity_kind=entity_kind, life_days=life_days,
-        n_states=n_states,
+        spec=spec, report=report, n_states=n_states,
         state_keys=np.array([s.pack() for s in state_list], dtype=np.int64),
-        key_index=key_to_id,
-        edge_offsets=offsets,
-        edge_next=np.array(edge_next_l, dtype=np.int32),
-        edge_chain=np.array(edge_chain_l, dtype=np.int16),
-        edge_prod=np.array(edge_prod_l, dtype=np.int32),
-        edge_fert_out=np.array(edge_fert_l, dtype=np.int32),
-        edge_use=np.array(edge_use_l, dtype=np.int32),
+        key_index=key_to_id, edge_offsets=offsets,
+        edge_next=np.array(edge_next, dtype=np.int32),
+        edge_chain=np.array(edge_chain, dtype=np.int16),
+        edge_entity=np.array(edge_entity, dtype=np.int8),
+        edge_cost=np.array(cost_rows, dtype=np.int32).reshape(-1, N_RESOURCE),
+        edge_produce=np.array(produce_rows, dtype=np.int32).reshape(
+            -1, N_RESOURCE),
         engine_tag=ENGINE_TAG)

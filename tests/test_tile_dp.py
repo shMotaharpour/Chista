@@ -1,23 +1,28 @@
-"""tile_dp tests: carrot daily state-action graph (v2 generalized).
+"""tile_dp tests: the merged tile graph (v15).
 
 Run:  .venv/bin/python -m tests.test_tile_dp
 
 Contracts under test:
 - TileState decode/pack round-trips (carrot + ongoing/animal dims).
-- The carrot graph is engine truth: honest-yield calendars come out of
-  its edges (3 by day-3 start no-fert; WATER,HARVEST = 4 with fert).
+- The carrot graph is engine truth: honest-yield calendars come out of its
+  edges (3 by day-3 start no-fert; WATER,HARVEST = 4 with fert).
 - Pruning: no zero-cost self-loops; dominated edges absent (no
   FERTILIZE->HARVEST with bare-HARVEST production on fert-less states).
 - Rescue watering on consec=1 states exists (F002 second-night rule).
+- v15 vocabulary/cost contracts: 18 resource names with no duplicate, NO_ACT
+  only ever a whole chain, no chain longer than 24 labour hours, and cost /
+  produce as two separate 18-int vectors per edge.
 """
 
 from __future__ import annotations
 
-from tile_dp.chains import (CHAIN_NAMES, NO_ACT, chain_labor, chain_ops,
-                            chains_for)
-from tile_dp.graph import TileGraph, build_graph
-from tile_dp.tile_state import TileState, decode_tile
+import numpy as np
 
+from tile_dp.chains import (CHAIN_NAMES, N_RESOURCE, NO_ACT, RES_CARROT,
+                            RES_WHEAT, RESOURCE_ID, RESOURCE_NAMES,
+                            chain_labor, chains_for, domain_ok)
+from tile_dp.graph import TileGraph, _exec_chain, _new_sim, build_graph
+from tile_dp.tile_state import KIND_NONE, TileState, decode_tile
 
 def test_decode_and_pack() -> None:
     tile = {"kind": "PLANT", "crop": "CARROT", "planted_day": 0,
@@ -44,6 +49,14 @@ def test_young_plant_cannot_harvest() -> None:
     assert all("PLANT" not in c for c in young)  # occupied tile
 
 
+def test_registry_contracts() -> None:
+    """v15: the registry's own invariants (brief part 2, item 1)."""
+    assert len(RESOURCE_NAMES) == 18
+    assert len(set(RESOURCE_NAMES)) == 18
+    assert [c for c in CHAIN_NAMES if NO_ACT in c] == [(NO_ACT,)]
+    assert max(chain_labor(c) for c in CHAIN_NAMES) <= 24
+
+
 def _find(g: TileGraph, **kw) -> int:
     for i in range(g.n_states):
         s = g.state_of(i)
@@ -56,11 +69,11 @@ def _find(g: TileGraph, **kw) -> int:
     raise KeyError(f"state not in graph: {kw}")
 
 
-def _prod_of(g: TileGraph, sid: int, chain) -> int | None:
-    lo, hi = g.edges_of(sid)
-    for e in range(lo, hi):
-        if chain_ops(int(g.edge_chain[e])) == chain:
-            return int(g.edge_prod[e])
+def _prod_of(g: TileGraph, sid: int, chain, res: str = RES_CARROT) -> int | None:
+    """Produced units of `res` on the state's `chain` edge (None if absent)."""
+    for edge in g.edges_from(sid):
+        if edge.ops == chain:
+            return edge.produce[RESOURCE_ID[res]]
     return None
 
 
@@ -80,11 +93,9 @@ def test_dry_consec1_pass_dies() -> None:
     for i in range(g.n_states):
         s = g.state_of(i)
         if s.kind == "PLANT" and s.consec == 1:
-            lo, hi = g.edges_of(i)
-            for e in range(lo, hi):
-                cid = int(g.edge_chain[e])
-                if chain_ops(cid) == (NO_ACT,):
-                    nxt = g.state_of(int(g.edge_next[e]))
+            for edge in g.edges_from(i):
+                if edge.ops == (NO_ACT,):
+                    nxt = g.state_of(edge.to_id)
                     assert nxt.kind != "PLANT", (s.describe(), nxt.describe())
 
 
@@ -96,10 +107,8 @@ def test_rescue_watering_exists() -> None:
     for i in range(g.n_states):
         s = g.state_of(i)
         if s.kind == "PLANT" and s.consec == 1:
-            lo, hi = g.edges_of(i)
-            if any(chain_ops(int(g.edge_chain[e])) in
-                   (("WATER",), ("FERTILIZE", "WATER"))
-                   for e in range(lo, hi)):
+            if any(edge.ops in (("WATER",), ("FERTILIZE", "WATER"))
+                   for edge in g.edges_from(i)):
                 saved += 1
     assert saved >= 1
 
@@ -115,8 +124,7 @@ def test_dominated_fert_harvest_absent() -> None:
         s = g.state_of(i)
         if s.kind != "PLANT" or s.fert_left != 0 or s.age >= 0:
             continue
-        lo, hi = g.edges_of(i)
-        chains = [chain_ops(int(g.edge_chain[e])) for e in range(lo, hi)]
+        chains = [edge.ops for edge in g.edges_from(i)]
         if ("HARVEST",) in chains and ("FERTILIZE", "HARVEST") in chains:
             p_bare = _prod_of(g, i, ("HARVEST",))
             p_fert = _prod_of(g, i, ("FERTILIZE", "HARVEST"))
@@ -127,31 +135,27 @@ def test_dominated_fert_harvest_absent() -> None:
 def test_no_zero_cost_self_loops() -> None:
     g = build_graph("CARROT")
     for i in range(g.n_states):
-        lo, hi = g.edges_of(i)
-        for e in range(lo, hi):
-            nid = int(g.edge_next[e])
-            total_use = sum(int(g.edge_use[r][e]) for r in range(3))
-            assert not (nid == i and total_use == 0
-                        and int(g.edge_prod[e]) == 0), (
+        for edge in g.edges_from(i):
+            assert not (edge.to_id == i and not any(edge.cost)
+                        and not any(edge.produce)), (
                 f"zero-cost self-loop on state {i}")
 
 
 def test_chain_one_day_contract() -> None:
-    """v13: NO_ACT costs 0 hours; every daily chain fits exactly one day."""
-    from tile_dp.graph import LIFE_DAYS, _exec_chain, _new_sim
+    """v15: NO_ACT costs 0 hours; every daily chain fits exactly one day.
 
+    The chain is executed from the bare-tile state (a fresh sim), so the ops
+    that need a plant/an animal are engine no-ops here - what is under test is
+    the day boundary, and the v15 successor assertion that has to accept them.
+    """
     assert chain_labor((NO_ACT,)) == 0
     assert chain_labor(("PLANT", "WATER")) == 2
     assert chain_labor(("BUILD", "PLACE", "FEED")) == 3
-    # The registry is one global list: a DIG follow-up may cross domains (build a
-    # structure after digging a crop). The graph selects its domain, so this crop
-    # test only runs the chains a crop entity can execute (2026-09-14).
-    animal_ops = {"BUILD", "PLACE", "PLACE_ANIMAL", "FEED", "CARE",
-                  "COLLECT_FERTILIZER"}
+    bare = TileState(KIND_NONE, None, None, None, 0, 0, 0, 0, 0, 0)
     todo = [c for c in list(chains_for("NONE")) + list(chains_for("PLANT", 1))
-            if not set(c) & animal_ops]
+            if domain_ok(c, "CARROT")]      # the graph filters domains too
     for ops in todo:
-        sim = _new_sim(LIFE_DAYS["CARROT"])
+        sim = _new_sim()
         day0 = int(sim.observations()[0]["day"])
         hops: list[int] = []
         raw = sim.step
@@ -161,9 +165,40 @@ def test_chain_one_day_contract() -> None:
             return raw(actions, *a, **k)
 
         sim.step = wrap
-        _exec_chain(sim, ops, "CARROT", "crop")
+        _exec_chain(sim, bare, ops, "CARROT")
         assert len(hops) == 24, (ops, len(hops))
         assert int(sim.observations()[0]["day"]) == day0 + 1, ops
+
+
+_MERGED: TileGraph | None = None
+
+
+def _merged() -> TileGraph:
+    """The merged tile graph (built once: ~40 s, shared by these tests)."""
+    global _MERGED
+    if _MERGED is None:
+        _MERGED = build_graph()
+    return _MERGED
+
+
+def _all_edges(g: TileGraph):
+    for sid in range(g.n_states):
+        yield from g.edges_from(sid)
+
+
+def test_merged_vectors_are_two_18_vectors() -> None:
+    """v15 decision 2: cost and produce are separate, int, 18 entries long."""
+    g = _merged()
+    assert g.edge_cost.shape == (g.n_edges, N_RESOURCE)
+    assert g.edge_produce.shape == (g.n_edges, N_RESOURCE)
+    assert g.edge_cost.dtype == np.int32
+    assert g.edge_produce.dtype == np.int32
+    wheat = RESOURCE_ID[RES_WHEAT]
+    both = [e for e in _all_edges(g)
+            if e.cost[wheat] > 0 and e.produce[wheat] > 0]
+    assert both, ("no edge both eats and harvests wheat: netting the cost and "
+                  "produce vectors would go unnoticed")
+    assert g.n_edges == sum(1 for _ in _all_edges(g))
 
 
 if __name__ == "__main__":

@@ -8,8 +8,15 @@
 - **Edge** = one daily action chain in canonical order
   `PLANT → FERTILIZE → WATER → HARVEST` (animals:
   `FEED → CARE → HARVEST → COLLECT_FERTILIZER`), executed by the workers, then
-  idle to the next day start.
-- **DIG layering (v14)**: a chain may **start** with `DIG` or put `DIG` right
+  idle to the next day start. The record is
+  `from, to, chain, entity, cost[], produce[]` with `cost` / `produce` as two
+  **separate** 18-wide int vectors: `cost` = inputs consumed + `LABOR_HOURS`,
+  `produce` = harvested units of the tile's standing product + collected
+  fertilizer. A resource may appear in both and they are **never netted**. No
+  money and no day in the artifact (both are DP inputs / DP dimensions);
+  `entity` = the entity that parameterises the chain's constructive op
+  (`PLANT` / `BUILD` / `PLACE`), else the state's own, 0 = none.
+- **DIG layering**: a chain may **start** with `DIG` or put `DIG` right
   after `HARVEST`, and may then run one full `NONE` chain, so a single day can
   convert the tile to another kind. One `DIG` per chain; `DIG` never touches an
   occupied animal tile (the engine returns early there); the follow-up must not
@@ -20,7 +27,13 @@
   hours), inputs per op: `PLANT` 1 seed of the entity's crop, `FERTILIZE` 1
   fertilizer, `FEED` 1 wheat, `PLACE` / `PLACE_ANIMAL` 1 animal of the entity's
   species.
-- **Applicability filters** (`chains_for`): `FERTILIZE` dropped for `age < -2`
+- **Resource vocabulary (v15)**: 18 names, exactly one id per physical item —
+  `LABOR_HOURS, FERTILIZER, WHEAT, SEED_WHEAT, SEED_CARROT, SEED_TOMATO,
+  SEED_STRAWBERRY, SEED_MELON, CARROT, TOMATO, STRAWBERRY, MELON, EGG, MILK,
+  WOOL, ANIMAL_GOOSE, ANIMAL_COW, ANIMAL_SHEEP`. `WHEAT_FOOD` no longer exists
+  (`WHEAT` is the engine's own product id) and the generic `ANIMAL` is gone:
+  every op names its species. `NO_ACT` is a whole-chain op only.
+- **Applicability filters** (`chains_for`, unchanged in v15): `FERTILIZE` dropped for `age < -2`
   (the fertilize effect covers the day plus two), `HARVEST` dropped for
   `age < 0` or `yield_units == 0`.
 - **Animals age origin** = first yield day (Hossein's convention): negative age
@@ -39,7 +52,7 @@
 ## Engine-derived rules baked in
 
 - A plant **not watered on its planting day is weed by the next day**
-  (F002) → the canonical replay always waters the planting day; the
+  (F002) → the planting chain always waters the planting day; the
   first plant day-start state is age - SGW with consec=0.
 - `consec` and `fert_left` are **independent** (probed): `(consec=1, fert_left=2)`
   is reachable, so there is no cap of fert_left by consec.
@@ -48,27 +61,37 @@
 - `FERTILIZE→HARVEST` (no water) is **dominated** by bare HARVEST:
   same production, wasted fertilizer (engine-probed) → pruned by the
   generic dominance filter.
-- Nightly auto-drop returns unit inventory to the shed → the fert day
-  re-PICKUPs before FERTILIZE in the canonical replay.
+- Nightly auto-drop returns unit inventory to the shed → a chain that
+  fertilizes re-PICKUPs the fertilizer first (the secretary layer's job).
 - Market purchases land one turn before the op that needs them (F030).
 
 ## Numbers (engine-verified, build_graph)
 
-- reachable day-start states are whatever the engine actually produces; the
-  authoritative counts are `build_graph()`'s output (see the status table in
-  `README.md`).
-- The graph builder interns states from real execution: only states the engine
-  actually produces become nodes (the v13 build: 8 graphs, 456 nodes / 2267
-  edges; authoritative counts are the table in `README.md`).
+- The shipped model is ONE **merged** tile graph (`build_graph()`, engine
+  tag `tile-dp-v15`): 675 states / 14422 edges, 34 KB, tracked as
+  `tile_dp/models/graph_tile_lifecycle.npz` with
+  `tile_dp/models/build_report.json`; rebuild both with
+  `.venv/bin/python -m tile_dp.build`. Only day-start states the engine
+  actually produces
+  become nodes (interned from real execution): PLANT 392, ANIMAL 279,
+  EMPTY_STRUCTURE 2, NONE 1, WEED 1.
+- `build_graph(entity=...)` builds the same search restricted to one entity's
+  chains: the per-entity views the tests use, not artifacts.
+- Each node is expanded with the sim that produced it (**sim inheritance**);
+  only the root is a fresh `FastSim` (30-day episode, seed 4242,
+  `weedSpawnChance = 0.0`). No replays exist any more.
+- Every edge is asserted: it must end in one day (`ChainSpansDays`) and land on
+  the state it promises (`StateMismatch`).
 - No zero-cost self-loops; dominance-pruned (FERTILIZE→HARVEST absent).
-- The chain registry is now **v14** (54 chains, DIG-layered): the stored graphs
-  are still the v13 build and must be rebuilt in the graph's turn.
+- The chain registry is **v15**: 54 chains (DIG-layered), 18 resource names.
 
 ## Files
 
 | file | role |
 |---|---|
 | `tile_state.py` | TileState, day-start decode from the engine tile |
-| `chains.py` | chain registry (per kind, DIG-layered), cost model, applicability |
-| `graph.py` | `build_graph()` — engine-driven edges + pruning; `TileGraph` |
+| `chains.py` | chain registry (v15, per kind, DIG-layered), resource vocabulary, cost/produce vectors, applicability |
+| `graph.py` | `build_graph()` — sim-inherited engine edges, assertions, pruning; `TileGraph` / `Edge` |
+| `build.py` | `python -m tile_dp.build` — writes the model + `build_report.json` into `models/` |
+| `models/` | `graph_tile_lifecycle.npz` (the merged tile graph) + `build_report.json` (counts) |
 | — | (next step: the DP over this graph, not written yet) |
