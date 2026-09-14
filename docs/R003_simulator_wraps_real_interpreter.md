@@ -32,7 +32,7 @@ evidence for the decision:
 
 | path | s/episode |
 |---|---:|
-| `env.run()` (the harness path `lab/eval/arena.py` already uses) | 5.20 |
+| `env.run()` (the harness path AgriOracle's `lab/eval/arena.py` used) | 5.20 |
 | `agrioracle.sim.run_episode()` (interpreter called directly) | 0.61 |
 
 8.2× faster, with the exact reward the harness produced at the same seed

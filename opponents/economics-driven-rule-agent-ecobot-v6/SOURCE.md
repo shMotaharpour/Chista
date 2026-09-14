@@ -1,6 +1,6 @@
 # economics-driven-rule-agent-ecobot-v6
 
-Sparring partner for `./run arena`. **Not our code** — see
+Sparring partner for the evaluation arena. **Not our code** — see
 [../NOTICE.md](../NOTICE.md) for where it came from and under what licence.
 
 ## Extraction
@@ -15,7 +15,7 @@ Sparring partner for `./run arena`. **Not our code** — see
 
 `agent.py` is the payload byte-for-byte; `tests/test_opponents.py` checks it
 against that hash, and re-running the extractor must reproduce it. Extraction is
-`lab/opponents/extract.py`, which parses the notebook with `ast` and **never
+`opponents/extract.py`, which parses the notebook with `ast` and **never
 executes it**.
 
 ## Audit
@@ -25,9 +25,17 @@ checked before it was ever called:
 
 Clean — every import and call is within the allowlist.
 
+Nothing packed: the file is the agent.
+
 ## Play it
 
-```bash
-./run arena --opponent opp:economics-driven-rule-agent-ecobot-v6 --seeds 12
-./run profile                                   # what it actually does
+```python
+import importlib.util
+spec = importlib.util.spec_from_file_location(
+    "opp_agent", "opponents/economics-driven-rule-agent-ecobot-v6/agent.py")
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)   # import-time: this agent unpacks itself here
+agent = mod.agent              # obs -> action
 ```
+
+Hand it a **copy** of the observation, never the live view (R004).

@@ -18,9 +18,10 @@ Three packing styles cover every notebook seen so far:
   * **writefile** -- a `%%writefile main.py` cell whose body is the source.
   * **inline** -- the notebook simply defines `def agent(obs)` at top level.
 
-The extracted source is written verbatim to `lab/opponents/<slug>/agent.py` and
-hashed, so it stays evidence rather than a paraphrase. `pyproject.toml` already
-excludes `lab/opponents` from ruff for exactly that reason.
+The extracted source is written verbatim to `opponents/<slug>/agent.py` and
+hashed, so it stays evidence rather than a paraphrase -- nothing here reformats
+it, and `tests/test_opponents.py` checks every payload against its recorded
+SHA-256.
 """
 
 from __future__ import annotations
@@ -325,17 +326,25 @@ def _self_bundled(tree: ast.AST) -> set[str]:
     return bundled
 
 
-def audit(source: str) -> list[str]:
-    """Imports and calls worth a human's attention before this agent is played.
+def _audit_source(source: str, where: str = "",
+                  bundling: bool | None = None) -> list[str]:
+    """Audit ONE unit of source. `where` labels findings from a nested payload.
 
-    Tuned to surface what actually matters -- anything reaching the network, the
-    filesystem or a subprocess -- rather than every unfamiliar name. A file that
-    builds its own module tree gets its internal imports and its `compile()`
-    call reported as such, not as unknown code.
+    `bundling` overrides the self-bundling detection. A packed payload is a
+    module of a package its loader rebuilt at import, so it imports its own
+    siblings by names that exist nowhere else -- `v23.state_encoder`,
+    `scripts.v22_market_impact`. Detected in isolation it bundles nothing, and
+    every one of those reads as unknown third-party code: seventeen such lines
+    for one agent, which is how a real finding gets buried. The caller knows the
+    payload came out of a self-bundling file and says so.
     """
     findings: list[str] = []
-    tree = ast.parse(source)
-    bundling = bool(_self_bundled(tree))
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return [f"{where}payload does not parse as Python"]
+    if bundling is None:
+        bundling = bool(_self_bundled(tree))
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             names = [a.name for a in node.names]
@@ -346,20 +355,179 @@ def audit(source: str) -> list[str]:
             name = fn.id if isinstance(fn, ast.Name) else getattr(fn, "attr", "")
             if name in FORBIDDEN_CALLS:
                 if name == "compile" and bundling:
-                    continue  # its own module loader, not an escape hatch
-                findings.append(f"line {node.lineno}: calls {name}()")
+                    # Its own module loader, not an escape hatch. Say so rather
+                    # than staying silent: `audit` decodes and scans what it
+                    # loads, and a suppressed finding that is never replaced by
+                    # a real one is how an unaudited payload slips through.
+                    findings.append(
+                        f"{where}line {node.lineno}: compile() -- self-bundled "
+                        "module loader, payload audited separately")
+                    continue
+                findings.append(f"{where}line {node.lineno}: calls {name}()")
             continue
         else:
             continue
         for full in names:
             top = full.split(".")[0]
             if top in FORBIDDEN_MODULES:
-                findings.append(f"line {node.lineno}: imports {full}  << REACHES OUTSIDE")
+                findings.append(
+                    f"{where}line {node.lineno}: imports {full}  << REACHES OUTSIDE")
             elif top and top not in SAFE_IMPORTS:
                 if bundling:
                     continue  # resolved from the agent's own sys.modules entries
-                findings.append(f"line {node.lineno}: imports {full} (unrecognised)")
+                findings.append(
+                    f"{where}line {node.lineno}: imports {full} (unrecognised)")
     return findings
+
+
+def _try_decode(text: str) -> str | None:
+    """Decode one string literal if it is a packed payload, else None.
+
+    Deliberately blunter than `_decode_chain`: it ignores how the file decodes
+    the constant and just tries the ladder competitors use. That matters because
+    several of them decode through a helper -- `_load_payload(_MOON_PAYLOAD)`
+    -- where the call site's argument is a parameter name and resolving the
+    chain yields nothing. An audit that only follows call sites reports those
+    agents as carrying no payload at all.
+
+    Guessing wrong is cheap here: a constant that decodes to something which is
+    neither source nor a module map is dropped by `_nested_sources`. Guessing
+    wrong in `_decode_chain` would corrupt an extraction, which is why that one
+    stays strict and this one does not share its vocabulary.
+    """
+    if len(text) < 512:
+        return None
+    try:
+        payload = text.encode("ascii")
+    except UnicodeEncodeError:
+        return None
+    for decode in (base64.b85decode, base64.b64decode):
+        try:
+            raw = decode(payload)
+        except Exception:  # noqa: BLE001 - any malformed literal is simply not a payload
+            continue
+        for decompress in (zlib.decompress, gzip.decompress, None):
+            try:
+                data = raw if decompress is None else decompress(raw)
+                return data.decode("utf-8")
+            except Exception:  # noqa: BLE001 - wrong guess, try the next rung
+                continue
+    return None
+
+
+def _payloads(source: str) -> list[str]:
+    """Every packed payload in one file, decoded in memory.
+
+    Two ways in, because agents pack two ways: the decode chain at a call site
+    (what `unpack` follows), and any module-level string constant that decodes
+    on its own (what a helper-function loader leaves behind). Kept in memory
+    rather than written out -- making the audit depend on a side effect on disk
+    would let the audit and the thing audited drift apart.
+    """
+    out: list[str] = []
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return out
+    consts = _constants(source)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            payload = _decode_chain(node, consts)
+            if payload and len(payload) >= 512:
+                out.append(payload)
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+            payload = _try_decode(node.value)
+            if payload:
+                out.append(payload)
+    return out
+
+
+def _nested_sources(payload: str) -> list[str]:
+    """Python source carried inside one decoded payload.
+
+    A payload is either module source itself, or a JSON map of module name to
+    source -- the shape competitors use to rebuild a package tree from one file.
+    Route tables and action schedules are data and carry no code to audit.
+    """
+    # JSON first, and not via `_classify`: a module MAP is a JSON object whose
+    # values are source, and `ast.parse` accepts that object as a dict literal
+    # while `"def "` appears inside one of its strings -- so `_classify` calls it
+    # a module and the sources inside it are never scanned. That misread is the
+    # whole reason five agents' payloads looked empty.
+    if payload.lstrip()[:1] in "[{":
+        try:
+            obj = json.loads(payload)
+        except ValueError:
+            pass
+        else:
+            if isinstance(obj, dict):
+                return [v for v in obj.values()
+                        if isinstance(v, str) and _classify(v)[0] == "module"]
+            return []  # a route table: data, no code to audit
+    return [payload] if _classify(payload)[0] == "module" else []
+
+
+def audit(source: str, depth: int = 3) -> list[str]:
+    """Imports and calls worth a human's attention before this agent is played.
+
+    Tuned to surface what actually matters -- anything reaching the network, the
+    filesystem or a subprocess -- rather than every unfamiliar name.
+
+    **Recurses into packed payloads.** Six of the vendored agents carry their
+    real logic base85- or zlib-packed and `exec` it at import, so auditing only
+    the outer file describes a loader, not an agent. Every payload is decoded
+    (never executed), and any Python source inside it is audited too; findings
+    from a payload are labelled with its digest. `depth` bounds payload-inside-
+    payload nesting.
+    """
+    findings = _audit_source(source)
+    for digest, kind, text in packed_payloads(source, depth):
+        if kind == "module":
+            findings += _audit_source(text, f"embedded {digest}: ", bundling=True)
+    return findings
+
+
+def packed_payloads(source: str, depth: int = 3) -> list[tuple[str, str, str]]:
+    """(digest, kind, text) for every payload packed into this file.
+
+    `kind` is `module` for Python source -- the payload itself, or each source
+    inside a JSON module map -- and `table` for anything else, which in practice
+    means a decoded route or action schedule. Only a `module` carries code for
+    `audit` to read; a `table` is data, and calling it unaudited would be a false
+    alarm on the ten agents whose entire payload is a precomputed route.
+    """
+    found: list[tuple[str, str, str]] = []
+    seen: set[str] = set()
+    frontier = [(source, 1)]
+    while frontier:
+        current, level = frontier.pop()
+        if level > depth:
+            continue
+        for payload in _payloads(current):
+            sources = _nested_sources(payload)
+            kind = "module" if sources else "table"
+            for text in sources or [payload]:
+                digest = hashlib.sha256(
+                    text.encode("utf-8", "replace")).hexdigest()[:12]
+                if digest in seen:
+                    continue
+                seen.add(digest)
+                found.append((digest, kind, text))
+                if kind == "module":
+                    frontier.append((text, level + 1))
+    return found
+
+
+def payload_digests(source: str, depth: int = 3) -> list[str]:
+    """Digests of every payload decoded out of this file, code or data.
+
+    Coverage, reported separately from findings, because "audited and clean" and
+    "never decoded" both render as an empty finding list -- and for a third of
+    the vendored agents the second was silently true until the decoder learned
+    about JSON module maps and helper-function loaders.
+    `tests/test_opponents.py` asserts this stays non-empty for the packed ones.
+    """
+    return [digest for digest, _, _ in packed_payloads(source, depth)]
 
 
 # --------------------------------------------------------------------------
