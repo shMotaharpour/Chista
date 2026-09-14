@@ -13,25 +13,25 @@ idle to the next day start.
 | TOMATO | ongoing crop | 14 days | 99 | 567 | `graph_TOMATO_lifecycle.npz` |
 | STRAWBERRY | ongoing crop | 19 days | 159 | 999 | `graph_STRAWBERRY_lifecycle.npz` |
 | MELON | one-shot crop | 15 days | 89 | 368 | `graph_MELON_lifecycle.npz` |
-| GOOSE / COW / SHEEP | animals | — | deferred | — | next step |
+| GOOSE / COW / SHEEP | animals | ? | ? | ? | ? |
 
 ## State definition
 
 - **Crops** — `(crop, age, consec, fert_left, yield)`:
-  - `age`: origin = FIRST HARVEST DAY (age -1 = the day before it);
-    age 0..max_yield-first = golden window (water/fert give +2, F005);
-    after max_yield the plant decays 1 unit per 2 turns (F008) until weed.
+  - `age`: origin = START OF GOLDEN WINDOWS (SGW) ((max_yield_day + 1) // 2) (age -1 = the day before it);
+    age 0..max_yield-SGW = golden window (water give +1 and water/fert give +2, F005);
+    day after max_yield the plant considered as weed.
   - `consec`: 0|1 — yesterday watered/dry. Two dry nights = weed (F002),
     so a consec=1 day MUST be watered or the plant dies.
   - `fert_left`: 0..2 remaining fertilizer-covered days (F004).
   - `yield`: units on the tile (0..cap).
-- **Animals** (deferred; Hossein's convention noted for the next step):
-  - `age` wraps inside the positive production range:
+- **Animals**:
+  - `age` wraps inside the positive production range and start from - first_yield_day:
     goose `{0}`, cow `{0,1}`, sheep `{0,1,2}` (interval = 1/2/3);
     pre-yield ages are negative (placement day itself is intra-day).
   - `unfed`: 0|1 (2 = escaped overnight, F017) — the structure REMAINS,
     so a new animal can be placed without DIG (F024: DIG fails on an
-    occupied structure).
+    occupied structure) or DIG to make it NONE.
   - `care_bank`: 0..max_held (goose 4, cow 6, sheep 6) — banked CARE
     nights (F019); CARE banks only on fed days.
   - `yield`: units on the animal (0..cap).
@@ -46,7 +46,7 @@ Chains = canonical subsets of the state's ops. Engine-verified notes:
 - WATER strictly before HARVEST for one-shot crops (the watered unit
   lands immediately — F026).
 - Order of FERTILIZE vs WATER within the day does not change the
-  outcome ( fert covers the whole day) — canonical keeps it fixed.
+  outcome for ongoing corps ( fert covers the whole day) — canonical keeps it fixed.
 - Fertilizer must be in the UNIT's bag for FERTILIZE (F004) and the
   nightly auto-drop returns it to the shed → each fert day re-PICKUPs.
 - Market purchases land one turn BEFORE the unit op that needs them
@@ -64,6 +64,6 @@ Chains = canonical subsets of the state's ops. Engine-verified notes:
 ## v1 simplifications (documented)
 
 - Weed-spawn RNG ignored (0.005/tile/day, single tile).
-- No animals yet; wheat+carrot only; preconditions explicit on edges
+- preconditions explicit on edges
   but assumed satisfied.
 - Selling = harvesting at the secretary's day-price; no warehousing.
