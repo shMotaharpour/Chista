@@ -64,15 +64,22 @@ from world.fast_sim import FastSim
 
 from tile_dp.chains import (CONSTRUCTIVE_OPS, ENTITY_CODE, ENTITY_NAMES,
                             MARKET_OPS, N_RESOURCE, NO_ACT, RESOURCE_ID,
-                            chain_id_of, chain_name, chain_ops,
-                            chains_for, cost_vector, domain_ok,
+                            chain_id_of, chain_name, chain_ops, chains_for,
+                            contract_id, cost_vector, domain_ok,
                             entity_code_of, entity_of_code, is_animal,
-                            produce_vector)
-from tile_dp.tile_state import (KIND_ANIMAL, KIND_EMPTY_STRUCTURE, KIND_NONE,
-                                KIND_PLANT, KIND_WEED, TURNS_PER_DAY, TileState,
+                            produce_vector, registry_fingerprint)
+from tile_dp.tile_state import (EMPTY_KIND_OF_STRUCTURE, EMPTY_KINDS,
+                                KIND_ANIMAL, KIND_EMPTY_COOP,
+                                KIND_EMPTY_PASTURE, KIND_NONE, KIND_PLANT,
+                                KIND_WEED, TURNS_PER_DAY, TileState,
                                 crop_age_origin, decode_tile)
 
-ENGINE_TAG = "tile-dp-v16"
+# Identity of the artifact contract, COMPUTED from its inputs (chains.
+# contract_id): no hand-typed version number exists here on purpose - a version
+# is a property of the product, and the first state is not finished yet. The
+# name is kept because build.py and the paused tests import it.
+CONTRACT_ID = contract_id()
+ENGINE_TAG = CONTRACT_ID
 
 # Which structure an entity lives in (engine data: BUILD needs it, and it is
 # how the EMPTY_STRUCTURE candidates are decided). Crops are absent on purpose.
@@ -225,17 +232,29 @@ class TileGraph:
             edge_next=self.edge_next, edge_chain=self.edge_chain,
             edge_entity=self.edge_entity, edge_cost=self.edge_cost,
             edge_produce=self.edge_produce, engine_tag=self.engine_tag,
+            registry=registry_fingerprint(),
             n_expanded=self.report.n_expanded,
             n_noop_edges=self.report.n_noop_edges)
 
     @classmethod
     def load(cls, path: Path) -> "TileGraph":
-        """Read an artifact written by `save` (the engine tag must match)."""
+        """Read an artifact written by `save` (tag and registry must match).
+
+        An edge stores its chain as an id, i.e. as a POSITION in `CHAIN_NAMES`
+        (owner's item 7), so an artifact is only readable together with the
+        registry that produced it; a mismatch means the ids would decode into
+        other chains and is refused instead.
+        """
         data = np.load(Path(path), allow_pickle=True)
         tag = str(data["engine_tag"])
         if tag != ENGINE_TAG:
             raise ValueError(f"graph engine tag {tag!r} != {ENGINE_TAG!r}; "
                              "rebuild the cache")
+        registry = str(data["registry"])
+        if registry != registry_fingerprint():
+            raise ValueError(
+                f"artifact built with chain registry {registry!r}, this code has "
+                f"{registry_fingerprint()!r}: chain ids shifted, rebuild it")
         entity = str(data["entity"]) or None
         keys = data["state_keys"]
         kinds: dict[str, int] = {}
@@ -289,7 +308,7 @@ def _act(farmer: list, market: list | None = None) -> dict:
     return {"farmer": farmer, "hands": [], "market": market or []}
 
 
-def _tile_and_day(sim: FastSim) -> tuple[object, int]:
+def _tile_and_day(sim: FastSim) -> tuple[dict | None, int]:
     """(tile the worker stands on, current day) - live view, read-only."""
     obs = sim.observations()
     me = obs[0]["farms"][0]
@@ -300,6 +319,40 @@ def _tile_and_day(sim: FastSim) -> tuple[object, int]:
 def _state_of(sim: FastSim) -> TileState:
     """Day-start state of the sim's own tile."""
     return decode_tile(*_tile_and_day(sim))
+
+
+def verify_engine_constants() -> None:
+    """Re-check the decode constants the engine tables do not state.
+
+    TURNS_PER_DAY comes from the run configuration (kaggriculture.py:864) and
+    the dry limit is a literal in the nightly loop (783, 817): a run with
+    another turnsPerDay would shift every day comparison in the decoder while
+    the tables still looked right. Both are checked on a scratch sim, so a
+    wrong constant raises at build time instead of decoding wrongly.
+    """
+    sim = _new_sim()
+    sim.step([_act(["PASS"], [["BUY_SEED", "MELON", 1]]), _act(["PASS"])])
+    sim.step([_act(["PLANT", "MELON"]), _act(["PASS"])])
+    tile, _ = _tile_and_day(sim)
+    if tile is None:
+        raise RuntimeError("PLANT MELON left the tile empty: cannot check the "
+                           "decode constants against this engine")
+    spec = K.CROPS["MELON"]
+    planted = int(tile["planted_day"])
+    want = (planted + int(spec["max_yield_day"]) + 1) * TURNS_PER_DAY
+    got = int(tile["max_lifespan_step"])
+    if got != want:
+        raise RuntimeError(
+            f"day length mismatch: a MELON planted on day {planted} carries "
+            f"max_lifespan_step={got}, the decoder expects {want} = "
+            f"(day + max_yield_day + 1) * {TURNS_PER_DAY} turns per day")
+    for _ in range(TURNS_PER_DAY):
+        sim.step([_act(["PASS"]), _act(["PASS"])])
+    dry, _ = _tile_and_day(sim)
+    if dry is None or dry.get("kind") != KIND_WEED:
+        raise RuntimeError(
+            f"dry limit mismatch: an unwatered MELON became {dry!r} after one "
+            f"day; the decoder expects WEED after the second dry night")
 
 
 def _next_age(state: TileState) -> int:
@@ -336,8 +389,9 @@ def _expected_next(state: TileState, ops: tuple[str, ...],
                          1 - spec["first_yield_day"], 0, unfed, 0,
                          min(bank, int(spec["max_held"])), 0)
     if "BUILD" in ops:
-        return TileState(KIND_EMPTY_STRUCTURE, None, None,
-                         _STRUCTURE_OF[entity], 0, 0, 0, 0, 0, 0)
+        structure = _STRUCTURE_OF[entity]
+        return TileState(EMPTY_KIND_OF_STRUCTURE[structure], None, None,
+                         structure, 0, 0, 0, 0, 0, 0)
     if "DIG" in ops:
         return TileState(KIND_NONE, None, None, None, 0, 0, 0, 0, 0, 0)
     return None
@@ -364,7 +418,7 @@ def _growth_day_violation(state: TileState, child: TileState,
         # dry streak or the lifespan end turns a plant into WEED, harvesting a
         # one-shot crop clears the tile, a second unfed night frees the animal
         # (the structure stays). Anything else is a broken chain.
-        if child.kind in (KIND_WEED, KIND_NONE, KIND_EMPTY_STRUCTURE):
+        if child.kind in (KIND_WEED, KIND_NONE, *EMPTY_KINDS):
             return None
         return (f"edge {chain_name(ops)} on {state.describe()}: the engine gave "
                 f"{child.describe()}")
@@ -531,7 +585,7 @@ def _own_entity(state: TileState, restrict: str | None) -> str | None:
         return state.crop
     if state.kind == KIND_ANIMAL:
         return state.animal
-    if state.kind == KIND_EMPTY_STRUCTURE:
+    if state.kind in EMPTY_KINDS:
         for name in ENTITY_NAMES:
             if _STRUCTURE_OF.get(name) == state.structure:
                 return name
@@ -557,9 +611,18 @@ def _candidates(state: TileState, restrict: str | None) -> tuple[str, ...]:
         if animal is None:
             raise ValueError(f"ANIMAL state without an animal: {state.describe()}")
         return (animal,)
-    if state.kind == KIND_EMPTY_STRUCTURE:
-        return tuple(n for n in ENTITY_NAMES
-                     if _STRUCTURE_OF.get(n) == state.structure)
+    if state.kind in EMPTY_KINDS:
+        # Own animals first (place / rebuild), then every other entity for the
+        # DIG follow-up: dig this structure and build the OTHER one on the same
+        # day. Engine probe 2026-09-14: BUILD_COOP, DIG, BUILD_PASTURE and PLACE
+        # all run inside one day in either order (kaggriculture.py:484-503); a
+        # chain that mismatches the structure is refused silently, so it lands
+        # on the state it started from and `_is_noop_edge` drops it. Item 6 of
+        # the v15 review: with own-structure candidates only, an empty COOP had
+        # no edge to an empty PASTURE.
+        own = tuple(n for n in ENTITY_NAMES
+                    if _STRUCTURE_OF.get(n) == state.structure)
+        return own + tuple(n for n in ENTITY_NAMES if n not in own)
     raise ValueError(f"unsupported state kind {state.kind!r}")
 
 
@@ -579,7 +642,7 @@ def _plan(state: TileState, restrict: str | None
     seen: set[tuple[int, tuple[str, ...]]] = set()
     for ent in _candidates(state, restrict):
         for ops in chains_for(state.kind, age=age, animal_graph=is_animal(ent),
-                              yield_units=state.yield_units):
+                              yield_units=state.yield_units, entity=own):
             if not domain_ok(ops, ent):
                 continue         # domain filter (decision 9)
             if any(op in CONSTRUCTIVE_OPS for op in ops):
@@ -597,9 +660,15 @@ def _plan(state: TileState, restrict: str | None
 # ------------------------------------------------------------------- pruning
 
 def _is_noop_edge(state_id: int, edge: Edge) -> bool:
-    """F047 sweep: a self-loop that costs nothing and produces nothing."""
-    return (edge.to_id == state_id and not any(edge.cost)
-            and not any(edge.produce))
+    """A self-loop that holds no product: it lands on the node it starts from.
+
+    Owner's rule (2026-09-14): an edge with an empty produce vector STAYS when it
+    changes the tile - the state change is its product. A self-loop changes
+    nothing and produces nothing, and NO_ACT reaches the same node for free, so
+    it is a no-op whether or not it spends an hour (the old rule caught only the
+    zero-cost ones and let a 2-hour DIG+BUILD self-loop through).
+    """
+    return edge.to_id == state_id and not any(edge.produce)
 
 
 def _dominates(better: Edge, worse: Edge) -> bool:
@@ -644,6 +713,7 @@ def build_graph(entity: str | None = None, progress: bool = False) -> TileGraph:
     one day - or that lands on a state other than the one it promises - fails
     the build loudly instead of being skipped.
     """
+    verify_engine_constants()
     spec = BuildSpec(entity=entity, progress=progress)
     key_to_id: dict[int, int] = {}
     state_list: list[TileState] = []
@@ -673,14 +743,17 @@ def build_graph(entity: str | None = None, progress: bool = False) -> TileGraph:
             continue
         visited.add(sid)
         state = state_list[sid]
-        sim = sims[sid]
+        # The sim is consumed here: a node is expanded exactly once, so keeping
+        # its sim alive afterwards only costs memory (~0.05 MB per node, owner's
+        # item 11).
+        sim = sims.pop(sid)
         _assert_sim_at(sim, state, f"state {sid}")
         for run_entity, ops, code in _plan(state, entity):
             branch = sim.clone()
             outcome = _exec_chain(branch, state, ops, run_entity)
             nid = intern(outcome.next_state)
-            sims.setdefault(nid, branch)   # first sim to reach the node wins
             if nid not in visited:
+                sims.setdefault(nid, branch)   # first sim to reach the node wins
                 frontier.append(nid)
             edges.setdefault(sid, []).append(
                 Edge(sid, nid, chain_id_of(ops), code,
