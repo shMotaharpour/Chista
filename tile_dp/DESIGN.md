@@ -1,25 +1,24 @@
-# tile_dp — carrot daily state-action graph
-
-Branch: `single_tile_daily_state_action` — step 1 per Hossein's spec.
+# tile_dp — daily state-action graphs 
 
 ## Model
 
-- **State** = the tile at **day start** (hour 0): `NONE | WEED | PLANT`
-  with `(age, consec, fert_left, yield)` for plants.
+- **State** = the tile at **day start** (hour 0): `NONE | WEED | PLANT | COOP | PASTURE | AMIMAL`
+  with `(age, consec, fert_left, yield)` for plants and (age, comsec, held, yield) for animals
 - **Edge** = one daily action chain in canonical order
   `PLANT → FERTILIZE → WATER → HARVEST` (+ DIG for clearing), executed
   by the workers, then idle 24 turns to the next day start.
-- **Age origin** = first harvest day (Hossein's convention): age -1 =
-  the day before the first harvest; age 2 = the last living day for
-  carrot (weed from age 3 — never a day-start state).
+- **Animals age origin** = first harvest day (Hossein's convention): age -1 =
+  the day before the first harvest;
+- **Corps age origin** = first golden windows day (Hossein's convention): age -1 =
+  the day before the SGW (Start of Golden Windows);
 
 ## Engine-derived rules baked in
 
 - A plant **not watered on its planting day is weed by the next day**
   (F002) → the canonical replay always waters the planting day; the
-  first plant day-start state is age -1 with consec=0.
+  first plant day-start state is age - SGW with consec=0.
 - `consec=1` (yesterday dry) **caps fert_left at 1**: the fertilizer
-  day must be a watered day, and yesterday was dry (engine-probed).
+  day must be at age > -2.
 - `FERTILIZE→HARVEST` (no water) is **dominated** by bare HARVEST:
   same production, wasted fertilizer (engine-probed) → pruned by the
   generic dominance filter.
@@ -29,9 +28,7 @@ Branch: `single_tile_daily_state_action` — step 1 per Hossein's spec.
 
 ## Numbers (engine-verified, build_graph)
 
-- 57 reachable day-start plant states (+ NONE; WEED is unreachable as a
-  day-start state in v1 — dry-night deaths decode to NONE, weed-spawn
-  RNG ignored).
+- 57 reachable day-start plant states (+ NONE.
 - The graph builder interns states from real execution: only states the
   engine actually produces become nodes (≈45 nodes, 100+ edges —
   authoritative count is `build_graph()`'s output).
@@ -45,4 +42,3 @@ Branch: `single_tile_daily_state_action` — step 1 per Hossein's spec.
 | `chains.py` | chain registry, canonical order, per-state applicability |
 | `graph.py` | `build_graph()` — engine-driven edges + pruning; `TileGraph` |
 | `contractor.py` | (next step: the DP over this graph) |
-| `CARROT_GRAPH.md` | full SC/AC listing + Mermaid diagram |
