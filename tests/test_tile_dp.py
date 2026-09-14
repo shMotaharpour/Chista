@@ -6,6 +6,8 @@ Contracts under test:
 - TileState decode/pack round-trips (carrot + ongoing/animal dims).
 - The carrot graph is engine truth: honest-yield calendars come out of its
   edges (3 by day-3 start no-fert; WATER,HARVEST = 4 with fert).
+- Chain shape: every op is a known op; inside each DIG-free segment no op
+  repeats, WATER precedes HARVEST (F009) and a PLACE follows its BUILD.
 - Pruning: no zero-cost self-loops; dominated edges absent (no
   FERTILIZE->HARVEST with bare-HARVEST production on fert-less states).
 - Dominance is componentwise on BOTH vectors (2026-09-14): a difference in one
@@ -22,7 +24,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from tile_dp.chains import (ANIMAL_OPS, CHAIN_NAMES, CROP_OPS, N_RESOURCE,
+from tile_dp.chains import (ALL_OPS, CHAIN_NAMES, N_RESOURCE,
                             NO_ACT, RES_CARROT,
                             RES_FERTILIZER, RES_LABOR, RES_MELON,
                             RES_SEED_CARROT, RES_SEED_WHEAT, RES_WHEAT,
@@ -70,11 +72,36 @@ def test_chain_order_canonical() -> None:
     for ops in CHAIN_NAMES:
         if ops == (NO_ACT,):
             continue
-        assert any(all(op in src for op in ops)
-                   for src in (CROP_OPS, ANIMAL_OPS)), ops
-        assert len(set(ops)) == len(ops), ops
-        if "WATER" in ops and "HARVEST" in ops and "DIG" not in ops:
-            assert ops.index("WATER") < ops.index("HARVEST"), ops
+        # Every op is a known worker or market op.
+        for op in ops:
+            assert op in ALL_OPS, (ops, op)
+        # Split the chain into DIG-free segments: a DIG starts a new tile
+        # (the old plant is gone, a new one may be planted and watered), so
+        # every canonical-order rule holds WITHIN one segment.
+        segments: list[list[str]] = [[]]
+        for op in ops:
+            if op == "DIG":
+                segments.append([])
+            else:
+                segments[-1].append(op)
+        for seg in segments:
+            # No op repeats inside one segment (one water per plant day...).
+            assert len(set(seg)) == len(seg), ops
+            # WATER waters the plant it harvests: it precedes HARVEST - the
+            # +1 yield of F009 (owner's item 4). (HARVEST, DIG, PLANT, WATER)
+            # waters the NEXT plant and is legal because the DIG separates.
+            if "WATER" in seg and "HARVEST" in seg:
+                assert seg.index("WATER") < seg.index("HARVEST"), ops
+            # PLACE lands an animal in a structure: either the same day's
+            # BUILD (build before place) or the tile's own empty structure.
+            if "PLACE" in seg or "PLACE_ANIMAL" in seg:
+                place = seg.index("PLACE" if "PLACE" in seg else "PLACE_ANIMAL")
+                if "BUILD" in seg:
+                    assert seg.index("BUILD") < place, ops
+        # One PLANT per chain even across DIGs: the registry never replants
+        # twice in one day (two plants would need two seeds and two hours
+        # beyond the model's one-crop-per-day shape).
+        assert sum(op == "PLANT" for op in ops) <= 1, ops
 
 
 def test_young_plant_cannot_harvest() -> None:

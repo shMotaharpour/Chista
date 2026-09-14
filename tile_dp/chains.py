@@ -136,6 +136,9 @@ MARKET_OPS = ("BUY_SEED", "BUY_PRODUCT", "BUY_ANIMAL")
 WORKER_OPS = frozenset(("PLANT", "WATER", "FERTILIZE", "HARVEST", "DIG",
                         "BUILD", "PLACE", "PLACE_ANIMAL", "FEED", "CARE",
                         "COLLECT_FERTILIZER"))
+# Every op a chain may name: worker ops + the market ops + the day-pass op.
+# The registry vocabulary (tests assert every chain draws from this set).
+ALL_OPS: frozenset[str] = WORKER_OPS | set(MARKET_OPS) | {NO_ACT}
 
 CROP_OPS = ("FERTILIZE", "WATER", "HARVEST")
 ANIMAL_OPS = ("FEED", "CARE", "HARVEST", "COLLECT_FERTILIZER")
