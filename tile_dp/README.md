@@ -1,14 +1,12 @@
-# tile_dp — Single-Tile Daily State-Action Graphs
+# tile_dp — Daily State-Action Graphs (single_tile_daily_state_action)
 
-Branch: `single_tile_daily_state_action`
-
-## Scope (per Hossein)
-
-Per-tile **daily** state-action graphs: state = the tile at day start
+Per-tile **daily** state-action graphs. State = the tile at day start
 (hour 0); edge = one daily action chain executed by the workers, then
-idle to the next day start. Covered so far:
+idle to the next day start.
 
-| entity | kind | lifecycle | states | edges | graph file |
+## Status
+
+| entity | kind | lifecycle | states | edges | graph npz |
 |---|---|---|---|---|---|
 | CARROT | one-shot crop | 6 days | 22 | 90 | `graph_CARROT_lifecycle.npz` |
 | WHEAT | one-shot crop | 7 days | 34 | 158 | `graph_WHEAT_lifecycle.npz` |
@@ -36,7 +34,7 @@ idle to the next day start. Covered so far:
     occupied structure).
   - `care_bank`: 0..max_held (goose 4, cow 6, sheep 6) — banked CARE
     nights (F019); CARE banks only on fed days.
-  - `fert_avail` dropped as a state bit (it's 1 every day — Hossein).
+  - `yield`: units on the animal (0..cap).
 
 ## Action chains (canonical order)
 
@@ -50,8 +48,9 @@ Chains = canonical subsets of the state's ops. Engine-verified notes:
 - Order of FERTILIZE vs WATER within the day does not change the
   outcome ( fert covers the whole day) — canonical keeps it fixed.
 - Fertilizer must be in the UNIT's bag for FERTILIZE (F004) and the
-  nightly auto-drop returns it to the shed → each fert day needs a
-  fresh PICKUP in the replay.
+  nightly auto-drop returns it to the shed → each fert day re-PICKUPs.
+- Market purchases land one turn BEFORE the unit op that needs them
+  (F030) — the BUY turn itself costs no labor.
 
 ## Pruning (engine-driven, no hand tables)
 
@@ -62,31 +61,9 @@ Chains = canonical subsets of the state's ops. Engine-verified notes:
    at least one strict). Dominated edges are removed — the DP never
    needs them.
 
-## Resources (independent per-resource vectors)
+## v1 simplifications (documented)
 
-- `LABOR_HOURS`: 1 per op turn
-- `SEED_<CROP>`: 1 per PLANT (bought via market — F030: purchases land
-  one turn BEFORE the op that needs them)
-- `FERTILIZER`: 1 per FERTILIZE (PICKUP from shed first — the nightly
-  auto-drop returns the unit bag to the shed)
-- WHEAT (animal food): 1 per FEED (animals, next step)
-
-All int; prices/wages are the secretary's per-day int vectors.
-
-## Mechanics verified on the engine (probes)
-
-- A plant not watered on its planting day is weed by the next day
-  (F002) — the canonical replay always waters the planting day.
-- FERTILIZE on a day covers that day + 2 (F004); the +2 bonus applies
-  only on window days (F005/F006).
-- The unit bag auto-drops into the shed at night → each fert day
-  re-PICKUPs (probe-verified).
-- HARVEST collects the post-water yield into the unit bag; a DROP at
-  the shed moves it to storage (probe-verified).
-
-## Honest-yield calendars (engine probes)
-
-- wheat (watered daily, no fert): 1 → 1 → 2 → 3 → 4 (cap 6 needs fert)
-- wheat (watered daily + fert day 2): 6 by end of day 4 (F006)
-- carrot (watered daily, no fert): 1 → 2 → 3 (cap 4)
-- goose (fed + cared daily): eggs from day 4, cap 4
+- Weed-spawn RNG ignored (0.005/tile/day, single tile).
+- No animals yet; wheat+carrot only; preconditions explicit on edges
+  but assumed satisfied.
+- Selling = harvesting at the secretary's day-price; no warehousing.
