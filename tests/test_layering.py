@@ -6,6 +6,14 @@ Run:  .venv/bin/python -m tests.test_layering
 arena, never to the agent: a submission that imports it would ship someone
 else's published work, and on Kaggle it would not be there to import anyway.
 
+The rule this file states (issue #20 review round): **nothing the submission
+loads may import `opponents`** — stated as the transitive in-repo import
+closure of the submission entry point (`agent/main.py`), not as a per-file
+scan with an exemption list. The closure is strictly stronger: it catches an
+indirect import through a helper, and it needs no list that grows until the
+guard means nothing. `offline/` (the arena, issue #20) imports `opponents`
+by design and is outside the submission's closure by construction.
+
 Written before `agent/` exists, deliberately. A guard added after the first
 violation is a cleanup; added before, it is a contract — and the cost of
 discovering this one late is a submission that fails to load.
@@ -16,48 +24,112 @@ import ast
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
-# Where the rule does not apply: the vendored tree itself, and the tests that
-# exist to check it.
-EXEMPT = {"opponents", "tests"}
+ENTRY = REPO / "agent" / "main.py"
 FORBIDDEN_ROOT = "opponents"
 
 
-def source_files() -> list[Path]:
-    return sorted(p for p in REPO.rglob("*.py")
-                  if not p.relative_to(REPO).parts[0].startswith(".")
-                  and p.relative_to(REPO).parts[0] not in EXEMPT)
-
-
-def imported_roots(path: Path) -> set[str]:
+def _imported_modules(path: Path) -> set[str]:
+    """Full dotted names imported by one file (import x / from x import y)."""
     try:
         tree = ast.parse(path.read_text(errors="replace"))
     except SyntaxError:
         return set()
-    roots: set[str] = set()
+    names: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
-            roots |= {a.name.split(".")[0] for a in node.names}
+            names |= {a.name for a in node.names}
         elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
-            roots.add(node.module.split(".")[0])
-    return roots
+            names.add(node.module)
+    return names
 
 
-def test_no_module_outside_the_arena_imports_opponents() -> None:
-    violations = [str(p.relative_to(REPO)) for p in source_files()
-                  if FORBIDDEN_ROOT in imported_roots(p)]
-    assert not violations, (
-        f"these modules import `{FORBIDDEN_ROOT}`, which ships only in this "
-        "repository and must never reach a submission:\n  " + "\n  ".join(violations)
+def _module_file(name: str) -> Path | None:
+    """The in-repo file a dotted name maps to (first segment = top package)."""
+    top = name.split(".")[0]
+    pkg_dir = REPO / top
+    if not pkg_dir.is_dir():
+        return None
+    parts = name.split(".")
+    candidate = REPO.joinpath(*parts).with_suffix(".py")
+    if candidate.is_file():
+        return candidate
+    pkg_init = REPO.joinpath(*parts, "__init__.py")
+    if pkg_init.is_file():
+        return pkg_init
+    return None
+
+
+def submission_closure(entry: Path = ENTRY) -> tuple[set[Path], set[str]]:
+    """The transitive in-repo import closure of the submission entry point.
+
+    Returns (files in the closure, imported root names seen) — the roots are
+    for the self-check below.
+    """
+    seen: set[Path] = {entry}
+    queue = [entry]
+    roots: set[str] = set()
+    while queue:
+        path = queue.pop()
+        for name in _imported_modules(path):
+            roots.add(name.split(".")[0])
+            target = _module_file(name)
+            if target is not None and target not in seen:
+                seen.add(target)
+                queue.append(target)
+    return seen, roots
+
+
+def test_submission_closure_excludes_opponents() -> None:
+    """Nothing the submission loads may import `opponents` — transitively."""
+    closure, _ = submission_closure()
+    offenders = sorted(
+        str(p.relative_to(REPO)) for p in closure
+        if FORBIDDEN_ROOT in _imported_modules(p)
+    )
+    assert not offenders, (
+        f"the submission's import closure reaches `{FORBIDDEN_ROOT}`, which "
+        "ships only in this repository and must never reach a submission:"
+        "\n  " + "\n  ".join(offenders)
     )
 
 
-def test_the_guard_can_see_the_files_it_guards() -> None:
-    """A scan that silently matches nothing passes forever."""
-    scanned = source_files()
-    assert scanned, "no source files scanned: the walk or the exemptions are wrong"
-    roots = {p.relative_to(REPO).parts[0] for p in scanned}
-    assert {"world", "tile_dp"} <= roots, (
-        f"expected world/ and tile_dp/ in the scan, saw {sorted(roots)}"
+def test_the_closure_is_real_and_covers_the_agent() -> None:
+    """A closure that silently matches nothing passes forever.
+
+    The entry must resolve, and the closure must contain the modules the
+    spine is known to load (agent.runtime, agent.obs, world.fast_sim) —
+    the same protection test_layering's file-scan self-check had.
+    """
+    assert ENTRY.is_file(), f"submission entry point missing: {ENTRY}"
+    closure, roots = submission_closure()
+    names = {p.relative_to(REPO).with_suffix("").as_posix() for p in closure}
+    # M1 spine: main -> runtime -> {greedy, dispatch}. agent.obs and
+    # world.fast_sim join the closure when #11's replanner wires them in.
+    for required in ("agent/runtime", "agent/greedy", "agent/dispatch"):
+        assert required in names, (
+            f"closure misses {required}: the walk is broken ({sorted(names)})"
+        )
+    assert "opponents" not in roots, (
+        "the submission already imports opponents — the guard is allowing "
+        "the thing it exists to forbid"
+    )
+
+
+def test_layering_holds_repo_wide_outside_the_arena() -> None:
+    """The old rule, kept where it still applies: no module OUTSIDE the
+    arena tree (`offline/`, which imports opponents by design) may import
+    it either — the belt to the closure's braces."""
+    exempt = {"opponents", "tests", "offline"}
+    violations = []
+    for p in sorted(REPO.rglob("*.py")):
+        top = p.relative_to(REPO).parts[0]
+        if top.startswith(".") or top in exempt:
+            continue
+        if FORBIDDEN_ROOT in _imported_modules(p):
+            violations.append(str(p.relative_to(REPO)))
+    assert not violations, (
+        f"these modules import `{FORBIDDEN_ROOT}` outside the arena:\n  "
+        + "\n  ".join(violations)
     )
 
 
@@ -75,7 +147,9 @@ def main() -> int:
     if failures:
         print(f"{failures} test(s) failed")
         return 1
-    print(f"layering holds across {len(source_files())} modules")
+    closure, _ = submission_closure()
+    print(f"layering holds: submission closure = {len(closure)} modules, "
+          "opponents excluded")
     return 0
 
 
