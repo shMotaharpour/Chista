@@ -6,8 +6,9 @@ second per turn, unbankable; the harness bills ~35 ms more than measured,
 so the working budget is 0.965 s).
 
 Per turn:
-  with the deadline enforced, decode the observation (stub in M1 - #10),
-  replan at hour 0 (stub in M1), dispatch the committed plan.
+  with the deadline enforced, decode the observation (#10),
+  replan at hour 0 (the replanner rung, #11 - opt-in, see agent/replan.py),
+  dispatch the committed plan.
 On exception or deadline expiry the fallback ladder applies, in order:
   1. the committed plan, dispatched greedily
   2. the previous day's plan, repaired
@@ -91,12 +92,30 @@ def _hour_of(obs) -> int:
         return 0
 
 
+def _replanner_rung(runtime, obs):
+    """The replanner rung (#11), imported on first use.
+
+    `tile_dp` and the graph artifact are imported lazily: a run that never
+    replans (the default) pays nothing for them, and the harness's 60 s bank is
+    never charged for code the turn does not use (F046).
+    """
+    from agent.replan import replan_day
+    return replan_day(runtime, obs)
+
+
 class Runtime:
     """Per-turn state singleton: plans, timing log, fallback ladder."""
 
     def __init__(self) -> None:
         self.plan: Any = None                # committed day plan (stub: None)
         self.prev_plan: Any = None           # previous day's plan, for rung 2
+        # The replanner rung (#11). `None` means the socket is empty and the
+        # ladder falls through to greedy: the rung prices one tile per unit and
+        # cannot yet carry the inputs its chains assume (see agent/replan.py),
+        # so it stays opt-in until the secretary layer (#14) exists.
+        self.replanner: Any = (_replanner_rung
+                               if os.environ.get("CHISTA_REPLAN") == "1"
+                               else None)
         self.last_return_t: float | None = None
         self.day_logged = -1
         self.turn_index = 0
@@ -144,10 +163,10 @@ class Runtime:
         deadline = Deadline(_overage_of(obs))
         error = None
         try:
-            # M1: decode (#10) and replan are stubs - the greedy policy is
-            # the brain until #11 lands. At hour 0 a committed plan archives
-            # (rung 2: the previous day's plan, dispatched again); with no
-            # replanner, plan stays None and greedy drives the day.
+            # The replanner rung (#11) fills `self.plan` at hour 0 when it is
+            # enabled; with no replanner (or one that bailed) the greedy policy
+            # is the brain, as in M1. At hour 0 a committed plan archives to
+            # prev_plan (rung 2: the previous day's plan, dispatched again).
             hour = _hour_of(obs)
             if hour == 0 and self.plan is not None:
                 self.prev_plan, self.plan = self.plan, None
@@ -156,14 +175,15 @@ class Runtime:
             # cheapest remaining rung, and the except path below honours the
             # same gate.
             #
-            # TODO(rung self-bail): `self._deadline` is published so a rung can
-            # poll it and raise TimeoutError mid-work, but NO rung polls it
-            # yet - nothing in M1 runs long enough to need it, so a
-            # between-rung gate is the whole protection today. The first heavy
-            # rung (the replanner, #11) must poll;
-            # tests/test_agent_runtime.py::test_deadline_gates_the_ladder pins
-            # that contract with a polling rung of its own.
+            # The replanner (#11) is the first heavy rung, so it polls the
+            # deadline itself and raises TimeoutError mid-work; the between-rung
+            # gate could only ever see a replan that had already spent the turn.
+            # It runs ONCE PER DAY, at hour 0: within a day the graph the DP
+            # prices is unchanged except by our own execution, so the stored
+            # plan is dispatched for the remaining 23 hours.
             self._deadline = deadline
+            if hour == 0 and self.replanner is not None:
+                self.plan = self.replanner(self, obs)
             action = self._rung_plan(obs)
             if action is None and not deadline.expired():
                 action = self._rung_prev_plan(obs)

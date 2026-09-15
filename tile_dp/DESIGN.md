@@ -120,4 +120,41 @@
 | `graph.py` | `build_graph()` — sim-inherited engine edges, assertions, pruning; `TileGraph` / `Edge` |
 | `build.py` | `python -m tile_dp.build` — writes the model + `build_report.json` into `models/` |
 | `models/` | `graph_tile_lifecycle.npz` (the merged tile graph) + `build_report.json` (counts) |
-| — | (next step: the DP over this graph, not written yet) |
+| `contractor.py` | the DP over this graph: one backward sweep prices the whole board, plans are recovered forward — `price_board()` (issue #11) |
+
+## The DP over this graph (issue #11, `contractor.py`)
+
+The graph is **day-invariant and position-invariant**, so one backward sweep
+prices every tile on the board at once — there is no per-tile solve and no
+per-day rebuild, and a loop over tiles in the sweep means the property the
+architecture rests on has been lost:
+
+```
+V_30(s) ≡ 0                                     # F029: no liquidation
+V_d(s)  = max over e out of s of  produce(e)·p_d − cost(e)·w_d + V_{d+1}(next(e))
+```
+
+Three array ops per day over the shipped CSR (`matvec`, `add`, segmented max),
+`V` kept as `(31, 685) float32` ≈ 80 KB, no argmax table: plans are recovered
+forward for the tiles actually owned, per-day coefficients included (labour,
+inputs, produce) so the master (#12) can couple on them.
+
+Two contracts travel with the graph and are the DP's, not the caller's:
+
+- **R006 — non-negativity.** Dominance pruning is optimality-preserving only
+  while `p ≥ 0` and `w ≥ 0` componentwise; a negative component makes a pruned
+  edge the true optimum, so the contractor asserts on entry, every call, and the
+  master clamps its duals. See `docs/R006_non-negative-prices-and-wages.md`.
+- **No empty edge slices.** `np.maximum.reduceat` returns the element *at* the
+  index for an empty group — a plausible wrong value rather than an error — so
+  the shipped graph asserts every state owns at least one out-edge.
+
+Measured on the dev box (issue #11 acceptance: sweep ≤ 15 ms, 100 recoveries
+≤ 5 ms): **sweep 3.34 ms, 100 tile recoveries 3.38 ms**. The per-tile recovery
+loop the issue describes costs 20.8 ms for 100 tiles — the tiles walk in
+lockstep instead of paying numpy dispatch cost per ~25-element slice.
+
+`agent/replan.py` wires it into the runtime as the hour-0 rung (the pricing
+oracle in place): duals and routing are stood in for by the engine's own quotes
+(#12) and by "each unit works the tile it stands on" (#14), so the rung is
+opt-in behind `CHISTA_REPLAN=1` until the secretary can carry its inputs.

@@ -89,6 +89,9 @@ class PricedBoard:
     # per_day_produce. `columns` / `produce` are their sums.
     per_day_cost: np.ndarray = field(repr=False, default=None)
     per_day_produce: np.ndarray = field(repr=False, default=None)
+    # (n_owned, days) int8 — the entity code of each day's chosen edge, i.e.
+    # what a constructive op (PLANT / BUILD / PLACE) names; 0 = none.
+    per_day_entity: np.ndarray = field(repr=False, default=None)
     # The per-day edge rewards the sweep computed, kept because plan recovery
     # re-reads exactly these numbers (and re-deriving them per tile would be
     # the per-tile loop the architecture forbids anyway).
@@ -202,6 +205,7 @@ class TileContractor:
         per_day_produce = np.zeros_like(per_day_cost)
         rows = np.empty((days, n_owned), dtype=np.intp)
         states_at = np.empty((days, n_owned), dtype=np.intp)
+        entities_at = np.empty((days, n_owned), dtype=np.int8)
         lane = np.arange(n_owned, dtype=np.intp)
         states = np.asarray(owned, dtype=np.intp).copy()
         for d in range(days):
@@ -218,6 +222,7 @@ class TileContractor:
             chosen = edge_ix[hits[np.searchsorted(segment[hits], lane)]]
             rows[d] = chosen
             states_at[d] = states
+            entities_at[d] = self.graph.edge_entity[chosen]
             # Per-day coefficients, not only the sum: the master (#12) couples
             # on labour[d], inputs[r][d] and produce[r][d].
             per_day_cost[:, d, :] = self.graph.edge_cost[chosen]
@@ -230,7 +235,7 @@ class TileContractor:
         produced = per_day_produce.sum(axis=1)
         return (columns, produced, plans,
                 V[0, np.asarray(owned, dtype=np.intp)].astype(np.float64),
-                per_day_cost, per_day_produce)
+                per_day_cost, per_day_produce, entities_at)
 
     def price(self, p, w, owned_states) -> PricedBoard:
         """Price the board: one sweep for every owned tile, plus their columns.
@@ -248,8 +253,8 @@ class TileContractor:
                     f"owned state id out of range 0..{self.n_states - 1}: "
                     f"{int(owned.min())}..{int(owned.max())}")
         V, rewards = self._sweep(p, w)
-        (columns, produced, plans, tile_values,
-         per_day_cost, per_day_produce) = self._recover(V, rewards, owned)
+        (columns, produced, plans, tile_values, per_day_cost,
+         per_day_produce, per_day_entity) = self._recover(V, rewards, owned)
         # With no owned tile there is no column and nothing to price; the
         # signal is defined as 0 rather than as the max of an empty set.
         reduced_cost = float(tile_values.max()) if owned.size else 0.0
@@ -258,6 +263,7 @@ class TileContractor:
                            tile_values=tile_values, days=self.days,
                            per_day_cost=per_day_cost,
                            per_day_produce=per_day_produce,
+                           per_day_entity=per_day_entity,
                            rewards=rewards)
 
 
