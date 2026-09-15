@@ -30,6 +30,11 @@ Order: **Rules** (`R<NNN>_<slug>.md`) first, then **Findings**
   wasted on validation when speed matters. Dev mode is deliberately stricter
   than the real harness (junk inner action shapes pass there, raise here) and
   hands out observation copies instead of live views.
+- [R005_every-number-has-a-source.md](R005_every-number-has-a-source.md) —
+  Every threshold, budget and constant in the repo traces to a source: an
+  F-finding, the engine itself, or a measurement recorded where it was taken. A
+  number without one is a defect, even when it looks reasonable. Missing values
+  are measured or left as named TODOs, never guessed.
 
 ## Findings
 
