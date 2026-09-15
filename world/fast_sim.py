@@ -325,25 +325,9 @@ def _pass_policy(_obs: dict[str, Any]) -> dict[str, Any]:
 
 
 def _validate_action(index: int, action: Any) -> None:
-    """Dev-mode action shape check.
-
-    Deliberately STRICTER than the harness: the harness only requires the action
-    to be an object (its schema declares no typed properties and the interpreter
-    no-ops unknown ops), so a wrong inner type passes silently on the real
-    environment while dev mode raises here. A dev failure therefore means
-    "caller bug", not necessarily "would fail on Kaggle" — see R004.
-    """
-    if not isinstance(action, dict):
-        raise TypeError(f"agent {index}: action must be a dict")
-    for key in ("farmer", "hands", "market"):
-        if key not in action:
-            raise KeyError(f"agent {index}: action missing '{key}'")
-    if not isinstance(action["farmer"], list):
-        raise TypeError(f"agent {index}: 'farmer' must be a list")
-    if not isinstance(action["hands"], list):
-        raise TypeError(f"agent {index}: 'hands' must be a list")
-    if not isinstance(action["market"], list):
-        raise TypeError(f"agent {index}: 'market' must be a list")
+    """Dev-mode action shape check (promoted to world.actions, #20)."""
+    from world.actions import validate_action
+    validate_action(index, action)
 
 
 # --------------------------------------------------------------- parallel runs
