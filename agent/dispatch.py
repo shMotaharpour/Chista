@@ -42,11 +42,26 @@ def dispatch_plan(plan, obs) -> dict:
         raise ValueError("plan units must be a list of per-unit op lists")
     hour = int(obs.get("hour", 0)) if isinstance(obs, dict) else 0
 
+    if not units:
+        # an empty plan is legitimate (every tile locked, nothing worth
+        # doing): everyone passes, the market orders still ride
+        market = [list(order) for order in plan.get("market", [])] \
+            if hour == 0 else []
+        return {"farmer": ["PASS"], "hands": [],
+                "market": market[:MAX_MARKET_ORDERS]}
+
     farmer = list(units[0][hour]) if hour < len(units[0]) else ["PASS"]
+    # F031: a HIRE behind a short purse is refused SILENTLY, so the day's
+    # real hand count can differ from what the plan assumed. The board is
+    # authoritative; ops for hands that do not exist are dropped, and a
+    # real hand without a planned op passes. (F047 class - never ship ops
+    # for units the engine will ignore.)
+    real_hands = len(obs.get("farms", [{}])[obs.get("player", 0)]
+                     .get("hands", [])) if isinstance(obs, dict) else len(units) - 1
     hands = []
-    for i, unit in enumerate(units[1:]):
-        if hour < len(unit):
-            hands.append(list(unit[hour]))
+    for i in range(real_hands):
+        if i + 1 < len(units) and hour < len(units[i + 1]):
+            hands.append(list(units[i + 1][hour]))
         else:
             hands.append(["PASS"])
     market = [list(order) for order in plan.get("market", [])] \
@@ -54,4 +69,8 @@ def dispatch_plan(plan, obs) -> dict:
     if len(market) > MAX_MARKET_ORDERS:
         # F031: the engine drops the 11th silently - never send one
         market = market[:MAX_MARKET_ORDERS]
+    # M1 simplification (named): the cap is per TURN, so a day has 240
+    # order slots - M1 sends them all at hour 0. #15's sell scheduling
+    # spreads sells intraday precisely because one big basket tips the
+    # price a step (F036: ~25 wheat per coin).
     return {"farmer": farmer, "hands": hands, "market": market}

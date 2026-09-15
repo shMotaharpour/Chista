@@ -70,17 +70,22 @@ def test_dispatch_slices_by_hour() -> None:
     plan = {"units": [[["PLANT", "WHEAT"], ["WATER"], ["HARVEST"]],
                       [["PASS"], ["NORTH"], ["PASS"]]],
             "market": [["BUY_SEED", "WHEAT", 1]]}
-    a0 = dispatch_plan(plan, _obs(hour=0))
+    obs = _obs(hour=0)
+    obs["farms"][0]["hands"] = [[1, 1]]       # one real hand (F031 truth)
+    a0 = dispatch_plan(plan, obs)
     assert a0["farmer"] == ["PLANT", "WHEAT"]
     assert a0["hands"] == [["PASS"]]
     assert a0["market"] == [["BUY_SEED", "WHEAT", 1]]      # hour 0 carries it
-    a1 = dispatch_plan(plan, _obs(hour=1))
+    obs1 = _obs(hour=1); obs1["farms"][0]["hands"] = [[1, 1]]
+    a1 = dispatch_plan(plan, obs1)
     assert a1["farmer"] == ["WATER"]
     assert a1["hands"] == [["NORTH"]]
     assert a1["market"] == []                              # only hour 0
-    a2 = dispatch_plan(plan, _obs(hour=2))
+    obs2 = _obs(hour=2); obs2["farms"][0]["hands"] = [[1, 1]]
+    a2 = dispatch_plan(plan, obs2)
     assert a2["farmer"] == ["HARVEST"]
-    a5 = dispatch_plan(plan, _obs(hour=5))
+    obs5 = _obs(hour=5); obs5["farms"][0]["hands"] = [[1, 1]]
+    a5 = dispatch_plan(plan, obs5)
     assert a5["farmer"] == ["PASS"] and a5["hands"] == [["PASS"]]
 
 
@@ -136,6 +141,70 @@ def test_deadline_reads_overage() -> None:
     assert d.remaining_ms() <= int(WORKING_BUDGET_S * 1000)
     d2 = Deadline(0.0)
     assert d2.remaining_overage_s == 0.0      # exhausted bank: F046 forfeit
+
+
+def test_deadline_gates_the_ladder() -> None:
+    """A rung that burns the budget hands the turn to PASS, fast.
+
+    The drill must be able to FAIL: a sleeping rung makes act() return in
+    well under the sleep, because the deadline is consulted between rungs
+    (review 2, finding 1 - the old drill passed whatever the budget was).
+    """
+    import time
+
+    def slow_dispatch(runtime, obs):
+        # a well-behaved heavy rung polls the deadline and bails
+        for _ in range(120):                  # 1.2 s in 10 ms slices
+            if runtime._deadline.expired():
+                raise TimeoutError("plan rung over budget")
+            time.sleep(0.01)
+        return {"farmer": ["WATER"], "hands": [], "market": []}
+
+    r = _fresh_runtime()
+    r.plan = {"units": [[["WATER"]]], "market": []}
+    saved = Runtime._rung_plan                # act() calls the BOUND method
+    saved_budget = WORKING_BUDGET_S
+    import agent.runtime as R
+    R.WORKING_BUDGET_S = 0.05                 # shrink the wall for the drill
+    Runtime._rung_plan = lambda self, obs: slow_dispatch(self, obs)
+    try:
+        t0 = time.perf_counter()
+        action = r.act(_obs(hour=1))          # hour 1: plan rung runs first
+        elapsed = time.perf_counter() - t0
+    finally:
+        Runtime._rung_plan = saved
+        R.WORKING_BUDGET_S = saved_budget
+    # the plan rung saw the expired budget and bailed; the ladder handed
+    # the turn to PASS instead of running more rungs past the wall
+    assert action["farmer"] == ["PASS"], action
+    assert elapsed < 0.5, f"act() took {elapsed:.3f}s - the gate did not fire"
+
+
+def test_empty_units_plan_is_legal() -> None:
+    """{"units": []} is a legitimate plan: everyone passes, no raise."""
+    plan = {"units": [], "market": [["SELL", "WHEAT", 5]]}
+    a = dispatch_plan(plan, _obs(hour=0))
+    assert a["farmer"] == ["PASS"]
+    assert a["hands"] == []
+    assert a["market"] == [["SELL", "WHEAT", 5]]
+
+
+def test_dispatch_reconciles_hands_with_obs() -> None:
+    """F031: hires can fail silently, so the OBS's hand count is
+    authoritative - plan ops for non-existent hands are dropped."""
+    plan = {"units": [[["PASS"]],            # farmer
+                      [["NORTH"]],           # planned hand 1
+                      [["SOUTH"]]],          # planned hand 2
+            "market": []}
+    obs = _obs(hour=0)
+    a = dispatch_plan(plan, obs)              # obs has no hands hired
+    assert a["hands"] == []                   # both dropped: no real hands
+    obs["farms"][0]["hands"] = [[1, 1]]       # one real hand
+    a = dispatch_plan(plan, obs)
+    assert a["hands"] == [["NORTH"]]          # hand 1 kept, hand 2 gone
+    obs["farms"][0]["hands"] = [[1, 1], [2, 2], [3, 3]]   # 3 real hands
+    a = dispatch_plan(plan, obs)
+    assert a["hands"] == [["NORTH"], ["SOUTH"], ["PASS"]]
 
 
 def test_greedy_f002_water_first() -> None:
