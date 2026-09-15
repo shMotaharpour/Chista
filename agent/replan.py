@@ -30,12 +30,27 @@ stands on, and only the chain's own worker ops are dispatched: the purchases and
 carries the chain assumes are missing, and the engine refuses an op whose input
 the unit does not carry, **in silence** (F047).
 
-That is why the rung is **off by default** (`CHISTA_REPLAN=1` turns it on). On
-today's code greedy is the honest brain; this module is the socket, wired and
-tested, waiting for the layer that can carry the inputs. Turning it on today
-would replace a working policy with a plan whose purchases nobody carries —
-a regression in play, not a step forward, and the arena has not been built yet
-(#18/#20) to catch it.
+That is why the rung is **off by default** (`CHISTA_REPLAN=1` turns it on), and
+the reason is F047 rather than a hunch: shipping ops the engine ignores is the
+mistake class the project named, and every op in a chain whose input the unit
+does not carry is exactly that.
+
+Measured, so nobody has to guess what "off" is worth (official path, against
+`random`, seeds 0-2, 720 steps, rung toggled by the env switch):
+
+| | final money |
+|---|---|
+| rung off (greedy) | 2,840 |
+| rung on | 3,000 |
+
+Both numbers are bad, and neither says the rung works. The rung's side is the
+**starting money untouched** (F038: 3,000) — it dispatches ops like
+`BUILD_PASTURE, PLACE SHEEP` whose animal nobody bought, the engine refuses them
+in silence, and it spends nothing, which scores above a greedy policy that buys
+wheat seed and never sells the harvest. So: greedy is a weak baseline, the rung
+currently does nothing useful, and the honest place for it is behind a switch
+until #14 can carry the inputs. The arena (#18/#20) is the instrument that will
+settle it, not this table.
 """
 
 from __future__ import annotations
