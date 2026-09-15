@@ -64,6 +64,33 @@ rewards for both agents — enforced by `tests/test_world_parity.py`, which
 compares the full agent-facing stream. If a change breaks that, the change is
 wrong.
 
+## Vocabulary
+
+**The arena** — the evaluation loop that plays our agent against the vendored
+competitors in `opponents/` over paired seeds, and reports win rate and coin
+margin. It is `offline/evaluate.py` (issue #18) driving `offline/pool/`
+(issue #20).
+
+**It does not exist yet.** Both are specified and neither is built, so every
+sentence in this repo that says "the arena runs this in our interpreter" is
+describing a contract the code must honour once it is written, not something
+that happens today. Read those as requirements.
+
+Two things it is not:
+
+- It is not the game harness. `world/` reserves *harness* for
+  `kaggle_environments` itself — "the real harness (`make()`)" — and the two
+  must not be called the same thing.
+- It is not a Kaggle leaderboard. Only Kaggle scores the competition; the arena
+  is our own measurement, and its numbers are ours alone.
+
+The word arrived with the vendored `opponents/` directory, which came from
+**AgriOracle**, this project's predecessor, where it was a real module at
+`lab/eval/arena.py` (still cited in R003's evidence table). It travelled into
+Chista's own tests and docs before anything here answered to it. It stays
+because it is a good name for the thing, and now it has a referent — which is
+the point of this section, and the reason it is here rather than assumed.
+
 ## Docs
 
 - `docs/player_agent.md` — getting started: build, test, and submit an agent.
