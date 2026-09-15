@@ -241,8 +241,9 @@ def test_greedy_market_cap_f031() -> None:
 def test_plan_day_roll_over() -> None:
     """At hour 0 the committed plan archives to prev_plan (rung 2 feed).
 
-    M1 has no replanner: the archived plan is dispatched on the next hour
-    (rung 2), and plan stays None so greedy drives the day.
+    With no replanner enabled (the default - the rung is opt-in until the
+    secretary #14 can carry its chains' inputs) plan stays None and greedy
+    drives the day; the archived plan is dispatched on the next hour.
     """
     r = _fresh_runtime()
     r.plan = {"units": [[["WATER"], ["NORTH"]]], "market": []}
