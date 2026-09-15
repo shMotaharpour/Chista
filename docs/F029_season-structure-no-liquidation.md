@@ -5,6 +5,9 @@
 ## Finding
 
 - An episode is 720 turns, `turnsPerDay = 24` — exactly 30 days.
+  **720 counts states, not decisions**: the agent is asked for an action
+  719 times, at steps 0..718, so the final day has 23 slots and the last
+  one still counts in full (F048).
 - The reward is money. Goods in the shed at the end are worth nothing.
 - There is no liquidation day: what the crew brings in on the last night is dropped into the shed and lost — planning a 30-day season on a 31-day board inflates the figures by more than half.
 - Each turn: every unit acts (farmer, then hands in order) -> the market runs -> the day's refresh happens at the day boundary.

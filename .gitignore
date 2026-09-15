@@ -1,6 +1,11 @@
 __pycache__/
 *.pyc
 
+# The project venv AGENTS.md names (`.venv/`, Python 3.11). Ignored here
+# because it is machine-specific and thousands of files; the stack that
+# belongs in the repo is requirements.txt.
+.venv/
+
 # Generated artifacts (replays from world.kaggle_env, benchmark output)
 artifacts/
 

@@ -28,6 +28,11 @@ files — R002 (never transcribe game rules; import from
 never reimplements it), and R004 (validation is a config switch: dev mode
 validates, fast mode bypasses) — they dictate how `world/` must be used.
 
+R005 (every number has a source) binds wider than `world/`: it applies to every
+threshold, budget and constant written anywhere in this project, including
+issues and commit messages. A number that cannot name a finding, the engine, or
+a measurement someone recorded is a defect, not a detail.
+
 ## Environment
 
 Python 3.11 venv at `.venv/`, CPU-only PyTorch, built from `requirements.txt`:
