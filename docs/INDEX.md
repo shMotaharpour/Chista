@@ -35,6 +35,11 @@ Order: **Rules** (`R<NNN>_<slug>.md`) first, then **Findings**
   engine, or a recorded measurement. So does every conclusion drawn from one,
   because a chain of inference over a measured number is not itself measured.
   Missing values are measured or left as named TODOs.
+- [R006_non-negative-prices-and-wages.md](R006_non-negative-prices-and-wages.md) —
+  The dominance-pruned tile graph is optimal only while every price and wage is
+  non-negative componentwise; a negative component makes the pruned edge the
+  optimum, so the contractor asserts `p >= 0` and `w >= 0` on entry and the
+  master projects its duals onto the non-negative orthant.
 
 ## Findings
 
