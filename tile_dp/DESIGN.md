@@ -150,9 +150,16 @@ Two contracts travel with the graph and are the DP's, not the caller's:
   the shipped graph asserts every state owns at least one out-edge.
 
 Measured on the dev box (issue #11 acceptance: sweep ≤ 15 ms, 100 recoveries
-≤ 5 ms): **sweep 3.34 ms, 100 tile recoveries 3.38 ms**. The per-tile recovery
-loop the issue describes costs 20.8 ms for 100 tiles — the tiles walk in
-lockstep instead of paying numpy dispatch cost per ~25-element slice.
+≤ 5 ms): **sweep 5.8-6.2 ms, 100 tile recoveries 2.1-3.1 ms**, and in
+`bench_turn_budget` **solo 5.63 ms / contended 9.33 ms (ratio 1.66)**. Two
+measurements that changed the code rather than decorating it:
+
+- The per-tile recovery loop the issue describes costs **20.8 ms for 100 tiles**
+  against the 5 ms ceiling — every ~25-element slice pays full numpy dispatch
+  cost — so the tiles walk in lockstep instead.
+- Folding produce and cost into one `[EP | −EC] @ [p ; w]` matvec looks like
+  fewer passes and measured **85-126 ms a sweep** against 8.5-10.4 ms for the
+  issue's two-matvec form: the wider `gemv` loses to BLAS thread dispatch.
 
 `agent/replan.py` wires it into the runtime as the hour-0 rung (the pricing
 oracle in place): duals and routing are stood in for by the engine's own quotes

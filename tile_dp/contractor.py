@@ -119,11 +119,6 @@ class TileContractor:
         # per matrix, and casting per call would upcast the whole sweep.
         self.EP = np.ascontiguousarray(graph.edge_produce, dtype=DTYPE)
         self.EC = np.ascontiguousarray(graph.edge_cost, dtype=DTYPE)
-        # produce and cost priced in ONE matvec: [EP | −EC] @ [p ; w] reads the
-        # two matrices once instead of twice and allocates no intermediate
-        # (18217,) result per day. Same arithmetic, fewer passes.
-        self.edge_value = np.ascontiguousarray(
-            np.concatenate([self.EP, -self.EC], axis=1))
         self._assert_no_empty_slices()
 
     # ---- guards -------------------------------------------------------
@@ -174,7 +169,13 @@ class TileContractor:
         # F029 — no liquidation, shed goods are worth nothing at season end.
         V = np.zeros((self.days + 1, self.n_states), dtype=DTYPE)
         for d in range(self.days - 1, -1, -1):
-            r = self.edge_value @ np.concatenate((p[d], w[d]))
+            # Two matvecs, priced by their own vector — and measured: folding
+            # produce and cost into one [EP | −EC] @ [p ; w] looks cheaper (one
+            # pass over the matrices instead of two) and is not. On this box it
+            # cost 85-126 ms a sweep against 8.5-10.4 ms here, because the wider
+            # gemv loses to BLAS thread dispatch. The two-matvec form is the
+            # measured one; do not "optimise" it back.
+            r = self.EP @ p[d] - self.EC @ w[d]
             rewards[d] = r
             cand = r + V[d + 1][self.edge_next]
             V[d] = np.maximum.reduceat(cand, self.edge_starts)

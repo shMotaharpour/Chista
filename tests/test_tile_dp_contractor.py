@@ -386,18 +386,22 @@ def test_empty_owned_board_prices_nothing() -> None:
 def test_budget_sweep_and_recovery() -> None:
     """Issue #11 §7: sweep ≤ 15 ms, 100 tile recoveries ≤ 5 ms.
 
-    Best of three runs: this is a shared box, so the floor is the honest
-    number, and a single reading carries another process's contention.
+    Best of five runs after a warm-up: this is a shared box, so the floor is the
+    honest number, and a single reading carries another process's contention.
+    The warm-up matters — a process's first sweeps pay for the BLAS thread pool
+    and the page faults on the 2.6 MB of matrices (measured: 90-150 ms on the
+    first call), which is a property of the process, not of the kernel.
     """
     graph = _graph()
     p, w = _integer_duals()
     contractor = TileContractor(graph)
-    contractor.sweep(p, w)                                   # warm the pages
+    for _ in range(3):
+        contractor.sweep(p, w)                               # warm, then time
 
-    solo = min(_time_ms(contractor.sweep, p, w) for _ in range(3))
+    solo = min(_time_ms(contractor.sweep, p, w) for _ in range(5))
     owned = list(range(0, min(100, graph.n_states)))
-    one = min(_time_ms(contractor.price, p, w, [0]) for _ in range(3))
-    hundred = min(_time_ms(contractor.price, p, w, owned) for _ in range(3))
+    one = min(_time_ms(contractor.price, p, w, [0]) for _ in range(5))
+    hundred = min(_time_ms(contractor.price, p, w, owned) for _ in range(5))
     recovery = max(0.0, hundred - one)
     print(f"  sweep {solo:.2f} ms  price(1 tile) {one:.2f} ms  "
           f"price(100 tiles) {hundred:.2f} ms  recovery {recovery:.2f} ms")
