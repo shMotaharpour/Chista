@@ -259,8 +259,9 @@ def decode_tile(tile: object, day: int) -> TileState:
         # one-shot crops, on the night the last unit is produced for
         # ongoing ones) is decoded as WEED: the project never plans on it.
         mls = int(tile.get("max_lifespan_step", -1) or -1)
-        # MAGIC NUMBER (engine, kaggriculture.py:226/800): TODO - pin it with a
-        # probe test against the engine instead of trusting this copy.
+        # (planted + max_yield_day + 1) * TURNS_PER_DAY is pinned against
+        # the live engine by tests/test_agent_obs.py
+        # (test_magic_number_pinned_by_engine_probe).
         if mls > 0 and day * TURNS_PER_DAY >= mls:
             return TileState(KIND_WEED, None, None, None, 0, 0, 0, 0, 0, 0)
         age = day - (tile.get("planted_day", day) + crop_age_origin(spec))
