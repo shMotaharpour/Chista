@@ -152,9 +152,17 @@ class Runtime:
             if hour == 0 and self.plan is not None:
                 self.prev_plan, self.plan = self.plan, None
             # The deadline gates the ladder BETWEEN rungs (review 2, finding
-            # 1), and is handed to the rungs so a long one can bail itself:
-            # a rung that has burned (or sees burned) budget yields its turn
-            # to the cheapest remaining rung.
+            # 1): a rung that has burned the budget yields its turn to the
+            # cheapest remaining rung, and the except path below honours the
+            # same gate.
+            #
+            # TODO(rung self-bail): `self._deadline` is published so a rung can
+            # poll it and raise TimeoutError mid-work, but NO rung polls it
+            # yet - nothing in M1 runs long enough to need it, so a
+            # between-rung gate is the whole protection today. The first heavy
+            # rung (the replanner, #11) must poll;
+            # tests/test_agent_runtime.py::test_deadline_gates_the_ladder pins
+            # that contract with a polling rung of its own.
             self._deadline = deadline
             action = self._rung_plan(obs)
             if action is None and not deadline.expired():
