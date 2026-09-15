@@ -337,6 +337,7 @@ def test_build_is_deterministic() -> None:
     assert (a.edge_entity == b.edge_entity).all()
     assert (a.edge_cost == b.edge_cost).all()
     assert (a.edge_produce == b.edge_produce).all()
+    assert (a.edge_steps == b.edge_steps).all()
 
 
 if __name__ == "__main__":

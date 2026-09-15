@@ -26,7 +26,15 @@
   number of ops in the `WORKER_OPS` allow-list (market buys and `PICKUP` cost 0
   hours), inputs per op: `PLANT` 1 seed of the entity's crop, `FERTILIZE` 1
   fertilizer, `FEED` 1 wheat, `PLACE` / `PLACE_ANIMAL` 1 animal of the entity's
-  species.
+  species. **`LABOR_HOURS` is a floor, not the whole day**: the executor
+  actually spends `edge_steps` engine steps per edge (shipped beside
+  `edge_cost` — PLANT 2, FERTILIZE / FEED / PLACE / PLACE_ANIMAL 3, the rest 1,
+  from `OP_STEPS`), because the secretary layer does not exist yet and the
+  purchases are realised inline. In isolation `LABOR_HOURS` under-charges a
+  chain exactly as `edge_steps` over-charges it (a PICKUP can carry several
+  units; one PASS carries up to ten market orders — F031); the truth depends
+  on how the secretary batches (#14). The master's labour row (#12) gets the
+  bracket, not a guess.
 - **Resource vocabulary**: 18 names, exactly one id per physical item —
   `LABOR_HOURS, FERTILIZER, WHEAT, SEED_WHEAT, SEED_CARROT, SEED_TOMATO,
   SEED_STRAWBERRY, SEED_MELON, CARROT, TOMATO, STRAWBERRY, MELON, EGG, MILK,
@@ -60,6 +68,14 @@
   is reachable, so there is no cap of fert_left by consec.
 - `care_bank` is **capped at `max_held`** by contract (Hossein): the engine can
   bank more than `max_held` before the first yield day, the model caps the state.
+  Probe (2026-09-14): a COW fed+cared nightly banks 7 before its day-8
+  production, but the first production consumes
+  `min(max_held, yield + 1 + bank)`, so **any bank ≥ `max_held` − 1 is
+  decision-equivalent**; the bank also burns on an unfed production night
+  (engine zeroes it, kaggriculture.py:826-828). The cap can therefore be
+  tightened to `max_held − 1` (one state folded per animal/age/unfed/yield
+  combination, a straight DP saving) without losing a decision - on record
+  here, not applied mid-PR to keep the state-space contract stable.
 - **Dominance is componentwise (contract 2026-09-14)**: two edges to the same
   state prune each other only when one needs no more of EVERY resource and
   produces no less of EVERY resource. The vectors are never netted and no scalar

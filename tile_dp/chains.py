@@ -394,13 +394,20 @@ def contract_id() -> str:
     2026-09-14: why mint a version while the first state is still unfinished - a
     version is a property of the product, not of an iteration).
     Instead, an artifact carries the fingerprint of everything it depends on -
-    the chain registry, the engine source, the day length and the key layout -
-    so a changed input makes an old artifact unusable by construction. The first
-    product (this tile lifecycle graph) is unfinished, so nothing is stamped
-    with a version number yet.
+    the chain registry, the engine source, the day length, the key layout AND
+    the builder's own logic (graph.py: the pruning rules, the applicability
+    filters and the executor; review 2026-09-14: `3c8733a` moved the edge count
+    by 1286 without touching a chain name, and a logic change must invalidate
+    the old artifact the same way an engine change does) - so a changed input
+    makes an old artifact unusable by construction. The first product (this
+    tile lifecycle graph) is unfinished, so nothing is stamped with a version
+    number yet.
     """
+    from hashlib import sha1
+    graph_src = (Path(__file__).resolve().parent / "graph.py").read_bytes()
     return (f"tile-dp/reg={registry_fingerprint()}"
-            f"+eng={engine_fingerprint()}+tpd={TURNS_PER_DAY}+pb={KEY_BITS}")
+            f"+eng={engine_fingerprint()}+tpd={TURNS_PER_DAY}+pb={KEY_BITS}"
+            f"+bld={sha1(graph_src).hexdigest()[:8]}")
 
 
 # Contract: every chain fits one engine day (owner's item 14). The guard that

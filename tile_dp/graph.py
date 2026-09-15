@@ -65,9 +65,9 @@ from world.fast_sim import FastSim
 from tile_dp.chains import (CONSTRUCTIVE_OPS, ENTITY_CODE, ENTITY_NAMES,
                             MARKET_OPS, N_RESOURCE, NO_ACT, OP_STEPS,
                             RESOURCE_ID, chain_id_of, chain_name, chain_ops,
-                            chains_for, contract_id, cost_vector, domain_ok,
-                            entity_code_of, entity_of_code, is_animal,
-                            produce_vector, registry_fingerprint)
+                            chain_steps, chains_for, contract_id, cost_vector,
+                            domain_ok, entity_code_of, entity_of_code,
+                            is_animal, produce_vector, registry_fingerprint)
 from tile_dp.tile_state import (EMPTY_KIND_OF_STRUCTURE, EMPTY_KINDS,
                                 KIND_ANIMAL, KIND_EMPTY_COOP,
                                 KIND_EMPTY_PASTURE, KIND_NONE, KIND_PLANT,
@@ -174,6 +174,9 @@ class TileGraph:
     edge_entity: np.ndarray
     edge_cost: np.ndarray
     edge_produce: np.ndarray
+    edge_steps: np.ndarray            # engine steps the chain spends (upper
+                                      # bracket on LABOR_HOURS, which counts
+                                      # worker ops only - see chains.OP_STEPS)
     engine_tag: str
 
     @property
@@ -231,7 +234,8 @@ class TileGraph:
             state_keys=self.state_keys, edge_offsets=self.edge_offsets,
             edge_next=self.edge_next, edge_chain=self.edge_chain,
             edge_entity=self.edge_entity, edge_cost=self.edge_cost,
-            edge_produce=self.edge_produce, engine_tag=self.engine_tag,
+            edge_produce=self.edge_produce, edge_steps=self.edge_steps,
+            engine_tag=self.engine_tag,
             registry=registry_fingerprint(),
             n_expanded=self.report.n_expanded,
             n_noop_edges=self.report.n_noop_edges)
@@ -274,7 +278,7 @@ class TileGraph:
             edge_offsets=data["edge_offsets"], edge_next=data["edge_next"],
             edge_chain=data["edge_chain"], edge_entity=data["edge_entity"],
             edge_cost=data["edge_cost"], edge_produce=data["edge_produce"],
-            engine_tag=tag)
+            edge_steps=data["edge_steps"], engine_tag=tag)
 
 
 # ------------------------------------------------------- sim + state helpers
@@ -355,51 +359,104 @@ def verify_engine_constants() -> None:
             f"day; the decoder expects WEED after the second dry night")
 
 
-def verify_op_steps() -> None:
-    """Measure each op's engine-step cost instead of trusting `OP_STEPS`.
+def _op_probe_sequences(op: str, entity: str) -> list[list]:
+    """The engine steps `_exec_chain` spends on `op`, in order.
 
-    `OP_STEPS` (chains.py) hand-writes how many engine steps the executor
-    spends per op - the buy rides a PASS, a PICKUP is its own step, the act is
-    the last. That table bounds the one-day contract, so a drifted value lets
-    an overlong chain through the registry guard silently. This probe runs
-    each op once on a scratch sim (a bare tile; ops that need a target are
-    engine-refused, but the refusal still costs its steps), counts the
-    `sim.step` calls up to and including the op's own action, and compares
-    with the table - a mismatch raises at build time.
+    One shared fact in one place: the executor's per-op sequences are built
+    from this table, and `verify_op_steps` replays it, so the probe and the
+    executor cannot drift apart. `OP_STEPS[op]` is `len(...)` of this list.
     """
-    probe_ops = ("PLANT", "FERTILIZE", "FEED", "PLACE", "PLACE_ANIMAL")
-    for op in probe_ops:
-        sim = _new_sim()
-        hops = 0
-        raw = sim.step
+    if op == "PLANT":
+        return [(["PASS"], [["BUY_SEED", entity, 1]]),
+                (["PLANT", entity], [])]
+    if op == "FERTILIZE":
+        return [(["PASS"], [["BUY_PRODUCT", "FERTILIZER", 1]]),
+                (["PICKUP", "FERTILIZER", 1], []),
+                (["FERTILIZE"], [])]
+    if op == "FEED":
+        return [(["PASS"], [["BUY_PRODUCT", "WHEAT", 1]]),
+                (["PICKUP", "WHEAT", 1], []),
+                (["FEED"], [])]
+    if op in ("PLACE", "PLACE_ANIMAL"):
+        return [(["PASS"], [["BUY_ANIMAL", entity, 1]]),
+                (["PICKUP", entity, 1], []),
+                (["PLACE", entity], [])]
+    return [(["PASS"], [])]      # single-step ops: the act itself
 
-        def wrap(actions, *a, **k):
-            nonlocal hops
-            hops += 1
-            return raw(actions, *a, **k)
 
-        sim.step = wrap
-        entity = "CARROT" if op == "PLANT" else "COW"
-        if op == "PLANT":
-            sim.step([_act(["PASS"], [["BUY_SEED", entity, 1]]), _act(["PASS"])])
-            sim.step([_act(["PLANT", entity]), _act(["PASS"])])
-        elif op in ("FERTILIZE", "FEED"):
-            res = "FERTILIZER" if op == "FERTILIZE" else "WHEAT"
-            sim.step([_act(["PASS"], [["BUY_PRODUCT", res, 1]]), _act(["PASS"])])
-            sim.step([_act(["PICKUP", res, 1]), _act(["PASS"])])
-            sim.step([_act([op]), _act(["PASS"])])
-        else:
-            sim.step([_act(["PASS"], [["BUY_ANIMAL", entity, 1]]), _act(["PASS"])])
-            sim.step([_act(["PICKUP", entity, 1]), _act(["PASS"])])
-            sim.step([_act([op, entity]), _act(["PASS"])] if op == "PLACE"
-                     else [_act([op]), _act(["PASS"])])
+def verify_op_steps() -> None:
+    """Check `OP_STEPS` against the engine's own answer (minimality).
+
+    Replays `_op_probe_sequences` - the same sequences `_exec_chain` runs -
+    one engine step at a time, and reads the op's effect off the raw tile:
+    the effect must NOT be present before the op's action step and MUST be
+    present after it. If the engine ever needed one more step (a fourth for
+    FERTILIZE), the effect would not have landed and this raises; if a
+    sequence were over-counted, the action step would not be the last and
+    the effect would appear one step early.
+    """
+    cases = [("PLANT", "CARROT", None), ("FERTILIZE", "CARROT", None),
+             ("FEED", "COW", None), ("PLACE", "COW", None),
+             ("PLACE_ANIMAL", "GOOSE", None)]
+    for op, entity, _unused in cases:
         want = OP_STEPS.get(op, 1)
-        if hops != want:
+        sim = _new_sim()
+        if op in ("FERTILIZE",):
+            # a fertiliser dose needs a plant on the tile (engine refuses on
+            # a bare one): plant it first, from a scratch sim of its own
+            sim.step([_act(["PASS"], [["BUY_SEED", entity, 1]]),
+                      _act(["PASS"])])
+            sim.step([_act(["PLANT", entity]), _act(["PASS"])])
+        elif op in ("FEED", "PLACE", "PLACE_ANIMAL"):
+            # feed / place need the structure the animal lives in; FEED also
+            # needs the animal ON the structure (a feed on an empty one is a
+            # silent refusal), so the setup places it with the same sequence
+            # the PLACE probe measures
+            structure = "COOP" if entity == "GOOSE" else "PASTURE"
+            sim.step([_act(["PASS"], [["BUY_ANIMAL", entity, 1]]),
+                      _act(["PASS"])])
+            sim.step([_act([f"BUILD_{structure}"]), _act(["PASS"])])
+            if op == "FEED":
+                # the feed target is the animal, not the empty structure:
+                # buy, carry and place it with the very sequence the PLACE
+                # probe measures, then the FEED sequence lands on it
+                sim.step([_act(["PICKUP", entity, 1]), _act(["PASS"])])
+                sim.step([_act(["PLACE", entity]), _act(["PASS"])])
+        effects = {"PLANT": ("crop", entity),
+                   "FERTILIZE": ("fertilized_until_day", None),
+                   "FEED": ("fed_today", True),
+                   "PLACE": ("animal", entity),
+                   "PLACE_ANIMAL": ("animal", entity)}
+        field, value = effects[op]
+        seq = _op_probe_sequences(op, entity)
+        assert len(seq) == want, (op, len(seq), want)
+        for _farmer, _market in seq[:-1]:
+            sim.step([_act(list(_farmer), list(_market)), _act(["PASS"])])
+        before, _ = _tile_and_day(sim)
+        # snapshot the pre-action fields NOW: _tile_and_day returns the live
+        # tile dict, and the action step mutates it in place
+        # snapshot the pre-action fields NOW: _tile_and_day returns the live
+        # tile dict and the action step mutates it in place
+        before_fert = int(before.get("fertilized_until_day", -1)) if before else -1
+        before_field = dict(before) if before else {}
+        final_farmer, final_market = seq[-1]
+        sim.step([_act(list(final_farmer), list(final_market)),
+                  _act(["PASS"])])
+        after, _ = _tile_and_day(sim)
+        if after is None or not isinstance(after, dict):
+            raise RuntimeError(f"op {op}: tile vanished under the probe")
+        # effect present after, and (where meaningful) not before
+        if op == "FERTILIZE":
+            landed = int(after.get("fertilized_until_day", -1)) > before_fert
+        elif op == "FEED":
+            landed = bool(after.get(field)) and not before_field.get(field)
+        else:
+            landed = after.get(field) == value and before_field.get(field) != value
+        if not landed:
             raise RuntimeError(
-                f"op {op} consumed {hops} engine steps in the executor, "
-                f"OP_STEPS says {want}: the step table drifted, fix it")
-
-
+                f"op {op} did not produce its effect within {want} engine "
+                f"steps (OP_STEPS says {want}): the step table, the probe "
+                "sequences or the executor drifted")
 def _next_age(state: TileState) -> int:
     """Age of the same tile one day later (crop age / animal cycle age)."""
     if state.kind == KIND_PLANT:
@@ -822,6 +879,7 @@ def build_graph(entity: str | None = None, progress: bool = False) -> TileGraph:
     edge_entity: list[int] = []
     cost_rows: list[list[int]] = []
     produce_rows: list[list[int]] = []
+    step_rows: list[int] = []
     offsets = np.zeros(n_states + 1, dtype=np.int64)
     n_noop = 0
     for sid in range(n_states):
@@ -834,6 +892,7 @@ def build_graph(entity: str | None = None, progress: bool = False) -> TileGraph:
             edge_entity.append(edge.entity_code)
             cost_rows.append(list(edge.cost))
             produce_rows.append(list(edge.produce))
+            step_rows.append(chain_steps(edge.ops))
     offsets[n_states] = len(edge_next)
 
     kinds: dict[str, int] = {}
@@ -852,4 +911,5 @@ def build_graph(entity: str | None = None, progress: bool = False) -> TileGraph:
         edge_cost=np.array(cost_rows, dtype=np.int32).reshape(-1, N_RESOURCE),
         edge_produce=np.array(produce_rows, dtype=np.int32).reshape(
             -1, N_RESOURCE),
+        edge_steps=np.array(step_rows, dtype=np.int8),
         engine_tag=ENGINE_TAG)
