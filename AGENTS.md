@@ -77,10 +77,14 @@ competitors in `opponents/` over paired seeds, and reports win rate and coin
 margin. It is `offline/evaluate.py` (issue #18) driving `offline/pool/`
 (issue #20).
 
-**It does not exist yet.** Both are specified and neither is built, so every
-sentence in this repo that says "the arena runs this in our interpreter" is
-describing a contract the code must honour once it is written, not something
-that happens today. Read those as requirements.
+`offline/evaluate.py` exists (issue #18): paired-seed comparison of two
+versions, paired coin margin as the development signal and win rate against
+the pool as the ship gate, ties counted explicitly, loss autopsy, a measured
+seed-count line, and a serial `--timing` path for the F046 budget. What it
+does NOT have yet is the pool's measured dev/held-out split
+(`offline/pool/registry.py`, issue #20) — opponent selection falls back to a
+sorted-slug prefix and says so in every report. Every "beats X on N paired
+seeds" ship gate in the milestone issues reads as pending that split.
 
 Two things it is not:
 
