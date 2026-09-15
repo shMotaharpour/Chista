@@ -65,6 +65,20 @@ def test_day_start_guard_raises_off_hour_zero() -> None:
     assert raised, "mid-day decode must raise when at_day_start is required"
 
 
+def test_opponent_decode_is_opt_in() -> None:
+    """M1 default: opponent is None (nothing consumes it yet, #16);
+    decode_opponent=True fills it through the identical code path."""
+    obs = _mini_obs(hour=0)
+    default = decode_world(obs)
+    assert default.opponent is None
+    opt_in = decode_world(obs, decode_opponent=True)
+    assert opt_in.opponent is not None
+    # and the opt-in view equals a direct decode_farm of the same board
+    direct = decode_farm(obs["farms"][1], day=obs["day"], hour=0)
+    assert (opt_in.opponent.keys == direct.keys).all()
+    assert opt_in.opponent.classes == direct.classes
+
+
 def test_opponent_parity_same_path() -> None:
     """Mirrored boards decode to identical FarmViews field for field."""
     board = _board_with_plant(day=2)
@@ -178,7 +192,7 @@ def _mini_obs(hour: int) -> dict:
 
 def test_decode_world_no_graph_keys_option() -> None:
     """graph_keys=None: raw keys, unknown 0 (the caller opted out)."""
-    wv = decode_world(_mini_obs(hour=0))
+    wv = decode_world(_mini_obs(hour=0), decode_opponent=True)
     assert wv.unknown_keys == 0
     assert wv.me.classes and wv.opponent.classes
 
@@ -196,8 +210,8 @@ def test_unknown_keys_map_nearest_and_count() -> None:
         "watered_today": True, "consecutive_unwatered": 0,
         "yield_units": 5, "max_lifespan_step": 96,
         "fertilized_until_day": -1}
-    wv = decode_world(obs, graph_keys=known)
-    raw = decode_world(obs)
+    wv = decode_world(obs, graph_keys=known, decode_opponent=True)
+    raw = decode_world(obs, decode_opponent=True)
     unknown_raw = 0
     for farm_view in (raw.me, raw.opponent):   # cumulative over BOTH farms
         raw_keys = {int(k) for row in farm_view.keys for k in row} \
