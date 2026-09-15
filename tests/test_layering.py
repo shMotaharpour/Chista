@@ -21,6 +21,8 @@ discovering this one late is a submission that fails to load.
 from __future__ import annotations
 
 import ast
+import contextlib
+import tempfile
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
@@ -28,16 +30,21 @@ ENTRY = REPO / "agent" / "main.py"
 FORBIDDEN_ROOT = "opponents"
 
 
-def _imported_modules(path: Path) -> set[str]:
+def _imported_modules(path: Path, strict: bool = False) -> set[str]:
     """Full dotted names imported by one file (import x / from x import y).
 
-    Relative imports (`from .greedy import ...`, node.level > 0) RAISE
-    here: the closure walk cannot resolve them (level means "up N
-    packages", which needs the importing package's position at runtime),
-    and an unresolved import silently shrinks the closure - a weaker
-    guard that still reports success (review round 1, finding 2). The
-    submission tree uses absolute imports; the assertion below keeps
-    that true by construction instead of by cleverness.
+    `strict` is for the CLOSURE WALK only. There, a relative import
+    (`from .greedy import ...`, node.level > 0) must raise: the walk cannot
+    resolve it (level means "up N packages", which needs the importing
+    package's position at runtime), and an unresolved import silently
+    shrinks the closure — a weaker guard that still reports success.
+
+    Everywhere else relative imports are skipped, not refused. The repo-wide
+    scan only asks which top-level package a file reaches, and a relative
+    import cannot reach a sibling top-level package. Raising there made a
+    perfectly ordinary `from .tile_state import ...` in a package __init__
+    fail the layering suite, with a message calling it part of the
+    submission tree when it was not in the closure at all (review round 2).
     """
     try:
         tree = ast.parse(path.read_text(errors="replace"))
@@ -49,45 +56,54 @@ def _imported_modules(path: Path) -> set[str]:
             names |= {a.name for a in node.names}
         elif isinstance(node, ast.ImportFrom):
             if node.level > 0:
-                raise ValueError(
-                    f"{path}: relative import (level {node.level}) inside "
-                    "the submission tree - the closure walk cannot see it; "
-                    "use absolute imports so the layering guard can")
+                if strict:
+                    raise ValueError(
+                        f"{path}: relative import (level {node.level}) inside "
+                        "the submission's import closure — the closure walk "
+                        "cannot see it, so it would silently shrink the "
+                        "closure; use an absolute import here")
+                continue
             if node.module:
                 names.add(node.module)
     return names
 
 
-def _module_file(name: str) -> Path | None:
+def _module_file(name: str, repo: Path = REPO) -> Path | None:
     """The in-repo file a dotted name maps to (first segment = top package)."""
     top = name.split(".")[0]
-    pkg_dir = REPO / top
-    if not pkg_dir.is_dir():
+    if not (repo / top).is_dir():
         return None
     parts = name.split(".")
-    candidate = REPO.joinpath(*parts).with_suffix(".py")
+    candidate = repo.joinpath(*parts).with_suffix(".py")
     if candidate.is_file():
         return candidate
-    pkg_init = REPO.joinpath(*parts, "__init__.py")
+    pkg_init = repo.joinpath(*parts, "__init__.py")
     if pkg_init.is_file():
         return pkg_init
     return None
 
 
-def submission_closure(entry: Path = ENTRY) -> tuple[set[Path], set[str]]:
+def submission_closure(entry: Path = ENTRY,
+                       repo: Path = REPO) -> tuple[set[Path], set[str]]:
     """The transitive in-repo import closure of the submission entry point.
 
     Returns (files in the closure, imported root names seen) — the roots are
     for the self-check below.
+
+    `repo` is a parameter so the walk can be pointed at a synthetic tree: the
+    regression tests below need a repository containing a violation, and
+    building one in a temp directory is the alternative to writing the
+    violation into this repository's own source (review round 2). The arena
+    (#20) will want the same handle to walk a different entry point.
     """
     seen: set[Path] = {entry}
     queue = [entry]
     roots: set[str] = set()
     while queue:
         path = queue.pop()
-        for name in _imported_modules(path):
+        for name in _imported_modules(path, strict=True):
             roots.add(name.split(".")[0])
-            target = _module_file(name)
+            target = _module_file(name, repo)
             if target is not None and target not in seen:
                 seen.add(target)
                 queue.append(target)
@@ -144,53 +160,90 @@ def test_the_closure_is_real_and_covers_the_agent() -> None:
     )
 
 
+@contextlib.contextmanager
+def _fake_repo(runtime_body: str):
+    """A three-file repository in a temp directory, for the tests below.
+
+    The first version of these tests wrote the violation into this repo's
+    OWN `agent/greedy.py` and restored it in a `finally`. A clean run put it
+    back, but a crash between the two left `import opponents` in a shipped
+    file, and two concurrent runs poisoned the shared backup and restored
+    the mutated copy permanently — the exact accident this whole file exists
+    to prevent, caused by its own test (review round 2). So the violation
+    goes in a repository we build and throw away.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        (root / "agent").mkdir()
+        (root / "opponents").mkdir()
+        (root / "opponents" / "__init__.py").write_text("AGENT_COUNT = 0\n")
+        (root / "opponents" / "extract.py").write_text("def audit():\n    pass\n")
+        (root / "agent" / "main.py").write_text(
+            "from agent.runtime import RUNTIME\n\n\ndef agent(obs):\n"
+            "    return RUNTIME\n")
+        (root / "agent" / "greedy.py").write_text("GREEDY = 1\n")
+        (root / "agent" / "runtime.py").write_text(runtime_body)
+        yield root, root / "agent" / "main.py"
+
+
 def test_guard_catches_submodule_imports() -> None:
     """The regression from review round 1: a dotted submodule import
-    (`import opponents.extract`) walked through root-membership tests
-    that had regressed to testing dotted names. The exact shapes that
-    slipped through are asserted here, so this can regress only with a
-    failing suite."""
-    import shutil
-
-    target = REPO / "agent" / "greedy.py"
-    backup = target.with_suffix(".py.bak_guard")
-    shutil.copy(target, backup)
-    try:
-        text = target.read_text()
-        for stmt in ("import opponents\n",
-                     "from opponents.extract import audit\n",
-                     "import opponents.extract\n"):
-            target.write_text(text + stmt)
-            closure, _ = submission_closure()
+    (`import opponents.extract`) walked through root-membership tests that
+    had regressed to testing dotted names. The three shapes that slipped
+    through are asserted here, so this can regress only with a failing
+    suite."""
+    for stmt in ("import opponents",
+                 "from opponents.extract import audit",
+                 "import opponents.extract"):
+        body = f"from agent.greedy import GREEDY\n{stmt}\n\nRUNTIME = 1\n"
+        with _fake_repo(body) as (root, entry):
+            closure, _ = submission_closure(entry, root)
             reached = any(FORBIDDEN_ROOT in _imported_roots(p) for p in closure)
             assert reached, f"closure missed the violation: {stmt!r}"
-    finally:
-        shutil.copy(backup, target)
-        backup.unlink()
 
 
 def test_relative_imports_are_refused_in_the_closure() -> None:
     """The walk cannot resolve relative imports; an unresolved import
     silently shrinks the closure. They are refused, not ignored."""
-    import shutil
-
-    target = REPO / "agent" / "runtime.py"
-    backup = target.with_suffix(".py.bak_guard")
-    shutil.copy(target, backup)
-    try:
-        text = target.read_text()
-        target.write_text(text.replace(
-            "from agent.greedy import greedy_action",
-            "from .greedy import greedy_action"))
-        raised = False
+    body = "from .greedy import GREEDY\n\nRUNTIME = 1\n"
+    with _fake_repo(body) as (root, entry):
         try:
-            submission_closure()
-        except ValueError:
-            raised = True
-        assert raised, "a relative import inside the submission must raise"
-    finally:
-        shutil.copy(backup, target)
-        backup.unlink()
+            submission_closure(entry, root)
+        except ValueError as exc:
+            assert "relative import" in str(exc), f"wrong error: {exc}"
+        else:
+            raise AssertionError(
+                "a relative import inside the submission closure must raise")
+
+
+def test_relative_imports_are_tolerated_outside_the_closure() -> None:
+    """...and only there. `from .x import y` in a package __init__ is
+    ordinary Python; the repo-wide scan asks which top-level package a file
+    reaches, which a relative import cannot change. Refusing it repo-wide
+    made a legal idiom a layering failure (review round 2)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        f = Path(tmp) / "pkg_init.py"
+        f.write_text("from .tile_state import TileState\nimport numpy as np\n")
+        assert _imported_roots(f) == {"numpy"}, (
+            "the relative import should be skipped, not raised, outside the "
+            f"closure walk — got {_imported_roots(f)}"
+        )
+
+
+def test_the_tests_do_not_touch_the_repository() -> None:
+    """These regression tests build their violations in a temp directory.
+    If one ever writes into the real tree again, the file it would target is
+    the one the submission loads — so this asserts the tree is untouched."""
+    for name in ("greedy.py", "runtime.py", "main.py", "dispatch.py"):
+        src = REPO / "agent" / name
+        if src.is_file():
+            assert FORBIDDEN_ROOT not in _imported_roots(src), (
+                f"agent/{name} imports `{FORBIDDEN_ROOT}` — a test that "
+                "mutates real source was interrupted, or the guard is being "
+                "violated for real"
+            )
+    strays = sorted(p.name for p in (REPO / "agent").glob("*.bak*"))
+    assert not strays, f"backup files left in agent/: {strays}"
 
 
 def test_layering_holds_repo_wide_outside_the_arena() -> None:
