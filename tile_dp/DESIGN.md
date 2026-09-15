@@ -26,14 +26,24 @@
   number of ops in the `WORKER_OPS` allow-list (market buys and `PICKUP` cost 0
   hours), inputs per op: `PLANT` 1 seed of the entity's crop, `FERTILIZE` 1
   fertilizer, `FEED` 1 wheat, `PLACE` / `PLACE_ANIMAL` 1 animal of the entity's
-  species.
-- **Resource vocabulary (v15)**: 18 names, exactly one id per physical item —
+  species. **`LABOR_HOURS` is a floor, not the whole day**: the executor
+  actually spends `edge_steps` engine steps per edge (shipped beside
+  `edge_cost` — PLANT 2, FERTILIZE / FEED / PLACE / PLACE_ANIMAL 3, the rest 1,
+  from `OP_STEPS`), because the secretary layer does not exist yet and the
+  purchases are realised inline. In isolation `LABOR_HOURS` under-charges a
+  chain exactly as `edge_steps` over-charges it (a PICKUP can carry several
+  units; one PASS carries up to ten market orders — F031); the truth depends
+  on how the secretary batches (#14). The master's labour row (#12) gets the
+  bracket, not a guess.
+- **Resource vocabulary**: 18 names, exactly one id per physical item —
   `LABOR_HOURS, FERTILIZER, WHEAT, SEED_WHEAT, SEED_CARROT, SEED_TOMATO,
   SEED_STRAWBERRY, SEED_MELON, CARROT, TOMATO, STRAWBERRY, MELON, EGG, MILK,
   WOOL, ANIMAL_GOOSE, ANIMAL_COW, ANIMAL_SHEEP`. `WHEAT_FOOD` no longer exists
   (`WHEAT` is the engine's own product id) and the generic `ANIMAL` is gone:
   every op names its species. `NO_ACT` is a whole-chain op only.
-- **Applicability filters** (`chains_for`, unchanged in v15): `FERTILIZE` dropped for `age < -2`
+- **Applicability filters** (`chains_for`; the CARE rule added 2026-09-14): `CARE`
+  requires `FEED` in the same chain (no-op otherwise, and not in the registry),
+  `FERTILIZE` dropped for `age < -2`
   (the fertilize effect covers the day plus two), `HARVEST` dropped for
   `age < 0` or `yield_units == 0`.
 - **Animals age origin** = first yield day (Hossein's convention): negative age
@@ -58,6 +68,20 @@
   is reachable, so there is no cap of fert_left by consec.
 - `care_bank` is **capped at `max_held`** by contract (Hossein): the engine can
   bank more than `max_held` before the first yield day, the model caps the state.
+  Probe (2026-09-14): a COW fed+cared nightly banks 7 before its day-8
+  production, but the first production consumes
+  `min(max_held, yield + 1 + bank)`, so **any bank ≥ `max_held` − 1 is
+  decision-equivalent**; the bank also burns on an unfed production night
+  (engine zeroes it, kaggriculture.py:826-828). The cap can therefore be
+  tightened to `max_held − 1` (one state folded per animal/age/unfed/yield
+  combination, a straight DP saving) without losing a decision - on record
+  here, not applied mid-PR to keep the state-space contract stable.
+- **Dominance is componentwise (contract 2026-09-14)**: two edges to the same
+  state prune each other only when one needs no more of EVERY resource and
+  produces no less of EVERY resource. The vectors are never netted and no scalar
+  sum may decide: 1 wheat against 1 melon, a carrot seed against a wheat seed,
+  and one collected fertilizer against nothing all keep both edges. This is what
+  keeps the 1286 `COLLECT_FERTILIZER` edges in the model.
 - `FERTILIZE→HARVEST` (no water) is **dominated** by bare HARVEST:
   same production, wasted fertilizer (engine-probed) → pruned by the
   generic dominance filter.
@@ -68,13 +92,14 @@
 ## Numbers (engine-verified, build_graph)
 
 - The shipped model is ONE **merged** tile graph (`build_graph()`, engine
-  tag `tile-dp-v15`): 675 states / 14422 edges, 34 KB, tracked as
+  identity tag `tile-dp/reg=55fb92f019f166a9+eng=a2278746+tpd=24+pb=30`):
+  685 states / 18217 edges, 42 KB, tracked as
   `tile_dp/models/graph_tile_lifecycle.npz` with
   `tile_dp/models/build_report.json`; rebuild both with
   `.venv/bin/python -m tile_dp.build`. Only day-start states the engine
   actually produces
-  become nodes (interned from real execution): PLANT 392, ANIMAL 279,
-  EMPTY_STRUCTURE 2, NONE 1, WEED 1.
+  become nodes (interned from real execution): PLANT 402, ANIMAL 279,
+  EMPTY_COOP 1, EMPTY_PASTURE 1, NONE 1, WEED 1.
 - `build_graph(entity=...)` builds the same search restricted to one entity's
   chains: the per-entity views the tests use, not artifacts.
 - Each node is expanded with the sim that produced it (**sim inheritance**);
@@ -82,15 +107,16 @@
   `weedSpawnChance = 0.0`). No replays exist any more.
 - Every edge is asserted: it must end in one day (`ChainSpansDays`) and land on
   the state it promises (`StateMismatch`).
-- No zero-cost self-loops; dominance-pruned (FERTILIZE→HARVEST absent).
-- The chain registry is **v15**: 54 chains (DIG-layered), 18 resource names.
+- No zero-cost self-loops; dominance-pruned componentwise (FERTILIZE→HARVEST
+  absent, while the 1286 fertilizer-collecting edges survive).
+- The chain registry: 54 chains (DIG-layered; 30 carry DIG), 18 resource names.
 
 ## Files
 
 | file | role |
 |---|---|
 | `tile_state.py` | TileState, day-start decode from the engine tile |
-| `chains.py` | chain registry (v15, per kind, DIG-layered), resource vocabulary, cost/produce vectors, applicability |
+| `chains.py` | chain registry (per kind, DIG-layered), resource vocabulary, cost/produce vectors, applicability |
 | `graph.py` | `build_graph()` — sim-inherited engine edges, assertions, pruning; `TileGraph` / `Edge` |
 | `build.py` | `python -m tile_dp.build` — writes the model + `build_report.json` into `models/` |
 | `models/` | `graph_tile_lifecycle.npz` (the merged tile graph) + `build_report.json` (counts) |
