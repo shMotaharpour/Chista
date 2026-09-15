@@ -1,9 +1,9 @@
 # R005 — Every number has a source
 
-**Summary (<=50 words):** Every threshold, budget and constant in the repo
-traces to a source: an F-finding, the engine itself, or a measurement recorded
-where it was taken. A number without one is a defect, even when it looks
-reasonable. Missing values are measured or left as named TODOs, never guessed.
+**Summary (<=50 words):** Every threshold, budget and constant traces to a
+source: an F-finding, the engine, or a recorded measurement. So does every
+conclusion drawn from one, because a chain of inference over a measured number
+is not itself measured. Missing values are measured or left as named TODOs.
 
 ## Decision
 
@@ -70,6 +70,45 @@ The bank policy in #9 is the worked example: instead of a fixed cutoff, the agen
 reserves against the worst overrun *it has already produced this episode*, and
 the two shape parameters come from the measured timing distribution rather than
 from the issue that specified them.
+
+## A conclusion drawn from a measurement is not itself measured
+
+The rule above is about numbers. This one is about what you say next, and it is
+the harder half: **an inference inherits the authority of the number it came
+from without inheriting its evidence.** It does not read like a guess. It reads
+like a consequence.
+
+F048 is the worked example, and it went wrong twice in a day, in opposite
+directions.
+
+A grader log held 719 records where the rules say 720 turns. First conclusion:
+the exporter dropped one. Measured — it had not; the agent really is called 719
+times. Good so far: a guess, checked, corrected.
+
+Then the second conclusion, built on the correction: *if the agent is never
+called at step 719, then step 718 must be too late, so a final sale is lost.*
+That went into a PR review as a design consequence, carrying endgame advice to
+schedule liquidation an hour early.
+
+It was false. The step-718 action is processed in full — a wheat seed bought
+there costs ten coins in the terminal state. Nothing is lost. The error was
+worse than the first precisely because it sounded derived: it had a real
+measurement upstream of it, and every link in between was one twenty-line
+script away from being checked.
+
+So the test to apply before stating a consequence:
+
+> **What would I observe if this were false — and have I observed it?**
+
+If the answer is "I would see the money not move, and I have not looked", the
+sentence is an inference, not a finding. Two honest ways out, the same as for a
+missing number: run the check, or label it. An `F<NNN>` file states which of its
+claims are measured and which are read off them; a conclusion with no evidence
+of its own does not get to sit in the same list as one that has it.
+
+Why this earns a section rather than a line in the one above: nobody defends an
+unexplained `45`. People defend a conclusion, because defending it feels like
+defending the measurement it grew from.
 
 ## How it is enforced
 

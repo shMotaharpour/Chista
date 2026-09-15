@@ -31,10 +31,10 @@ Order: **Rules** (`R<NNN>_<slug>.md`) first, then **Findings**
   than the real harness (junk inner action shapes pass there, raise here) and
   hands out observation copies instead of live views.
 - [R005_every-number-has-a-source.md](R005_every-number-has-a-source.md) —
-  Every threshold, budget and constant in the repo traces to a source: an
-  F-finding, the engine itself, or a measurement recorded where it was taken. A
-  number without one is a defect, even when it looks reasonable. Missing values
-  are measured or left as named TODOs, never guessed.
+  Every threshold, budget and constant traces to a source: an F-finding, the
+  engine, or a recorded measurement. So does every conclusion drawn from one,
+  because a chain of inference over a measured number is not itself measured.
+  Missing values are measured or left as named TODOs.
 
 ## Findings
 
