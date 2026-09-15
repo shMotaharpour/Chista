@@ -215,6 +215,49 @@ def test_each_seat_sees_its_own_player_index() -> None:
     assert all(p == 1 for p in seen[1]), seen[1]
 
 
+def test_vendored_mutation_cannot_corrupt_the_episode() -> None:
+    """The N1 guard, through the REAL worker: a vendored agent that
+    writes into its observation must not corrupt the episode's live
+    state. Re-introducing the bug (copy_state default inside the loop)
+    makes this fail - the reviewer's method, verified below."""
+    import offline.runner as R
+    import offline.pool.loader as PL
+
+    real_load = PL.load
+    written = []          # the money the mutator SAW, per turn
+
+    def mutator_factory(seat):
+        seat = int(seat)                          # slug is a string
+        la = real_load("adaptive-replay-agent")   # real shape, arity from loader
+        def fn(obs, config=None):
+            if isinstance(obs, dict):
+                money = obs["farms"][seat]["money"]
+                written.append(money)
+                obs["farms"][seat]["money"] = 999999   # the corruption attempt
+            return {"farmer": ["PASS"], "hands": [], "market": []}
+        from offline.pool.loader import LoadedAgent
+        return LoadedAgent(slug=la.slug, fn=fn, fn_name="mutator",
+                           arity=la.arity, rule="test-mutator",
+                           module=la.module)
+
+    saved = PL.load
+    PL.load = mutator_factory
+    try:
+        rec = R._episode_worker("0", "1", seed=0, episode_steps=8)
+    finally:
+        PL.load = saved
+    # The corruption attempt must not propagate: if the views were LIVE,
+    # the next turn's mutator would read the 999999 it wrote (measured:
+    # with live views the written value persists into every later turn).
+    # Detached views mean the mutator always reads 3000.
+    assert written and all(m == 3000 for m in written), (
+        f"the mutator read non-clean money {sorted(set(written))}: the "
+        "views handed to vendored agents are live - N1 regression")
+    for seat in (0, 1):
+        assert rec["seats"][seat]["rewards"] == 3000.0, (
+            f"seat {seat} rewards corrupted: {rec['seats'][seat]['rewards']}")
+
+
 def main() -> int:
     failures = 0
     for name, fn in sorted(globals().items()):
