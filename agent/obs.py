@@ -68,7 +68,7 @@ class WorldView:
     hour: int
     player: int
     me: FarmView
-    opponent: FarmView
+    opponent: FarmView | None      # None unless decode_opponent=True (#16)
     private: PrivateView          # ours only; the opponent's is hidden
     market_inventory: dict[str, int]
     market_prices: dict[str, int]
@@ -113,12 +113,18 @@ def decode_farm(farm: dict, day: int, hour: int) -> FarmView:
 
 
 def decode_world(obs: dict, config=None, *, at_day_start: bool = False,
+                 decode_opponent: bool = False,
                  graph_keys: frozenset[int] | None = None) -> WorldView:
     """The harness observation -> WorldView (both farms, one code path).
 
     `at_day_start=True` is the DP entry point: it asserts `hour == 0`,
     because `decode_tile` decodes a day-start state and a mid-day value
     fed to the DP is the pre-v15 rebuild bug (184/394 nodes wrong).
+
+    `decode_opponent=False` (the M1 default, owner 2026-09-15) leaves
+    `opponent` as None: nothing consumes the opponent farm yet (#16 does),
+    and decoding it every turn is 0.12 ms of dead work. The hook stays -
+    flip the flag and the identical code path decodes their board.
 
     `graph_keys` is `frozenset(TileGraph.load(...).key_index)` — the set
     of states the shipped graph knows. When given, keys outside it are
@@ -137,12 +143,16 @@ def decode_world(obs: dict, config=None, *, at_day_start: bool = False,
     player = int(obs.get("player", 0))
     farms = obs["farms"]
     me = decode_farm(farms[player], day, hour)
-    opponent = decode_farm(farms[1 - player], day, hour)
+    opponent = decode_farm(farms[1 - player], day, hour) \
+        if decode_opponent else None
 
     unknown = 0
     if graph_keys is not None:
-        fixed_me, fixed_opp = dict(me.classes), dict(opponent.classes)
+        fixed_me = dict(me.classes)
+        fixed_opp = dict(opponent.classes) if opponent is not None else None
         for view_classes in (fixed_me, fixed_opp):
+            if view_classes is None:
+                continue
             for key in list(view_classes):
                 if key not in graph_keys:
                     count = view_classes.pop(key)
@@ -152,10 +162,12 @@ def decode_world(obs: dict, config=None, *, at_day_start: bool = False,
         me = FarmView(keys=me.keys, classes=fixed_me, money=me.money,
                       farmer=me.farmer, hands=me.hands,
                       unlocked=me.unlocked, hires_today=me.hires_today)
-        opponent = FarmView(keys=opponent.keys, classes=fixed_opp,
-                            money=opponent.money, farmer=opponent.farmer,
-                            hands=opponent.hands, unlocked=opponent.unlocked,
-                            hires_today=opponent.hires_today)
+        if opponent is not None:
+            opponent = FarmView(keys=opponent.keys, classes=fixed_opp,
+                                money=opponent.money,
+                                farmer=opponent.farmer, hands=opponent.hands,
+                                unlocked=opponent.unlocked,
+                                hires_today=opponent.hires_today)
 
     private = obs.get("private", {})
     market = obs.get("market", {})
