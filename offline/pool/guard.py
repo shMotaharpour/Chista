@@ -10,8 +10,8 @@ an episode. The wrapper contains all four and turns them into LABELS:
 - `malformed`: the returned action fails world.actions.validate_action;
 - `slow`: per-call wall time p95 above the 1 s free turn (F046) - it
   would time out on Kaggle, so its score carries the label;
-- `abandoned`: a call hit the hard per-turn ceiling and the episode was
-  given up rather than silently retried.
+- `abandoned`: the episode's process timeout tripped (offline.runner) -
+  M1 has no in-call ceiling; the per-call one is a named TODO.
 
 The substituted action on any failure is the same PASS our own agent's
 bottom rung uses.
@@ -25,9 +25,10 @@ from typing import Any
 
 from world.actions import validate_action
 
-# Hard per-turn ceiling for a pool agent (F046's 1 s free turn plus a
-# measured margin - brief 5.1 labels this a conservative decision, and
-# every timing number carries the note that it is not a Kaggle reading).
+# Hard per-turn ceiling for a pool agent: named TODO (R005) - the
+# number below has NO measurement behind it; the M1 bench distribution
+# under the grader's measured conditions sets the real ceiling. It is
+# unused in M1 (the runner's episode timeout owns the hard stop).
 TURN_CEILING_S = 2.0
 PASS = {"farmer": ["PASS"], "hands": [], "market": []}
 
@@ -73,22 +74,24 @@ class GuardStats:
 
 
 def guarded_call(fn, obs, configuration, stats: GuardStats,
-                 ceiling_s: float = TURN_CEILING_S,
-                 copy: bool = True) -> dict:
-    """One guarded call: copy, contain, validate, time. Returns a legal dict.
+                 copy: bool = True, arity: int | None = None) -> dict:
+    """One guarded call: contain, validate, time. Returns a legal dict.
 
-    The agent receives a COPY of the observation (see copy_observation)
-    - the live view must never reach third-party code. The ceiling is
-    enforced by the RUNNER's process timeout (a thread cannot be
-    killed); this function is what the runner's worker calls and
-    `abandoned` is set by the runner when the ceiling trips at the
-    process level.
+    `arity` comes from the LOADER's resolution (LoadedAgent.arity) - the
+    decision is made once at load, not re-inspected per call (720 x 2
+    per episode). Callers holding a bare callable may omit it; the
+    signature is inspected then. The observation handed over is the
+    caller's responsibility (offline.runner passes detached per-seat
+    views); `copy=True` deep-copies here for callers holding a live
+    view. The per-episode hard stop is the RUNNER's process timeout -
+    `abandoned` there - because a thread cannot be killed.
     """
     t0 = time.perf_counter()
     agent_obs = copy_observation(obs) if copy else obs
     try:
-        action = (fn(agent_obs, configuration) if _wants_two(fn)
-                  else fn(agent_obs))
+        wants_two = _wants_two(fn) if arity is None else arity == 2
+        action = (fn(agent_obs, configuration) if wants_two
+                  else fn(agent_obs))  # noqa: kept for plain callables
     except Exception as exc:                     # noqa: BLE001 - containment IS the job
         stats.raises += 1
         if stats.first_traceback is None:

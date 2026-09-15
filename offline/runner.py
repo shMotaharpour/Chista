@@ -31,11 +31,14 @@ from __future__ import annotations
 # --- thread caps: set before ANY third-party import (numpy/torch land in
 # _episode_worker's imports, below), and this module is the only one in
 # the repository permitted to set them (a test enforces it).
+# Hard-set, not setdefault (review 1 F5): a pre-set shell variable
+# silently overriding the cap would make every timing number a reading
+# of the wrong machine. The effective count rides on every record.
 import os
 
 for _var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS",
              "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
-    os.environ.setdefault(_var, "1")
+    os.environ[_var] = "1"
 
 import json
 import subprocess
@@ -44,9 +47,6 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 
-# NOTE: `from __future__ import annotations` must precede other code; placed below
-# the env block on purpose (docstring + env caps first). Python allows it anywhere
-# before usage; keep it adjacent to the typing imports that need it.
 
 def run_episode_process(slug0: str, slug1: str, seed: int,
                         episode_steps: int = 720,
@@ -66,9 +66,18 @@ def run_episode_process(slug0: str, slug1: str, seed: int,
         f"{episode_steps})\n"
         "print(json.dumps(rec))\n"
     )
-    proc = subprocess.run(
-        [sys.executable, "-c", worker_code],
-        cwd=REPO, capture_output=True, text=True, timeout=timeout_s)
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-c", worker_code],
+            cwd=REPO, capture_output=True, text=True, timeout=timeout_s)
+    except subprocess.TimeoutExpired as exc:
+        # F3: a wedged pool agent aborts ITS episode as `abandoned`,
+        # it never takes the sweep down
+        return {"seats": {
+                    0: {"slug": slug0, "status": "abandoned"},
+                    1: {"slug": slug1, "status": "abandoned"}},
+                "seed": seed, "status": "abandoned",
+                "error": f"episode exceeded {timeout_s}s (abandoned)"}
     if proc.returncode != 0:
         return {"seats": {
                     0: {"slug": slug0, "status": "abandoned"},
@@ -86,11 +95,14 @@ def run_episode_timed(slug0: str, slug1: str = "PASS-proxy", seed: int = 0,
                       episode_steps: int = 720) -> dict:
     """Timing mode: exactly one process, serial, per-seat readings.
 
-    `timing_solo` = the seat's turn time against the PASS proxy (the
-    floor); `timing_contended` = against a real pool agent (the honest
-    number the bank policy derives from - addendum A4). The reporting
-    layer refuses contended < solo: an inverted reading means the
-    harness is broken, not that load helps.
+    What this BUILDS today: a serial, unloaded per-call timing record
+    tagged mode="timing" - `timing_solo` when slug1 is the PASS proxy.
+    What A4 REQUIRES and is NOT built yet (named TODO, #20 addendum):
+    the `timing_contended` reading against a real thinking pool agent,
+    the direction assertion (contended >= solo), and the bank policy
+    deriving from the contended number. The function exists so the
+    reporting layer has a mode tag to refuse on; do not quote its
+    timings as the budget until the contended reading exists.
     """
     rec = run_episode_process(slug0, slug1, seed, episode_steps,
                               timeout_s=1200.0)
@@ -129,18 +141,24 @@ def _episode_worker(slug0: str, slug1: str, seed: int,
                    "weedSpawnChance": 0.005}, validate="fast")
 
     actions = {0: [], 1: []}
-    obs = sim.observations()[0]
+    # one DETACHED view per seat (addendum safety + review 1 F9): the
+    # harness deep-copies per agent, so third-party code never touches
+    # live episode state - through the world/ parameter, not a second
+    # copy implementation in the guard
+    views = sim.observations(copy_state=True)
     while not sim.done:
-        # seat 0 then seat 1, the harness's own order; each receives a
-        # copy (guarded_call) - neither sees the other's live mutation
-        a0 = guarded_call(agents[0].fn, obs,
-                          {"episodeSteps": episode_steps}, stats[0])
-        a1 = guarded_call(agents[1].fn, obs,
-                          {"episodeSteps": episode_steps}, stats[1])
+        # seat 0 then seat 1, the harness's own order; each sees only
+        # its own view and its own private state
+        a0 = guarded_call(agents[0].fn, views[0],
+                          {"episodeSteps": episode_steps}, stats[0],
+                          copy=False, arity=agents[0].arity)
+        a1 = guarded_call(agents[1].fn, views[1],
+                          {"episodeSteps": episode_steps}, stats[1],
+                          copy=False, arity=agents[1].arity)
         actions[0].append(_freeze(a0))
         actions[1].append(_freeze(a1))
         sim.step([a0, a1])
-        obs = sim.observations()[0]
+        views = sim.observations()
     rewards = sim.rewards()
     return {"seed": seed, "status": "DONE",
             "seats": {

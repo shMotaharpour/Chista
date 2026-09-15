@@ -6,8 +6,10 @@ sequence is recorded under four conditions and compared by exact
 equality of the action dicts at every step.
 
 Vendored agents keep module-level state across turns, so each trajectory
-runs in a FRESH process (the runner's one-process-per-episode design
-provides that; classify.py drives the runner).
+runs in a FRESH process (offline.runner provides that). This module
+holds the COMPARISON only - producing the four S1-S4 trajectories is the
+caller's job via offline.runner (S4's seat-1 run needs the runner's seat
+argument, pending in M1).
 
 | run | seat | seed | opponent |
 |-----|------|------|----------|
