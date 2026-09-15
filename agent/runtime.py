@@ -107,7 +107,7 @@ class Runtime:
     """Per-turn state singleton: plans, timing log, fallback ladder."""
 
     def __init__(self) -> None:
-        self.plan: Any = None                # committed day plan (stub: None)
+        self.plan: Any = None                # committed day plan (rung 1's input)
         self.prev_plan: Any = None           # previous day's plan, for rung 2
         # The replanner rung (#11). `None` means the socket is empty and the
         # ladder falls through to greedy: the rung prices one tile per unit and
