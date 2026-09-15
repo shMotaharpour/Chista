@@ -142,11 +142,16 @@ def _episode_worker(slug0: str, slug1: str, seed: int,
 
     actions = {0: [], 1: []}
     # one DETACHED view per seat (addendum safety + review 1 F9): the
-    # harness deep-copies per agent, so third-party code never touches
-    # live episode state - through the world/ parameter, not a second
-    # copy implementation in the guard
-    views = sim.observations(copy_state=True)
     while not sim.done:
+        # DETACHED views per seat, EVERY turn (review 2, N1): the first
+        # fix detached turn 0 only - copy_state defaults off in fast
+        # mode, so turns 1..719 handed out LIVE views and a mutating
+        # vendored agent wrote straight into the episode. Never rely on
+        # the default here: in this module's validate="fast" mode the
+        # default IS the unsafe one. The harness deep-copies per agent
+        # through the world/ parameter (R003), so third-party code never
+        # touches live episode state.
+        views = sim.observations(copy_state=True)
         # seat 0 then seat 1, the harness's own order; each sees only
         # its own view and its own private state
         a0 = guarded_call(agents[0].fn, views[0],
@@ -158,7 +163,6 @@ def _episode_worker(slug0: str, slug1: str, seed: int,
         actions[0].append(_freeze(a0))
         actions[1].append(_freeze(a1))
         sim.step([a0, a1])
-        views = sim.observations()
     rewards = sim.rewards()
     return {"seed": seed, "status": "DONE",
             "seats": {

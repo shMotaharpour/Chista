@@ -176,38 +176,43 @@ def test_per_seat_records_populated() -> None:
 
 
 def test_each_seat_sees_its_own_player_index() -> None:
-    """The F1 regression, closed with an assertion: seat n's agent must
-    see player == n. Seat 1 previously received seat 0's view - it read
-    player 0 and seat 0's private state - and every test passed because
-    they only asserted the record was populated."""
-    import subprocess
-    import sys
-    probe = (
-        "import sys; sys.path.insert(0, '.')\n"
-        "import json\n"
-        "from offline.pool.loader import load\n"
-        "from offline.pool.guard import guarded_call, GuardStats\n"
-        "seen = {}\n"
-        "def make(seat):\n"
-        "    la = load('adaptive-replay-agent')\n"   # any pool agent
-        "    def fn(obs, config=None):\n"
-        "        seen[seat] = obs.get('player')\n"
-        "        return {'farmer': ['PASS'], 'hands': [], 'market': []}\n"
-        "    return fn\n"
-        "f0, f1 = make(0), make(1)\n"
-        "from offline.pool.guard import GuardStats\n"
-        "guarded_call(f0, {'player': 0, 'hour': 0}, None, GuardStats(), copy=False, arity=1)\n"
-        "guarded_call(f1, {'player': 1, 'hour': 0}, None, GuardStats(), copy=False, arity=1)\n"
-        "print(json.dumps(seen))\n"
-    )
-    # direct guarded_call check: the copy does not rewrite player (the
-    # per-seat VIEW is the runner's duty - asserted in the e2e below)
-    proc = subprocess.run([sys.executable, "-c", probe], cwd=REPO,
-                          capture_output=True, text=True, timeout=120)
-    assert proc.returncode == 0, proc.stderr[-300:]
-    import json as _json
-    seen = _json.loads(proc.stdout.strip().splitlines()[-1])
-    assert seen == {"0": 0, "1": 1}, seen
+    """The F1 regression, closed through the REAL runner path: seat n's
+    agent must see player == n on EVERY turn. The first fix attempt
+    passed a hand-made-dict test while the runner still handed views[0]
+    to seat 1 - so this test re-applies the bug and must fail if it
+    ever returns (review 2, N2)."""
+    import offline.runner as R
+
+    seen = {0: [], 1: []}
+
+    class ProbeAgent:
+        slug = "probe"
+        arity = 2
+        fn_name = "probe_fn"
+        rule = "probe"
+        module = None
+
+        def __init__(self, seat):
+            self.seat = seat
+            self.fn = self._fn
+
+        def _fn(self, obs, config=None):
+            seen[self.seat].append(obs.get("player"))
+            return {"farmer": ["PASS"], "hands": [], "market": []}
+
+    import offline.pool.loader as PL
+    saved = PL.load
+    PL.load = lambda slug: ProbeAgent(int(slug))  # slug IS the seat here
+    try:
+        rec = R._episode_worker("0", "1", seed=0, episode_steps=8)
+    finally:
+        PL.load = saved
+    assert rec["status"] == "DONE"
+    # seat n saw player n on EVERY turn - the exact assertion that fails
+    # when views[0] is handed to both seats
+    assert seen[0] and seen[1], seen
+    assert all(p == 0 for p in seen[0]), seen[0]
+    assert all(p == 1 for p in seen[1]), seen[1]
 
 
 def main() -> int:
