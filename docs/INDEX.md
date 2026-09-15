@@ -85,6 +85,7 @@ Order: **Rules** (`R<NNN>_<slug>.md`) first, then **Findings**
 - [F045_weed-rng-couples-farms-and-market.md](F045_weed-rng-couples-farms-and-market.md) — _spawn_weeds draws rng.random() once per empty tile on both farms before the same stream picks the town's next shop (weedSpawnChance = 0.005; LOCKED tiles draw nothing). Planting a tile therefore changes tomorrow's prices, and no price path can be precomputed offline.
 - [F046_runtime-budget-one-second-bank.md](F046_runtime-budget-one-second-bank.md) — The budget is 1 free second per turn plus a 60-second bank for the episode. Overrunning bills max(0, duration - 1.0); the harness bills ~35 ms extra, so budget against 0.965 s. An exhausted bank forfeits. A free turn buys ~8.7M Python ops; the competition machine is ~1.95x faster.
 - [F047_silent-operations-catalog.md](F047_silent-operations-catalog.md) — The most expensive mistake class: the engine fails silently. Purse-short orders are refused, hires and land buys no-op, LOCKED tiles spend hours for nothing, the full shed destroys overflow, SELL and FERTILIZE without stock refuse, over-seeded PLANT drops the crop's whole turn, and an 11th order is dropped.
+- [F048_episode-has-720-states-and-719-decisions.md](F048_episode-has-720-states-and-719-decisions.md) — F029's "720 turns" counts states. The agent is asked for an action 719 times, at steps 0..718; the terminal state needs none. Day 29 therefore gets 23 decisions, ending at hour 22 — and that last decision is processed in full, market included. Measured, not inferred.
 
 ## Tests & benchmarks
 
@@ -97,4 +98,5 @@ Executable checks — `.venv/bin/python -m tests.<module>` (no pytest required; 
 - [../tests/test_tile_dp.py](../tests/test_tile_dp.py) — tile graph contracts: day-start decode round-trip, engine calendars as truth, chain and labour cost model, no-op and dominance pruning.
 - [../tests/test_opponents.py](../tests/test_opponents.py) — vendored competitor agents: every slug complete, every payload matching its recorded SHA-256 (the Apache 4(b) claim), nothing reaching outside the process, packed payloads actually decoded, and no doc pointing at a path this repo lacks.
 - [../tests/test_layering.py](../tests/test_layering.py) — `opponents/` is evaluation input, never submission input: nothing outside it imports it, and the guard proves it can see the files it guards.
+- [../tests/test_episode_boundary.py](../tests/test_episode_boundary.py) — F048 pinned on the official harness path: 720 states vs 719 decisions, day/hour following the step, day 29 one decision short, the step-718 action processed in money, and no call past it.
 - [../bench/bench_paths.py](../bench/bench_paths.py) — reproduces the R003 timings on the current machine.
