@@ -32,6 +32,20 @@ TURN_CEILING_S = 2.0
 PASS = {"farmer": ["PASS"], "hands": [], "market": []}
 
 
+def copy_observation(obs):
+    """A deep copy of the observation, handed to a third-party agent.
+
+    Pool-analysis safety note (issue #20 comment 1): six vendored agents
+    exec payloads at import and one installs sys.modules entries; fast
+    mode hands out LIVE observation views, and a stray mutation by a
+    competitor corrupts the evaluation silently (F047). The wrapper
+    therefore hands out copies, never the live view. The copy cost is
+    measured once per season by the bench, not assumed.
+    """
+    import copy
+    return copy.deepcopy(obs)
+
+
 @dataclass
 class GuardStats:
     raises: int = 0
@@ -48,7 +62,9 @@ class GuardStats:
         p95 = times[min(len(times) - 1, int(0.95 * len(times)))] if times else 0.0
         return {
             "raises": self.raises,
+            "first_traceback": self.first_traceback,
             "malformed": self.malformed,
+            "first_malformed": self.first_malformed,
             "slow": p95 > 1000.0,
             "self_p95_ms": round(p95, 3),
             "self_max_ms": round(times[-1], 3) if times else 0.0,
@@ -57,17 +73,22 @@ class GuardStats:
 
 
 def guarded_call(fn, obs, configuration, stats: GuardStats,
-                 ceiling_s: float = TURN_CEILING_S) -> dict:
-    """One guarded call: contain, validate, time. Returns a legal dict.
+                 ceiling_s: float = TURN_CEILING_S,
+                 copy: bool = True) -> dict:
+    """One guarded call: copy, contain, validate, time. Returns a legal dict.
 
-    The ceiling is enforced by the RUNNER's process timeout (a thread
-    cannot be killed); this function is what the runner's worker calls
-    and `abandoned` is set by the runner when the ceiling trips at the
+    The agent receives a COPY of the observation (see copy_observation)
+    - the live view must never reach third-party code. The ceiling is
+    enforced by the RUNNER's process timeout (a thread cannot be
+    killed); this function is what the runner's worker calls and
+    `abandoned` is set by the runner when the ceiling trips at the
     process level.
     """
     t0 = time.perf_counter()
+    agent_obs = copy_observation(obs) if copy else obs
     try:
-        action = fn(obs, configuration) if _wants_two(fn) else fn(obs)
+        action = (fn(agent_obs, configuration) if _wants_two(fn)
+                  else fn(agent_obs))
     except Exception as exc:                     # noqa: BLE001 - containment IS the job
         stats.raises += 1
         if stats.first_traceback is None:
