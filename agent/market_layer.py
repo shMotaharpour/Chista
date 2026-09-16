@@ -86,7 +86,13 @@ class MarketLayer:
             self.last = {"mode": self.mode,
                          "error": f"{type(exc).__name__}: {exc}"}
             return action
-        merged = dict(action or {})
+        # A rung that returned something that is not an action dict is the
+        # layer's problem too: this method's contract is a shape-VALID dict,
+        # so a missing rung action degrades to PASS plus this turn's orders.
+        merged = dict(action) if isinstance(action, dict) \
+            else {"farmer": ["PASS"], "hands": []}
+        merged.setdefault("farmer", ["PASS"])
+        merged.setdefault("hands", [])
         merged["market"] = orders
         return merged
 
@@ -135,8 +141,8 @@ def _market_row(layer: "MarketLayer", action: dict, obs: Any) -> list[list]:
         layer.day = day
         layer.signature = signature
     row = list(layer.queue[hour]) if 0 <= hour < len(layer.queue) else []
-    others = [list(o) for o in (action.get("market") or [])
-              if not (o and o[0] == "SELL")]
+    given = (action.get("market") if isinstance(action, dict) else []) or []
+    others = [list(o) for o in given if not (o and o[0] == "SELL")]
     orders = _sort_market(others + row)
     if len(orders) > MAX_MARKET_ORDERS:
         raise ValueError(

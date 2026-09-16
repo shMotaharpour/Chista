@@ -130,7 +130,7 @@ def _guard_margin(capacity: int) -> int:
 
 
 def plan_sales(stock: Mapping[str, int], forecast, *, day: int, hour: int = 0,
-               capacity_room: int, harvest_expected: int = 0,
+               harvest_expected: int = 0,
                money: float = 0.0, cash_needed: float = 0.0,
                end_day: int = SEASON_DAYS - 1,
                capacity: int = SHED_CAPACITY) -> tuple[Sale, ...]:
@@ -289,7 +289,6 @@ def market_queue(obs: Any, forecast_obj=None, *, harvest_expected: int = 0,
     # what the bags already hold plus whatever the day still harvests.
     incoming = state.carried + max(0, int(harvest_expected))
     sales = plan_sales(state.sellable(), fc, day=day, hour=hour,
-                       capacity_room=state.room,
                        harvest_expected=incoming,
                        money=_money(obs), cash_needed=cash_needed,
                        capacity=capacity)

@@ -201,10 +201,12 @@ def test_shed_state_reads_the_bags_and_blocks_buys_at_the_cap():
 
 # --- the schedule and the queue ------------------------------------------
 
-def _forecast_stub(prices: dict, days: int = 30):
+def _forecast_stub(prices: dict, days: int = 30, rising: bool = False):
+    """A price oracle: flat (its own peak, so `peak` fires) or rising."""
     class _F:
         def price_of(self, item, day):
-            return prices.get(item, 25)
+            base = prices.get(item, 25)
+            return base + (int(day) if rising else 0)
 
         @property
         def days(self):
@@ -213,24 +215,28 @@ def _forecast_stub(prices: dict, days: int = 30):
 
 
 def test_shed_guard_sells_the_overflow_plus_its_margin():
-    sales = plan_sales({"WHEAT": 120}, _forecast_stub({}), day=5, hour=0,
-                       capacity_room=0, harvest_expected=0)
+    sales = plan_sales({"WHEAT": 120}, _forecast_stub({}, rising=True),
+                       day=5, hour=0, harvest_expected=0)
     assert sum(s.units for s in sales) >= 25, sales       # 20 + margin 5
     assert all(s.reason == "shed-guard" for s in sales)
 
 
 def test_season_end_liquidates_everything():
     sales = plan_sales({"WHEAT": 40, "MELON": 7}, _forecast_stub({}), day=29,
-                       hour=12, capacity_room=53, end_day=29)
+                       hour=12, end_day=29)
     assert sum(s.units for s in sales) == 47
     assert {s.reason for s in sales} == {"season-end"}
     assert max(s.hour for s in sales) <= 23
 
 
 def test_a_basket_is_spread_not_dumped():
-    """F036: one big basket walks the ladder down; split it across turns."""
-    sales = plan_sales({"WHEAT": 50}, _forecast_stub({}), day=3, hour=0,
-                       capacity_room=50)
+    """F036: one big basket walks the ladder down; split it across turns.
+
+    The stub's flat price is its own horizon maximum, so this is the
+    `peak` rule firing (the shed holds less than the cap here: the guard
+    has nothing to sell).
+    """
+    sales = plan_sales({"WHEAT": 50}, _forecast_stub({}), day=3, hour=0)
     assert len(sales) > 1, sales
     assert max(s.units for s in sales) < 50, sales
     assert sum(s.units for s in sales) == 50
@@ -238,8 +244,14 @@ def test_a_basket_is_spread_not_dumped():
 
 
 def test_a_full_shed_with_empty_forecast_never_raises():
-    assert plan_sales({}, _forecast_stub({}), day=0, hour=0,
-                      capacity_room=100) == ()
+    assert plan_sales({}, _forecast_stub({}), day=0, hour=0) == ()
+
+
+def test_a_rising_price_path_holds_instead_of_selling():
+    """The other direction: a price that keeps rising is not a peak."""
+    sales = plan_sales({"WHEAT": 50}, _forecast_stub({}, rising=True),
+                       day=3, hour=0)
+    assert sales == (), sales
 
 
 def test_sell_orders_are_capped_per_turn_and_the_guard_fires():
@@ -294,6 +306,15 @@ def test_the_layer_returns_the_rung_action_untouched_when_it_fails():
     out = layer.attach(rung_action, obs)
     assert out == rung_action, out
     assert "planned failure" in layer.last.get("error", "")
+
+
+def test_a_non_dict_rung_action_still_comes_back_shape_valid():
+    """The layer's contract is a VALID dict even if the rung broke its own."""
+    sim = _sim(0)
+    obs = sim.observations()[0]
+    out = MarketLayer("spread").attach(None, obs)
+    assert isinstance(out, dict) and out["farmer"] and "hands" in out \
+        and isinstance(out["market"], list), out
 
 
 def test_the_layer_replaces_the_rungs_sells_and_keeps_its_buys():

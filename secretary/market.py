@@ -222,7 +222,6 @@ def forecast(obs: Any, *, days: int = 30,
     shop_interval = max(1, int(_get(config, "townShopSellInterval", 4)))
     center_interval = max(1, int(_get(config, "townCenterSellInterval", 24)))
     unlock_interval = max(1, int(_get(config, "townShopUnlockInterval", 3)))
-    rescale = float(_get(config, "townConsumptionScale", 1.0))
 
     sells = our_sells or {}
     res = {item: float(n) for item, n in (residual or {}).items()}
@@ -248,10 +247,10 @@ def forecast(obs: Any, *, days: int = 30,
             _apply_sells(inv, item, units, params)
         for item, n in town_deltas(shops, turn, shop_interval,
                                    center_interval).items():
-            inv[item] -= n * rescale
+            inv[item] -= n
         if virtual_shops and turn % shop_interval == 0:
             for item, n in mean_demand.items():
-                inv[item] -= n * virtual_shops * rescale
+                inv[item] -= n * virtual_shops
         if (turn + 1) % TURNS_PER_DAY == 0:        # end of day: one unlock?
             next_day = (turn + 1) // TURNS_PER_DAY
             if (unlock_policy == "mean" and next_day % unlock_interval == 0
