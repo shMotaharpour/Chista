@@ -114,13 +114,40 @@ def _own_tiles(obs: Any) -> list[list[bool]]:
     return [[tile != "LOCKED" for tile in row] for row in tiles]
 
 
-def order_cost(order: Iterable[str], obs: Any, hires_today: int) -> float | None:
+def land_step_price(obs: Any, land_bought: int = 0) -> int | None:
+    """The price of the next land purchase, or None once the prefix is complete.
+
+    F042: quadrants open in a fixed prefix at escalating prices (`LAND_PRICES`),
+    never a gap, and NW is owned from the start — so the first purchase costs
+    `LAND_PRICES[0]` and each later one the next entry.
+
+    `land_bought` is how many purchases the *current repair walk* has already
+    simulated. Land has no equivalent of `hires_today` in the observation, so
+    the caller carries it, and **without it every purchase inside one day is
+    priced as the first one** — 3 × 1000 = 3000 against a real 1000+2000+4000 =
+    7000, which walked a 7000-coin plan through a 3000-coin purse. That is B1 of
+    the PR #35 review.
+    """
+    farms = obs.get("farms", []) if isinstance(obs, dict) else []
+    player = int(obs.get("player", 0)) if isinstance(obs, dict) else 0
+    owned = 0
+    if len(farms) > player:
+        owned = len(farms[player].get("unlocked_quadrants", []))
+    index = max(0, owned) - 1 + int(land_bought)   # NW is owned from the start
+    if 0 <= index < len(K.LAND_PRICES):
+        return int(K.LAND_PRICES[index])
+    return None
+
+
+def order_cost(order: Iterable[str], obs: Any, hires_today: int,
+               land_bought: int = 0) -> float | None:
     """What an order costs, from the engine's own tables (R002).
 
-    `None` means "not a purchase" (a SELL, or an op this module does not price).
-    Every number is imported: seed and animal prices from the engine tables, the
-    market quote from the observation, the hire from the engine's own fib rule
-    (F039) and land from the engine's prefix table (F042).
+    `None` means "not a purchase this module prices" (a SELL, or a `BUY_LAND`
+    once every quadrant is owned — which the repair drops on its own account,
+    F042). Every number is imported: seed and animal prices from the engine
+    tables, the market quote from the observation, the hire from the engine's
+    own fib rule (F039) and land from the engine's prefix table (F042).
     """
     op = list(order)
     if not op:
@@ -139,14 +166,9 @@ def order_cost(order: Iterable[str], obs: Any, hires_today: int) -> float | None
         if price is not None:
             return float(price) * int(op[2])
     elif kind == "BUY_LAND":
-        owned = 0
-        farms = obs.get("farms", []) if isinstance(obs, dict) else []
-        player = int(obs.get("player", 0)) if isinstance(obs, dict) else 0
-        if len(farms) > player:
-            owned = len(farms[player].get("unlocked_quadrants", []))
-        index = max(0, owned) - 1          # NW is owned from the start (F042)
-        if 0 <= index < len(K.LAND_PRICES):
-            return float(K.LAND_PRICES[index])
+        price = land_step_price(obs, land_bought)
+        if price is not None:
+            return float(price)
     elif kind == "HIRE":
         return float(K._hire_cost(int(hires_today)))
     return None
@@ -209,11 +231,19 @@ def repair_day(plan: dict, obs: Any) -> RepairResult:
     market = _sort_market(market)
     purse = _money(obs)
     hires_today = int(farm.get("hires_today", 0))
+    land_bought = 0                 # carried through the walk: land escalates (B1)
     kept_market: list[list[str]] = []
     for order in market:
         if len(kept_market) >= MAX_MARKET_ORDERS:
             drops.append(Drop("market", tuple(order),
                               "F031: an 11th order is dropped silently"))
+            continue
+        if order and order[0] == "BUY_LAND" and \
+                land_step_price(obs, land_bought) is None:
+            # F042: with every quadrant owned the buy refuses in silence, so
+            # this is an op the engine would ignore — the repair's own job.
+            drops.append(Drop("market", tuple(order),
+                              "F042: every quadrant is already owned"))
             continue
         if order and order[0] == "SELL" and len(order) >= 3:
             held = shed.get(order[1], 0)
@@ -225,7 +255,7 @@ def repair_day(plan: dict, obs: Any) -> RepairResult:
             purse += float(_prices(obs).get(order[1], 0)) * int(order[2])
             kept_market.append(order)
             continue
-        cost = order_cost(order, obs, hires_today)
+        cost = order_cost(order, obs, hires_today, land_bought)
         if cost is not None:
             if cost > purse:
                 drops.append(Drop("market", tuple(order),
@@ -235,6 +265,8 @@ def repair_day(plan: dict, obs: Any) -> RepairResult:
             purse -= cost
             if order[0] == "HIRE":
                 hires_today += 1
+            elif order[0] == "BUY_LAND":
+                land_bought += 1
         kept_market.append(order)
 
     return RepairResult(plan={"units": units, "market": kept_market},

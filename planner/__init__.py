@@ -19,7 +19,8 @@ from planner.columns import (Choice, ClassMix, DAYS, Plan, ROW_NAMES,
                              rounded_value, row_use, violations)
 from planner.land import (Candidate, LandPlanner, LandResult, best_land,
                           candidates, prefix_cost)
-from planner.repair import (Drop, RepairResult, order_cost, repair_day)
+from planner.repair import (Drop, RepairResult, land_step_price, order_cost,
+                            repair_day)
 
 __all__ = [
     "Choice", "ClassMix", "Plan", "Violation", "ROW_NAMES", "DAYS",
@@ -27,5 +28,5 @@ __all__ = [
     "demote_to_feasible", "plan_from_board",
     "Candidate", "LandPlanner", "LandResult", "best_land", "candidates",
     "prefix_cost",
-    "Drop", "RepairResult", "repair_day", "order_cost",
+    "Drop", "RepairResult", "repair_day", "order_cost", "land_step_price",
 ]
