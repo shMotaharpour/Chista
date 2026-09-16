@@ -70,7 +70,8 @@ def class_of(slug: str) -> str:
 
 
 def dev_and_heldout() -> tuple[list[str], list[str]]:
-    """The 14 dev / 5 held-out split, stratified (brief §4).
+    """The 11 dev / 5 held-out split over the canonical 16 (brief §4,
+    recounted after the duplicate discovery - the amendment).
 
     Held-out five: all class R (holding back a playbook withholds
     nothing), chosen to span behaviour - includes the one price-aware
@@ -81,8 +82,8 @@ def dev_and_heldout() -> tuple[list[str], list[str]]:
                "findings-from-zero-to-top-meta",
                "frontier-the-soil-remembers-rain",
                "v20-adaptive-r1-multi-route-agent"]
-    dev = [s for s in sorted(REGISTRY) if s not in heldout]
-    assert len(dev) == 14 and len(heldout) == 5
+    dev = [s for s in canonical_slugs() if s not in heldout]
+    assert len(dev) == 11 and len(heldout) == 5
     assert all(REGISTRY[s]["class"].startswith("R") for s in heldout), (
         "held-out five must all be class R (brief section 4)")
     return dev, heldout
