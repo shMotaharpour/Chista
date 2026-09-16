@@ -28,9 +28,11 @@ OBS = {"day": 0, "hour": 0, "step": 0, "player": 0,
 
 
 def test_all_slugs_resolve() -> None:
-    """Every vendored slug resolves through one interface."""
+    """Every canonical slug resolves through one interface (16 distinct
+    agents; three vendored slugs are aliases of a canonical sibling and
+    are excluded by default - registry.DUPLICATE_OF declares them)."""
     agents = load_all()
-    assert len(agents) == len(slugs()) == 19
+    assert len(agents) == len(slugs()) == 16
     for slug, loaded in agents.items():
         assert callable(loaded.fn), slug
         assert loaded.arity in (1, 2), (slug, loaded.arity)
@@ -54,21 +56,22 @@ def test_two_arg_required_agent_covered() -> None:
 
 
 def test_every_agent_first_turn_callable() -> None:
-    """Each of the 19, called in its own convention, returns a dict on a
-    minimal first-turn observation (packaging errors surface loudly)."""
+    """Each of the 16 canonical agents, called in its own convention,
+    returns a dict on a minimal first-turn observation."""
     agents = load_all()
-    assert len(agents) == 19
+    assert len(agents) == 16
     for slug, la in sorted(agents.items()):
         action = call(la, OBS, {"episodeSteps": 720})
         assert isinstance(action, dict), slug
 
 
 def test_arity_counts_match_the_brief_table() -> None:
-    """Brief 2.1: 9 one-arg + 9 two-arg-optional + 1 two-arg-required."""
+    """Brief 2.1 over the canonical 16 (the alias pairs share their
+    canonical's arity): the two-arg-required agent is still covered."""
     agents = load_all()
     ones = [s for s, la in agents.items() if la.arity == 1]
     twos = [s for s, la in agents.items() if la.arity == 2]
-    assert len(ones) + len(twos) == 19
+    assert len(ones) + len(twos) == 16
     assert "adaptive-public-state-multi-route" in twos  # requires two
 
 

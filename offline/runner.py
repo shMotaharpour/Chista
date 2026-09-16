@@ -48,6 +48,23 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 
 
+def run_selfplay_probe(slug: str, seed: int = 0,
+                       episode_steps: int = 720,
+                       timeout_s: float = 600.0) -> dict:
+    """The §A2 self-play P-filter: slug vs slug, same seed, one episode.
+
+    The two seats play the SAME slug; the worker compares their action
+    sequences by exact equality and returns the verdict directly
+    (brief part 2 §1: classify inside the worker - 719 action tuples do
+    not ride through JSON for a boolean). Identical sequences = strong P
+    candidate; different = S or R, needs the full four-run table.
+    """
+    rec = run_episode_process(slug, slug, seed, episode_steps,
+                              timeout_s=timeout_s)
+    rec["selfplay"] = True
+    return rec
+
+
 def run_episode_process(slug0: str, slug1: str, seed: int,
                         episode_steps: int = 720,
                         timeout_s: float = 600.0) -> dict:
@@ -131,6 +148,12 @@ def _episode_worker(slug0: str, slug1: str, seed: int,
             return LoadedAgent(slug="PASS-proxy", fn=_pass_agent,
                                fn_name="_pass_agent", arity=2,
                                rule="builtin", module=None)
+        if slug == "chista-m1":       # OUR agent (the baseline subject)
+            from agent.main import agent as our_agent
+            from offline.pool.loader import LoadedAgent
+            return LoadedAgent(slug="chista-m1", fn=our_agent,
+                               fn_name="agent", arity=2,
+                               rule="builtin-our-agent", module=None)
         return load(slug)
 
     agents = {0: _load(slug0), 1: _load(slug1)}
@@ -141,6 +164,7 @@ def _episode_worker(slug0: str, slug1: str, seed: int,
                    "weedSpawnChance": 0.005}, validate="fast")
 
     actions = {0: [], 1: []}
+    selfplay = slug0 == slug1        # the A2 self-play probe condition
     # one DETACHED view per seat (addendum safety + review 1 F9): the
     while not sim.done:
         # DETACHED views per seat, EVERY turn (review 2, N1): the first
@@ -164,16 +188,24 @@ def _episode_worker(slug0: str, slug1: str, seed: int,
         actions[1].append(_freeze(a1))
         sim.step([a0, a1])
     rewards = sim.rewards()
-    return {"seed": seed, "status": "DONE",
-            "seats": {
-                0: {"slug": slug0, "rewards": rewards[0],
-                    "guard": stats[0].labels(),
-                    "actions_hash": _stable_hash(actions[0]),
-                    "n_actions": len(actions[0])},
-                1: {"slug": slug1, "rewards": rewards[1],
-                    "guard": stats[1].labels(),
-                    "actions_hash": _stable_hash(actions[1]),
-                    "n_actions": len(actions[1])}}}
+    record = {"seed": seed, "status": "DONE", "selfplay": selfplay,
+              "seats": {
+                  0: {"slug": slug0, "rewards": rewards[0],
+                      "guard": stats[0].labels(),
+                      "actions_hash": _stable_hash(actions[0]),
+                      "n_actions": len(actions[0])},
+                  1: {"slug": slug1, "rewards": rewards[1],
+                      "guard": stats[1].labels(),
+                      "actions_hash": _stable_hash(actions[1]),
+                      "n_actions": len(actions[1])}}}
+    if selfplay:
+        # the A2 self-play filter: identical sequences across the two
+        # seats = strong P candidate (classify.py's pure comparison,
+        # applied inside the worker per brief part 2 section 1)
+        from offline.pool.classify import classify_from_sequences
+        record["class_verdict"] = classify_from_sequences(
+            actions[0], actions[1], actions[0], actions[0])
+    return record
 
 
 def _freeze(action: dict) -> tuple:

@@ -25,10 +25,20 @@ from pathlib import Path
 POOL_DIR = Path(__file__).resolve().parents[2] / "opponents"
 
 
-def slugs() -> list[str]:
-    """The vendored slugs, sorted (19 of them; test_opponents pins count)."""
-    return sorted(p.name for p in POOL_DIR.iterdir()
-                  if p.is_dir() and (p / "agent.py").is_file())
+def slugs(include_aliases: bool = False) -> list[str]:
+    """The canonical slugs, sorted (16 distinct agents).
+
+    The vendored tree holds 19 directories, but three ship byte-identical
+    payloads to a canonical sibling (registry.DUPLICATE_OF, measured by
+    SHA-256). `include_aliases=True` returns all 19 - for the guards that
+    must keep covering every payload.
+    """
+    all_slugs = sorted(p.name for p in POOL_DIR.iterdir()
+                       if p.is_dir() and (p / "agent.py").is_file())
+    if include_aliases:
+        return all_slugs
+    from offline.pool.registry import DUPLICATE_OF
+    return [s for s in all_slugs if s not in DUPLICATE_OF]
 
 
 @dataclass(frozen=True)

@@ -95,6 +95,39 @@ def test_packed_agents_actually_get_decoded() -> None:
     )
 
 
+def test_every_duplicate_payload_is_declared() -> None:
+    """Two slugs, one payload is one agent counted twice: it inflates every
+    count and silently shrinks the dev set. The vendored directories stay
+    (provenance is information), but the duplication must be DECLARED in
+    offline/pool/registry.py's DUPLICATE_OF - an undeclared duplicate
+    fails here."""
+    by_hash: dict[str, list[str]] = {}
+    for slug in slugs():
+        digest = hashlib.sha256((slug / "agent.py").read_bytes()).hexdigest()
+        by_hash.setdefault(digest, []).append(slug.name)
+    dupes = {h: names for h, names in by_hash.items() if len(names) > 1}
+    from offline.pool.registry import DUPLICATE_OF
+    undeclared = {}
+    for digest, names in dupes.items():
+        # every slug with a twin must be a KEY in DUPLICATE_OF naming its
+        # canonical sibling - a group-level edge would let an undeclared
+        # member hide behind another pair's declaration
+        # each member must be DECLARED: a key mapping to a sibling, or
+        # the canonical target of a sibling's declaration
+        missing = [n for n in names
+                   if DUPLICATE_OF.get(n) not in names
+                   and n not in DUPLICATE_OF.values()]
+        if missing:
+            undeclared[digest] = missing
+    assert not undeclared, (
+        "duplicate payloads exist but are not declared in "
+        "registry.DUPLICATE_OF - one agent counted twice inflates every "
+        "pool count:\n  "
+        + "\n  ".join(f"{h[:12]}… -> {names}" for h, names
+                       in sorted(undeclared.items()))
+    )
+
+
 def test_docs_do_not_point_at_paths_that_do_not_exist() -> None:
     """The docs arrived describing AgriOracle's layout; keep them describing this one."""
     dangling = []
