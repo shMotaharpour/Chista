@@ -393,11 +393,11 @@ def test_seed_invariance_no_rng_in_tile_transitions() -> None:
     consistent with itself. This re-runs the SHIPPED builder at several
     seeds and compares the artifact arrays byte for byte.
 
-    Teeth: the comparison is exercised on a pair it MUST reject (the
-    CARROT graph's arrays against WHEAT's - different sizes and content),
-    so "identical" cannot come from a comparison that sees nothing. The
-    RNG's reach into tile transitions is measured in
-    `test_weed_rng_reaches_tile_transitions`.
+    Teeth: two controls inside the test — the same comparison on WHEAT (a
+    different graph) must report a difference, and a copy of the graph with
+    one edge's produce raised must be rejected on content alone (so an
+    equal-shaped comparison that ignores values cannot pass). The RNG's reach
+    into tile transitions is measured in `test_weed_rng_reaches_tile_transitions`.
     """
     base = _carrot()
     base_arrays = _graph_arrays(base)
@@ -407,11 +407,23 @@ def test_seed_invariance_no_rng_in_tile_transitions() -> None:
             assert _arrays_equal(a, b), (
                 f"seed {seed} changed {name}: the no-weed graph must not "
                 f"depend on the RNG (issue #24 class A)")
+    # Control 1: a DIFFERENT graph must be rejected (different shape/content).
     wheat = build_graph("WHEAT")
     assert not all(_arrays_equal(a, b) for a, b
                    in zip(base_arrays, _graph_arrays(wheat))), (
-        "the byte comparison used above cannot see a difference between "
-        "two different graphs, so its equality proves nothing")
+        "the byte comparison used above cannot tell two different graphs "
+        "apart, so its equality proves nothing")
+    # Control 2: the CONTENT path alone, on an identically-shaped graph (one
+    # edge's produce raised): a control that only exercises the shape mismatch
+    # would not notice a comparison that ignores equal-shaped arrays.
+    from dataclasses import replace
+
+    ep = base.edge_produce.copy()
+    ep[0, 0] = ep[0, 0] + 1
+    nudged = replace(base, edge_produce=ep)
+    assert not _arrays_equal(base.edge_produce, nudged.edge_produce), (
+        "the comparison misses a changed value on an identically-shaped "
+        "array, so the seed equality above proves nothing")
 
 
 def test_weed_rng_reaches_tile_transitions() -> None:
@@ -424,9 +436,9 @@ def test_weed_rng_reaches_tile_transitions() -> None:
     is the only reason the graph can be seed-independent - while a
     non-zero spawn turns some tiles into WEED.
 
-    Measured on this engine, 12 idle days: spawn 0.0 → every one of 24
-    seeds still bare; spawn 0.2 → most seeds WEED. Without this, "the
-    graph does not depend on the RNG" is a claim nobody has seen fail.
+    Measured on this engine, 12 idle days: spawn 0.0 → 0 of 24 seeds show a
+    tile (every one still bare); spawn 0.2 → 22 of 24 are WEED. Without this,
+    "the graph does not depend on the RNG" is a claim nobody has seen fail.
     """
     def idle(seed: int, spawn: float, days: int = 12):
         from world.fast_sim import FastSim

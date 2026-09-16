@@ -17,11 +17,13 @@ NEXT merge). This probe hunts for them mechanically:
    future, not merely one that looks different.
 
 Usage:
-    .venv/bin/python -m bench.probe_hidden_state [--depth 4] [--entity CARROT]
+    .venv/bin/python -m bench.probe_hidden_state [--keep 4] [--entity CARROT]
 
 Exit code 1 when a candidate pair's futures differ (a lost dimension), 0 when
-every candidate pair is decision-equivalent. The modelled/unmodelled field
-split is read off `decode_tile`'s own source, never hand-listed.
+every candidate pair is decision-equivalent — and 0 ALSO when the sweep formed
+no candidate pair at all, which the output states explicitly rather than
+reading as a clean bill of health. The modelled/unmodelled field split is read
+off `decode_tile`'s own source, never hand-listed.
 """
 
 from __future__ import annotations
@@ -164,8 +166,8 @@ def main() -> int:
                     help="one entity's graph; omit for the merged graph")
     args = ap.parse_args()
 
-    print(f"hidden-state probe: entity {args.entity}, sims kept per state "
-          f"{args.keep}", flush=True)
+    print(f"hidden-state probe: entity {args.entity or 'TILE (merged)'}, sims "
+          f"kept per state {args.keep}", flush=True)
     buckets = _state_sims(args.entity, keep=args.keep)
     tiles = [G._tile_and_day(sim)[0] for _key, members in buckets.items()
              for sim, _st in members]
@@ -205,9 +207,18 @@ def main() -> int:
                           f"{_raw_signature(tile_b)}", flush=True)
                     for ops, why in diffs[:3]:
                         print(f"    chain {ops}: {why}", flush=True)
-    print(f"candidate pairs checked: {checked} | with differing futures: "
-          f"{lost} (0 = the abstraction is decision-equivalent on this sweep)",
-          flush=True)
+    print(f"candidate pairs formed: {checked} | with differing futures: "
+          f"{lost}", flush=True)
+    if checked == 0:
+        print("  no pair in this sweep decoded to one state with a different "
+              "ignored-field signature, so nothing was actually tested: the "
+              "equivalence claim covers only the paths this walk kept (canon "
+              "chains, up to --keep sims per state), never the whole space",
+              flush=True)
+    else:
+        print(f"  {checked} pairs tested: the abstraction is "
+              f"decision-equivalent on the canonical paths this sweep kept",
+              flush=True)
     return 1 if lost else 0
 
 
