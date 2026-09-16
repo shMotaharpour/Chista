@@ -168,6 +168,7 @@ def test_rung_polls_the_deadline_mid_work() -> None:
     class SlowContractor:
         def __init__(self, real):
             self.real = real
+            self.days = real.days          # the master reads the horizon
 
         def price(self, *args, **kwargs):
             time.sleep(0.05)                      # one slow pricing step
