@@ -88,10 +88,15 @@ w_next = np.maximum(w_next, 0)               # R006, projected every round
 
 ## Fallback (required, not optional — #12 brief §3)
 
-If scipy is absent, or the contractor or a solve fails, the master
-publishes the LAGGED (warm) prices with no update — degraded, not dead.
-`MasterResult.used_fallback` + `fallback_reason` carry which path fired,
-so a run never silently mixes master-priced and stand-in-priced days.
+If scipy is absent (the module-level import is GUARDED, review round 1
+B1: a bare import would take the whole submission down at load), or the
+contractor or a solve fails, the master publishes its LAGGED prices with
+no update — degraded, not dead. `MasterResult.used_fallback` +
+`fallback_reason` carry which path fired, so a run never silently mixes
+master-priced and stand-in-priced days. Both paths are tested:
+`test_fallback_fires_on_solver_error` (a raising solver) and
+`test_scipy_absent_is_survivable` (a subprocess whose scipy import is
+genuinely blocked, R007-verified in its failing direction).
 
 Every number has a source (R005): the row set names findings, α carries
 its measured sweep (`tests/test_master.py`), the day-0 supply model
@@ -105,7 +110,19 @@ import time
 from dataclasses import dataclass, field
 
 import numpy as np
-from scipy.optimize import linprog
+try:
+    from scipy.optimize import linprog
+    HAS_SCIPY = True
+except ImportError:                     # the grading image may not carry it
+    # Review round 1, B1: a bare module-level import takes the WHOLE
+    # SUBMISSION down at load if scipy is absent (measured: an import
+    # hook that blocks scipy raises straight out of `import
+    # planner.master`, so the fallback below could never run — there was
+    # nothing left to fall back FROM). The probe also found torch absent
+    # on the local grading-like image, so "scipy is definitely there" is
+    # not a safe assumption. Degrade to the lagged-price path instead.
+    linprog = None
+    HAS_SCIPY = False
 
 from agent.replan import dual_stand_in
 from tile_dp.chains import N_RESOURCE, RESOURCE_ID
@@ -263,9 +280,12 @@ def _solve_lp(cost: np.ndarray, revenue: np.ndarray, supply: CouplingSupply,
     `cost` (n_cols, days, N_COUPLING) INCLUDING the trailing idle column;
     `revenue` (n_cols,); `n_tiles` is the convexity right-hand side — the
     number of REAL tiles, one plan-weight each (the idle column is a
-    column, not a tile). Raises RuntimeError on solver failure — the
-    caller decides fallback.
+    column, not a tile). Raises RuntimeError on solver failure OR on an
+    absent scipy (the guarded import, module top) — the caller decides
+    fallback.
     """
+    if not HAS_SCIPY:
+        raise RuntimeError("master LP failed: scipy is not available")
     n_cols = cost.shape[0]
     # rows: N_COUPLING·days ≤-constraints (r outer, d inner), one convexity.
     A_ub = cost.transpose(0, 2, 1).reshape(n_cols, -1).T          # (rows, cols)
@@ -363,6 +383,11 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
 
     if owned is None:
         owned = _owned_states(runtime, obs)
+    # Fallback trigger 1 (review round 1, B1): scipy absent on the
+    # grading image. The module still imports (guarded import above);
+    # the publish degrades to the warm prices and SAYS so.
+    if not HAS_SCIPY:
+        return _fallback("scipy unavailable: linprog not importable")
     deadline = getattr(runtime, "_deadline", None)
     t_end = (time.perf_counter() + deadline.remaining_ms() / 1000.0 - 0.020
              if deadline is not None else None)

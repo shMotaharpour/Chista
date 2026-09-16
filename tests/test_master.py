@@ -285,8 +285,14 @@ def test_warm_start_shapes_match() -> None:
     assert again.w.min() >= 0.0
 
 
-def test_fallback_fires_without_scipy(monkeypatch=None) -> None:
-    """scipy unavailable -> lagged prices published, agent still plays."""
+def test_fallback_fires_on_solver_error() -> None:
+    """A RAISING SOLVER -> lagged prices published, agent still plays.
+
+    This is the solver-failure path (HiGHS erroring on the grader),
+    not the absent-scipy path its old name promised — review round 1
+    B1 split the two; the absent-scipy case is
+    `test_scipy_absent_is_survivable` below.
+    """
     import planner.master as M
     rt, c = _RT(), _contractor()
     obs = _obs(_bare_ids(2), c.graph)
@@ -294,7 +300,7 @@ def test_fallback_fires_without_scipy(monkeypatch=None) -> None:
     real_solve = M._solve_lp
 
     def _boom(*a, **k):
-        raise RuntimeError("master LP failed: simulated grader without HiGHS")
+        raise RuntimeError("master LP failed: simulated HiGHS error on the grader")
 
     M._solve_lp = _boom
     try:
@@ -304,6 +310,60 @@ def test_fallback_fires_without_scipy(monkeypatch=None) -> None:
     assert res.used_fallback
     assert res.fallback_reason
     assert res.w.min() >= 0.0 and res.w.shape[0] == c.days   # publishable
+
+
+def test_scipy_absent_is_survivable() -> None:
+    """scipy GENUINELY absent: the module still imports and the publish
+    degrades (review round 1, B1).
+
+    A bare module-level `from scipy.optimize import linprog` raises out
+    of `import planner.master` when scipy is missing, so the fallback
+    could never run — measured with an import hook, and the local
+    grading-like probe already found torch absent. This test runs the
+    real thing in a SUBPROCESS (the hook must be installed before the
+    module loads, which cannot be done in this interpreter):
+    scipy is blocked, `planner.master` is imported, `equilibrate` runs
+    against the real graph, and the result must be a fallback publish.
+
+    R007: verified in its failing direction — restoring the bare import
+    makes this test fail with `ImportError: scipy blocked for this
+    probe` at `import planner.master`.
+    """
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    repo = Path(__file__).resolve().parents[1]
+    code = (
+        "import sys\n"
+        "sys.path.insert(0, '.')\n"
+        "class _Block:\n"
+        "    def find_module(self, name, path=None):\n"
+        "        if name == 'scipy' or name.startswith('scipy.'):\n"
+        "            return self\n"
+        "    def load_module(self, name):\n"
+        "        raise ImportError('scipy blocked for this probe')\n"
+        "sys.meta_path.insert(0, _Block())\n"
+        "for m in list(sys.modules):\n"
+        "    if m == 'scipy' or m.startswith('scipy.'):\n"
+        "        del sys.modules[m]\n"
+        "import planner.master as M\n"
+        "assert M.HAS_SCIPY is False, 'HAS_SCIPY true with scipy blocked'\n"
+        "from tests.test_master import _RT, _contractor, _obs, _bare_ids, _supply\n"
+        "rt, c = _RT(), _contractor()\n"
+        "obs = _obs(_bare_ids(2), c.graph)\n"
+        "res = M.equilibrate(rt, obs, c, _supply())\n"
+        "assert res.used_fallback, 'no fallback with scipy absent'\n"
+        "assert 'scipy' in res.fallback_reason, res.fallback_reason\n"
+        "assert res.w.min() >= 0.0 and res.w.shape[0] == c.days\n"
+        "print('OK')\n"
+    )
+    proc = subprocess.run([sys.executable, "-c", code], cwd=repo,
+                          capture_output=True, text=True, timeout=300)
+    assert proc.returncode == 0, (
+        f"the absent-scipy run failed (rc {proc.returncode}):\n"
+        f"{proc.stdout[-500:]}\n{proc.stderr[-900:]}")
+    assert "OK" in proc.stdout
 
 
 def test_budget() -> None:
