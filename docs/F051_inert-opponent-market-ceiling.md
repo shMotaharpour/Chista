@@ -1,4 +1,4 @@
-# F049 — the inert-opponent ceiling: a PASS seat saturates the market at ~191,812
+# F051 — the inert-opponent ceiling: a PASS seat saturates the market at ~191,812
 
 Summary: against a PASS opponent the market saturates near 191,812 coins
 and distinct competent agents land on that ceiling exactly — tables

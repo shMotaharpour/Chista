@@ -35,6 +35,16 @@ Order: **Rules** (`R<NNN>_<slug>.md`) first, then **Findings**
   engine, or a recorded measurement. So does every conclusion drawn from one,
   because a chain of inference over a measured number is not itself measured.
   Missing values are measured or left as named TODOs.
+- [R006_non-negative-prices-and-wages.md](R006_non-negative-prices-and-wages.md) —
+  The dominance-pruned tile graph is optimal only while every price and wage is
+  non-negative componentwise; a negative component makes the pruned edge the
+  optimum, so the contractor asserts `p >= 0` and `w >= 0` on entry and the
+  master projects its duals onto the non-negative orthant.
+- [R007_a-guard-must-be-seen-to-fail.md](R007_a-guard-must-be-seen-to-fail.md) —
+  A test earns the name "regression guard" only after someone has
+  re-introduced the bug and watched it go red. Five guards in this repository
+  passed while guarding nothing, because each exercised a path the production
+  code never takes. Reading cannot find this; two minutes of breaking it can.
 
 ## Findings
 
@@ -86,8 +96,9 @@ Order: **Rules** (`R<NNN>_<slug>.md`) first, then **Findings**
 - [F046_runtime-budget-one-second-bank.md](F046_runtime-budget-one-second-bank.md) — The budget is 1 free second per turn plus a 60-second bank for the episode. Overrunning bills max(0, duration - 1.0); the harness bills ~35 ms extra, so budget against 0.965 s. An exhausted bank forfeits. A free turn buys ~8.7M Python ops; the competition machine is ~1.95x faster.
 - [F047_silent-operations-catalog.md](F047_silent-operations-catalog.md) — The most expensive mistake class: the engine fails silently. Purse-short orders are refused, hires and land buys no-op, LOCKED tiles spend hours for nothing, the full shed destroys overflow, SELL and FERTILIZE without stock refuse, over-seeded PLANT drops the crop's whole turn, and an 11th order is dropped.
 - [F048_episode-has-720-states-and-719-decisions.md](F048_episode-has-720-states-and-719-decisions.md) — F029's "720 turns" counts states. The agent is asked for an action 719 times, at steps 0..718; the terminal state needs none. Day 29 therefore gets 23 decisions, ending at hour 22 — and that last decision is processed in full, market included. Measured, not inferred.
-- [F049_inert-opponent-market-ceiling.md](F049_inert-opponent-market-ceiling.md) — against a PASS opponent the market saturates near 191,812 and distinct competent agents land on that ceiling exactly: baseline columns measured against an inert opponent read the ceiling, not the agents.
+- [F049_the-tile-optimum-is-a-cycle-not-a-crop.md](F049_the-tile-optimum-is-a-cycle-not-a-crop.md) — The honest single-cycle maxima of F009 are not the season-optimal policy. With a flat wheat price and zero wages the DP harvests 5 units on day 3 and replants the same day, 48 wheat over 30 days; F009's 6-by-day-4 cycle yields 6 per 4 days. Throughput, not per-cycle yield, is what the tile maximises.
 - [F050_market-coupling-defeats-common-opponent-screen.md](F050_market-coupling-defeats-common-opponent-screen.md) — a fixed-policy reference's own score varies by sd 61,142 across opponents (~330× the adjacent-agent gap): pool results are pair properties, no scalar ranking of the pool exists.
+- [F051_inert-opponent-market-ceiling.md](F051_inert-opponent-market-ceiling.md) — against a PASS opponent the market saturates near 191,812 and distinct competent agents land on that ceiling exactly: baseline columns measured against an inert opponent read the ceiling, not the agents.
 
 ## Tests & benchmarks
 
@@ -104,4 +115,7 @@ Executable checks — `.venv/bin/python -m tests.<module>` (no pytest required; 
 - [../bench/bench_paths.py](../bench/bench_paths.py) — reproduces the R003 timings on the current machine.
 - [../tests/test_agent_runtime.py](../tests/test_agent_runtime.py) — agent spine: the entry point returns a shape-valid dict for any input (never raises), the dispatcher slices by hour under the F031 market cap, the fallback ladder runs plan → prev plan → greedy → PASS, and a full 720-turn smoke stays legal.
 - [../tests/test_agent_obs.py](../tests/test_agent_obs.py) — observation decode: LOCKED sentinel (F042), day-start guard, both farms through one code path, coverage round-trip against the shipped graph (0 unknowns, weedSpawnChance 0 and 0.005 × 20 seeds), nearest-state fallback counted, the mls formula pinned against the live engine, ≤ 2 ms per turn.
-- [../bench/bench_turn_budget.py](../bench/bench_turn_budget.py) — per-turn timing over a full episode on the official path: the p50/p95/p99/max baseline later milestones compare against; bank draw reported.
+- [../bench/bench_turn_budget.py](../bench/bench_turn_budget.py) — per-turn timing over a full episode on the official path: the p50/p95/p99/max baseline later milestones compare against; bank draw reported, and the tile-DP sweep timed solo and contended with the direction asserted.
+- [../tests/test_tile_dp_contractor.py](../tests/test_tile_dp_contractor.py) — the DP over the shipped graph: `V_30 ≡ 0`, zero duals ⇒ zero values, monotonicity in `p` and `w`, bit-equality with a scalar DP and with an exhaustive 6-day search, R006 on both vectors, the empty-slice guard, the engine calendars (F009, F014, F027), plan determinism and the timing ceiling.
+- [../tests/test_agent_replan.py](../tests/test_agent_replan.py) — the replanner rung: the dual stand-in is non-negative and engine-sourced, chains expand to per-turn ops, a unit works the tile it stands on (LOCKED dropped), every recovered plan dispatches and validates for 30 days, the rung polls the deadline mid-work, and it runs once per day through `Runtime.act`.
+- [../tests/test_planner_integrality.py](../tests/test_planner_integrality.py) — the master's λ rounded: one plan per tile deterministically, LOCKED tiles never planned (F042), the coupling rows checked and demoted (20 boards), F047's drops counted by rule (F031/F004/F043/F042/F032), the repaired plan legal for 30 days, and the land enumeration on the engine's prefix table with its cadence cap. (The integrality gap and the land budget need #12; see `planner/DESIGN.md`.)

@@ -8,9 +8,12 @@ engine-verified edges (R003) and engine-driven pruning.
 from tile_dp.tile_state import TileState, decode_tile
 from tile_dp.chains import CHAIN_NAMES, CHAIN_ID_OF, chain_ops, chain_id_of
 from tile_dp.graph import TileGraph, build_graph
+from tile_dp.contractor import (HORIZON_DAYS, PricedBoard, TileContractor,
+                                price_board)
 
 __all__ = [
     "TileState", "decode_tile",
     "CHAIN_NAMES", "CHAIN_ID_OF", "chain_ops", "chain_id_of",
     "TileGraph", "build_graph",
+    "TileContractor", "PricedBoard", "price_board", "HORIZON_DAYS",
 ]
