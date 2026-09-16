@@ -229,11 +229,11 @@ the dispatch revisit a worker after another worker's commit — which reroutes
 hands and so interacts with the entry-cell class just above — and it needs its
 own change and its own sweep, like that one.
 
-Fifth, **still open** (pre-existing at 40d9cfa, 756356a and this commit): a
-declared precedence edge *into* an aggregatable pickup is dropped on both sides
+Fifth, **fixed in this branch** (was open at 40d9cfa, 756356a and 6784719): a
+declared precedence edge *into* an aggregatable pickup was dropped on both sides
 — such a pickup is not a target task, so neither `target_preds` nor
-`_successor_gaps` carries the edge — and the preload phase emits the pickup at
-its own hour. The day then fails validation as a precedence violation:
+`_successor_gaps` carried the edge — and the preload phase emitted the pickup at
+its own hour. The day then failed validation as a precedence violation:
 
 ```
 T at (9,9) -> S = PICKUP WHEAT (cell-less) -> C = FEED at (0,0)
@@ -246,15 +246,32 @@ group [S, C], horizon 24, two workers starting at hour 0
 
 No recipe in `models.py` emits an edge into a pickup — the option chains all go
 pickup -> consume — so this input is outside the formulation's own shapes, but
-`Instance.compile` accepts it without complaint and the answer is a schedule the
-solver's own verifier rejects: an unusable day rather than a named input error.
-There are two fixes and the choice between them is a decision, not a patch:
-reject the shape at compile time (`InfeasibleInputError`, where the other input
-validation lives), or let the preload honour an incoming precedence edge. The
-400-seed audit is blind to it either way — its generator only emits edges *out
-of* a pickup — so a hunt that counts *false INFEASIBLE* on this shape reports
-zero while the shape still returns an unusable answer: the rejection lands in
-the invalid column, not the INFEASIBLE one.
+`Instance.compile` accepted it without complaint and the answer was a schedule
+the solver's own verifier rejects: an unusable day rather than a named input
+error. `solve_oxa` now refuses the shape up front, next to its other input
+validation:
+
+```
+  raise InfeasibleInputError(
+      "precedence 'T' -> 'S' puts a task before a preloaded pickup: 'S' is "
+      "emitted as the setup turn at the head of its route, so it cannot "
+      "follow another task, and this solver answers INVALID_SOLUTION when "
+      "asked to")
+```
+
+(`tests/wrs/test_oxa_solver.py::
+test_an_edge_into_a_preloaded_pickup_is_rejected_not_mis_scheduled`, whose
+R007 direction is the removal of that one call: the test then stops raising and
+gets `INVALID_SOLUTION` back — measured.) The check lives in `solve_oxa` rather
+than `Instance.compile` because `cpsat_solver` *can* honour the edge (it
+returned the OPTIMAL day above), and taking the input away from the model would
+take that away too. Honouring it in the preload instead is the other possible
+fix and a deliberate follow-up: it changes when an acquire may be emitted, which
+this solver's whole emission phase is built around. The 400-seed audit is blind
+to the shape either way — its generator only emits edges *out of* a pickup — so
+a hunt that counts *false INFEASIBLE* on it reports zero while it still returned
+an unusable answer: the rejection landed in the invalid column, not the
+INFEASIBLE one.
 
 ## What changed
 
