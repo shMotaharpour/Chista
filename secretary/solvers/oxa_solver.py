@@ -1,0 +1,399 @@
+"""
+OXA solver (Refactored: Spatial Greedy Dispatcher)
+
+A blazing-fast, pure Python heuristic solver optimized for dense grids and sub-second 
+execution times. Based on Capacity-Constrained Nearest Neighbor and Setup Costs.
+"""
+
+from __future__ import annotations
+
+import math
+import time
+from dataclasses import dataclass
+from typing import Optional
+
+from ..distances import assign_entry_cells, manhattan
+from ..fibonacci import fibonacci_cost
+from ..models import (
+    CONSUME_ACTIONS,
+    MinorActionType,
+    WAREHOUSE_ENTRY_CELLS,
+    Cell,
+    Instance,
+    MinorTask,
+    ScheduledTask,
+    Solution,
+    WorkerRoute,
+)
+from ..verify import verify_solution
+from .base_config import BaseSolverConfig
+
+
+class InfeasibleInputError(ValueError):
+    """The instance is provably infeasible before the model is even built
+    (e.g. more of an item is picked up across all tasks than the shed
+    holds) -- a static property of the task list itself."""
+    pass
+
+@dataclass
+class OxaConfig(BaseSolverConfig):
+    min_workers: int = 1
+    worker_pool_cap: Optional[int] = None
+
+
+@dataclass
+class OxaResult:
+    status: str
+    solution: Optional[Solution] = None
+    wall_time_seconds: float = 0.0
+    matched_lower_bound: bool = False
+
+
+def _build_worker_route(
+    worker_index: int,
+    earliest_start: int,
+    entry_cell: Cell,
+    remaining_targets: set[str],
+    done_targets: set[str],
+    exec_times: dict[str, int],
+    target_preds: dict[str, list[str]],
+    tasks_by_id: dict[str, MinorTask],
+    target_needs_item: dict[str, str],
+    item_to_pickups: dict[str, list[str]],
+    horizon: int,
+    instance: Optional[Instance] = None,
+) -> tuple[list[ScheduledTask], set[str]]:
+    """Greedily fills a single worker's shift using Nearest Neighbor + Setup Costs."""
+    current_t = earliest_start
+    current_pos = entry_cell
+    worker_items: set[str] = set()
+    
+    route_task_ids: list[str] = []
+    local_exec_times: dict[str, int] = {}
+    time_offset = 0
+    
+    acquire_partner: dict[str, str] = {}
+    for group in instance.single_worker_groups:
+        if len(group) == 2 and tasks_by_id[group[0]].action == MinorActionType.PICKUP:
+            acquire_partner[group[1]] = group[0]
+
+    while True:
+        available = [
+            tid for tid in remaining_targets 
+            if all(p in done_targets or p in route_task_ids for p in target_preds[tid])
+        ]
+        
+        best_task_id = None
+        best_cost = (float('inf'), float('inf'))
+        best_actual_exec = -1
+        best_setup = 0
+        best_item = None
+        
+        for tid in available:
+            task = tasks_by_id[tid]
+            needed_item = target_needs_item.get(tid)
+            
+            setup = 1 if (needed_item and needed_item not in worker_items) else 0
+            task_cell = task.cell if task.cell else WAREHOUSE_ENTRY_CELLS['NW']
+            dist = manhattan(current_pos, task_cell)
+            
+            proposed_t = current_t + setup + 1 + dist
+            
+            ready_t = 0
+            for p in target_preds[tid]:
+                if p in route_task_ids:
+                    ready_t = max(ready_t, local_exec_times[p] + setup + 1)
+                else:
+                    ready_t = max(ready_t, exec_times[p] + 1)
+                    
+            actual_exec = max(proposed_t, ready_t)
+            
+            if actual_exec > horizon:
+                continue
+                
+            cost = actual_exec - current_t
+            tie_breaker = -manhattan(entry_cell, task_cell)
+            
+            if (cost, tie_breaker) < best_cost:
+                best_cost = (cost, tie_breaker)
+                best_task_id = tid
+                best_actual_exec = actual_exec
+                best_setup = setup
+                best_item = needed_item
+                
+        if not best_task_id:
+            break
+            
+        if best_setup:
+            worker_items.add(best_item)
+            time_offset += 1
+            current_t += 1
+            for rt in route_task_ids:
+                local_exec_times[rt] += 1
+            # the setup turn IS the acquire: insert the paired acquire into
+            # the route here; it occupies the turn just consumed by setup
+            acq_id = acquire_partner.get(best_task_id)
+            if acq_id and acq_id not in route_task_ids:
+                # insert immediately BEFORE best_task_id so the emitted
+                # order stays chronological (acquire at the setup turn)
+                idx = route_task_ids.index(best_task_id) if best_task_id in route_task_ids else len(route_task_ids)
+                route_task_ids.insert(idx, acq_id)
+                local_exec_times[acq_id] = current_t - 1
+        route_task_ids.append(best_task_id)
+        local_exec_times[best_task_id] = best_actual_exec
+        current_t = best_actual_exec
+        current_pos = tasks_by_id[best_task_id].cell or WAREHOUSE_ENTRY_CELLS['NW']
+        
+        remaining_targets.remove(best_task_id)
+
+    scheduled_tasks: list[ScheduledTask] = []
+
+    # ---- emission (verifier-consistent) -------------------------------
+    # Preload phase: the worker stands at its entry cell and performs one
+    # PICKUP per needed item (turns es+1 .. es+p). All pickups happen at
+    # the SAME entry cell, so consecutive travel is zero.
+    # The greedy's local_exec_times already include one 'setup' turn per
+    # new item, so the route tasks keep their greedy times.
+    acquire_partner: dict[str, str] = {}
+    for group in instance.single_worker_groups:
+        if len(group) == 2 and tasks_by_id[group[0]].action == MinorActionType.PICKUP:
+            acquire_partner[group[1]] = group[0]
+
+    first_consume_time: dict[str, int] = {}
+    route_demand: dict[str, int] = {}
+    for tid in route_task_ids:
+        task = tasks_by_id[tid]
+        if task.action in CONSUME_ACTIONS and task.item is not None:
+            route_demand[task.item] = route_demand.get(task.item, 0) + task.qty
+            if task.item not in first_consume_time:
+                first_consume_time[task.item] = local_exec_times[tid]
+
+    t = earliest_start + 1
+    emitted_acquires: set[str] = set()
+    for item in sorted(first_consume_time, key=lambda i: first_consume_time[i]):
+        acq_id = None
+        for tid2 in route_task_ids:
+            t2 = tasks_by_id[tid2]
+            if (t2.action in CONSUME_ACTIONS and t2.item == item
+                    and tid2 in acquire_partner):
+                acq_id = acquire_partner[tid2]
+                break
+        if acq_id is None:
+            continue
+        scheduled_tasks.append(ScheduledTask(
+            task_id=acq_id,
+            exec_time=t,
+            resolved_cell=entry_cell,
+            resolved_qty=route_demand[item],
+        ))
+        emitted_acquires.add(acq_id)
+        t += 1
+
+    for tid in route_task_ids:
+        if tid in emitted_acquires:
+            continue
+        task = tasks_by_id[tid]
+        scheduled_tasks.append(ScheduledTask(
+            task_id=tid,
+            exec_time=local_exec_times[tid],
+            resolved_cell=task.cell or entry_cell,
+            resolved_qty=task.qty,
+        ))
+        exec_times[tid] = local_exec_times[tid]
+        done_targets.add(tid)
+
+    return scheduled_tasks
+
+
+def _chain_cost_for_group(group: list[str], precedence: list[tuple[str, str]], tasks_by_id: dict[str, MinorTask]) -> int:
+    """Workload of one single_worker_group, as an indivisible block (see
+    module docstring). Exact for the current domain's size-2 groups
+    (feed/frtz/place_animal); falls back to a plain task count for any
+    larger group, which the design doc flags as a still-open
+    generalization (a shortest-path-respecting-precedence over the
+    group's members) if one is ever needed."""
+    if len(group) != 2:
+        return len(group)
+    a, b = group
+    order = (a, b)
+    for pred, succ in precedence:
+        if pred == a and succ == b:
+            order = (a, b)
+            break
+        if pred == b and succ == a:
+            order = (b, a)
+            break
+    first, second = order
+    d = _min_dist(_cell_options(tasks_by_id[first]), _cell_options(tasks_by_id[second]))
+    return 2 + d
+
+
+
+def _min_dist(a_options: list[Cell], b_options: list[Cell]) -> int:
+    return min(manhattan(a, b) for a in a_options for b in b_options)
+
+
+_ENTRY_CELLS = frozenset(WAREHOUSE_ENTRY_CELLS.values())
+
+
+def _cell_options(task: MinorTask) -> list[Cell]:
+    if task.cell is not None:
+        return [task.cell]
+    return _ENTRY_CELLS
+
+
+
+def compute_lower_bound(instance: Instance) -> int:
+    tasks_by_id = {t.id: t for t in instance.minor_tasks}
+    grouped_ids = {tid for group in instance.single_worker_groups for tid in group}
+    workload = sum(
+        _chain_cost_for_group(group, instance.precedence, tasks_by_id) for group in instance.single_worker_groups
+    )
+    workload += sum(1 for t in instance.minor_tasks if t.id not in grouped_ids)
+    # /horizon, not /(horizon+1): a worker starting at t=0 fits actions
+    # completing at t=1..horizon -- horizon of them, not horizon+1 (see
+    # module docstring's "Lower bound" note and docs constraint 3).
+    return max(1, math.ceil(workload / instance.horizon)) if instance.horizon > 0 else max(1, workload)
+
+
+# ---------------------------------------------------------------- worker mechanics
+
+
+class _WorkerState:
+    __slots__ = ("worker", "entry_cell", "last_cell", "last_time", "balance", "tasks")
+
+    def __init__(self, worker: Worker, entry_cell: Cell):
+        self.worker = worker
+        self.entry_cell = entry_cell
+        self.last_cell = entry_cell
+        # History: was `earliest_start - 1`, which let the first task
+        # execute for free at `earliest_start + dist` (no +1 for its own
+        # turn) -- the same off-by-one fixed in greedy_decoder.py's
+        # _WorkerState (see its docstring for the full story). Priming to
+        # `earliest_start` (not `- 1`) makes the uniform
+        # "next = last_time + 1 + dist" formula in `_earliest_time` correct
+        # for the first task too.
+        self.last_time = worker.earliest_start
+        self.balance: dict[Item, int] = {}
+        self.tasks: list[ScheduledTask] = []
+
+
+
+def _validate_item_sources(instance: Instance) -> None:
+    """Static check: every consume task must have an item source — either
+    a paired acquire in its single-worker group, or any PICKUP task of
+    the same item somewhere in the instance (preload-able). Raises
+    InfeasibleInputError otherwise."""
+    pickup_items = {t.item for t in instance.minor_tasks
+                    if t.action == MinorActionType.PICKUP and t.item is not None}
+    for t in instance.minor_tasks:
+        if t.action not in CONSUME_ACTIONS or t.item is None:
+            continue
+        has_partner = any(
+            t.id in g and any(
+                instance.tasks_by_id[tid].action == MinorActionType.PICKUP and
+                instance.tasks_by_id[tid].item == t.item
+                for tid in g if tid != t.id
+            )
+            for g in instance.single_worker_groups
+        )
+        if not has_partner and t.item not in pickup_items:
+            raise InfeasibleInputError(
+                f"consume task {t.id!r} needs {t.item.value!r} but no PICKUP "
+                f"of that item exists anywhere in the instance"
+            )
+
+def solve_oxa(instance: Instance, config: OxaConfig = OxaConfig()) -> OxaResult:
+    _validate_item_sources(instance)
+
+    # ---- static input validation: warehouse stock overrun ----------------
+    if instance.warehouse_stock:
+        picked: dict[Item, int] = {}
+        for _t in instance.minor_tasks:
+            if _t.action == MinorActionType.PICKUP and _t.item is not None:
+                picked[_t.item] = picked.get(_t.item, 0) + _t.qty
+        for _item, _amount in picked.items():
+            _stock = instance.warehouse_stock.get(_item, 0)
+            if _amount > _stock:
+                raise InfeasibleInputError(
+                    f"warehouse stock for {_item.value!r} is {_stock}, "
+                    f"but {_amount} is picked up across all tasks"
+                )
+    start = time.perf_counter()
+    
+    if not instance.tasks_by_id:
+        return OxaResult(status="OPTIMAL", solution=Solution(routes=[], reported_cost=0), matched_lower_bound=True)
+
+    candidates = instance.workers
+    if instance.worker_pool_size is not None:
+        candidates = candidates[: instance.worker_pool_size]
+    if config.worker_pool_cap is not None:
+        candidates = candidates[: config.worker_pool_cap]
+        
+    if not candidates:
+        return OxaResult(status="INFEASIBLE", wall_time_seconds=0.0)
+
+    # 1. Initialize Dispatcher State directly from Instance
+    remaining_targets = set(instance.target_tasks)
+    done_targets: set[str] = set()
+    exec_times: dict[str, int] = {}
+    routes: list[WorkerRoute] = []
+    
+    entry_assignments = assign_entry_cells([(w.index, w.earliest_start) for w in candidates])
+    active_workers = 0
+    
+    # 2. Spatial Greedy Dispatch Loop
+    for worker in candidates:
+        if not remaining_targets:
+            break
+            
+        entry_cell = WAREHOUSE_ENTRY_CELLS[entry_assignments[worker.index]]
+        sched_tasks = _build_worker_route(
+            worker_index=worker.index,
+            earliest_start=worker.earliest_start,
+            entry_cell=entry_cell,
+            remaining_targets=remaining_targets,
+            done_targets=done_targets,
+            exec_times=exec_times,
+            target_preds=instance.target_preds,
+            tasks_by_id=instance.tasks_by_id,
+            target_needs_item=instance.target_needs_item,
+            item_to_pickups=instance.item_to_pickups,
+            horizon=instance.horizon,
+            instance=instance,
+        )
+        
+        if sched_tasks:
+            routes.append(WorkerRoute(worker_index=worker.index, start_time=worker.earliest_start, tasks=sched_tasks,
+                                      start_cell=entry_assignments[worker.index] and WAREHOUSE_ENTRY_CELLS[entry_assignments[worker.index]]))
+            active_workers += 1
+
+    wall_time = time.perf_counter() - start
+    
+    if remaining_targets:
+        return OxaResult(status="INFEASIBLE", wall_time_seconds=wall_time)
+        
+    solution = Solution(
+        routes=routes, 
+        reported_cost=sum(fibonacci_cost(r.worker_index) for r in routes)
+    )
+    
+    if config.validate:
+        try:
+            verification = verify_solution(instance, solution)
+            if not verification.is_valid:
+                return OxaResult(status="INVALID_SOLUTION", solution=solution,
+                                 wall_time_seconds=wall_time,
+                                 matched_lower_bound=False)
+        except Exception:
+            return OxaResult(status="INVALID_SOLUTION", solution=solution,
+                             wall_time_seconds=wall_time,
+                             matched_lower_bound=False)
+        
+    is_optimal = active_workers <= config.min_workers
+    return OxaResult(
+        status="OPTIMAL" if is_optimal else "FEASIBLE",
+        solution=solution,
+        wall_time_seconds=wall_time,
+        matched_lower_bound=is_optimal,
+    )
