@@ -21,6 +21,12 @@ Modes, and why there are two (`CHISTA_MARKET`):
 - `dump` — the baseline `spread` has to beat: every sellable item, one order,
   at hour 0, the moment it is in the shed.
 
+The measured margin between the two modes (`offline/scoreboard.csv`, ladder
+tier) is measured with BOTH arms on the same greedy brain, so it isolates
+this layer and says nothing about how it behaves on a stronger unit policy:
+once #14's plan drives the units, that number has to be re-measured, not
+inherited.
+
 The layer never raises: a failure returns the rung's own action unchanged, so
 the ladder's contract ("never raise, always a legal shape") holds with the
 market layer on exactly as it does with it off. The rung's SELLs are dropped

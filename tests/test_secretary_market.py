@@ -332,6 +332,23 @@ def test_the_mean_policy_consumes_more_than_none():
             assert held_mean < held_none, (seed, day, held_mean, held_none)
 
 
+def test_the_peak_scan_reads_the_forecasts_own_origin():
+    """The scan's origin comes from the FORECAST (`first_day`), not from `day`.
+
+    Today the two always move together (`market_queue` builds a fresh
+    forecast, so `first_day == day`), which is why a wrong origin is
+    invisible elsewhere: this leg pins the contract by planning on a stub
+    built on day 20 while asking about day 23 — its LAST modelled row, where
+    the path stops rising and the rule must fire. Reading the horizon from
+    `day` instead of `first_day` finds a later price and holds, so this leg
+    goes red on that edit (the round-1 `range(day, days)` shape is caught by
+    `test_a_late_season_rising_path_still_holds`).
+    """
+    stub = _forecast_stub({}, days=4, rising=True, first_day=20)
+    assert plan_sales({"WHEAT": 50}, stub, day=23, hour=0) != ()   # last row
+    assert plan_sales({"WHEAT": 50}, stub, day=22, hour=0) == ()   # still rising
+
+
 def test_a_mid_day_plan_is_indexed_by_the_day_it_is_in():
     """A plan made at hour 5 must not read tomorrow's row as today's.
 
