@@ -40,10 +40,13 @@ from secretary.verify import verify_solution
 
 ROOT = Path(__file__).resolve().parents[2]
 
-# docs/F057's reviewed row, and the seeds the audit still reports: the
-# single_worker_group/entry-cell placement class, open there.
-AUDIT_STATUSES = {"OPTIMAL": 97, "FEASIBLE": 99, "INFEASIBLE": 201, "INVALID_SOLUTION": 3}
-AUDIT_REJECTED = [93, 182, 205]
+# docs/F057's reviewed row, and the seeds the audit still reports. The audit is
+# clean on this branch: the three entry-cell rejections (93, 182, 205) that the
+# placement fixed point removed left no `INVALID_SOLUTION` behind, and without
+# `--oracle` nothing else is reported (the 15 INFEASIBLE verdicts the oracle
+# schedules are F057's fourth class and only show up under `--oracle`).
+AUDIT_STATUSES = {"OPTIMAL": 97, "FEASIBLE": 101, "INFEASIBLE": 202}
+AUDIT_REJECTED = []
 
 
 def run_audit(dump: Path, hash_seed):
@@ -64,9 +67,38 @@ def test_the_audit_reproduces_the_statuses_docs_F057_reports(tmp_path):
     per_seed, proc = run_audit(tmp_path / "audit.json", "0")
 
     assert Counter(per_seed.values()) == AUDIT_STATUSES, Counter(per_seed.values())
-    assert proc.returncode == 1, "the audit exits non-zero while its open defect stands"
+    assert proc.returncode == 0, (
+        "the audit exits non-zero when it has a defect to report; with the "
+        "entry-cell class fixed and no --oracle run, it has none"
+    )
     line = next(line for line in proc.stdout.splitlines() if "rejected by the verifier" in line)
-    assert line.strip() == f"schedules rejected by the verifier: 3 {AUDIT_REJECTED}", line
+    assert line.strip() == f"schedules rejected by the verifier: 0 {AUDIT_REJECTED}", line
+
+
+def test_the_entry_cell_is_assigned_over_the_routed_workers():
+    """docs/F057's third class: the placement rule follows the ROUTED hands.
+
+    `verify_solution` recomputes the entry cells over the workers that carry
+    tasks (constraint 10), so a hand the greedy leaves idle does not hold a
+    cell. Here worker 0 cannot reach the task inside a 5-turn horizon, worker 1
+    takes it from NE -- and with the placement recomputed for worker 1 alone
+    that hand holds NW, from which the task is one turn out of reach. The
+    solver used to emit worker 1's route from NE anyway and answer
+    INVALID_SOLUTION ("worker 1: first task 't0' reachable too early from
+    entry"); the day is genuinely impossible (the oracle says INFEASIBLE too),
+    so the honest verdict is INFEASIBLE.
+    R007 failing direction: run one dispatch instead of the fixed point and
+    this reddens with that INVALID_SOLUTION.
+    """
+    instance = Instance.compile(
+        workers=[Worker(index=0, earliest_start=0), Worker(index=1, earliest_start=0)],
+        standalone_minor_tasks=[MinorTask(id="t0", cell=Cell(5, 0), action=MinorActionType.PASS)],
+        horizon=5,
+    )
+    result = solve_oxa(instance, OxaConfig(min_workers=1))
+
+    assert result.status == "INFEASIBLE", result.status
+    assert cpsat_binarySearch(instance, CpSatConfig(time_limit_seconds=10)).solution is None
 
 
 def test_the_verdicts_do_not_depend_on_the_interpreter_hash_order(tmp_path):

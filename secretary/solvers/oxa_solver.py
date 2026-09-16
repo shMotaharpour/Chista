@@ -18,6 +18,7 @@ from ..models import (
     CONSUME_ACTIONS,
     MinorActionType,
     WAREHOUSE_ENTRY_CELLS,
+    Worker,
     Cell,
     Instance,
     MinorTask,
@@ -62,7 +63,7 @@ def _build_worker_route(
     item_to_pickups: dict[str, list[str]],
     horizon: int,
     instance: Optional[Instance] = None,
-) -> tuple[list[ScheduledTask], set[str]]:
+) -> list[ScheduledTask]:
     """Greedily fills a single worker's shift using Nearest Neighbor + Setup Costs."""
     current_t = earliest_start
     current_pos = entry_cell
@@ -402,6 +403,60 @@ def _validate_preloaded_pickups_have_no_predecessor(instance: Instance) -> None:
                 f"and this solver answers INVALID_SOLUTION when asked to"
             )
 
+# How many times `solve_oxa` re-derives the entry-cell assignment from the
+# routed set and re-runs the dispatch (docs/F057, third class). One dispatch is
+# sub-millisecond on this domain's shapes; the audit converges in one or two
+# attempts, and the cap keeps a pathological instance bounded.
+_PLACEMENT_ATTEMPTS = 4
+
+
+def _dispatch(
+    instance: Instance,
+    candidates: list[Worker],
+    entry_assignments: dict[int, str],
+) -> tuple[list[WorkerRoute], set[str]]:
+    """One spatial-greedy pass: every candidate in order takes the tasks it can.
+
+    Returns the routes it built and the targets it left behind (empty means the
+    day was covered). `entry_assignments` is the cell each candidate starts
+    from; the caller owns its correctness (see the placement fixed point in
+    `solve_oxa`).
+    """
+    remaining_targets: set[str] = set(instance.target_tasks)
+    done_targets: set[str] = set()
+    exec_times: dict[str, int] = {}
+    routes: list[WorkerRoute] = []
+
+    for worker in candidates:
+        if not remaining_targets:
+            break
+
+        entry_cell = WAREHOUSE_ENTRY_CELLS[entry_assignments[worker.index]]
+        sched_tasks = _build_worker_route(
+            worker_index=worker.index,
+            earliest_start=worker.earliest_start,
+            entry_cell=entry_cell,
+            remaining_targets=remaining_targets,
+            done_targets=done_targets,
+            exec_times=exec_times,
+            target_preds=instance.target_preds,
+            tasks_by_id=instance.tasks_by_id,
+            target_needs_item=instance.target_needs_item,
+            item_to_pickups=instance.item_to_pickups,
+            horizon=instance.horizon,
+            instance=instance,
+        )
+
+        if sched_tasks:
+            routes.append(WorkerRoute(
+                worker_index=worker.index,
+                start_time=worker.earliest_start,
+                tasks=sched_tasks,
+                start_cell=WAREHOUSE_ENTRY_CELLS[entry_assignments[worker.index]],
+            ))
+
+    return routes, remaining_targets
+
 
 def solve_oxa(instance: Instance, config: OxaConfig = OxaConfig()) -> OxaResult:
     _validate_item_sources(instance)
@@ -440,43 +495,34 @@ def solve_oxa(instance: Instance, config: OxaConfig = OxaConfig()) -> OxaResult:
     if not candidates:
         return OxaResult(status="INFEASIBLE", wall_time_seconds=0.0)
 
-    # 1. Initialize Dispatcher State directly from Instance
-    remaining_targets = set(instance.target_tasks)
-    done_targets: set[str] = set()
-    exec_times: dict[str, int] = {}
-    routes: list[WorkerRoute] = []
-    
+    # 1. Dispatcher state, then the placement fixed point.
+    #
+    # `verify_solution` recomputes the entry cells over the workers that are
+    # actually ROUTED (constraint 10, `_check_placement`), not over every
+    # candidate: a hand the greedy leaves idle does not hold a cell. The
+    # dispatch used to assign over all candidates and never look again, so a
+    # worker could be sent out from a cell it does not hold and the day came
+    # back INVALID_SOLUTION -- "first task ... reachable too early from entry"
+    # (docs/F057, third class, fuzz seeds 93, 182, 205). Which workers are
+    # routed is only known after a dispatch, so the assignment is re-derived
+    # from the routed set and the dispatch re-run until it stops moving.
     entry_assignments = assign_entry_cells([(w.index, w.earliest_start) for w in candidates])
-    active_workers = 0
-    
-    # 2. Spatial Greedy Dispatch Loop
-    for worker in candidates:
-        if not remaining_targets:
+    routes: list[WorkerRoute] = []
+    for _attempt in range(_PLACEMENT_ATTEMPTS):
+        routes, remaining_targets = _dispatch(instance, candidates, entry_assignments)
+        if remaining_targets:
             break
-            
-        entry_cell = WAREHOUSE_ENTRY_CELLS[entry_assignments[worker.index]]
-        sched_tasks = _build_worker_route(
-            worker_index=worker.index,
-            earliest_start=worker.earliest_start,
-            entry_cell=entry_cell,
-            remaining_targets=remaining_targets,
-            done_targets=done_targets,
-            exec_times=exec_times,
-            target_preds=instance.target_preds,
-            tasks_by_id=instance.tasks_by_id,
-            target_needs_item=instance.target_needs_item,
-            item_to_pickups=instance.item_to_pickups,
-            horizon=instance.horizon,
-            instance=instance,
+        routed = {route.worker_index for route in routes}
+        corrected = assign_entry_cells(
+            [(w.index, w.earliest_start) for w in candidates if w.index in routed]
         )
-        
-        if sched_tasks:
-            routes.append(WorkerRoute(worker_index=worker.index, start_time=worker.earliest_start, tasks=sched_tasks,
-                                      start_cell=entry_assignments[worker.index] and WAREHOUSE_ENTRY_CELLS[entry_assignments[worker.index]]))
-            active_workers += 1
+        if all(entry_assignments.get(index) == corrected.get(index) for index in routed):
+            break
+        entry_assignments = {**entry_assignments, **corrected}
 
+    active_workers = len(routes)
     wall_time = time.perf_counter() - start
-    
+
     if remaining_targets:
         return OxaResult(status="INFEASIBLE", wall_time_seconds=wall_time)
         
