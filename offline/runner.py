@@ -43,6 +43,7 @@ for _var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS",
 import json
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
@@ -110,16 +111,18 @@ def run_episode_process(slug0: str, slug1: str, seed: int,
 
 def run_episode_timed(slug0: str, slug1: str = "PASS-proxy", seed: int = 0,
                       episode_steps: int = 720) -> dict:
-    """Timing mode: exactly one process, serial, per-seat readings.
+    """Throughput-shaped record tagged mode="timing" — NO per-turn readings.
 
-    What this BUILDS today: a serial, unloaded per-call timing record
-    tagged mode="timing" - `timing_solo` when slug1 is the PASS proxy.
-    What A4 REQUIRES and is NOT built yet (named TODO, #20 addendum):
-    the `timing_contended` reading against a real thinking pool agent,
-    the direction assertion (contended >= solo), and the bank policy
-    deriving from the contended number. The function exists so the
-    reporting layer has a mode tag to refuse on; do not quote its
-    timings as the budget until the contended reading exists.
+    What this BUILDS: one process, one episode, the record tagged
+    mode="timing" so the reporting layer can refuse on the tag. The
+    per-turn readings live in `_timed_episode_worker` (used by
+    `offline.evaluate`'s timing block): `timing_solo` against
+    "PASS-proxy" and `timing_contended` against a real pool opponent,
+    with the addendum's direction assertion (contended >= solo — a
+    contended reading faster than solo is a broken harness, not fast
+    load). Still open, named: the bank policy DERIVING from the
+    contended number (#9's flip; F046's 1 s + 60 s accounting is in
+    `bank_seconds` but nothing gates on it yet).
     """
     rec = run_episode_process(slug0, slug1, seed, episode_steps,
                               timeout_s=1200.0)
@@ -127,36 +130,64 @@ def run_episode_timed(slug0: str, slug1: str = "PASS-proxy", seed: int = 0,
     return rec
 
 
+def _pass_agent(obs, config=None):
+    """The built-in PASS policy (the timing floor's opponent)."""
+    return {"farmer": ["PASS"], "hands": [], "market": []}
+
+
+def _load_agent(slug: str):
+    """Resolve one runner-side agent reference (shared by both workers).
+
+    - "PASS-proxy": the built-in PASS policy;
+    - "chista-m1": OUR agent (the sweep/baseline subject, main's
+      offline/pool/sweep.py slugs it); kept from main — the arena
+      rebase must not drop it;
+    - "ref:<module>:<attr>": an in-repo agent (issue #18 --a/--b refs);
+    - otherwise: a vendored pool slug via offline.pool.loader.
+    """
+    from offline.pool.loader import LoadedAgent, load
+
+    if slug == "PASS-proxy":
+        return LoadedAgent(slug="PASS-proxy", fn=_pass_agent,
+                           fn_name="_pass_agent", arity=2,
+                           rule="builtin", module=None)
+    if slug == "chista-m1":                 # OUR agent (the baseline subject)
+        from agent.main import agent as our_agent
+        return LoadedAgent(slug="chista-m1", fn=our_agent,
+                           fn_name="agent", arity=2,
+                           rule="builtin-our-agent", module=None)
+    if slug.startswith("ref:"):
+        # issue #18: --a/--b accept "main" / "agent.main:agent". The
+        # module is OUR code, importable from the repo root (the child's
+        # cwd + sys.path); no shim under opponents/ (vendored tree is
+        # SHA-pinned by tests/test_opponents.py).
+        import importlib
+        import inspect as _inspect
+        _, module_name, attr = slug.split(":")
+        module_obj = importlib.import_module(module_name)
+        fn = getattr(module_obj, attr)
+        arity = 2 if len(list(_inspect.signature(fn).parameters.values())) >= 2 else 1
+        return LoadedAgent(slug=slug, fn=fn, fn_name=attr, arity=arity,
+                           rule="in-repo-ref", module=module_obj)
+    return load(slug)
+
+
 def _episode_worker(slug0: str, slug1: str, seed: int,
-                    episode_steps: int) -> dict:
+                    episode_steps: int, capture: bool = False) -> dict:
     """The child-process body: two guard-wrapped agents, one episode.
 
     Returns a record PER SEAT (addendum A1) - every pool-vs-pool episode
     characterises two agents. Seat 0's agent is called before seat 1's
     within a step (measured harness behaviour); both receive COPIES of
     the observation, never the live view.
+
+    `capture=True` (issue #18 loss autopsy) additionally records the raw
+    per-turn action dicts and each seat's money series - used only by
+    single-episode re-runs, never in the bulk sweep (record size).
     """
-    from offline.pool.loader import load
     from offline.pool.guard import guarded_call, GuardStats
 
-    def _pass_agent(obs, config=None):
-        return {"farmer": ["PASS"], "hands": [], "market": []}
-
-    def _load(slug):
-        if slug == "PASS-proxy":      # the timing floor's opponent
-            from offline.pool.loader import LoadedAgent
-            return LoadedAgent(slug="PASS-proxy", fn=_pass_agent,
-                               fn_name="_pass_agent", arity=2,
-                               rule="builtin", module=None)
-        if slug == "chista-m1":       # OUR agent (the baseline subject)
-            from agent.main import agent as our_agent
-            from offline.pool.loader import LoadedAgent
-            return LoadedAgent(slug="chista-m1", fn=our_agent,
-                               fn_name="agent", arity=2,
-                               rule="builtin-our-agent", module=None)
-        return load(slug)
-
-    agents = {0: _load(slug0), 1: _load(slug1)}
+    agents = {0: _load_agent(slug0), 1: _load_agent(slug1)}
     stats = {0: GuardStats(), 1: GuardStats()}
 
     from world.fast_sim import FastSim
@@ -165,6 +196,8 @@ def _episode_worker(slug0: str, slug1: str, seed: int,
 
     actions = {0: [], 1: []}
     selfplay = slug0 == slug1        # the A2 self-play probe condition
+    raw_actions: dict[int, list] = {0: [], 1: []}
+    money: dict[int, list] = {0: [], 1: []}
     # one DETACHED view per seat (addendum safety + review 1 F9): the
     while not sim.done:
         # DETACHED views per seat, EVERY turn (review 2, N1): the first
@@ -186,18 +219,24 @@ def _episode_worker(slug0: str, slug1: str, seed: int,
                           copy=False, arity=agents[1].arity)
         actions[0].append(_freeze(a0))
         actions[1].append(_freeze(a1))
+        if capture:
+            raw_actions[0].append(a0)
+            raw_actions[1].append(a1)
+            m = sim.money()
+            money[0].append(m[0])
+            money[1].append(m[1])
         sim.step([a0, a1])
     rewards = sim.rewards()
     record = {"seed": seed, "status": "DONE", "selfplay": selfplay,
-              "seats": {
-                  0: {"slug": slug0, "rewards": rewards[0],
-                      "guard": stats[0].labels(),
-                      "actions_hash": _stable_hash(actions[0]),
-                      "n_actions": len(actions[0])},
-                  1: {"slug": slug1, "rewards": rewards[1],
-                      "guard": stats[1].labels(),
-                      "actions_hash": _stable_hash(actions[1]),
-                      "n_actions": len(actions[1])}}}
+              "seats": {}}
+    for seat, slug in ((0, slug0), (1, slug1)):
+        record["seats"][seat] = {"slug": slug, "rewards": rewards[seat],
+                                 "guard": stats[seat].labels(),
+                                 "actions_hash": _stable_hash(actions[seat]),
+                                 "n_actions": len(actions[seat])}
+        if capture:
+            record["seats"][seat]["actions"] = raw_actions[seat]
+            record["seats"][seat]["money_series"] = money[seat]
     if selfplay:
         # the A2 self-play filter: identical sequences across the two
         # seats = strong P candidate (classify.py's pure comparison,
@@ -206,6 +245,72 @@ def _episode_worker(slug0: str, slug1: str, seed: int,
         record["class_verdict"] = classify_from_sequences(
             actions[0], actions[1], actions[0], actions[0])
     return record
+
+
+def _timed_episode_worker(slug: str, opp: str, seed: int,
+                          episode_steps: int) -> dict:
+    """Serial per-turn timing of ONE agent in the child process (issue #18).
+
+    Timing is part of the score (F046): every run records per-turn wall
+    time for `slug` only. The opponent may be the PASS proxy (the
+    `timing_solo` floor) or a real pool agent (`timing_contended`, the
+    A4-honest number). The caller tags mode/reading and enforces the
+    direction assertion (contended >= solo).
+    """
+    from offline.pool.guard import guarded_call, GuardStats
+
+    me = _load_agent(slug)
+    other = _load_agent(opp)
+    stats_me = GuardStats()
+    stats_other = GuardStats()
+
+    from world.fast_sim import FastSim
+    sim = FastSim({"episodeSteps": episode_steps, "seed": seed,
+                   "weedSpawnChance": 0.005}, validate="fast")
+
+    turn_ms: list[float] = []
+    while not sim.done:
+        views = sim.observations(copy_state=True)
+        a1 = guarded_call(other.fn, views[1],
+                          {"episodeSteps": episode_steps}, stats_other,
+                          copy=False, arity=other.arity)
+        t0 = time.perf_counter()
+        a0 = guarded_call(me.fn, views[0],
+                          {"episodeSteps": episode_steps}, stats_me,
+                          copy=False, arity=me.arity)
+        turn_ms.append((time.perf_counter() - t0) * 1000.0)
+        sim.step([a0, a1])
+    turn_ms.sort()
+    n = len(turn_ms)
+    p50 = turn_ms[n // 2]
+    p95 = turn_ms[min(n - 1, int(0.95 * n))]
+    mx = turn_ms[-1]
+    drawn_s, worst_over_s = bank_seconds(turn_ms)
+    return {"seed": seed, "status": "DONE", "slug": slug, "opponent": opp,
+            "turns": n,
+            "timing_ms": {"p50": round(p50, 3), "p95": round(p95, 3),
+                          "max": round(mx, 3)},
+            "bank_drawn_s": round(drawn_s, 4),
+            "worst_turn_over_s": round(worst_over_s, 4),
+            "guard": stats_me.labels()}
+
+
+def bank_seconds(turn_ms: list[float]) -> tuple[float, float]:
+    """F046's runtime-budget accounting over one episode's turn times.
+
+    Returns `(bank_drawn_s, worst_turn_over_s)`:
+    - `bank_drawn_s` is the POLICY number: F046 gives 1 free second per
+      turn and a 60-second bank for the episode, and bills
+      `max(0, duration - 1.0)` per turn, so the draw is the SUM over
+      turns (a forfeit is this exceeding 60 s). The bench's single
+      `max(0, max_turn - 1.0)` is a different, weaker reading — it only
+      ever equals the draw when one turn overruns and the rest do not;
+    - `worst_turn_over_s` keeps that per-turn worst case, which is what
+      the bench prints (labelled "from the max turn").
+    """
+    drawn = sum(max(0.0, ms / 1000.0 - 1.0) for ms in turn_ms)
+    worst = max(0.0, (max(turn_ms) / 1000.0 - 1.0)) if turn_ms else 0.0
+    return drawn, worst
 
 
 def _freeze(action: dict) -> tuple:

@@ -77,10 +77,16 @@ competitors in `opponents/` over paired seeds, and reports win rate and coin
 margin. It is `offline/evaluate.py` (issue #18) driving `offline/pool/`
 (issue #20).
 
-**It does not exist yet.** Both are specified and neither is built, so every
-sentence in this repo that says "the arena runs this in our interpreter" is
-describing a contract the code must honour once it is written, not something
-that happens today. Read those as requirements.
+`offline/evaluate.py` exists (issue #18): paired-seed comparison of two
+versions, paired coin margin as the development signal and win rate against
+the pool as the ship gate, ties counted explicitly, loss autopsy, a measured
+seed-count line, and a serial `--timing` path for the F046 budget. Opponent
+selection consumes the measured dev/held-out split from
+`offline/pool/registry.py` (#20: 11 dev / 5 held-out over the canonical 16 —
+amendment A dropped 3 byte-identical duplicates); the sorted-prefix fallback
+fires only if the registry module is missing, and every report names which
+selection ran. The ship gate's win rate is seat-0-only (measured seat effect
+in the module docstring).
 
 Two things it is not:
 
