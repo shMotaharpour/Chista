@@ -192,23 +192,29 @@ idle hand in the middle (fuzz seed 9) under-reported its `reported_cost`, and
 The engine's rule is append-only hiring (`verify.py`, COST ACCOUNTING):
 `fib(0..max_active)`, idle middle hands included. Fixed here.
 
-Third, **still open** (pre-existing, not introduced by this PR): the dispatch
-loop assigns warehouse entry cells over *all* candidate workers while
-`verify_solution` recomputes the placement rule over the workers that are
-actually routed, so a worker can be sent out from a cell it does not hold —
+Third, **fixed in this branch** (pre-existing at 40d9cfa, 756356a and 6784719):
+the dispatch loop assigned warehouse entry cells over *all* candidate workers
+while `verify_solution` recomputes the placement rule over the workers that are
+actually routed, so a worker could be sent out from a cell it does not hold —
 `worker 2: first task 'c0_a' reachable too early from entry`. Measured on fuzz
-seeds 93, 182 and 205; seeds 182/205 already failed this way before the PR, and
-the failure total still improved (208 + 3 → 201 + 3). It needs its own change
-(the assignment has to be re-derived from the active set, which is not known
-before the dispatch runs) and its own sweep, so it is recorded here rather than
-patched blind.
+seeds 93, 182 and 205; seeds 182/205 already failed this way before the PR. The
+assignment is now re-derived from the routed set and the dispatch re-run until
+it stops moving (`_dispatch` plus the fixed point in `solve_oxa`, capped at four
+attempts — the audit converges in one or two: 380 of the 400 seeds need a single
+dispatch, 20 need two). The audited row moves from `97 / 99 / 201 / 3 invalid`
+to `97 / 101 / 202 / 0`: 0 regressions and 2 improvements by
+`bench_oxa_diff.py`, with seed 93 going `INVALID_SOLUTION -> INFEASIBLE` (that
+day really is impossible — the oracle answers INFEASIBLE for it too) and seeds
+182/205 becoming valid `FEASIBLE` days. The 140-instance sweep is unchanged: all
+140 verify, none INFEASIBLE.
 
-Fourth, **still open** (pre-existing at 40d9cfa, 756356a and this commit): the
-dispatch gives each worker one pass, and a task is only *available* once its
-predecessors are committed. A day whose only legal arrangement serves a
-successor from a lower-indexed worker while a later worker serves its
-predecessor is therefore called INFEASIBLE, even though precedence only orders
-the two *times*. The minimal case is two plain tasks far apart on the grid:
+Fourth, **partly fixed in this branch** (pre-existing at 40d9cfa, 756356a and
+6784719): the dispatch gives each worker one pass, and a task is only
+*available* once its predecessors are committed. A day whose only legal
+arrangement serves a successor from a lower-indexed worker while a later worker
+serves its predecessor is therefore called INFEASIBLE, even though precedence
+only orders the two *times*. The minimal case is two plain tasks far apart on
+the grid:
 
 ```
 t0 at (9,0) -> t1 at (0,0), horizon 10, two workers both starting at hour 0
@@ -223,17 +229,32 @@ worker 0's single pass is over, so `t1` is left unserved. In the 400-seed audit
 this is not rare: `bench/bench_oxa_fuzz.py --oracle` reports 15 INFEASIBLE
 verdicts the oracle schedules — seeds 18, 45, 52, 58, 62, 100, 179, 191, 208,
 233, 235, 251, 262, 321, 337 — and all 15 are INFEASIBLE at the pre-fix blob,
-the first guard and this commit (verified one seed at a time against
-`cpsat_binarySearch` at 5 s, `verify_solution`-valid). Fixing it means letting
-the dispatch revisit a worker after another worker's commit — which reroutes
-hands and so interacts with the entry-cell class just above — and it needs its
-own change and its own sweep, like that one.
+the first guard and 6784719 (verified one seed at a time against
+`cpsat_binarySearch` at 5 s, `verify_solution`-valid).
 
-Fifth, **still open** (pre-existing at 40d9cfa, 756356a and this commit): a
-declared precedence edge *into* an aggregatable pickup is dropped on both sides
+**The pass now repeats over the hands that have no route yet**, which is exactly
+the minimal case's fix: the greedy finds the oracle's day (`w0 -> t1 at 10`,
+`w1 -> t0 at 9`), and fuzz seed 179 goes `INFEASIBLE -> FEASIBLE`. With the
+entry-cell fixed point of the third class alongside it, the audited row is
+`97 / 102 / 201 / 0` against `97 / 99 / 201 / 3` — 0 regressions, 3 improvements
+and 1 reason-changed by `bench_oxa_diff.py` (seed 179 from the repeated pass,
+182/205 from the placement, 93's reason changing). **14 of the 15 seeds stay
+open**, and their trace says why: they need a *routed* hand's route extended
+after another hand commits, not another pass over the idle ones. Seed 18 routes
+both hands in the first pass (`w0: c0_a 8, c0_b 14`; `w1: c1_acq 1, c1_cons 11`)
+and leaves `c1_tail` with no idle hand left to take it; seed 45 leaves `extra`
+behind with two idle hands that cannot reach it inside its 10-hour horizon at
+all. Rebuilding a route after the fact means re-running its emission phase (the
+batched acquires and their `resolved_qty`) and re-checking the placement rule
+per route, so it is its own change; the 14 seeds are listed here so that change
+starts from a measurement rather than a guess. This is also why the class is
+recorded as *partly* fixed rather than closed.
+
+Fifth, **fixed in this branch** (was open at 40d9cfa, 756356a and 6784719): a
+declared precedence edge *into* an aggregatable pickup was dropped on both sides
 — such a pickup is not a target task, so neither `target_preds` nor
-`_successor_gaps` carries the edge — and the preload phase emits the pickup at
-its own hour. The day then fails validation as a precedence violation:
+`_successor_gaps` carried the edge — and the preload phase emitted the pickup at
+its own hour. The day then failed validation as a precedence violation:
 
 ```
 T at (9,9) -> S = PICKUP WHEAT (cell-less) -> C = FEED at (0,0)
@@ -246,15 +267,32 @@ group [S, C], horizon 24, two workers starting at hour 0
 
 No recipe in `models.py` emits an edge into a pickup — the option chains all go
 pickup -> consume — so this input is outside the formulation's own shapes, but
-`Instance.compile` accepts it without complaint and the answer is a schedule the
-solver's own verifier rejects: an unusable day rather than a named input error.
-There are two fixes and the choice between them is a decision, not a patch:
-reject the shape at compile time (`InfeasibleInputError`, where the other input
-validation lives), or let the preload honour an incoming precedence edge. The
-400-seed audit is blind to it either way — its generator only emits edges *out
-of* a pickup — so a hunt that counts *false INFEASIBLE* on this shape reports
-zero while the shape still returns an unusable answer: the rejection lands in
-the invalid column, not the INFEASIBLE one.
+`Instance.compile` accepted it without complaint and the answer was a schedule
+the solver's own verifier rejects: an unusable day rather than a named input
+error. `solve_oxa` now refuses the shape up front, next to its other input
+validation:
+
+```
+  raise InfeasibleInputError(
+      "precedence 'T' -> 'S' puts a task before a preloaded pickup: 'S' is "
+      "emitted as the setup turn at the head of its route, so it cannot "
+      "follow another task, and this solver answers INVALID_SOLUTION when "
+      "asked to")
+```
+
+(`tests/wrs/test_oxa_solver.py::
+test_an_edge_into_a_preloaded_pickup_is_rejected_not_mis_scheduled`, whose
+R007 direction is the removal of that one call: the test then stops raising and
+gets `INVALID_SOLUTION` back — measured.) The check lives in `solve_oxa` rather
+than `Instance.compile` because `cpsat_solver` *can* honour the edge (it
+returned the OPTIMAL day above), and taking the input away from the model would
+take that away too. Honouring it in the preload instead is the other possible
+fix and a deliberate follow-up: it changes when an acquire may be emitted, which
+this solver's whole emission phase is built around. The 400-seed audit is blind
+to the shape either way — its generator only emits edges *out of* a pickup — so
+a hunt that counts *false INFEASIBLE* on it reports zero while it still returned
+an unusable answer: the rejection landed in the invalid column, not the
+INFEASIBLE one.
 
 ## What changed
 
@@ -270,6 +308,15 @@ the invalid column, not the INFEASIBLE one.
   the chain to a worker that still has room. It is built once per worker route
   (three calls for this sweep's ten-worker pool, which routes three hands —
   counted, not assumed).
+- `_dispatch` + `_dispatch_rounds` + the placement fixed point in `solve_oxa`:
+  the dispatch became a helper over shared state, repeated for the hands that
+  have no route yet (a successor stranded by a later hand's commit is picked up
+  again — part of the fourth class, the rest stays open), and the entry-cell
+  assignment is re-derived from the workers that are actually routed and the
+  dispatch re-run until it stops moving, because `verify_solution` recomputes
+  the placement over the routed set (constraint 10) and not over every
+  candidate. The pool cap is applied to the lowest-indexed hands, matching
+  `cpsat_solver` and the engine's append-only payroll.
 - `reported_cost` now follows the engine's append-only payroll
   (`fib(0..max_active)`), not the sum over the routes that carry tasks.
 - `tests/wrs/test_oxa_false_infeasible.py`: the sweep as a guard (every

@@ -40,10 +40,14 @@ from secretary.verify import verify_solution
 
 ROOT = Path(__file__).resolve().parents[2]
 
-# docs/F057's reviewed row, and the seeds the audit still reports: the
-# single_worker_group/entry-cell placement class, open there.
-AUDIT_STATUSES = {"OPTIMAL": 97, "FEASIBLE": 99, "INFEASIBLE": 201, "INVALID_SOLUTION": 3}
-AUDIT_REJECTED = [93, 182, 205]
+# docs/F057's reviewed row. The audit is clean on this branch: the three
+# entry-cell rejections (93, 182, 205) are gone (the placement fixed point),
+# seed 179's stranded successor is now scheduled (the repeated pass) and no
+# `INVALID_SOLUTION` is left, so the default run exits clean. The INFEASIBLE
+# verdicts the oracle schedules are F057's fourth class — 14 remain — and only
+# show up under `--oracle`.
+AUDIT_STATUSES = {"OPTIMAL": 97, "FEASIBLE": 102, "INFEASIBLE": 201}
+AUDIT_REJECTED = []
 
 
 def run_audit(dump: Path, hash_seed):
@@ -64,9 +68,69 @@ def test_the_audit_reproduces_the_statuses_docs_F057_reports(tmp_path):
     per_seed, proc = run_audit(tmp_path / "audit.json", "0")
 
     assert Counter(per_seed.values()) == AUDIT_STATUSES, Counter(per_seed.values())
-    assert proc.returncode == 1, "the audit exits non-zero while its open defect stands"
+    assert proc.returncode == 0, (
+        "the audit exits non-zero when it has a defect to report; with the "
+        "entry-cell class fixed and no --oracle run, it has none"
+    )
     line = next(line for line in proc.stdout.splitlines() if "rejected by the verifier" in line)
-    assert line.strip() == f"schedules rejected by the verifier: 3 {AUDIT_REJECTED}", line
+    assert line.strip() == f"schedules rejected by the verifier: 0 {AUDIT_REJECTED}", line
+
+
+def test_the_entry_cell_is_assigned_over_the_routed_workers():
+    """docs/F057's third class: the placement rule follows the ROUTED hands.
+
+    `verify_solution` recomputes the entry cells over the workers that carry
+    tasks (constraint 10), so a hand the greedy leaves idle does not hold a
+    cell. Here worker 0 cannot reach the task inside a 5-turn horizon, worker 1
+    takes it from NE -- and with the placement recomputed for worker 1 alone
+    that hand holds NW, from which the task is one turn out of reach. The
+    solver used to emit worker 1's route from NE anyway and answer
+    INVALID_SOLUTION ("worker 1: first task 't0' reachable too early from
+    entry"); the day is genuinely impossible (the oracle says INFEASIBLE too),
+    so the honest verdict is INFEASIBLE.
+    R007 failing direction: run one dispatch instead of the fixed point and
+    this reddens with that INVALID_SOLUTION.
+    """
+    instance = Instance.compile(
+        workers=[Worker(index=0, earliest_start=0), Worker(index=1, earliest_start=0)],
+        standalone_minor_tasks=[MinorTask(id="t0", cell=Cell(5, 0), action=MinorActionType.PASS)],
+        horizon=5,
+    )
+    result = solve_oxa(instance, OxaConfig(min_workers=1))
+
+    assert result.status == "INFEASIBLE", result.status
+    assert cpsat_binarySearch(instance, CpSatConfig(time_limit_seconds=10)).solution is None
+
+
+def test_a_stranded_successor_goes_to_an_earlier_hand_that_still_waits():
+    """docs/F057's fourth class, the idle-hand half: the pass repeats.
+
+    Worker 0 cannot reach the predecessor `t0` inside a 10-turn horizon and
+    refuses it (`10 + 1 > 10`), worker 1 takes it at hour 9 — and worker 0's
+    single pass was already over, so the successor `t1` was stranded and the
+    solver answered INFEASIBLE for a day the oracle schedules as
+    `w0 -> t1 at 10, w1 -> t0 at 9`. Repeating the dispatch over the hands that
+    have no route yet lets worker 0 take `t1`, and the greedy finds that exact
+    day. R007 failing direction: one pass only (as before that change) and this
+    reddens with INFEASIBLE.
+    """
+    instance = Instance.compile(
+        workers=[Worker(index=0, earliest_start=0), Worker(index=1, earliest_start=0)],
+        standalone_minor_tasks=[
+            MinorTask(id="t0", cell=Cell(9, 0), action=MinorActionType.PASS),
+            MinorTask(id="t1", cell=Cell(0, 0), action=MinorActionType.PASS),
+        ],
+        explicit_precedence=[("t0", "t1")],
+        horizon=10,
+    )
+    result = solve_oxa(instance, OxaConfig(min_workers=1))
+
+    assert result.status in ("OPTIMAL", "FEASIBLE"), result.status
+    assert verify_solution(instance, result.solution).is_valid
+    times = {task.task_id: task.exec_time
+             for route in result.solution.routes for task in route.tasks}
+    assert times == {"t0": 9, "t1": 10}, times
+    assert cpsat_binarySearch(instance, CpSatConfig(time_limit_seconds=10)).solution is not None
 
 
 def test_the_verdicts_do_not_depend_on_the_interpreter_hash_order(tmp_path):

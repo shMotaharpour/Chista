@@ -18,6 +18,7 @@ from ..models import (
     CONSUME_ACTIONS,
     MinorActionType,
     WAREHOUSE_ENTRY_CELLS,
+    Worker,
     Cell,
     Instance,
     MinorTask,
@@ -62,7 +63,7 @@ def _build_worker_route(
     item_to_pickups: dict[str, list[str]],
     horizon: int,
     instance: Optional[Instance] = None,
-) -> tuple[list[ScheduledTask], set[str]]:
+) -> list[ScheduledTask]:
     """Greedily fills a single worker's shift using Nearest Neighbor + Setup Costs."""
     current_t = earliest_start
     current_pos = entry_cell
@@ -379,8 +380,128 @@ def _validate_item_sources(instance: Instance) -> None:
                 f"of that item exists anywhere in the instance"
             )
 
+def _validate_preloaded_pickups_have_no_predecessor(instance: Instance) -> None:
+    """A preloaded pickup may not itself have a predecessor.
+
+    `Instance.compile` marks a pickup *aggregatable* when it precedes its own
+    consume inside a `single_worker_group` (models.py step 5): the solver then
+    executes it as the setup turn at the head of a route and emits it without
+    ever consulting the precedence graph -- such a pickup is not a target task,
+    so `target_preds` does not carry the edge either. An edge *into* it is
+    therefore unrepresentable here: the greedy commits it at its own hour and
+    `verify_solution` rejects the day as `precedence violated`. `cpsat_solver`
+    models the edge, so the input is not refusable at `Instance.compile`
+    without taking that ability away; the formulation's limit is raised here
+    instead of being answered with an unusable day (docs/F057, fifth class).
+    """
+    for pred, succ in instance.precedence:
+        if succ in instance.aggregatable_pickups:
+            raise InfeasibleInputError(
+                f"precedence {pred!r} -> {succ!r} puts a task before a "
+                f"preloaded pickup: {succ!r} is emitted as the setup turn at "
+                f"the head of its route, so it cannot follow another task, "
+                f"and this solver answers INVALID_SOLUTION when asked to"
+            )
+
+# How many times `solve_oxa` re-derives the entry-cell assignment from the
+# routed set and re-runs the dispatch (docs/F057, third class). One dispatch is
+# sub-millisecond on this domain's shapes; the audit converges in one or two
+# attempts, and the cap keeps a pathological instance bounded.
+_PLACEMENT_ATTEMPTS = 4
+
+# How many dispatch passes each placement attempt runs (docs/F057, fourth
+# class). Every pass covers the hands that have no route yet, so a further pass
+# only helps when a later hand committed a predecessor for an earlier one;
+# three covers every shape the audit produces.
+_DISPATCH_ROUNDS = 3
+
+
+def _dispatch(
+    instance: Instance,
+    candidates: list[Worker],
+    entry_assignments: dict[int, str],
+    remaining_targets: set[str],
+    done_targets: set[str],
+    exec_times: dict[str, int],
+) -> list[WorkerRoute]:
+    """One spatial-greedy pass over `candidates`, mutating the shared state.
+
+    `remaining_targets`, `done_targets` and `exec_times` carry across passes:
+    what an earlier pass committed is what makes a successor available to a
+    hand in a later one. The caller owns `entry_assignments` and owns running
+    the passes -- see `_dispatch_rounds` and the fixed point in `solve_oxa`.
+    """
+    routes: list[WorkerRoute] = []
+
+    for worker in candidates:
+        if not remaining_targets:
+            break
+
+        entry_cell = WAREHOUSE_ENTRY_CELLS[entry_assignments[worker.index]]
+        sched_tasks = _build_worker_route(
+            worker_index=worker.index,
+            earliest_start=worker.earliest_start,
+            entry_cell=entry_cell,
+            remaining_targets=remaining_targets,
+            done_targets=done_targets,
+            exec_times=exec_times,
+            target_preds=instance.target_preds,
+            tasks_by_id=instance.tasks_by_id,
+            target_needs_item=instance.target_needs_item,
+            item_to_pickups=instance.item_to_pickups,
+            horizon=instance.horizon,
+            instance=instance,
+        )
+
+        if sched_tasks:
+            routes.append(WorkerRoute(
+                worker_index=worker.index,
+                start_time=worker.earliest_start,
+                tasks=sched_tasks,
+                start_cell=WAREHOUSE_ENTRY_CELLS[entry_assignments[worker.index]],
+            ))
+
+    return routes
+
+
+def _dispatch_rounds(
+    instance: Instance,
+    candidates: list[Worker],
+    entry_assignments: dict[int, str],
+) -> tuple[list[WorkerRoute], set[str]]:
+    """The dispatch: as many passes as there are idle hands left to try.
+
+    A task is only available once its predecessors are committed, and one pass
+    gives every hand a single chance in index order -- so a day whose legal
+    arrangement serves a successor from a lower-indexed hand while a LATER hand
+    serves its predecessor is missed (docs/F057, fourth class: hand 0 can reach
+    the successor but not the predecessor, hand 1 takes the predecessor, and
+    hand 0's pass is already over). The pass therefore repeats for the hands
+    that still have no route; a routed hand's route is never touched, because
+    extending it would reroute it and neither the emission phase nor the
+    verifier's per-route checks are built for that. Returns the routes and the
+    targets left unscheduled (empty means the day was covered).
+    """
+    remaining_targets: set[str] = set(instance.target_tasks)
+    done_targets: set[str] = set()
+    exec_times: dict[str, int] = {}
+
+    routes: list[WorkerRoute] = []
+    for _round in range(_DISPATCH_ROUNDS):
+        if not remaining_targets:
+            break
+        idle = [w for w in candidates if w.index not in {r.worker_index for r in routes}]
+        if not idle:
+            break
+        routes.extend(_dispatch(
+            instance, idle, entry_assignments, remaining_targets, done_targets, exec_times))
+
+    return routes, remaining_targets
+
+
 def solve_oxa(instance: Instance, config: OxaConfig = OxaConfig()) -> OxaResult:
     _validate_item_sources(instance)
+    _validate_preloaded_pickups_have_no_predecessor(instance)
 
     # ---- static input validation: warehouse stock overrun ----------------
     if instance.warehouse_stock:
@@ -400,7 +521,13 @@ def solve_oxa(instance: Instance, config: OxaConfig = OxaConfig()) -> OxaResult:
     if not instance.tasks_by_id:
         return OxaResult(status="OPTIMAL", solution=Solution(routes=[], reported_cost=0), matched_lower_bound=True)
 
-    candidates = instance.workers
+    # The pool is the LOWEST-indexed hands, not the order the caller listed
+    # them in: `cpsat_solver` sorts by index before applying the cap, and
+    # verify.py's COST ACCOUNTING is the engine's append-only prefix by index,
+    # so a cap of 1 offers hand 0. Capping the given order instead let OXA
+    # route a high-indexed hand (and pay its payroll) for a day the oracle
+    # does with hand 0 at cost 0.
+    candidates = sorted(instance.workers, key=lambda worker: worker.index)
     if instance.worker_pool_size is not None:
         candidates = candidates[: instance.worker_pool_size]
     if config.worker_pool_cap is not None:
@@ -409,43 +536,37 @@ def solve_oxa(instance: Instance, config: OxaConfig = OxaConfig()) -> OxaResult:
     if not candidates:
         return OxaResult(status="INFEASIBLE", wall_time_seconds=0.0)
 
-    # 1. Initialize Dispatcher State directly from Instance
-    remaining_targets = set(instance.target_tasks)
-    done_targets: set[str] = set()
-    exec_times: dict[str, int] = {}
-    routes: list[WorkerRoute] = []
-    
+    # 1. The placement fixed point, over the repeated dispatch.
+    #
+    # `verify_solution` recomputes the entry cells over the workers that are
+    # actually ROUTED (constraint 10, `_check_placement`), not over every
+    # candidate: a hand the greedy leaves idle does not hold a cell. The
+    # dispatch used to assign over all candidates and never look again, so a
+    # worker could be sent out from a cell it does not hold and the day came
+    # back INVALID_SOLUTION -- "first task ... reachable too early from entry"
+    # (docs/F057, third class, fuzz seeds 93, 182, 205). Which workers are
+    # routed is only known after a dispatch, so the assignment is re-derived
+    # from the routed set and the dispatch re-run until it stops moving; each
+    # of those runs is itself the repeated pass of F057's fourth class
+    # (`_dispatch_rounds`), so a successor stranded on an idle hand is picked up
+    # before the placement is judged.
     entry_assignments = assign_entry_cells([(w.index, w.earliest_start) for w in candidates])
-    active_workers = 0
-    
-    # 2. Spatial Greedy Dispatch Loop
-    for worker in candidates:
-        if not remaining_targets:
+    routes: list[WorkerRoute] = []
+    for _attempt in range(_PLACEMENT_ATTEMPTS):
+        routes, remaining_targets = _dispatch_rounds(instance, candidates, entry_assignments)
+        if remaining_targets:
             break
-            
-        entry_cell = WAREHOUSE_ENTRY_CELLS[entry_assignments[worker.index]]
-        sched_tasks = _build_worker_route(
-            worker_index=worker.index,
-            earliest_start=worker.earliest_start,
-            entry_cell=entry_cell,
-            remaining_targets=remaining_targets,
-            done_targets=done_targets,
-            exec_times=exec_times,
-            target_preds=instance.target_preds,
-            tasks_by_id=instance.tasks_by_id,
-            target_needs_item=instance.target_needs_item,
-            item_to_pickups=instance.item_to_pickups,
-            horizon=instance.horizon,
-            instance=instance,
+        routed = {route.worker_index for route in routes}
+        corrected = assign_entry_cells(
+            [(w.index, w.earliest_start) for w in candidates if w.index in routed]
         )
-        
-        if sched_tasks:
-            routes.append(WorkerRoute(worker_index=worker.index, start_time=worker.earliest_start, tasks=sched_tasks,
-                                      start_cell=entry_assignments[worker.index] and WAREHOUSE_ENTRY_CELLS[entry_assignments[worker.index]]))
-            active_workers += 1
+        if all(entry_assignments.get(index) == corrected.get(index) for index in routed):
+            break
+        entry_assignments = {**entry_assignments, **corrected}
 
+    active_workers = len(routes)
     wall_time = time.perf_counter() - start
-    
+
     if remaining_targets:
         return OxaResult(status="INFEASIBLE", wall_time_seconds=wall_time)
         

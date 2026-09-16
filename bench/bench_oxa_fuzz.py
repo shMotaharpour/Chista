@@ -32,9 +32,11 @@ against another revision.
 
 A non-zero exit is the audit reporting a defect, not a harness error. Without
 `--oracle` it reports the `single_worker_group`/entry-cell placement class of
-`docs/F057` (`first task ... reachable too early from entry`, 3 seeds); with
-`--oracle` it also reports the INFEASIBLE verdicts the exact solver schedules
-(15 of them, F057's single-pass dispatch class). The oracle only *abstains* on
+`docs/F057` (`first task ... reachable too early from entry`, 3 seeds — removed
+by the placement fixed point in this branch, so the default run is expected to
+exit clean); with `--oracle` it reports the INFEASIBLE verdicts the exact solver
+schedules (15 of them, F057's single-pass dispatch class), which is still open.
+The oracle only *abstains* on
 an INFEASIBLE answer it cannot decide inside `--oracle-seconds`: an `UNKNOWN`
 there means "not checked", never "confirmed" -- which is why the sweep test's
 positive control pins a day the oracle decides (`INFEASIBLE`), not one it times

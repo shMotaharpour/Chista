@@ -167,11 +167,64 @@ def test_global_stock_overrun_raises_before_solving():
         solve_oxa(instance, OxaConfig(min_workers=1))
 
 
+def test_an_edge_into_a_preloaded_pickup_is_rejected_not_mis_scheduled():
+    # `models.py` marks a pickup *aggregatable* when it precedes its own
+    # consume (here S -> C), and the solver then emits it as the setup turn at
+    # the head of a route without consulting the precedence graph. An edge
+    # *into* S is therefore unrepresentable, and the greedy used to answer
+    # INVALID_SOLUTION for such a day -- `verify_solution` catching
+    # "precedence violated: 'T' must strictly precede 'S'" (docs/F057, fifth
+    # class) -- while `cpsat_binarySearch` scheduled it (OPTIMAL, S at 11,
+    # C at 24, T at 10). R007 failing direction: drop the validation and this
+    # stops raising, returning INVALID_SOLUTION instead.
+    instance = Instance.compile(
+        workers=_workers(0, 1),
+        standalone_minor_tasks=[
+            MinorTask(id="T", cell=NW, action=MinorActionType.PASS),
+            MinorTask(id="S", cell=None, action=MinorActionType.PICKUP,
+                      item=Item.WHEAT, qty=1),
+            MinorTask(id="C", cell=NE, action=MinorActionType.FEED,
+                      item=Item.WHEAT, qty=1),
+        ],
+        explicit_precedence=[("T", "S"), ("S", "C")],
+        explicit_single_worker_groups=[["S", "C"]],
+        warehouse_stock={Item.WHEAT: 5},
+        horizon=24,
+    )
+    with pytest.raises(InfeasibleInputError):
+        solve_oxa(instance, OxaConfig(min_workers=1))
+
+
 def test_empty_instance_is_trivially_optimal_with_zero_cost():
     instance = Instance.compile(workers=_workers(0, 1, 2), standalone_minor_tasks=[])
     result = solve_oxa(instance, OxaConfig(min_workers=1))
     assert result.status == "OPTIMAL"
     assert result.solution.reported_cost == 0
+
+
+def test_the_worker_pool_is_the_lowest_indices_not_the_given_order():
+    # `cpsat_solver` sorts workers by index before applying the pool cap, and
+    # verify.py's COST ACCOUNTING is the engine's append-only prefix by index,
+    # so a pool of one offers hand 0. Capping the caller's order instead let
+    # OXA route the first-listed worker: with workers [(3,0),(0,0),(1,0)] and
+    # worker_pool_size=1 it returned hand 3 at reported_cost 4 where the oracle
+    # returns hand 0 at cost 0 for the same day.
+    # R007 failing direction: drop the `sorted(...)` and this test reads
+    # hand 3 / cost 4 (measured).
+    instance = Instance.compile(
+        workers=[_worker(3), _worker(0), _worker(1)],
+        standalone_minor_tasks=[
+            MinorTask(id="t", cell=WAREHOUSE_ENTRY_CELLS["SE"], action=MinorActionType.PASS)
+        ],
+        worker_pool_size=1,
+        horizon=24,
+    )
+    result = solve_oxa(instance, OxaConfig(min_workers=1))
+
+    assert result.status == "OPTIMAL", result.status
+    assert [route.worker_index for route in result.solution.routes] == [0]
+    assert result.solution.reported_cost == 0
+    assert verify_solution(instance, result.solution).is_valid
 
 
 def test_no_workers_available_is_infeasible_when_tasks_exist():
