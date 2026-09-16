@@ -192,16 +192,21 @@ idle hand in the middle (fuzz seed 9) under-reported its `reported_cost`, and
 The engine's rule is append-only hiring (`verify.py`, COST ACCOUNTING):
 `fib(0..max_active)`, idle middle hands included. Fixed here.
 
-Third, **still open** (pre-existing, not introduced by this PR): the dispatch
-loop assigns warehouse entry cells over *all* candidate workers while
-`verify_solution` recomputes the placement rule over the workers that are
-actually routed, so a worker can be sent out from a cell it does not hold —
+Third, **fixed in this branch** (pre-existing at 40d9cfa, 756356a and 6784719):
+the dispatch loop assigned warehouse entry cells over *all* candidate workers
+while `verify_solution` recomputes the placement rule over the workers that are
+actually routed, so a worker could be sent out from a cell it does not hold —
 `worker 2: first task 'c0_a' reachable too early from entry`. Measured on fuzz
-seeds 93, 182 and 205; seeds 182/205 already failed this way before the PR, and
-the failure total still improved (208 + 3 → 201 + 3). It needs its own change
-(the assignment has to be re-derived from the active set, which is not known
-before the dispatch runs) and its own sweep, so it is recorded here rather than
-patched blind.
+seeds 93, 182 and 205; seeds 182/205 already failed this way before the PR. The
+assignment is now re-derived from the routed set and the dispatch re-run until
+it stops moving (`_dispatch` plus the fixed point in `solve_oxa`, capped at four
+attempts — the audit converges in one or two: 380 of the 400 seeds need a single
+dispatch, 20 need two). The audited row moves from `97 / 99 / 201 / 3 invalid`
+to `97 / 101 / 202 / 0`: 0 regressions and 2 improvements by
+`bench_oxa_diff.py`, with seed 93 going `INVALID_SOLUTION -> INFEASIBLE` (that
+day really is impossible — the oracle answers INFEASIBLE for it too) and seeds
+182/205 becoming valid `FEASIBLE` days. The 140-instance sweep is unchanged: all
+140 verify, none INFEASIBLE.
 
 Fourth, **still open** (pre-existing at 40d9cfa, 756356a and this commit): the
 dispatch gives each worker one pass, and a task is only *available* once its
@@ -270,6 +275,11 @@ the invalid column, not the INFEASIBLE one.
   the chain to a worker that still has room. It is built once per worker route
   (three calls for this sweep's ten-worker pool, which routes three hands —
   counted, not assumed).
+- `_dispatch` + the placement fixed point in `solve_oxa`: the entry-cell
+  assignment is re-derived from the workers that are actually routed and the
+  dispatch re-run until it stops moving, because `verify_solution` recomputes
+  the placement over the routed set (constraint 10) and not over every
+  candidate.
 - `reported_cost` now follows the engine's append-only payroll
   (`fib(0..max_active)`), not the sum over the routes that carry tasks.
 - `tests/wrs/test_oxa_false_infeasible.py`: the sweep as a guard (every
