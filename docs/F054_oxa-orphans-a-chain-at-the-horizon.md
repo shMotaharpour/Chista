@@ -229,6 +229,33 @@ the dispatch revisit a worker after another worker's commit — which reroutes
 hands and so interacts with the entry-cell class just above — and it needs its
 own change and its own sweep, like that one.
 
+Fifth, **still open** (pre-existing at 40d9cfa, 756356a and this commit): a
+declared precedence edge *into* an aggregatable pickup is dropped on both sides
+— such a pickup is not a target task, so neither `target_preds` nor
+`_successor_gaps` carries the edge — and the preload phase emits the pickup at
+its own hour. The day then fails validation as a precedence violation:
+
+```
+T at (9,9) -> S = PICKUP WHEAT (cell-less) -> C = FEED at (0,0)
+group [S, C], horizon 24, two workers starting at hour 0
+
+  solve_oxa           INVALID_SOLUTION  "precedence violated: 'T' must strictly precede 'S'"
+                      (40d9cfa, 756356a and this commit; verify_solution confirms)
+  cpsat_binarySearch  OPTIMAL           w0 -> S at 11, C at 24; w1 -> T at 10
+```
+
+No recipe in `models.py` emits an edge into a pickup — the option chains all go
+pickup -> consume — so this input is outside the formulation's own shapes, but
+`Instance.compile` accepts it without complaint and the answer is a schedule the
+solver's own verifier rejects: an unusable day rather than a named input error.
+There are two fixes and the choice between them is a decision, not a patch:
+reject the shape at compile time (`InfeasibleInputError`, where the other input
+validation lives), or let the preload honour an incoming precedence edge. The
+400-seed audit is blind to it either way — its generator only emits edges *out
+of* a pickup — so a hunt that counts *false INFEASIBLE* on this shape reports
+zero while the shape still returns an unusable answer: the rejection lands in
+the invalid column, not the INFEASIBLE one.
+
 ## What changed
 
 - `_build_worker_route`'s candidate choice is a total order
