@@ -629,7 +629,9 @@ def cpsat_binarySearch(instance: Instance, config: CpSatConfig = CpSatConfig()) 
 
     k_max = len(offered)
     if k_max == 0:
-        return cp_sat_direct(instance, config)
+        # no workers offered at all -- nothing to search over; the direct
+        # optimizing solve is the only entry point that can answer (#14).
+        return cpsat_direct(instance, config)
 
     aggregatable_pickups = frozenset(instance.task_index[tid] for tid in instance.aggregatable_pickups)
 
@@ -641,7 +643,9 @@ def cpsat_binarySearch(instance: Instance, config: CpSatConfig = CpSatConfig()) 
     if full.status == "INFEASIBLE":
         return finish(full, "INFEASIBLE")
     if full.solution is None:
-        return cp_sat_direct(instance, config)
+        # the full-pool probe found nothing inside its slice of the budget:
+        # fall back to the optimizing solve rather than inventing a verdict.
+        return cpsat_direct(instance, config)
 
     lo = max(1, min(_worker_count_lower_bound(instance, aggregatable_pickups), k_max))
     hi = k_max

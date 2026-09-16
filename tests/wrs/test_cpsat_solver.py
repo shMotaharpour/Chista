@@ -311,21 +311,19 @@ def test_prefix_search_reports_infeasible_without_scanning_every_prefix():
         cpsat_binarySearch(instance, FAST)
 
 
-@pytest.mark.xfail(strict=False, reason=(
-    "Ported unstable (Chista issue #14, first instruction). This assertion "
-    "is NONDETERMINISTIC: measured 5 runs of the same command on the same "
-    "commit, it xfailed 4 times and passed once. When it fails, "
-    "cpsat_binarySearch returns cost 0 with the pool capped at 1 while "
-    "solve_cpsat returns cost 2 — the prefix search finds the CHEAPER "
-    "answer, so what is in doubt is the assertion's premise (that the "
-    "monolithic solve is the optimum), not the prefix search. The likely "
-    "source is the time budget: `feasibility_probe` slices the remaining "
-    "limit by `share`, so a slower machine or a busier run changes which "
-    "probe gets cut off. strict=False because a strict marker turns the "
-    "run where it passes into a red suite, which is noise, not signal. "
-    "Settle the nondeterminism first — an oracle you cannot reproduce "
-    "cannot referee anything (R005)."))
-def test_prefix_search_matches_the_monolithic_optimum_on_an_aggregating_instance():
+def test_binary_search_pool_is_the_minimum_feasible_pool():
+    """The min-worker objective, asserted directly (issue #14, F056).
+
+    `cpsat_binarySearch` is the oracle: it probes *feasibility* under shrinking
+    pool caps, so the smallest cap that admits a schedule **is** the optimum for
+    this objective — that is the search's own invariant, and it needs no second
+    solver to certify it. The check is therefore feasible at `k`, infeasible at
+    `k − 1`.
+
+    (The monolithic solve cannot be the reference here: in its default mode it
+    builds no objective at all, so its reported cost is an arbitrary feasible
+    schedule — 18 × 0 and 2 × 2 in 20 runs.)
+    """
     # PICKUP aggregation interacts with the prefix search through the
     # lower bound, so exercise a genuinely aggregating instance too.
     majors = [MajorTask(id=f"m{i}", type="feed", cell=(i % 10, i % 10)) for i in range(4)]
@@ -334,17 +332,23 @@ def test_prefix_search_matches_the_monolithic_optimum_on_an_aggregating_instance
         workers=workers, major_tasks=majors, warehouse_stock={Item.WHEAT: 50}, horizon=24
     )
     config = CpSatConfig(time_limit_seconds=30)
-    mono = solve_cpsat(instance, config)
     prefix = cpsat_binarySearch(instance, config)
 
-    assert mono.status == "OPTIMAL" and prefix.status == "OPTIMAL"
-    assert prefix.solution.reported_cost == mono.solution.reported_cost
-
-    verification = verify_solution(
-        instance,
-        prefix.solution,
-    )
+    assert prefix.status == "OPTIMAL" and prefix.solution is not None
+    active = len(prefix.solution.routes)
+    assert active >= 1
+    verification = verify_solution(instance, prefix.solution)
     assert verification.is_valid, verification.violations
+    assert prefix.solution.reported_cost is None or isinstance(
+        prefix.solution.reported_cost, int)
+
+    # one worker fewer must be infeasible: that is what makes `active` minimal
+    smaller = solve_cpsat(instance, CpSatConfig(
+        time_limit_seconds=30, feasibility_only=True,
+        worker_pool_cap=active - 1, warm_start=None))
+    assert smaller.solution is None, (
+        f"{active - 1} workers also admit a schedule, so {active} was not "
+        "the minimum pool")
 
 
 def test_worker_pool_cap_truncates_the_pool_and_says_so():
