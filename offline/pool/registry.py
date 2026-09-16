@@ -40,6 +40,26 @@ REGISTRY: dict[str, dict] = {
 }
 
 
+# Three published notebooks shipped byte-identical payloads (SHA-256
+# measured 2026-09-15): the pool is 16 distinct agents in 19 slugs.
+# alias -> canonical slug; the canonical is the amendment's listing.
+DUPLICATE_OF: dict[str, str] = {
+    "44-46-strict-future-top-30-v22-price-impact": "v3-agent",
+    "farming-score-v3-replay-revised": "farming-score-a-mathematical-approach",
+    "v16-rc5-high-score-8c-4s-premium-market-lead": "v111-8c4s-economic-core-premium-lead",
+}
+
+
+def canonical(slug: str) -> str:
+    """The canonical slug for an alias (identity for non-duplicates)."""
+    return DUPLICATE_OF.get(slug, slug)
+
+
+def canonical_slugs() -> list[str]:
+    """The 16 distinct slugs (aliases excluded)."""
+    return [s for s in sorted(REGISTRY) if s not in DUPLICATE_OF]
+
+
 def get(slug: str) -> dict:
     """One registry row (KeyError for an unknown slug - loud, R005)."""
     return REGISTRY[slug]
