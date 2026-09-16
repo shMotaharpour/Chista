@@ -1,63 +1,58 @@
-# F053 — The monolithic default is not an oracle
+# F053 — The oracle is the binary search, and its pool is minimal by construction
 
-**Summary (<=50 words):** `solve_cpsat`'s default builds no objective, so its
-cost is an arbitrary feasible schedule — 18 × 0 and 2 × 2 in 20 runs with 8
-parallel workers — while `OPTIMAL` describes feasibility. The prefix search's 0
-is the verified optimum. The oracle comparison now runs optimizing and
-single-worker.
+**Summary (<=50 words):** The min-worker objective makes `cpsat_binarySearch` the
+oracle: feasibility under a shrinking pool cap means the smallest feasible cap is
+the optimum. The monolithic solve's default mode builds no objective —
+18 × cost 0 and 2 × cost 2 in 20 runs — so its cost can never be the reference.
 
 ## What was measured
 
-The instance is the aggregating one from
-`tests/wrs/test_cpsat_solver.py` (4 × `feed`, 6 workers offered, 50 wheat,
-24 hours), against `secretary/solvers/cpsat_solver.py` as ported in F052.
+The instance is the aggregating one from `tests/wrs/test_cpsat_solver.py`
+(4 × `feed`, 6 workers offered, 50 wheat, 24 hours), against
+`secretary/solvers/cpsat_solver.py` as ported in F052.
 
-| configuration | 20 runs |
+| configuration | result |
 |---|---|
-| `solve_cpsat`, default (`feasibility_only=True`, `num_search_workers=8`) | 18 × `(OPTIMAL, cost 0)`, **2 × `(OPTIMAL, cost 2)`** |
-| `solve_cpsat`, `feasibility_only=False`, `num_search_workers=1` | **20 × `(OPTIMAL, cost 0)`** |
-| `cpsat_binarySearch` (6 runs) | 6 × `(OPTIMAL, cost 0, pool_capped_at=1)`, `verify_solution` valid |
+| `solve_cpsat`, default (`feasibility_only=True`, `num_search_workers=8`) | 18 × `(OPTIMAL, cost 0)`, **2 × `(OPTIMAL, cost 2)`** in 20 runs |
+| `cpsat_binarySearch` | 6/6 `(OPTIMAL, cost 0, pool 1)`, `verify_solution` valid |
+| one worker fewer, cap = 0 | INFEASIBLE — so the returned pool is minimal |
 
-The rate depends on how busy the process is: the same flake is rarer as a fresh
-process per run (0 failures in 20 single-test `pytest` invocations on this box)
-and dependable in-process (2 of 20), because eight parallel search workers
-divide the work differently depending on what else they are doing. The R007
-re-introduction therefore reproduces in-process, and the probe is what settles
-it — a single fresh-process run can pass by luck.
+## The verdict
 
-`verify_solution` accepts the cost-0 solution with a single active worker, and
-0 < 2 — so the prefix search's answer is the optimum and the monolithic answer of
-2 was not.
+**The binary search's answer is the optimum.** Its objective is the minimum
+number of workers, and it reaches it by probing *feasibility* at shrinking pool
+caps: feasible at `k`, infeasible at `k − 1` **is** the optimality proof for that
+objective. Nothing else has to certify it — no cost comparison, and no second
+solver.
 
-## Mechanism (not the time budget)
+That is why the defect was in the *assertion*, not in a solver. The old
+assertion compared the binary search's cost against `solve_cpsat`'s default
+answer and called the latter "the monolithic optimum". But the default mode
+builds **no objective at all** (see the comment at the `Minimize` site:
+"feasibility_only=True (default): NO Minimize — CP-SAT only checks feasibility"),
+so its reported cost is an arbitrary feasible schedule — which the 8-worker
+parallel search then varies between runs (2 of 20 here). `OPTIMAL` in that mode
+is a statement about the feasibility model, not about cost.
 
-`cpsat_solver.py` adds `Minimize(Σ fib·u)` **only** when
-`config.feasibility_only` is false — its own comment at that site reads
-"feasibility_only=True (default): NO Minimize — CP-SAT only checks feasibility".
-So in the default mode the model has no objective to be optimal *about*: the
-reported cost is whatever feasible schedule the 8-worker parallel search
-returns, and `OPTIMAL` is a statement about the feasibility model. With eight
-workers the search allocation varies between runs, which is exactly the 10 %
-flip seen here (and the 1-in-5 the review saw under a busier machine).
+**My first fix was wrong and is retracted:** it kept the monolithic solve as the
+reference and merely changed its configuration. That keeps the assertion
+parasitic on the one solver whose cost is meaningless for this objective.
 
-The hypothesis that `feasibility_probe`'s time slicing caused it is refuted by
-the clock: the monolithic solve takes 60–77 ms against a 30 s ceiling, and the
-prefix search 168–188 ms — nothing is being cut off.
+## What the test asserts now
 
-## What changed
+`tests/wrs/test_cpsat_solver.py::test_binary_search_pool_is_the_minimum_feasible_pool`:
 
-- The comparison is now against the **optimizing** solve with a single search
-  worker (`feasibility_only=False, num_search_workers=1`), which is
-  deterministic, and the `xfail` marker is gone.
-- **Which solver was wrong:** `solve_cpsat` as the test used it. It is the
-  *default configuration* that is wrong to call an oracle, not the prefix
-  search; `cpsat_direct` remains the optimizing entry point for cross-checks.
-- The unstable assertion was the only thing that could have caught this: it did,
-  and the fix is to make both sides of it reproducible (R005).
+1. the binary search returns a schedule, `verify_solution` accepts it;
+2. its pool is **minimal**: re-solving the same instance with the pool capped one
+   lower must be infeasible.
 
-## Why this matters beyond the test
+Step 2 is the check that can fail, and it is the objective itself rather than a
+proxy for it (R007: the failing direction is `worker_pool_cap = active` instead
+of `active - 1`, which admits a schedule and reddens the assertion).
 
-An oracle whose answer varies run to run cannot referee anything — and the
-drop-loop in the secretary (#14 §6) leans on INFEASIBLE verdicts. This finding
-is the reason the oracle is now pinned to an objective-bearing, single-worker
-configuration before any solver comparison is trusted.
+## Why it matters
+
+The `xfail` is gone and the suite is deterministic (5/5 runs of the settled test,
+80 passed + 1 skipped for `tests/wrs`). The secretary's drop loop (#14 §6) leans
+on INFEASIBLE verdicts, so which verdicts are trustworthy had to be settled
+before any solver comparison — that is what this finding records.
