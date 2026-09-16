@@ -1,1 +1,5 @@
 run_id,utc,label,tier,a,b,git_sha,opponents_note,n_jobs,n_ok,n_abandoned,wins,losses,ties,win_rate,margin_mean,margin_sd,ci_lo,ci_hi,seeds_needed,records
+20260916T071102Z,2026-09-16T07:11:10.559289+00:00,,smoke,ref:agent.main_replan:agent,ref:agent.main:agent,39153be,--opponents override,3,3,0,3,0,0,1.0,160.0,0.0,160.0,160.0,nan,artifacts/evaluate/20260916T071102Z/records.jsonl
+20260916T071120Z,2026-09-16T07:11:54.307902+00:00,,smoke,ref:agent.main_replan:agent,ref:agent.main:agent,39153be,--opponents override,20,20,0,20,0,0,1.0,160.0,0.0,160.0,160.0,nan,artifacts/evaluate/20260916T071120Z/records.jsonl
+20260916T071254Z,2026-09-16T07:13:01.731259+00:00,,smoke,ref:agent.main:agent,ref:agent.main_replan:agent,39153be,--opponents override,4,4,0,0,4,0,0.0,-160.0,0.0,-160.0,-160.0,nan,artifacts/evaluate/20260916T071254Z/records.jsonl
+20260916T081039Z,2026-09-16T08:11:11.272005+00:00,,smoke,ref:agent.main:agent,adaptive-replay-agent,39153be,first 5 sorted slugs - dev/held-out split not measured yet (#20 in progress); every pool agent treated as dev,20,20,0,0,20,0,0.0,-57923.25,20750.64,-67017.62,-48828.88,0.5,artifacts/evaluate/20260916T081039Z/records.jsonl

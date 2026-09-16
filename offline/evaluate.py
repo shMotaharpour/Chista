@@ -23,9 +23,16 @@ Design (issue #18, corrections from #20's brief and addendum):
   measures IS the F045-contaminated variance - the seed-count line at
   the bottom of the report turns it into the measured n that replaces
   the provisional 16 (brief 6.3).
-- SEAT SYMMETRY. Every opponent is met in the SAME seat by both versions
-  (seat 0, the seat the harness calls first), so seat effects cancel in
-  the paired difference. Cross-seat runs are #20's probe job, not ours.
+- SEAT EFFECTS CANCEL IN THE PAIRED DIFFERENCE. Both versions meet
+  every opponent in the SAME seat (seat 0, the seat the harness calls
+  first), so the seat term is common to both sides and subtracts out.
+  The paired margin is clean; the WIN RATE, however, is seat-0-only —
+  a known limitation of the ship gate as built, not a property of the
+  board (brief #18 §3 asked for both orders; the full-tier gate should
+  play both). Measured seat effect on this box, same pair both orders
+  (2026-09-16): seed 0 delta 0, seed 1 delta 4,171 coins (seat-0
+  advantage ≈ 2,086 mean) — noise at today's −57.9k margins, material
+  the moment margins approach a few thousand coins.
 - REF NAMES. `--a`/`--b` take either a vendored pool slug or an
   agent-side reference: "main" (repo agent/main.py) or
   "agent.main:agent". Pool slugs make any two competitors comparable
@@ -78,7 +85,10 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 
-# --- tier table (issue #18; 20->19 corrected per #20 C1) -----------------
+# --- tier table (issue #18; 20->19 corrected per #20 C1, and #20's
+# amendment A later drops 3 byte-identical duplicates -> 16 canonical;
+# the counts below follow loader.slugs() once #20's registry lands —
+# F3 of the #34 review — instead of carrying their own constants).
 TIER_OPPONENTS = {"smoke": 5, "ladder": 15, "full": 19}
 TIER_SEEDS = {"smoke": 4, "ladder": 16, "full": 16}
 TIER_AGENT_EPISODES = {"smoke": 40, "ladder": 480, "full": 608}
