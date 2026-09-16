@@ -16,12 +16,13 @@ this module is the real thing it was pinning).
 
 ## Two stand-ins, both named, both somebody else's issue
 
-**The duals (#12).** The master that produces prices and wages does not exist,
-so the sweep is handed the engine's own quotes: the observation's market price
-for each product, the engine's seed and animal costs, and the price of an hour
-from the engine's own hire rule (`_hire_cost`, F039/F040). They are held flat
-across the horizon — F035 says prices rise through the season, and a stand-in
-that forecasts them would be a model, which is exactly what #12 is for.
+**The duals (#12).** The Walrasian master now sits on top of the stand-in
+(`planner/master.py`, on by default inside this rung; `CHISTA_MASTER=0`
+falls back to the flat quotes): the stand-in quotes are the FLOOR for the
+purchasable inputs and the exogenous product prices, and the master raises
+the internal prices only where the tiles' shared stocks actually bind. The
+measured table below predates the master; the F047 execution gap it reports
+is unchanged (the chains' purchases still ride on #14).
 
 **The secretary (#14).** The contractor prices ONE TILE at a time; turning tile
 chains into per-unit op lists — movement, pickups, market batching — is the
@@ -51,6 +52,18 @@ wheat seed and never sells the harvest. So: greedy is a weak baseline, the rung
 currently does nothing useful, and the honest place for it is behind a switch
 until #14 can carry the inputs. The arena (#18/#20) is the instrument that will
 settle it, not this table.
+
+**Arena measurement, 2026-09-16 (after the master landed, #12):** the rung
+played full seasons against pool agents (paired seeds, official
+evaluate harness) and finished at **exactly 3,000 every time — starting
+money untouched** (`BUILD_PASTURE` day 0 then `DIG` days 1-29; every
+purchase the chains assume is refused in silence because nothing buys,
+F047). Against a pool agent that also banks 3,000, every game is a tie
+(+160/-160 readings in the arena are the *opponent* beating a third
+seat, not us). Conclusion unchanged and now measured over full seasons:
+the rung is inert until #14 carries the purchases — the master (#12)
+prices correctly, but pricing cannot fix ops the engine silently
+refuses.
 """
 
 from __future__ import annotations
@@ -228,10 +241,30 @@ def replan_day(runtime, obs, graph: TileGraph | None = None,
     view = decode_world(obs, at_day_start=True,
                         graph_keys=frozenset(graph.key_index))
     _poll(deadline)
-    p, w = dual_stand_in(obs)
-    _poll(deadline)
     state_ids = unit_state_ids(view, graph)
     owned = [state_id for state_id in state_ids if state_id is not None]
+    # #12: the Walrasian master sets the internal prices. The stand-in
+    # quotes stay as the FLOOR (the farm can buy any input at the quote)
+    # and the exogenous product prices; the master's tâtonnement raises
+    # the internal prices only where the tiles' shared stocks bind. The
+    # warm start rides on the runtime (yesterday's published w);
+    # `CHISTA_MASTER=0` falls back to the flat stand-in quotes.
+    import os
+    if os.environ.get("CHISTA_MASTER", "1") == "1":
+        from planner.master import equilibrate, supply_from_obs
+        master = equilibrate(runtime, obs, contractor,
+                             supply_from_obs(obs),
+                             w_warm=getattr(runtime, "_master_w", None),
+                             owned=owned, poll=lambda: _poll(deadline))
+        runtime._master_w = master.w          # tomorrow's warm start
+        runtime._master_last = master         # the plan record's evidence
+        p, w = master.p, master.w
+    else:
+        p, w = dual_stand_in(obs)
+    _poll(deadline)
+    # the day's plan: each tile's best response at the PUBLISHED prices
+    # (the master's λ mix is fractional; per-tile rounding is #13 and
+    # the secretary's routing is #14)
     board = contractor.price(p, w, owned)
     _poll(deadline)
     # map each unit back onto its column in `owned`

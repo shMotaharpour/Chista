@@ -8,9 +8,16 @@ Issue #13 built the half of the master that does not need the master:
 - `land` — the prefix-locked land decision as an outer enumeration over the
   master, injected as a callable.
 
-The two numbers issue #13 asks for that need the LP itself (the integrality gap
-and the land enumeration's 400 ms) are named TODOs on #12; see each module's
-docstring and `planner/DESIGN.md`.
+Issue #12 added the master itself:
+
+- `master` — the restricted master LP over the tile contractor's columns, its
+  coupling duals, and the damped tâtonnement that turns the duals into the
+  prices the contractor prices against.
+
+The two numbers issue #13 asks for that need the LP itself stay OPEN: the
+integrality gap (`LP bound − rounded value`) and the land enumeration's 400 ms
+budget are named TODOs on `columns.py` / `land.py` — the LP now exists, so they
+are measurable, but neither is computed here and no run claims them.
 """
 
 from planner.columns import (Choice, ClassMix, DAYS, Plan, ROW_NAMES,
@@ -19,6 +26,9 @@ from planner.columns import (Choice, ClassMix, DAYS, Plan, ROW_NAMES,
                              rounded_value, row_use, violations)
 from planner.land import (Candidate, LandPlanner, LandResult, best_land,
                           candidates, prefix_cost)
+from planner.master import (ALPHA, COUPLING_IDS, ITER_CAP_DEFAULT, MARKET_IDS,
+                            MasterResult, TOL_DUAL, CouplingSupply,
+                            equilibrate, published_duals, supply_from_obs)
 from planner.repair import (Drop, RepairResult, land_step_price, order_cost,
                             repair_day)
 
@@ -28,5 +38,8 @@ __all__ = [
     "demote_to_feasible", "plan_from_board",
     "Candidate", "LandPlanner", "LandResult", "best_land", "candidates",
     "prefix_cost",
+    "ALPHA", "COUPLING_IDS", "ITER_CAP_DEFAULT", "MARKET_IDS",
+    "MasterResult", "TOL_DUAL", "CouplingSupply", "equilibrate",
+    "published_duals", "supply_from_obs",
     "Drop", "RepairResult", "repair_day", "order_cost", "land_step_price",
 ]
