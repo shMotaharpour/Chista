@@ -276,6 +276,50 @@ def test_seed_count_line_never_prints_nan() -> None:
     assert "n >= 0.6" in measured, measured
 
 
+def test_zero_spread_row_writes_empty_not_nan() -> None:
+    """Issue #38: a run with n >= 2 pairs and ZERO spread has an undefined
+    seed count — it must land as an EMPTY field, never a literal `nan`.
+
+    Measured defect: a 20-pair run with sd 0.0 appended
+    `...,160.0,160.0,nan,artifacts/.../records.jsonl`, because
+    `round(nan, 1)` is `nan` and the old `""` fallback only covered
+    `n < 2`. Built through the real row builder and written through the
+    real writer, then parsed back.
+
+    R007: verified in its failing direction — with the inline
+    `round(_seeds_needed(...), 1)` restored, this test fails with
+    "zero-spread row wrote 'nan'".
+    """
+    import csv
+    import tempfile
+    from pathlib import Path
+
+    from offline import evaluate as E
+
+    # exactly the shape that produced the defect: 20 pairs, no spread
+    s = {"n": 20, "mean": 160.0, "sd": 0.0, "ci_lo": 160.0, "ci_hi": 160.0}
+    row = E._scoreboard_row(
+        run_id="probe", label="zero-spread probe", tier="smoke",
+        a_slug="A", b_slug="B", opp_note="--opponents override",
+        n_jobs=20, n_ok=20, wins=20, losses=0, ties=0, s=s,
+        out_dir=E.REPO / "artifacts" / "evaluate" / "probe")
+    assert row["seeds_needed"] == "", f"zero-spread row wrote {row['seeds_needed']!r}"
+    assert row["margin_sd"] == 0.0      # a real zero is a number, kept
+    # and it must survive the writer as an empty field
+    real = E.SCOREBOARD
+    with tempfile.TemporaryDirectory() as d:
+        E.SCOREBOARD = Path(d) / "scoreboard.csv"
+        try:
+            E._append_scoreboard(row)
+        finally:
+            E.SCOREBOARD = real
+        raw = (Path(d) / "scoreboard.csv").open(newline="").read()
+        back = list(csv.DictReader((Path(d) / "scoreboard.csv").open()))
+    assert "nan" not in raw, raw
+    assert back[0]["seeds_needed"] == "", back[0]
+    assert back[0]["margin_mean"] == "160.0", back[0]
+
+
 def main() -> int:
     failures = 0
     for name, fn in sorted(globals().items()):

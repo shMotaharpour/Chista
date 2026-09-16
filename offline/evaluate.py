@@ -507,6 +507,46 @@ def _git_sha() -> str:
         return "unknown"
 
 
+def _csv_num(x: float, digits: int = 2):
+    """A scoreboard numeric field: rounded, or EMPTY when undefined (#38).
+
+    The file's convention is that an undefined number is an empty field,
+    never a literal `nan`: `float("nan")` propagates silently through every
+    comparison a consumer makes, while `""` is honestly missing. `nan` and
+    the infinities are the undefined values; `math.isfinite` is the test.
+    """
+    return round(x, digits) if math.isfinite(x) else ""
+
+
+def _scoreboard_row(run_id: str, label: str, tier: str, a_slug: str,
+                    b_slug: str, opp_note: str, n_jobs: int, n_ok: int,
+                    wins: int, losses: int, ties: int, s: dict,
+                    out_dir) -> dict:
+    """One scoreboard row, every numeric field through `_csv_num` (#38).
+
+    Extracted from the run path so a test can build the row for a
+    degenerate stats dict (n >= 2 pairs, sd == 0) and see what actually
+    reaches the CSV: the defect this fixes was a literal `nan` in
+    `seeds_needed`, because `round(nan, 1)` is `nan` and the old `""`
+    fallback only covered `n < 2`.
+    """
+    return {
+        "run_id": run_id, "utc": datetime.now(timezone.utc).isoformat(),
+        "label": label, "tier": tier, "a": a_slug, "b": b_slug,
+        "git_sha": _git_sha(), "opponents_note": opp_note,
+        "n_jobs": n_jobs, "n_ok": n_ok, "n_abandoned": n_jobs - n_ok,
+        "wins": wins, "losses": losses, "ties": ties,
+        "win_rate": round(wins / n_ok, 4) if n_ok else "",
+        "margin_mean": _csv_num(s["mean"]) if s.get("n") else "",
+        "margin_sd": _csv_num(s["sd"]) if s.get("n", 0) >= 2 else "",
+        "ci_lo": _csv_num(s["ci_lo"]) if s.get("n", 0) >= 2 else "",
+        "ci_hi": _csv_num(s["ci_hi"]) if s.get("n", 0) >= 2 else "",
+        "seeds_needed": (_csv_num(_seeds_needed(s["sd"], s["mean"]), 1)
+                         if s.get("n", 0) >= 2 else ""),
+        "records": str((out_dir / "records.jsonl").relative_to(REPO)),
+    }
+
+
 def _append_scoreboard(row: dict) -> None:
     """Append one run's row, never an unidentifiable one.
 
@@ -717,22 +757,10 @@ def main(argv: list[str] | None = None) -> int:
     ties = sum(1 for r in ok if r.get("outcome") == "tie")
     margins = [r["margin"] for r in ok]
     s = _stats(margins)
-    _append_scoreboard({
-        "run_id": run_id, "utc": datetime.now(timezone.utc).isoformat(),
-        "label": args.label, "tier": args.tier, "a": a_slug, "b": b_slug,
-        "git_sha": _git_sha(), "opponents_note": opp_note,
-        "n_jobs": len(records), "n_ok": len(ok),
-        "n_abandoned": len(records) - len(ok),
-        "wins": wins, "losses": losses, "ties": ties,
-        "win_rate": round(wins / len(ok), 4) if ok else "",
-        "margin_mean": round(s["mean"], 2) if s.get("n") else "",
-        "margin_sd": round(s["sd"], 2) if s.get("n", 0) >= 2 else "",
-        "ci_lo": round(s["ci_lo"], 2) if s.get("n", 0) >= 2 else "",
-        "ci_hi": round(s["ci_hi"], 2) if s.get("n", 0) >= 2 else "",
-        "seeds_needed": (round(_seeds_needed(s["sd"], s["mean"]), 1)
-                         if s.get("n", 0) >= 2 else ""),
-        "records": str((out_dir / "records.jsonl").relative_to(REPO)),
-    })
+    _append_scoreboard(_scoreboard_row(
+        run_id=run_id, label=args.label, tier=args.tier, a_slug=a_slug,
+        b_slug=b_slug, opp_note=opp_note, n_jobs=len(records), n_ok=len(ok),
+        wins=wins, losses=losses, ties=ties, s=s, out_dir=out_dir))
     print(f"\nscoreboard row appended: {SCOREBOARD.relative_to(REPO)}")
     print(f"records + report: {out_dir.relative_to(REPO)}")
 
