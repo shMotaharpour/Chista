@@ -22,3 +22,7 @@ numpy>=1.26
 pandas>=2.0
 matplotlib>=3.8
 seaborn>=0.13
+
+# Tests: `tests/wrs/` is a faithful pytest-shaped port (F052) and
+# `tests/test_secretary.py` drives it, so pytest is part of the test path.
+pytest>=8

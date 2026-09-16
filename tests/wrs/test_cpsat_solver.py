@@ -311,21 +311,20 @@ def test_prefix_search_reports_infeasible_without_scanning_every_prefix():
         cpsat_binarySearch(instance, FAST)
 
 
-@pytest.mark.xfail(strict=False, reason=(
-    "Ported unstable (Chista issue #14, first instruction). This assertion "
-    "is NONDETERMINISTIC: measured 5 runs of the same command on the same "
-    "commit, it xfailed 4 times and passed once. When it fails, "
-    "cpsat_binarySearch returns cost 0 with the pool capped at 1 while "
-    "solve_cpsat returns cost 2 — the prefix search finds the CHEAPER "
-    "answer, so what is in doubt is the assertion's premise (that the "
-    "monolithic solve is the optimum), not the prefix search. The likely "
-    "source is the time budget: `feasibility_probe` slices the remaining "
-    "limit by `share`, so a slower machine or a busier run changes which "
-    "probe gets cut off. strict=False because a strict marker turns the "
-    "run where it passes into a red suite, which is noise, not signal. "
-    "Settle the nondeterminism first — an oracle you cannot reproduce "
-    "cannot referee anything (R005)."))
-def test_prefix_search_matches_the_monolithic_optimum_on_an_aggregating_instance():
+def test_prefix_search_matches_the_optimizing_solve_on_an_aggregating_instance():
+    """The prefix search is the oracle here; the DEFAULT monolithic mode is not.
+
+    `solve_cpsat`'s default is `feasibility_only=True`, and that mode builds
+    **no objective at all** (see the comment at its `Minimize` site), so its
+    reported cost is whatever feasible schedule the 8-worker parallel search
+    lands on: measured on this instance, 20 runs gave 18 × cost 0 and 2 × cost 2.
+    The old assertion compared against that and called it "the monolithic
+    optimum" — it was asserting a feasibility-mode answer as the optimum, which
+    is both false and unstable (F053).
+
+    The comparison is against the OPTIMIZING solve on a single search worker,
+    which is deterministic: 20/20 cost 0, equal to the prefix search's answer.
+    """
     # PICKUP aggregation interacts with the prefix search through the
     # lower bound, so exercise a genuinely aggregating instance too.
     majors = [MajorTask(id=f"m{i}", type="feed", cell=(i % 10, i % 10)) for i in range(4)]
@@ -333,7 +332,8 @@ def test_prefix_search_matches_the_monolithic_optimum_on_an_aggregating_instance
     instance = Instance.compile(
         workers=workers, major_tasks=majors, warehouse_stock={Item.WHEAT: 50}, horizon=24
     )
-    config = CpSatConfig(time_limit_seconds=30)
+    config = CpSatConfig(time_limit_seconds=30, feasibility_only=False,
+                         num_search_workers=1)
     mono = solve_cpsat(instance, config)
     prefix = cpsat_binarySearch(instance, config)
 
