@@ -368,21 +368,37 @@ def test_scipy_absent_is_survivable() -> None:
 
 def test_budget() -> None:
     """One master round (sweep + LP) against the brief's 45 ms ceiling,
-    and the full 8-round loop measured so the cap's cost is on record."""
+    the price-path forecast it now calls (#15), and the full 8-round loop
+    measured so the cap's cost is on record.
+
+    The forecast is measured SEPARATELY rather than folded into the
+    round: #12's 45 ms ceiling bounds the sweep + LP, and #15's own budget
+    for the market layer is 10 ms (`secretary/market.py`, measured
+    1.14 ms p50 / 4.23 ms p99 by `bench/bench_market_forecast.py
+    --layer-timing`). Folding the two together would hide which part
+    moved.
+    """
     import time
+    from secretary.market import forecast
     rt, c = _RT(), _contractor()
     obs = _obs(_bare_ids(4), c.graph)
+    forecast(obs, days=c.days)                    # warm the import + tables
+    t0 = time.perf_counter()
+    forecast(obs, days=c.days)
+    fc_ms = (time.perf_counter() - t0) * 1000.0
     t0 = time.perf_counter()
     res = equilibrate(rt, obs, c, _supply(), iter_cap=1)
     one = (time.perf_counter() - t0) * 1000.0
     t0 = time.perf_counter()
     res = equilibrate(rt, obs, c, _supply())
     full = (time.perf_counter() - t0) * 1000.0
-    print(f"one round {one:.1f} ms (ceiling {ROUND_BUDGET_MS:.0f}); "
+    print(f"one round {one:.1f} ms (ceiling {ROUND_BUDGET_MS:.0f}), of which "
+          f"the #15 price-path forecast {fc_ms:.1f} ms (budget 10); "
           f"full {res.rounds}-round loop {full:.1f} ms "
           f"(history {['%.0f' % m for m in res.history]})")
-    assert one < ROUND_BUDGET_MS, \
-        f"one master round took {one:.1f} ms (> {ROUND_BUDGET_MS:.0f} ms)"
+    assert fc_ms < 10.0, f"the market forecast took {fc_ms:.1f} ms (> 10 ms)"
+    assert one - fc_ms < ROUND_BUDGET_MS, \
+        f"one master round took {one - fc_ms:.1f} ms (> {ROUND_BUDGET_MS:.0f} ms)"
 
 
 def test_published_form_zeros_on_market_columns() -> None:
