@@ -1,9 +1,9 @@
-"""docs/F054's numbers must stay true and repeatable (R005), and OXA's verdict
+"""docs/F057's numbers must stay true and repeatable (R005), and OXA's verdict
 must be a function of the instance, not of the interpreter's hash order.
 
 Three guards, each written against a defect that was measured:
 
-1. `test_the_audit_reproduces_the_statuses_docs_F054_reports` runs the
+1. `test_the_audit_reproduces_the_statuses_docs_F057_reports` runs the
    committed instrument (`bench/bench_oxa_fuzz.py`) over its 400 seeds and
    pins its answer. The number in the document and the number this test
    asserts are the same measurement; if the solver or the generator moves,
@@ -40,7 +40,7 @@ from secretary.verify import verify_solution
 
 ROOT = Path(__file__).resolve().parents[2]
 
-# docs/F054's reviewed row, and the seeds the audit still reports: the
+# docs/F057's reviewed row, and the seeds the audit still reports: the
 # single_worker_group/entry-cell placement class, open there.
 AUDIT_STATUSES = {"OPTIMAL": 97, "FEASIBLE": 99, "INFEASIBLE": 201, "INVALID_SOLUTION": 3}
 AUDIT_REJECTED = [93, 182, 205]
@@ -60,7 +60,7 @@ def run_audit(dump: Path, hash_seed):
     return json.loads(dump.read_text()), proc
 
 
-def test_the_audit_reproduces_the_statuses_docs_F054_reports(tmp_path):
+def test_the_audit_reproduces_the_statuses_docs_F057_reports(tmp_path):
     per_seed, proc = run_audit(tmp_path / "audit.json", "0")
 
     assert Counter(per_seed.values()) == AUDIT_STATUSES, Counter(per_seed.values())

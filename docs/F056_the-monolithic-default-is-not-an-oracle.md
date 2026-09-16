@@ -1,4 +1,4 @@
-# F053 — The oracle is the binary search, and its pool is minimal by construction
+# F056 — The oracle is the binary search, and its pool is minimal by construction
 
 **Summary (<=50 words):** The min-worker objective makes `cpsat_binarySearch` the
 oracle: feasibility under a shrinking pool cap means the smallest feasible cap is

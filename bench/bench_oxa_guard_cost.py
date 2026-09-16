@@ -3,16 +3,16 @@
 Usage:
     .venv/bin/python -m bench.bench_oxa_guard_cost
 
-This is the instrument behind docs/F054's timing sentence. It exists because
+This is the instrument behind docs/F057's timing sentence. It exists because
 that sentence used to carry a procedure ("best-of-50 per call, validate=False,
 two interleaved runs") with no committed script and no named instance, so a
 reader could not repeat it -- and the numbers did not reproduce (R005).
 
-The instance is the one the docs/F054 sweep builds for `feed`: `n` major feed
+The instance is the one the docs/F057 sweep builds for `feed`: `n` major feed
 tasks on the 5x5 grid, ten workers with the first entering at hour 0 and the
 rest at hour 1, horizon 24 -- the same `build()` as
 `tests/wrs/test_oxa_false_infeasible.py` and `bench/bench_oxa_fuzz.py`'s
-sweep. Compare revisions the F054 way, one revision at a time:
+sweep. Compare revisions the F057 way, one revision at a time:
 
     git show <rev>:secretary/solvers/oxa_solver.py > /tmp/old.py
     cp /tmp/old.py secretary/solvers/oxa_solver.py

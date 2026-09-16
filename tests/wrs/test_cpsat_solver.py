@@ -312,7 +312,7 @@ def test_prefix_search_reports_infeasible_without_scanning_every_prefix():
 
 
 def test_binary_search_pool_is_the_minimum_feasible_pool():
-    """The min-worker objective, asserted directly (issue #14, F053).
+    """The min-worker objective, asserted directly (issue #14, F056).
 
     `cpsat_binarySearch` is the oracle: it probes *feasibility* under shrinking
     pool caps, so the smallest cap that admits a schedule **is** the optimum for

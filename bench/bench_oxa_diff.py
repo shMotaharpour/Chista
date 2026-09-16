@@ -1,4 +1,4 @@
-"""Differential of two `bench_oxa_fuzz --dump` runs (docs/F054's tables).
+"""Differential of two `bench_oxa_fuzz --dump` runs (docs/F057's tables).
 
 Usage:
     .venv/bin/python -m bench.bench_oxa_diff OLD.json NEW.json
@@ -6,7 +6,7 @@ Usage:
 The two files are per-seed status maps written by
 `bench/bench_oxa_fuzz.py --dump`, from two different solver revisions. This
 script is the *source* of the "N regressions / M improvements" lines in
-docs/F054: the counts are a measurement, and a measurement needs the
+docs/F057: the counts are a measurement, and a measurement needs the
 procedure that produced it committed next to the number (R005).
 
 Definition (fixed here so two readers cannot disagree):

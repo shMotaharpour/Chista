@@ -1,4 +1,4 @@
-"""Audit of OXA's verdicts on randomised instances (docs/F054, review pass).
+"""Audit of OXA's verdicts on randomised instances (docs/F057, review pass).
 
 Usage:
     .venv/bin/python -m bench.bench_oxa_fuzz                 # 400 seeded instances
@@ -14,9 +14,9 @@ The audit asserts the two things a verdict must satisfy:
   * every answer that is not INFEASIBLE carries a schedule `verify_solution`
     accepts (a rejected schedule is as unusable as no schedule);
   * with --oracle, every INFEASIBLE answer is confirmed by `cpsat_binarySearch`
-    -- the F054 defect was exactly an INFEASIBLE the oracle could schedule.
+    -- the F057 defect was exactly an INFEASIBLE the oracle could schedule.
 
-`docs/F054`'s differential numbers come from running this script with the
+`docs/F057`'s differential numbers come from running this script with the
 pre-fix blob in place -- `git show <rev>:secretary/solvers/oxa_solver.py >
 /tmp/old.py`, copy it over the module, run with `--dump`, restore -- and
 comparing the two dumps with `bench/bench_oxa_diff.py`, which is the
@@ -26,15 +26,15 @@ Hash order: this solver's candidate order is a total order now, so its 400
 statuses are the same under every `PYTHONHASHSEED`
 (`tests/wrs/test_oxa_reproducibility.py` holds that). The pre-fix blobs are
 not -- they iterate a set -- so a number taken from one of them is only
-reproducible with the seed named next to it (`PYTHONHASHSEED=0` in F054's
+reproducible with the seed named next to it (`PYTHONHASHSEED=0` in F057's
 tables). Run this script with a fixed `PYTHONHASHSEED` when comparing
 against another revision.
 
 A non-zero exit is the audit reporting a defect, not a harness error. Without
 `--oracle` it reports the `single_worker_group`/entry-cell placement class of
-`docs/F054` (`first task ... reachable too early from entry`, 3 seeds); with
+`docs/F057` (`first task ... reachable too early from entry`, 3 seeds); with
 `--oracle` it also reports the INFEASIBLE verdicts the exact solver schedules
-(15 of them, F054's single-pass dispatch class). The oracle only *abstains* on
+(15 of them, F057's single-pass dispatch class). The oracle only *abstains* on
 an INFEASIBLE answer it cannot decide inside `--oracle-seconds`: an `UNKNOWN`
 there means "not checked", never "confirmed" -- which is why the sweep test's
 positive control pins a day the oracle decides (`INFEASIBLE`), not one it times

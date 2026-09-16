@@ -278,7 +278,7 @@ def _successor_gaps(
     (`1 + dist`). Every other edge is a plain precedence pair that any worker
     may serve: only `1` turn is forced (precedence is strict, one action per
     worker per turn) — charging travel there would reject commits another
-    worker can finish, which is its own false-INFEASIBLE (see docs/F054).
+    worker can finish, which is its own false-INFEASIBLE (see docs/F057).
     """
     gaps: dict[str, list[tuple[str, int]]] = {tid: [] for tid in instance.target_tasks}
     for pred, succ in instance.precedence:
@@ -303,7 +303,7 @@ def _unfinished_tail_turns(
     costing the minimum separation `_successor_gaps` assigns that edge.
 
     Every legal completion needs at least this much time, so refusing to
-    commit a task that cannot afford it is lossless -- see docs/F054 (the
+    commit a task that cannot afford it is lossless -- see docs/F057 (the
     false-INFEASIBLE defect).
     """
     cached = memo.get(tid)
@@ -456,7 +456,7 @@ def solve_oxa(instance: Instance, config: OxaConfig = OxaConfig()) -> OxaResult:
     # greedy leaves a gap, which the verifier then rejects as
     # INVALID_SOLUTION (fuzz seed 9 of the review audit; the other two
     # seeds that audit reports, 93 and 182/205, fail for the entry-cell
-    # reason docs/F054 records as still open).
+    # reason docs/F057 records as still open).
     max_active = max((route.worker_index for route in routes), default=-1)
     solution = Solution(
         routes=routes, 

@@ -27,6 +27,26 @@ MAX_MARKET_ORDERS = 10     # F031; the engine drops the 11th silently
 PASS_ACTION = {"farmer": ["PASS"], "hands": [], "market": []}
 
 
+def market_at(market, hour: int) -> list:
+    """This turn's market orders, from a per-hour queue or a flat list.
+
+    #15 made `plan["market"]` per-hour (`market[hour] -> [order, ...]`),
+    because the ≤ 10-order cap is PER TURN (F031) and a 24-turn day has 240
+    slots. The M1 flat list (`[["SELL", "WHEAT", 3]]`, all of it at hour 0)
+    still dispatches: its first element is an ORDER, while a queue's first
+    element is a ROW of orders.
+    """
+    if not market or not isinstance(market, (list, tuple)):
+        return []
+    head = market[0]
+    per_hour = (isinstance(head, (list, tuple))
+                and (not head or isinstance(head[0], (list, tuple))))
+    if per_hour:
+        row = market[hour] if 0 <= hour < len(market) else []
+        return [list(order) for order in (row or [])]
+    return [list(order) for order in market] if hour == 0 else []
+
+
 def dispatch_plan(plan, obs) -> dict:
     """Slice `plan` into this turn's action dict.
 
@@ -45,8 +65,7 @@ def dispatch_plan(plan, obs) -> dict:
     if not units:
         # an empty plan is legitimate (every tile locked, nothing worth
         # doing): everyone passes, the market orders still ride
-        market = [list(order) for order in plan.get("market", [])] \
-            if hour == 0 else []
+        market = market_at(plan.get("market", []), hour)
         return {"farmer": ["PASS"], "hands": [],
                 "market": market[:MAX_MARKET_ORDERS]}
 
@@ -64,13 +83,13 @@ def dispatch_plan(plan, obs) -> dict:
             hands.append(list(units[i + 1][hour]))
         else:
             hands.append(["PASS"])
-    market = [list(order) for order in plan.get("market", [])] \
-        if hour == 0 else []
+    market = market_at(plan.get("market", []), hour)
     if len(market) > MAX_MARKET_ORDERS:
         # F031: the engine drops the 11th silently - never send one
         market = market[:MAX_MARKET_ORDERS]
-    # M1 simplification (named): the cap is per TURN, so a day has 240
-    # order slots - M1 sends them all at hour 0. #15's sell scheduling
-    # spreads sells intraday precisely because one big basket tips the
-    # price a step (F036: ~25 wheat per coin).
+    # #15: `plan["market"]` is a per-hour queue (`market[hour] -> [orders]`),
+    # built by `secretary/inventory.py::market_queue`: the cap is per TURN
+    # (F031), so a 24-turn day has 240 slots, and a large forced sale is
+    # spread across the day's turns instead of landing as one basket (the
+    # measured scope of that is in `plan_sales`).
     return {"farmer": farmer, "hands": hands, "market": market}

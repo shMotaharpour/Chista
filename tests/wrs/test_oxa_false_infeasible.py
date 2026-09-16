@@ -7,7 +7,7 @@ independent, so the day's only binding resource is worker turns -- and
 with 10 x 24 of those against at most 4n actions the answer is a
 capacity question, not a construction one.
 
-Measured before the fix (docs/F054) with the oracle from
+Measured before the fix (docs/F057) with the oracle from
 tests/wrs/test_cpsat_solver.py's entry point, `cpsat_binarySearch`. The
 pre-fix `_build_worker_route` iterated the `remaining_targets` set, so its
 verdicts moved with the interpreter's hash order -- the sets below are the
@@ -28,7 +28,7 @@ its pre-fix state this module reddens. Measured at `PYTHONHASHSEED=0`:
 and the eight pinned pairs all fail (`8 failed, 13 deselected`) with the
 guard's own message naming the kind, the n and the oracle's answer.
 
-Two more findings came out of the pre-PR review (both measured, docs/F054):
+Two more findings came out of the pre-PR review (both measured, docs/F057):
 the tail gap must charge travel only for pairs that ONE worker has to serve
 (`single_worker_group`), because a plain precedence pair can be split across
 two workers -- charging travel there reddens
@@ -76,7 +76,7 @@ def test_the_sweep_never_calls_a_feasible_day_infeasible(kind):
         if result.status == "INFEASIBLE":
             # an INFEASIBLE verdict is only allowed when the exact oracle
             # cannot schedule the day either -- otherwise it is a
-            # construction failure with idle workers (docs/F054)
+            # construction failure with idle workers (docs/F057)
             oracle = cpsat_binarySearch(instance, ORACLE)
             assert oracle.solution is None, (
                 f"{kind} n={n}: OXA said INFEASIBLE but the oracle admits a "
@@ -94,7 +94,7 @@ def test_the_sweep_never_calls_a_feasible_day_infeasible(kind):
     # the exact instances of the finding, each measured false-INFEASIBLE
     # before the fix with the oracle proving them feasible, at
     # PYTHONHASHSEED=0 (the pre-fix blob's verdicts follow the hash order;
-    # see the table above and docs/F054's reproducibility section)
+    # see the table above and docs/F057's reproducibility section)
     ("plnt", 15),
     ("plnt", 25),
     ("wet_harvst", 15),
@@ -144,7 +144,7 @@ def test_a_cross_cell_chain_can_be_served_by_two_workers():
     t=9 and w1 runs s at t=10, and the oracle calls that day OPTIMAL. A tail
     that charges the successor the travel from p's cell reads the chain as
     needing 28 turns and answers INFEASIBLE for a schedulable day -- the
-    first version of the guard did exactly that (docs/F054, review pass).
+    first version of the guard did exactly that (docs/F057, review pass).
     """
     instance = Instance.compile(
         workers=[Worker(index=0, earliest_start=0), Worker(index=1, earliest_start=0)],
@@ -172,7 +172,7 @@ def test_a_day_that_skips_lower_index_hands_pays_for_them():
     be the engine's payroll `fib(0..max_active)`: reporting the sum over the
     routes that carry tasks under-reported a day with a gap and made the
     verifier answer INVALID_SOLUTION for an otherwise legal schedule
-    (docs/F054, review pass).
+    (docs/F057, review pass).
     """
     instance = Instance.compile(
         workers=[Worker(index=i, earliest_start=start)

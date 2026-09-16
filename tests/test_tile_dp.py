@@ -340,6 +340,130 @@ def test_build_is_deterministic() -> None:
     assert (a.edge_steps == b.edge_steps).all()
 
 
+def _graph_arrays(g: TileGraph) -> tuple:
+    """The artifact's own arrays, in a fixed order, for byte comparison."""
+    return (g.state_keys, g.edge_offsets, g.edge_next, g.edge_chain,
+            g.edge_entity, g.edge_cost, g.edge_produce, g.edge_steps)
+
+
+_ARRAY_NAMES = ("state_keys", "edge_offsets", "edge_next", "edge_chain",
+                "edge_entity", "edge_cost", "edge_produce", "edge_steps")
+
+
+def _sim_factory(seed: int, weed_spawn: float):
+    """A drop-in `graph._new_sim` with another seed (and optionally weeds)."""
+    from world.fast_sim import FastSim
+
+    def make() -> FastSim:
+        return FastSim({"episodeSteps": 30 * 24, "seed": seed,
+                        "weedSpawnChance": weed_spawn})
+    return make
+
+
+def _build_with(factory, entity: str) -> TileGraph:
+    """Run the SHIPPED builder under another sim factory.
+
+    `_new_sim` is a module-level constant (one 30-day sim, seed 4242, no
+    weeds). Swapping it re-runs the real `build_graph` - the same BFS, the
+    same executor, the same assertions - under a different RNG seed,
+    instead of re-implementing the build beside it.
+    """
+    from tile_dp import graph as G
+
+    real = G._new_sim
+    G._new_sim = factory
+    try:
+        return G.build_graph(entity)
+    finally:
+        G._new_sim = real
+
+
+def _arrays_equal(a, b) -> bool:
+    """Byte-compare two CSR columns, tolerating different shapes."""
+    return a.shape == b.shape and bool((a == b).all())
+
+
+def test_seed_invariance_no_rng_in_tile_transitions() -> None:
+    """Issue #24 class A: with `weedSpawnChance = 0.0`, NO tile transition
+    may depend on the RNG - so the graph must come out byte-identical
+    across seeds.
+
+    Every other check in this suite runs at the builder's single hard seed
+    (4242), so a transition that silently read the RNG would stay
+    consistent with itself. This re-runs the SHIPPED builder at several
+    seeds and compares the artifact arrays byte for byte.
+
+    Teeth: two controls inside the test — the same comparison on WHEAT (a
+    different graph) must report a difference, and a copy of the graph with
+    one edge's produce raised must be rejected on content alone (so an
+    equal-shaped comparison that ignores values cannot pass). The RNG's reach
+    into tile transitions is measured in `test_weed_rng_reaches_tile_transitions`.
+    """
+    base = _carrot()
+    base_arrays = _graph_arrays(base)
+    for seed in (1, 7, 99):
+        other = _build_with(_sim_factory(seed, 0.0), "CARROT")
+        for name, a, b in zip(_ARRAY_NAMES, base_arrays, _graph_arrays(other)):
+            assert _arrays_equal(a, b), (
+                f"seed {seed} changed {name}: the no-weed graph must not "
+                f"depend on the RNG (issue #24 class A)")
+    # Control 1: a DIFFERENT graph must be rejected (different shape/content).
+    wheat = build_graph("WHEAT")
+    assert not all(_arrays_equal(a, b) for a, b
+                   in zip(base_arrays, _graph_arrays(wheat))), (
+        "the byte comparison used above cannot tell two different graphs "
+        "apart, so its equality proves nothing")
+    # Control 2: the CONTENT path alone, on an identically-shaped graph (one
+    # edge's produce raised): a control that only exercises the shape mismatch
+    # would not notice a comparison that ignores equal-shaped arrays.
+    from dataclasses import replace
+
+    ep = base.edge_produce.copy()
+    ep[0, 0] = ep[0, 0] + 1
+    nudged = replace(base, edge_produce=ep)
+    assert not _arrays_equal(base.edge_produce, nudged.edge_produce), (
+        "the comparison misses a changed value on an identically-shaped "
+        "array, so the seed equality above proves nothing")
+
+
+def test_weed_rng_reaches_tile_transitions() -> None:
+    """The premise the seed-invariance check rests on, measured directly.
+
+    F045 draws weeds from the RNG; the engine seeds that draw per
+    (episode seed, day): `random.Random((seed * 1_000_003) ^ day)`
+    (kaggriculture.py:871, inside `_end_of_day`). So with
+    `weedSpawnChance = 0.0` a bare tile stays bare for every seed - which
+    is the only reason the graph can be seed-independent - while a
+    non-zero spawn turns some tiles into WEED.
+
+    Measured on this engine, 12 idle days: spawn 0.0 → 0 of 24 seeds show a
+    tile (every one still bare); spawn 0.2 → 22 of 24 are WEED. Without this,
+    "the graph does not depend on the RNG" is a claim nobody has seen fail.
+    """
+    def idle(seed: int, spawn: float, days: int = 12):
+        from world.fast_sim import FastSim
+        from tile_dp.graph import _act, _tile_and_day
+
+        sim = FastSim({"episodeSteps": 30 * 24, "seed": seed,
+                       "weedSpawnChance": spawn})
+        for _ in range(days * 24):
+            sim.step([_act(["PASS"]), _act(["PASS"])])
+        tile, _day = _tile_and_day(sim)
+        # a bare tile is `None` in the raw engine; the decoder maps it to NONE
+        return tile if tile is None else tile.get("kind")
+
+    seeds = tuple(range(24))
+    quiet = {seed: idle(seed, 0.0) for seed in seeds}
+    assert set(quiet.values()) == {None}, (
+        f"a tile changed with weeds off, so the builder's own premise is "
+        f"wrong: {quiet}")
+    loud = {seed: idle(seed, 0.2) for seed in seeds}
+    assert any(kind == "WEED" for kind in loud.values()), (
+        f"a non-zero weedSpawnChance changed no tile in {loud}, so the RNG "
+        f"does not reach tile transitions and the invariance claim above is "
+        f"vacuous")
+
+
 if __name__ == "__main__":
     failures = 0
     tests = [(k, v) for k, v in sorted(globals().items())

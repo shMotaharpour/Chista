@@ -1,4 +1,4 @@
-# F054 — OXA commits a chain's last turn and orphans the rest of the day
+# F057 — OXA commits a chain's last turn and orphans the rest of the day
 
 **Summary (<=50 words):** OXA's greedy could commit a task on the horizon's last
 turn, so its successors — pinned by the committed `exec_time` as a hard lower
@@ -12,7 +12,7 @@ The issue-#14 sweep: ten workers (the first entering at hour 0, the rest at hour
 1), horizon 24, `n` major tasks of a single kind laid out on the 5x5 grid,
 `n = 6..25` (140 instances), shed stock of 200 wheat / 200 fertilizer / 50 of
 each animal. Every INFEASIBLE answer was put to the oracle `cpsat_binarySearch`
-— the oracle by F053, since feasibility under a shrinking pool cap *is* the
+— the oracle by F056, since feasibility under a shrinking pool cap *is* the
 min-worker objective — with `CpSatConfig(time_limit_seconds=10)`. The
 instrument is the sweep in `tests/wrs/test_oxa_false_infeasible.py`, run against
 the pre-fix blob with **`PYTHONHASHSEED=0`**:
@@ -46,7 +46,7 @@ while `plnt` 23..25 and `wet_harvst` 24 are false here and absent from the
 comment. The comment's numbers predate the oracle question being settled — F052
 found the `cpsat_binarySearch`/`solve_cpsat` comparison unstable, the issue
 comment itself says to treat `cpsat_binarySearch` as unverified, and
-ac9a833/40d9cfa/F053 settled that the prefix search *is* the oracle — so the two
+ac9a833/40d9cfa/F056 settled that the prefix search *is* the oracle — so the two
 lists are measurements of different things.
 
 Raising the pool to 4, 8, 10, 12 or 16 workers leaves the verdict unchanged
@@ -116,7 +116,7 @@ gave up.
 
 ## Reproducibility (why this document was rewritten)
 
-The first version of F054 — and the two commits before this one — quoted numbers
+The first version of F057 — and the two commits before this one — quoted numbers
 a reader could not repeat. `_build_worker_route` built its candidate list by
 iterating the `remaining_targets` **set**, and the greedy's winner was the first
 candidate to reach the minimum of `(cost, tie_breaker)`. Ties were therefore
@@ -174,7 +174,7 @@ first guard and **6 improvements** for the reviewed one. With the comparison
 definition written down in `bench/bench_oxa_diff.py`, the measured answers are
 43/4 and 0/7 against the seed-0 pre-fix run (0/46 against the first guard), and
 the whole table is reproduced by
-`tests/wrs/test_oxa_reproducibility.py::test_the_audit_reproduces_the_statuses_docs_F054_reports`.
+`tests/wrs/test_oxa_reproducibility.py::test_the_audit_reproduces_the_statuses_docs_F057_reports`.
 One seed moves in neither direction by this definition: 93 goes
 `INFEASIBLE -> INVALID_SOLUTION`, both unusable, counted separately by the tool.
 
