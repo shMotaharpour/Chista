@@ -60,7 +60,8 @@ def _mix(lam=(0.6, 0.4)) -> ClassMix:
 
 
 def _obs(day: int = 0, hour: int = 0, money: int = 100,
-         shed=None, seeds=None, tile=None, inventory=None) -> dict:
+         shed=None, seeds=None, tile=None, inventory=None,
+         quadrants=None) -> dict:
     """A real engine observation, with the fields a repair looks at."""
     sim = FastSim({"episodeSteps": 24 * 3, "seed": 1})
     obs = dict(sim.observations()[0])
@@ -71,6 +72,8 @@ def _obs(day: int = 0, hour: int = 0, money: int = 100,
         tiles[4][4] = tile
     obs["farms"][0].update({"tiles": tiles, "money": money, "hands": [],
                             "hires_today": 0})
+    if quadrants is not None:
+        obs["farms"][0]["unlocked_quadrants"] = list(quadrants)
     obs["private"] = {"shed": shed or {}, "seeds": seeds or {},
                       "inventories": [inventory or {}]}
     return obs
@@ -197,7 +200,13 @@ def test_repaired_plan_dispatches_and_validates() -> None:
 
 
 def test_market_cap_and_short_purse_are_counted() -> None:
-    """F031: the 11th order is dropped — and said so."""
+    """F031: the 11th order is dropped — and said so.
+
+    Note for whoever writes the next cap test: 11 × SELL against an EMPTY shed
+    proves nothing about the cap — the shed check runs first and consumes every
+    order (11 drops, all F043). Stock the shed, or use purchases, as below; the
+    reviewer made exactly this point on PR #35 (N1).
+    """
     obs = _obs(money=1000)
     cheap = [["BUY_SEED", "WHEAT", 1] for _ in range(15)]
     result = repair_day({"units": [], "market": cheap}, obs)
@@ -274,6 +283,37 @@ def test_repair_summary_counts_by_rule() -> None:
     assert "F042" in result.summary() and "F031/F047" in result.summary()
 
 
+def test_land_purchases_escalate_inside_a_day() -> None:
+    """B1 of the PR #35 review: three BUY_LAND are not three first prices.
+
+    The real prefix is 1000 + 2000 + 4000 = 7000; before the counter, all three
+    were priced 1000 and a 7000-coin plan walked through a 3000-coin purse.
+    """
+    obs = _obs(money=3000, quadrants=("NW",))
+    result = repair_day({"units": [], "market": [["BUY_LAND"]] * 3}, obs)
+    # 1000 + 2000 = 3000 fits exactly; the third purchase needs 4000 and the
+    # purse is empty. Before the counter all three were priced 1000 and kept.
+    assert len(result.plan["market"]) == 2, result.summary()
+    assert result.dropped == 1
+    assert "4000 coins against a 0-coin purse" in result.drops[0].reason
+
+    rich = repair_day({"units": [], "market": [["BUY_LAND"]] * 3},
+                      _obs(money=7000, quadrants=("NW",)))
+    assert len(rich.plan["market"]) == 3 and rich.dropped == 0
+
+    priced = [order_cost(["BUY_LAND"], obs, 0, bought) for bought in (0, 1, 2)]
+    assert priced == [float(K.LAND_PRICES[0]), float(K.LAND_PRICES[1]),
+                      float(K.LAND_PRICES[2])]
+
+
+def test_buy_land_on_a_complete_prefix_is_dropped() -> None:
+    """F042: with every quadrant owned the buy refuses in silence."""
+    obs = _obs(money=99999, quadrants=["NW"] + list(K.LAND_ORDER))
+    result = repair_day({"units": [], "market": [["BUY_LAND"]]}, obs)
+    assert result.plan["market"] == []
+    assert result.dropped == 1 and "F042" in result.drops[0].reason
+
+
 def test_order_cost_uses_engine_tables() -> None:
     """R002: every price the repair compares comes from the engine."""
     obs = _obs(money=1000)
@@ -284,6 +324,7 @@ def test_order_cost_uses_engine_tables() -> None:
     assert order_cost(["HIRE"], obs, 0) == float(K._hire_cost(0))
     assert order_cost(["HIRE"], obs, 3) == float(K._hire_cost(3))
     assert order_cost(["BUY_LAND"], obs, 0) == float(K.LAND_PRICES[0])
+    assert order_cost(["BUY_LAND"], obs, 0, 1) == float(K.LAND_PRICES[1])
     assert order_cost(["SELL", "WHEAT", 5], obs, 0) is None
 
 
