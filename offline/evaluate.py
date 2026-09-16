@@ -38,19 +38,22 @@ Design (issue #18, corrections from #20's brief and addendum):
   "agent.main:agent". Pool slugs make any two competitors comparable
   with the same instrument. Baselines are versioned by git SHA (R005).
 - TIERED, BECAUSE COMPUTE IS THE CONSTRAINT (~12-15 s per episode, the
-  planning-dominated estimate from issue #18 - corrected 20 -> 19
-  opponents per #20 C1, so the full tier is 608 agent-episodes, not 640):
+  planning-dominated estimate from issue #18). #20's amendment A
+  landed: 19 vendored slugs, 3 byte-identical duplicates, 16 canonical
+  agents; registry.py holds the measured 11-dev / 5-held-out split
+  over the canonical 16:
 
       tier   opponents            seeds  agent-episodes  when
-      smoke  5 representative     4      40              every commit
-      ladder 15 dev pool          16     480             per milestone
-      full   19 incl. held-out    16     608             M5 only
+      smoke  5 of the dev split   4      40              every commit
+      ladder 11 dev pool          16     352             per milestone
+      full   19 incl. aliases     16     608             M5 only
 
-  The smoke five are the first five of the dev split (sorted, stable) -
-  a placeholder until #20's measured 14/5 split lands; --opponents
-  overrides. `offline/pool/registry.py` (the measured split, #20) is
-  used when present; until then every pool agent is treated as dev and
-  the report says so.
+  The full tier runs `slugs(include_aliases=True)` on purpose (the M5
+  whole-vendored-set gate, duplicates included for provenance per the
+  amendment); the canonical ship gate is the ladder.
+  `TIER_AGENT_EPISODES` is the load-bearing cross-check
+  (test_tier_counts_agree_with_the_note) - length * seeds * 2 must
+  equal it for every tier.
 - PARALLELISM IS THROUGHPUT ONLY. All coin/win numbers come from
   `run_episode_process` children (one process per episode, brief 5);
   per-turn wall time collected in that mode is reported as NOT a budget
@@ -165,10 +168,10 @@ def _pick_opponents(tier: str, override: str | None) -> tuple[list[str], str]:
     dev, note = _dev_split()
     from offline.pool.loader import slugs
     if tier == "full":
-        return sorted(slugs()), ("all 19 vendored opponents, M5 gate - "
-                                 "#20 amendment A: 16 canonical, 3 "
-                                 "byte-identical duplicates included for "
-                                 "provenance; canonical gate = ladder")
+        return sorted(slugs(include_aliases=True)), (
+            "all 19 vendored opponents incl. aliases, M5 gate - #20 "
+            "amendment A: 16 canonical, 3 byte-identical duplicates "
+            "included for provenance; canonical gate = ladder")
     if dev is None:
         return sorted(slugs())[:TIER_OPPONENTS[tier]], \
             f"first {TIER_OPPONENTS[tier]} sorted slugs - {HELD_OUT_NOTE}"

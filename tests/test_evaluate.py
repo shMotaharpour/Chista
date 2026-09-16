@@ -89,6 +89,35 @@ def test_seeds_needed_scales_with_noise() -> None:
     assert n_loud > n_quiet
 
 
+def test_tier_counts_agree_with_the_note() -> None:
+    """B2 (review round 2): the function that decides WHO you play must
+    be guarded - a 19-vs-16 gap shipped through a green suite once.
+    For every tier: the returned list length equals TIER_OPPONENTS[tier]
+    AND the count the note claims, and length * seeds * 2 equals
+    TIER_AGENT_EPISODES[tier] (which makes that constant load-bearing).
+    R007: verified in its failing direction - with slugs() restored over
+    include_aliases, this test fails with 'full tier: code returns 16
+    opponents, its note and TIER_OPPONENTS say 19'."""
+    from offline.evaluate import (_pick_opponents, TIER_AGENT_EPISODES,
+                                  TIER_OPPONENTS, TIER_SEEDS)
+    import re
+    for tier in ("smoke", "ladder", "full"):
+        ops, note = _pick_opponents(tier, None)
+        assert len(ops) == TIER_OPPONENTS[tier], (
+            f"{tier} tier: code returns {len(ops)} opponents, "
+            f"TIER_OPPONENTS says {TIER_OPPONENTS[tier]}")
+        m = re.search(r"^(\d+) opponents", note)
+        if m:
+            assert int(m.group(1)) == len(ops), (
+                f"{tier} tier: the note claims {m.group(1)} opponents, "
+                f"the code returns {len(ops)}")
+        total = len(ops) * TIER_SEEDS[tier] * 2
+        assert total == TIER_AGENT_EPISODES[tier], (
+            f"{tier} tier: {len(ops)} x {TIER_SEEDS[tier]} seeds x 2 = "
+            f"{total} agent-episodes, TIER_AGENT_EPISODES says "
+            f"{TIER_AGENT_EPISODES[tier]}")
+
+
 def main() -> int:
     failures = 0
     for name, fn in sorted(globals().items()):

@@ -80,11 +80,13 @@ margin. It is `offline/evaluate.py` (issue #18) driving `offline/pool/`
 `offline/evaluate.py` exists (issue #18): paired-seed comparison of two
 versions, paired coin margin as the development signal and win rate against
 the pool as the ship gate, ties counted explicitly, loss autopsy, a measured
-seed-count line, and a serial `--timing` path for the F046 budget. What it
-does NOT have yet is the pool's measured dev/held-out split
-(`offline/pool/registry.py`, issue #20) — opponent selection falls back to a
-sorted-slug prefix and says so in every report. Every "beats X on N paired
-seeds" ship gate in the milestone issues reads as pending that split.
+seed-count line, and a serial `--timing` path for the F046 budget. Opponent
+selection consumes the measured dev/held-out split from
+`offline/pool/registry.py` (#20: 11 dev / 5 held-out over the canonical 16 —
+amendment A dropped 3 byte-identical duplicates); the sorted-prefix fallback
+fires only if the registry module is missing, and every report names which
+selection ran. The ship gate's win rate is seat-0-only (measured seat effect
+in the module docstring).
 
 Two things it is not:
 
