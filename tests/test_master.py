@@ -24,9 +24,14 @@ import numpy as np
 
 from agent.replan import load_contractor
 from planner.master import (ALPHA, COUPLING_IDS, ITER_CAP_DEFAULT,
-                            N_COUPLING, ROUND_BUDGET_MS, TOL_DUAL,
+                            N_COUPLING, RESOURCE_ID, ROUND_BUDGET_MS, TOL_DUAL,
                             CouplingSupply, equilibrate, published_duals,
                             supply_from_obs)
+
+# #15's own budget for the price-path forecast the master now calls; the
+# round's hard ceiling is ROUND_BUDGET_MS (sweep + LP) PLUS this, so the two
+# never get folded into each other and neither can hide a regression.
+MARKET_LAYER_BUDGET_MS = 10.0
 
 # --- fixtures ------------------------------------------------------------
 
@@ -368,21 +373,76 @@ def test_scipy_absent_is_survivable() -> None:
 
 def test_budget() -> None:
     """One master round (sweep + LP) against the brief's 45 ms ceiling,
-    and the full 8-round loop measured so the cap's cost is on record."""
+    the price-path forecast it now calls (#15), and the full 8-round loop
+    measured so the cap's cost is on record.
+
+    The forecast is measured SEPARATELY rather than folded into the
+    round: #12's 45 ms ceiling bounds the sweep + LP, and #15's own budget
+    for the market layer is 10 ms (`secretary/market.py`; its p50/p99 come
+    from `bench/bench_market_forecast.py --layer-timing`, printed below and
+    NOT quoted as a stale pair here). Folding the two together would hide
+    which part moved. The round keeps a hard ceiling of both budgets
+    together, so a regression cannot hide inside the subtraction.
+    """
     import time
+    from secretary.market import forecast
     rt, c = _RT(), _contractor()
     obs = _obs(_bare_ids(4), c.graph)
+    forecast(obs, days=c.days)                    # warm the import + tables
+    t0 = time.perf_counter()
+    forecast(obs, days=c.days)
+    fc_ms = (time.perf_counter() - t0) * 1000.0
     t0 = time.perf_counter()
     res = equilibrate(rt, obs, c, _supply(), iter_cap=1)
     one = (time.perf_counter() - t0) * 1000.0
     t0 = time.perf_counter()
     res = equilibrate(rt, obs, c, _supply())
     full = (time.perf_counter() - t0) * 1000.0
-    print(f"one round {one:.1f} ms (ceiling {ROUND_BUDGET_MS:.0f}); "
+    print(f"one round {one:.1f} ms (ceiling {ROUND_BUDGET_MS:.0f}), of which "
+          f"the #15 price-path forecast {fc_ms:.1f} ms (budget "
+          f"{MARKET_LAYER_BUDGET_MS:.0f}); "
           f"full {res.rounds}-round loop {full:.1f} ms "
           f"(history {['%.0f' % m for m in res.history]})")
-    assert one < ROUND_BUDGET_MS, \
-        f"one master round took {one:.1f} ms (> {ROUND_BUDGET_MS:.0f} ms)"
+    assert fc_ms < MARKET_LAYER_BUDGET_MS, \
+        f"the market forecast took {fc_ms:.1f} ms (> {MARKET_LAYER_BUDGET_MS:.0f} ms)"
+    assert one - fc_ms < ROUND_BUDGET_MS, \
+        f"one master round took {one - fc_ms:.1f} ms (> {ROUND_BUDGET_MS:.0f} ms)"
+    assert one < ROUND_BUDGET_MS + MARKET_LAYER_BUDGET_MS, \
+        (f"one master round including the #15 forecast took {one:.1f} ms "
+         f"(> {ROUND_BUDGET_MS + MARKET_LAYER_BUDGET_MS:.0f} ms)")
+
+
+def test_the_market_forecast_reaches_the_masters_product_rows() -> None:
+    """#15's wiring: the product rows of `p` come from the forecast itself.
+
+    With `CHISTA_MARKET_FORECAST=0` the WHEAT column is the flat stand-in
+    (a single quote repeated over the horizon); with `=1` it is the
+    forecast's own path, which rises (F035), and `p_source` says so.
+    Timing the forecast (test_budget) does not pin this: a forecast that
+    never reaches `p` would still be fast.
+    """
+    import os
+    rt, c = _RT(), _contractor()
+    obs = _obs(_bare_ids(4), c.graph)
+    rid = RESOURCE_ID["WHEAT"]
+    was = os.environ.get("CHISTA_MARKET_FORECAST")
+    try:
+        os.environ["CHISTA_MARKET_FORECAST"] = "0"
+        flat = equilibrate(rt, obs, c, _supply(), iter_cap=1)
+        os.environ["CHISTA_MARKET_FORECAST"] = "1"
+        live = equilibrate(rt, obs, c, _supply(), iter_cap=1)
+    finally:
+        if was is None:
+            os.environ.pop("CHISTA_MARKET_FORECAST", None)
+        else:
+            os.environ["CHISTA_MARKET_FORECAST"] = was
+    flat_col = flat.p[:, rid]
+    live_col = live.p[:, rid]
+    assert "flat" in flat.p_source, flat.p_source
+    assert flat_col.min() == flat_col.max(), flat_col
+    assert "market forecast" in live.p_source, live.p_source
+    assert live_col[0] < live_col[-1], live_col      # F035: it rises
+    assert live_col[-1] > flat_col[-1], (live_col[-1], flat_col[-1])
 
 
 def test_published_form_zeros_on_market_columns() -> None:

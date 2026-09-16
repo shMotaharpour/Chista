@@ -101,6 +101,15 @@ Order: **Rules** (`R<NNN>_<slug>.md`) first, then **Findings**
 - [F051_inert-opponent-market-ceiling.md](F051_inert-opponent-market-ceiling.md) — against a PASS opponent the market saturates near 191,812 and distinct competent agents land on that ceiling exactly: baseline columns measured against an inert opponent read the ceiling, not the agents.
 - [F052_wrs-solvers-ported-one-project.md](F052_wrs-solvers-ported-one-project.md) — The workforce/routing solvers came in from ChistaWRS and now live in `secretary/`. `oxa_solver` is the runtime one — pure stdlib, 0.1–0.9 ms against a 20 ms budget. `cpsat_solver` is the offline oracle and imports ortools, which the submission's closure must never reach.
 - [F053_refused-ops-still-bill-the-cost-vector.md](F053_refused-ops-still-bill-the-cost-vector.md) — A chain's cost comes from the ops it was asked to run, not from what the engine accepted. On a bare tile the engine refuses WATER, HARVEST, DIG and FERTILIZE in silence (F047) and the model still bills them. Shipped chains are safe; hand-built ones are not.
+- [F054_town-consumption-is-exactly-modellable.md](F054_town-consumption-is-exactly-modellable.md) —
+  Town consumption is exactly modellable from the observation: shops every 4
+  turns (single-product shops 2x), the centre every 24 — 6,462/6,462 item-step
+  deltas matched. Only the next shop unlock is random; a forward inventory
+  forecast priced by the engine's own function errs ≤1.32 % of I0 at 10 days.
+- [F055_sell-reads-the-shed-not-the-bag.md](F055_sell-reads-the-shed-not-the-bag.md) —
+  SELL reads the shed, never a unit's bag, so the nightly drop is a choice and
+  not a forced one-day lag: a shed-adjacent unit that DROPs and SELLs in the
+  same turn is paid that turn (+27 coins, day 2, fast_sim seed 0).
 
 ## Tests & benchmarks
 
@@ -124,3 +133,5 @@ Executable checks — `.venv/bin/python -m tests.<module>` (no pytest required; 
 - [../tests/test_tile_dp_contractor.py](../tests/test_tile_dp_contractor.py) — the DP over the shipped graph: `V_30 ≡ 0`, zero duals ⇒ zero values, monotonicity in `p` and `w`, bit-equality with a scalar DP and with an exhaustive 6-day search, R006 on both vectors, the empty-slice guard, the engine calendars (F009, F014, F027), plan determinism and the timing ceiling.
 - [../tests/test_agent_replan.py](../tests/test_agent_replan.py) — the replanner rung: the dual stand-in is non-negative and engine-sourced, chains expand to per-turn ops, a unit works the tile it stands on (LOCKED dropped), every recovered plan dispatches and validates for 30 days, the rung polls the deadline mid-work, and it runs once per day through `Runtime.act`.
 - [../tests/test_planner_integrality.py](../tests/test_planner_integrality.py) — the master's λ rounded: one plan per tile deterministically, LOCKED tiles never planned (F042), the coupling rows checked and demoted (20 boards), F047's drops counted by rule (F031/F004/F043/F042/F032), the repaired plan legal for 30 days, and the land enumeration on the engine's prefix table with its cadence cap. (The integrality gap and the land budget need #12; see `planner/DESIGN.md`.)
+- [../tests/test_secretary_market.py](../tests/test_secretary_market.py) — Secretary B: the town cadence model reproduced against the engine exactly, the forecast error bound at 3/10 days per unlock policy (3 seeds — the 20-seed table is the bench's), the `mean`-vs-`none` policy distinction the default rests on, prices proven to come from `market_price` (not a copy), the peak rule holding on a late-season rising path, the guard's margin pinned as a number, the shed guard destroying nothing on the real interpreter while the same day without the layer destroys 15 units (R007 pair), season-end liquidation, the F031 per-turn cap guard, per-hour dispatch, and the layer's own p99 on the per-turn `attach` entry.
+- [../bench/bench_market_forecast.py](../bench/bench_market_forecast.py) — the #15 measurements the acceptance numbers name: the cadence probe (6,462/6,462 deltas), the 20-seed forecast error table in %I0 and coins per unlock policy, the `d+1` revenue contract probe, and the market layer's own p50/p99.
