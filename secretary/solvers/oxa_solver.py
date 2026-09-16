@@ -425,7 +425,13 @@ def solve_oxa(instance: Instance, config: OxaConfig = OxaConfig()) -> OxaResult:
     if not instance.tasks_by_id:
         return OxaResult(status="OPTIMAL", solution=Solution(routes=[], reported_cost=0), matched_lower_bound=True)
 
-    candidates = instance.workers
+    # The pool is the LOWEST-indexed hands, not the order the caller listed
+    # them in: `cpsat_solver` sorts by index before applying the cap, and
+    # verify.py's COST ACCOUNTING is the engine's append-only prefix by index,
+    # so a cap of 1 offers hand 0. Capping the given order instead let OXA
+    # route a high-indexed hand (and pay its payroll) for a day the oracle
+    # does with hand 0 at cost 0.
+    candidates = sorted(instance.workers, key=lambda worker: worker.index)
     if instance.worker_pool_size is not None:
         candidates = candidates[: instance.worker_pool_size]
     if config.worker_pool_cap is not None:
