@@ -92,6 +92,14 @@ REPO = Path(__file__).resolve().parents[1]
 # byte-identical duplicates, 16 canonical; registry.py holds the
 # measured 11/5 dev/held-out split, which _dev_split consumes).
 TIER_OPPONENTS = {"smoke": 5, "ladder": 11, "full": 19}
+
+# --- A4 timing-assertion floor (self-review fix) --------------------------
+# A PASS-level agent's per-turn p95 measures 0.1 ms on this box, i.e. the
+# timer's practical resolution; two such readings differ in the noise.
+# A no-tolerance `contended < solo` therefore aborted a real run. Below
+# this floor the direction is UNRESOLVED (and cannot feed a bank policy);
+# a larger inversion is a real violation and still raises.
+TIMING_NOISE_MS = 0.5
 TIER_SEEDS = {"smoke": 4, "ladder": 16, "full": 16}
 TIER_AGENT_EPISODES = {"smoke": 40, "ladder": 352, "full": 608}
 
@@ -321,6 +329,39 @@ def _timed_episode(slug: str, opp: str, seed: int,
     return rec
 
 
+def _direction_verdict(solo_p95: float, contended_p95: float) -> tuple[str, str]:
+    """A4's direction rule for one version's two readings (self-review fix).
+
+    Returns `(verdict, text)` with verdict in
+    `{"unresolved", "holds", "violated"}`:
+
+    - "unresolved": BOTH readings are below `TIMING_NOISE_MS`, i.e. the
+      p95 of a per-turn distribution that is pure timer noise. The old
+      no-tolerance `contended < solo` raised AssertionError here and
+      aborted a real run (both p95s were 0.1 ms), so a noise-scale
+      inversion is now reported as unresolvable — and it must not feed a
+      bank policy (F046 derives from the contended number).
+    - "holds": contended is within `max(TIMING_NOISE_MS, 5 % of solo)`
+      or above solo.
+    - "violated": contended is below solo by MORE than that tolerance —
+      an inverted measurement (addendum A4), not fast load.
+    """
+    if solo_p95 < TIMING_NOISE_MS and contended_p95 < TIMING_NOISE_MS:
+        return "unresolved", (
+            f"p95 {solo_p95:.3f} ms (solo) vs {contended_p95:.3f} ms "
+            f"(contended) are both below the {TIMING_NOISE_MS} ms "
+            f"resolution floor - this reading cannot support a bank policy")
+    slack = max(TIMING_NOISE_MS, 0.05 * solo_p95)
+    if contended_p95 < solo_p95 - slack:
+        return "violated", (
+            f"contended p95 {contended_p95:.1f} ms < solo p95 "
+            f"{solo_p95:.1f} ms - the harness is broken (a contended "
+            f"reading faster than solo is an inverted measurement, "
+            f"addendum A4), not fast load")
+    return "holds", (f"contended >= solo (p95 {solo_p95:.1f} -> "
+                     f"{contended_p95:.1f} ms)")
+
+
 def _timing_block(a_slug: str, b_slug: str, records: list[dict],
                   episode_steps: int) -> list[str]:
     """The two A4 readings, plus the direction assertion.
@@ -346,25 +387,26 @@ def _timing_block(a_slug: str, b_slug: str, records: list[dict],
         contended[slug] = rec
 
     lines.append(f"{'slug':<44} {'reading':<18} {'p50':>8} {'p95':>8} "
-                 f"{'max':>8} {'bank':>6} {'turns':>6}")
+                 f"{'max':>8} {'bank_s':>6} {'wrst':>6} {'turns':>6}")
     for slug in (a_slug, b_slug):
         for rec in (solo[slug], contended[slug]):
             t = rec["timing_ms"]
             lines.append(f"{slug:<44} {rec['reading']:<18} "
                          f"{t['p50']:>8.1f} {t['p95']:>8.1f} "
                          f"{t['max']:>8.1f} {rec['bank_drawn_s']:>6.3f} "
+                         f"{rec['worst_turn_over_s']:>6.3f} "
                          f"{rec['turns']:>6d}")
+    lines.append("bank_s = F046 policy draw (sum of per-turn overruns "
+                 "against the 1 s free turn; 60 s bank); wrst = worst "
+                 "single turn's overrun (the bench's reading)")
     for slug in (a_slug, b_slug):
         s, c = solo[slug]["timing_ms"]["p95"], \
             contended[slug]["timing_ms"]["p95"]
-        if c < s:
-            raise AssertionError(
-                f"A4 direction assertion failed for {slug}: contended p95 "
-                f"{c:.1f} ms < solo p95 {s:.1f} ms - the harness is broken "
-                f"(a contended reading faster than solo is an inverted "
-                f"measurement, addendum A4), not fast load")
-    lines.append("direction assertion: contended >= solo - holds for both "
-                 "versions")
+        verdict, text = _direction_verdict(s, c)
+        if verdict == "violated":
+            raise AssertionError(f"A4 direction assertion failed for "
+                                 f"{slug}: {text}")
+        lines.append(f"direction assertion ({slug}): {verdict} - {text}")
     return lines
 
 
@@ -466,10 +508,25 @@ def _git_sha() -> str:
 
 
 def _append_scoreboard(row: dict) -> None:
+    """Append one run's row, never an unidentifiable one.
+
+    Self-review fix: the tool's `--label` defaults to "" and so the row
+    that matters most (the M1 baseline) landed with an empty label —
+    evidence a reader cannot attribute to a run. An absent label is now
+    synthesised from the run's own a/b/tier, so every row says what it
+    measured.
+    """
+    row = dict(row)
+    if not str(row.get("label", "")).strip():
+        row["label"] = (f"{row.get('a', '?')} vs {row.get('b', '?')}"
+                        f" - {row.get('tier', '?')} tier")
     new = not SCOREBOARD.is_file()
     SCOREBOARD.parent.mkdir(parents=True, exist_ok=True)
     with SCOREBOARD.open("a", newline="") as fh:
-        w = csv.DictWriter(fh, fieldnames=_COLUMNS, extrasaction="ignore")
+        # lineterminator="\n": the default CRLF mixed into a file written
+        # with Unix endings (self-review fix; the guard test asserts none).
+        w = csv.DictWriter(fh, fieldnames=_COLUMNS, extrasaction="ignore",
+                           lineterminator="\n")
         if new:
             w.writeheader()
         w.writerow(row)
@@ -533,14 +590,36 @@ def _report(a_slug: str, b_slug: str, tier: str, records: list[dict],
         f"ties: {ties} (counted explicitly; margin on ties "
         f"{_fmt(statistics.fmean(ties_m)) if ties_m else 'n/a'} coins)",
         "",
-        f"seed count (paired, 95%, normal approx): with the pooled sd "
-        f"{_fmt(s.get('sd', float('nan')), '.1f')} and mean "
-        f"{_fmt(s.get('mean', float('nan')))}, resolving this margin needs "
-        f"n >= {_seeds_needed(s.get('sd', float('nan')), s.get('mean', float('nan'))):.1f} "
-        f"paired seeds per opponent-meeting (measured here; the 16 in "
-        f"issue #18 was provisional - #20 brief 6.3)",
+        _seed_count_line(s.get("sd", float("nan")), s.get("mean", float("nan"))),
     ] + extra_lines
     return "\n".join(lines)
+
+
+def _seed_count_line(sd: float, mean: float) -> str:
+    """The measured seed count, or WHY it is undefined (self-review fix).
+
+    A one-seed run produced "resolving this margin needs n >= nan
+    paired seeds" — arithmetic leaking into prose. nan means undefined,
+    and the reason is knowable: sd needs >= 2 paired comparisons, and a
+    zero spread or zero mean margin has no resolving count at all.
+    """
+    n_needed = _seeds_needed(sd, mean)
+    tail = ("(measured here; the 16 in issue #18 was provisional "
+            "- #20 brief 6.3)")
+    if n_needed == n_needed:                     # not nan
+        return (f"seed count (paired, 95%, normal approx): with the pooled "
+                f"sd {_fmt(sd, '.1f')} and mean {_fmt(mean)}, resolving this "
+                f"margin needs n >= {n_needed:.1f} paired seeds per "
+                f"opponent-meeting {tail}")
+    if sd != sd:
+        why = ("the pooled sd of a single paired comparison is undefined "
+               "- use >= 2 seeds")
+    elif abs(mean) < 1e-9:
+        why = "the observed mean margin is 0 - there is nothing to resolve"
+    else:
+        why = "the observed spread is 0 - every pair agrees exactly"
+    return (f"seed count (paired, 95%, normal approx): undefined ({why}) "
+            f"{tail}")
 
 
 # --- CLI -----------------------------------------------------------------

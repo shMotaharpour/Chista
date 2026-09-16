@@ -111,16 +111,18 @@ def run_episode_process(slug0: str, slug1: str, seed: int,
 
 def run_episode_timed(slug0: str, slug1: str = "PASS-proxy", seed: int = 0,
                       episode_steps: int = 720) -> dict:
-    """Timing mode: exactly one process, serial, per-seat readings.
+    """Throughput-shaped record tagged mode="timing" — NO per-turn readings.
 
-    What this BUILDS today: a serial, unloaded per-call timing record
-    tagged mode="timing" - `timing_solo` when slug1 is the PASS proxy.
-    What A4 REQUIRES and is NOT built yet (named TODO, #20 addendum):
-    the `timing_contended` reading against a real thinking pool agent,
-    the direction assertion (contended >= solo), and the bank policy
-    deriving from the contended number. The function exists so the
-    reporting layer has a mode tag to refuse on; do not quote its
-    timings as the budget until the contended reading exists.
+    What this BUILDS: one process, one episode, the record tagged
+    mode="timing" so the reporting layer can refuse on the tag. The
+    per-turn readings live in `_timed_episode_worker` (used by
+    `offline.evaluate`'s timing block): `timing_solo` against
+    "PASS-proxy" and `timing_contended` against a real pool opponent,
+    with the addendum's direction assertion (contended >= solo — a
+    contended reading faster than solo is a broken harness, not fast
+    load). Still open, named: the bank policy DERIVING from the
+    contended number (#9's flip; F046's 1 s + 60 s accounting is in
+    `bank_seconds` but nothing gates on it yet).
     """
     rec = run_episode_process(slug0, slug1, seed, episode_steps,
                               timeout_s=1200.0)
@@ -137,6 +139,9 @@ def _load_agent(slug: str):
     """Resolve one runner-side agent reference (shared by both workers).
 
     - "PASS-proxy": the built-in PASS policy;
+    - "chista-m1": OUR agent (the sweep/baseline subject, main's
+      offline/pool/sweep.py slugs it); kept from main — the arena
+      rebase must not drop it;
     - "ref:<module>:<attr>": an in-repo agent (issue #18 --a/--b refs);
     - otherwise: a vendored pool slug via offline.pool.loader.
     """
@@ -146,6 +151,11 @@ def _load_agent(slug: str):
         return LoadedAgent(slug="PASS-proxy", fn=_pass_agent,
                            fn_name="_pass_agent", arity=2,
                            rule="builtin", module=None)
+    if slug == "chista-m1":                 # OUR agent (the baseline subject)
+        from agent.main import agent as our_agent
+        return LoadedAgent(slug="chista-m1", fn=our_agent,
+                           fn_name="agent", arity=2,
+                           rule="builtin-our-agent", module=None)
     if slug.startswith("ref:"):
         # issue #18: --a/--b accept "main" / "agent.main:agent". The
         # module is OUR code, importable from the repo root (the child's
@@ -275,13 +285,32 @@ def _timed_episode_worker(slug: str, opp: str, seed: int,
     p50 = turn_ms[n // 2]
     p95 = turn_ms[min(n - 1, int(0.95 * n))]
     mx = turn_ms[-1]
-    bank = max(0.0, (mx - 1000.0)) / 1000.0
+    drawn_s, worst_over_s = bank_seconds(turn_ms)
     return {"seed": seed, "status": "DONE", "slug": slug, "opponent": opp,
             "turns": n,
             "timing_ms": {"p50": round(p50, 3), "p95": round(p95, 3),
                           "max": round(mx, 3)},
-            "bank_drawn_s": round(bank, 4),
+            "bank_drawn_s": round(drawn_s, 4),
+            "worst_turn_over_s": round(worst_over_s, 4),
             "guard": stats_me.labels()}
+
+
+def bank_seconds(turn_ms: list[float]) -> tuple[float, float]:
+    """F046's runtime-budget accounting over one episode's turn times.
+
+    Returns `(bank_drawn_s, worst_turn_over_s)`:
+    - `bank_drawn_s` is the POLICY number: F046 gives 1 free second per
+      turn and a 60-second bank for the episode, and bills
+      `max(0, duration - 1.0)` per turn, so the draw is the SUM over
+      turns (a forfeit is this exceeding 60 s). The bench's single
+      `max(0, max_turn - 1.0)` is a different, weaker reading — it only
+      ever equals the draw when one turn overruns and the rest do not;
+    - `worst_turn_over_s` keeps that per-turn worst case, which is what
+      the bench prints (labelled "from the max turn").
+    """
+    drawn = sum(max(0.0, ms / 1000.0 - 1.0) for ms in turn_ms)
+    worst = max(0.0, (max(turn_ms) / 1000.0 - 1.0)) if turn_ms else 0.0
+    return drawn, worst
 
 
 def _freeze(action: dict) -> tuple:

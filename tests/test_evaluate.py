@@ -118,6 +118,164 @@ def test_tier_counts_agree_with_the_note() -> None:
             f"{TIER_AGENT_EPISODES[tier]}")
 
 
+def test_scoreboard_rows_match_the_header() -> None:
+    """Self-review guard: the scoreboard is the PR's DURABLE evidence, so
+    it must parse as CSV.
+
+    Why this exists: two rows were hand-written with a label containing
+    unquoted commas ("... vs spine, 3 seeds, adaptive-replay-agent seat
+    1"), which made them 23 and 22 fields against the 21-column header —
+    every field after the label shifts for any reader, and the numbers
+    that a reviewer would quote (n_ok, margin, CI) are silently wrong.
+    A row must also carry a label: the one row that matters most (the
+    M1 baseline) shipped with an empty one, i.e. unidentifiable evidence.
+
+    R007: verified in its failing direction — re-introducing one
+    unquoted comma into a label makes this test fail with
+    "row 20260916T071102Z has 22 fields, header has 21".
+    """
+    import csv
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[1] / "offline" / "scoreboard.csv"
+    rows = list(csv.reader(path.open()))
+    header, data = rows[0], rows[1:]
+    assert header == ["run_id", "utc", "label", "tier", "a", "b", "git_sha",
+                      "opponents_note", "n_jobs", "n_ok", "n_abandoned",
+                      "wins", "losses", "ties", "win_rate", "margin_mean",
+                      "margin_sd", "ci_lo", "ci_hi", "seeds_needed",
+                      "records"], header
+    assert data, "the scoreboard has no measured row"
+    raw = path.open(newline="").read()   # newline="" keeps \r visible
+    assert "nan" not in raw, "an undefined number was written as 'nan'"
+    assert "\r" not in raw, "CRLF line endings mixed into the scoreboard"
+
+    def _num(s: str) -> float | None:
+        # '' is this file's convention for "undefined" (never 'nan'):
+        # a single paired comparison has no sd, hence no CI.
+        return float(s) if s.strip() else None
+
+    for r in data:
+        assert len(r) == len(header), (
+            f"row {r[0]} has {len(r)} fields, header has {len(header)}")
+        assert r[0].strip() and r[2].strip(), f"row {r[0]} lacks id/label"
+        assert r[3] in ("smoke", "ladder", "full"), r[3]
+        n_jobs, n_ok = int(r[8]), int(r[9])
+        wins, losses, ties = int(r[11]), int(r[12]), int(r[13])
+        assert n_ok <= n_jobs
+        assert wins + losses + ties == n_ok, r[:2]
+        mean = _num(r[15])
+        assert mean is not None, f"row {r[0]} has no margin"
+        lo, hi = _num(r[17]), _num(r[18])
+        assert (lo is None) == (hi is None), f"row {r[0]}: half a CI"
+        if lo is not None:
+            assert lo <= mean <= hi, (r[0], lo, mean, hi)
+        else:
+            assert n_ok < 2, f"row {r[0]}: no CI for {n_ok} comparisons"
+        sd = _num(r[16])
+        if sd is not None:
+            assert sd >= 0.0
+        seeds_n = _num(r[19])
+        if seeds_n is not None:
+            assert seeds_n >= 0.0
+
+
+def test_bank_seconds_is_the_policy_draw() -> None:
+    """F046: 1 free second per turn, billed per turn -> the bank draw is
+    the SUM of overruns, not the worst turn's.
+
+    Self-review fix: the worker reported `max(0, worst_turn - 1 s)`
+    under the name `bank_drawn_s`. Two 1.4 s turns draw 0.8 s from the
+    60 s bank; the old formula called that 0.4 s — an understated draw
+    under the policy's own name (the bench prints that weaker reading,
+    but labels it "from the max turn"). This test pins both numbers.
+    """
+    from offline.runner import bank_seconds
+
+    drawn, worst = bank_seconds([1400.0, 1400.0, 200.0])
+    assert abs(drawn - 0.8) < 1e-9, drawn
+    assert abs(worst - 0.4) < 1e-9, worst
+    assert bank_seconds([500.0, 999.0]) == (0.0, 0.0)
+    assert bank_seconds([]) == (0.0, 0.0)
+
+
+def test_scoreboard_writer_quotes_and_labels() -> None:
+    """The writer must never emit a row the guard test above would reject:
+    a comma-bearing label is QUOTED (the defect that corrupted two rows
+    was a label written by hand without quoting), and an absent label is
+    synthesised so no run is unidentifiable evidence.
+    """
+    import csv
+    import tempfile
+    from pathlib import Path
+
+    from offline import evaluate as E
+
+    real = E.SCOREBOARD
+    with tempfile.TemporaryDirectory() as d:
+        E.SCOREBOARD = Path(d) / "scoreboard.csv"
+        try:
+            E._append_scoreboard({"run_id": "x", "tier": "smoke",
+                                  "a": "A", "b": "B"})
+            E._append_scoreboard({"run_id": "y", "tier": "smoke",
+                                  "a": "A", "b": "B",
+                                  "label": "hand-written, with commas, 3 of them"})
+        finally:
+            E.SCOREBOARD = real
+        rows = list(csv.reader((Path(d) / "scoreboard.csv").open()))
+    assert rows[0] == E._COLUMNS, rows[0]
+    for r in rows[1:]:
+        assert len(r) == len(E._COLUMNS), (r, len(r))
+    assert rows[1][2] == "A vs B - smoke tier", rows[1][2]
+    assert rows[2][2] == "hand-written, with commas, 3 of them", rows[2][2]
+
+
+def test_direction_verdict_tolerates_timer_noise() -> None:
+    """A4's direction assertion must not abort a run on noise.
+
+    Self-review fix: a live run died with "contended p95 0.1 ms < solo
+    p95 0.1 ms" — two noise-scale readings. The verdict is now
+    three-valued: both-below-floor = unresolved (never asserted, and
+    never allowed to feed the bank policy), a within-tolerance
+    difference = holds, a real inversion = violated (still raises).
+
+    R007: verified in its failing direction — the old no-tolerance rule
+    (`contended < solo`) maps a sub-resolution difference such as
+    (0.1012, 0.0987) to a violation, so the pair below fails against it
+    (measured: old rule -> violated, new rule -> unresolved).
+    """
+    from offline.evaluate import _direction_verdict
+
+    assert _direction_verdict(0.1, 0.1)[0] == "unresolved"
+    assert _direction_verdict(0.1012, 0.0987)[0] == "unresolved"
+    assert _direction_verdict(0.1, 0.0)[0] == "unresolved"
+    assert _direction_verdict(9.0, 12.0)[0] == "holds"
+    assert _direction_verdict(9.0, 8.9)[0] == "holds"      # within slack
+    assert _direction_verdict(12.0, 9.0)[0] == "violated"  # inverted
+    assert _direction_verdict(40.0, 10.0)[0] == "violated"
+
+
+def test_seed_count_line_never_prints_nan() -> None:
+    """Self-review fix: a one-seed run's report said "needs n >= nan
+    paired seeds". nan is not a promise a report can make — the line now
+    states the reason it is undefined.
+    """
+    from offline.evaluate import _seed_count_line
+
+    one_seed = _seed_count_line(float("nan"), -46717.0)
+    assert "nan" not in one_seed, one_seed
+    assert "undefined" in one_seed and "2 seeds" in one_seed, one_seed
+
+    zero_mean = _seed_count_line(200.0, 0.0)
+    assert "nan" not in zero_mean and "mean margin is 0" in zero_mean
+
+    flat = _seed_count_line(0.0, 100.0)
+    assert "nan" not in flat and "spread is 0" in flat
+
+    measured = _seed_count_line(23713.83, -60817.3)
+    assert "n >= 0.6" in measured, measured
+
+
 def main() -> int:
     failures = 0
     for name, fn in sorted(globals().items()):
