@@ -85,13 +85,12 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 
-# --- tier table (issue #18; 20->19 corrected per #20 C1, and #20's
-# amendment A later drops 3 byte-identical duplicates -> 16 canonical;
-# the counts below follow loader.slugs() once #20's registry lands —
-# F3 of the #34 review — instead of carrying their own constants).
-TIER_OPPONENTS = {"smoke": 5, "ladder": 15, "full": 19}
+# --- tier table (issue #18; #20's amendment A landed: 19 slugs, 3
+# byte-identical duplicates, 16 canonical; registry.py holds the
+# measured 11/5 dev/held-out split, which _dev_split consumes).
+TIER_OPPONENTS = {"smoke": 5, "ladder": 11, "full": 19}
 TIER_SEEDS = {"smoke": 4, "ladder": 16, "full": 16}
-TIER_AGENT_EPISODES = {"smoke": 40, "ladder": 480, "full": 608}
+TIER_AGENT_EPISODES = {"smoke": 40, "ladder": 352, "full": 608}
 
 HELD_OUT_NOTE = ("dev/held-out split not measured yet (#20 in progress); "
                  "every pool agent treated as dev")
@@ -144,15 +143,17 @@ def _resolve_ref(ref: str) -> str:
 # --- opponent selection --------------------------------------------------
 
 def _dev_split() -> tuple[list[str] | None, str]:
-    """The 14-dev / 5-held-out split when #20's registry exists."""
+    """The measured dev / held-out split from #20's registry (11/5 over
+    the canonical 16 - amendment A dropped the three duplicates)."""
     try:
-        from offline.pool.registry import dev_slugs      # type: ignore
+        from offline.pool.registry import dev_and_heldout
     except Exception:                                # noqa: BLE001 - not yet
         return None, HELD_OUT_NOTE
-    dev = sorted(dev_slugs())
+    dev, _held = dev_and_heldout()
     if not dev:
         return None, HELD_OUT_NOTE
-    return dev, "dev split from offline/pool/registry.py (#20)"
+    return sorted(dev), ("measured 11-dev/5-held-out split from "
+                         "offline/pool/registry.py (#20, canonical 16)")
 
 
 def _pick_opponents(tier: str, override: str | None) -> tuple[list[str], str]:
@@ -164,7 +165,10 @@ def _pick_opponents(tier: str, override: str | None) -> tuple[list[str], str]:
     dev, note = _dev_split()
     from offline.pool.loader import slugs
     if tier == "full":
-        return sorted(slugs()), "all 19 vendored opponents (M5 gate)"
+        return sorted(slugs()), ("all 19 vendored opponents, M5 gate - "
+                                 "#20 amendment A: 16 canonical, 3 "
+                                 "byte-identical duplicates included for "
+                                 "provenance; canonical gate = ladder")
     if dev is None:
         return sorted(slugs())[:TIER_OPPONENTS[tier]], \
             f"first {TIER_OPPONENTS[tier]} sorted slugs - {HELD_OUT_NOTE}"
