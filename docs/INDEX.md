@@ -101,6 +101,7 @@ Order: **Rules** (`R<NNN>_<slug>.md`) first, then **Findings**
 - [F051_inert-opponent-market-ceiling.md](F051_inert-opponent-market-ceiling.md) — against a PASS opponent the market saturates near 191,812 and distinct competent agents land on that ceiling exactly: baseline columns measured against an inert opponent read the ceiling, not the agents.
 - [F052_wrs-solvers-ported-one-project.md](F052_wrs-solvers-ported-one-project.md) — The workforce/routing solvers came in from ChistaWRS and now live in `secretary/`. `oxa_solver` is the runtime one — pure stdlib, 0.1–0.9 ms against a 20 ms budget. `cpsat_solver` is the offline oracle and imports ortools, which the submission's closure must never reach.
 - [F053_the-monolithic-default-is-not-an-oracle.md](F053_the-monolithic-default-is-not-an-oracle.md) — The min-worker objective makes `cpsat_binarySearch` the oracle: feasibility under a shrinking pool cap means the smallest feasible cap is the optimum. The monolithic solve's default mode builds no objective — 18 × cost 0 and 2 × cost 2 in 20 runs — so its cost can never be the reference.
+- [F054_oxa-orphans-a-chain-at-the-horizon.md](F054_oxa-orphans-a-chain-at-the-horizon.md) — OXA's greedy could commit a task on the horizon's last turn, so its successors — pinned by the committed `exec_time` as a hard lower bound — could never run, and `solve_oxa` answered INFEASIBLE for days the oracle schedules. A chain-tail lookahead in the candidate test fixes all 47 measured verdicts.
 
 ## Tests & benchmarks
 

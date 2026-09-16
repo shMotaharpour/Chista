@@ -77,7 +77,13 @@ def _build_worker_route(
         if len(group) == 2 and tasks_by_id[group[0]].action == MinorActionType.PICKUP:
             acquire_partner[group[1]] = group[0]
 
+    successors = _successor_map(instance)
+
     while True:
+        # The tail table is constant across this iteration: the candidate
+        # set only changes when a task is committed, and a commit ends it.
+        pending = frozenset(remaining_targets)
+        tail_turns: dict[str, int] = {}
         available = [
             tid for tid in remaining_targets 
             if all(p in done_targets or p in route_task_ids for p in target_preds[tid])
@@ -109,6 +115,17 @@ def _build_worker_route(
             actual_exec = max(proposed_t, ready_t)
             
             if actual_exec > horizon:
+                continue
+            # Do not commit a task at a time where the rest of its own
+            # precedence chain can no longer run inside the horizon: the
+            # emitted exec_time becomes a hard global lower bound for its
+            # successors (`ready_t = exec_times[p] + 1`), so no later
+            # worker can rescue the chain and the leftover target is read
+            # as INFEASIBLE with idle workers sitting right there. The
+            # tail figure is a lower bound on any completion, so skipping
+            # the task here can never lose a schedule that fits.
+            if actual_exec + _unfinished_tail_turns(
+                    tid, pending, successors, tasks_by_id, tail_turns) > horizon:
                 continue
                 
             cost = actual_exec - current_t
@@ -241,6 +258,44 @@ def _cell_options(task: MinorTask) -> list[Cell]:
         return [task.cell]
     return _ENTRY_CELLS
 
+
+
+def _successor_map(instance: Instance) -> dict[str, list[str]]:
+    """`precedence` restricted to target tasks, inverted -- the mirror of
+    `Instance.target_preds`. Acquire pickups are not targets (the preload
+    phase emits them), so they never appear here."""
+    successors: dict[str, list[str]] = {tid: [] for tid in instance.target_tasks}
+    for pred, succ in instance.precedence:
+        if pred in successors and succ in successors:
+            successors[pred].append(succ)
+    return successors
+
+
+def _unfinished_tail_turns(
+    tid: str,
+    pending: frozenset[str],
+    successors: dict[str, list[str]],
+    tasks_by_id: dict[str, MinorTask],
+    memo: dict[str, int],
+) -> int:
+    """Turns that must still fit *after* `tid` for every one of its
+    not-yet-scheduled descendants to run: the longest path through the
+    successor DAG, each hop costing the successor's own turn plus the
+    travel to its cell. Any completion of the chain needs at least that
+    much time, so refusing to schedule a task that cannot afford it is
+    lossless -- see docs/F054 (the false-INFEASIBLE defect)."""
+    if tid in memo:
+        return memo[tid]
+    memo[tid] = 0  # a malformed (cyclic) successor map must not recurse
+    longest = 0
+    for succ in successors.get(tid, ()):
+        if succ not in pending:
+            continue
+        hop = 1 + _min_dist(_cell_options(tasks_by_id[tid]), _cell_options(tasks_by_id[succ]))
+        longest = max(longest, hop + _unfinished_tail_turns(
+            succ, pending, successors, tasks_by_id, memo))
+    memo[tid] = longest
+    return longest
 
 
 def compute_lower_bound(instance: Instance) -> int:
