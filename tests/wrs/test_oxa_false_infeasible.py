@@ -8,19 +8,25 @@ with 10 x 24 of those against at most 4n actions the answer is a
 capacity question, not a construction one.
 
 Measured before the fix (docs/F054) with the oracle from
-tests/wrs/test_cpsat_solver.py's entry point, `cpsat_binarySearch`:
+tests/wrs/test_cpsat_solver.py's entry point, `cpsat_binarySearch`. The
+pre-fix `_build_worker_route` iterated the `remaining_targets` set, so its
+verdicts moved with the interpreter's hash order -- the sets below are the
+`PYTHONHASHSEED=0` run, and a reader comparing them must pin the same seed
+(`test_oxa_reproducibility.py` holds the fixed solver to be seed-free):
 
-| kind | false INFEASIBLE at n = |
-|---|---|
-| plnt | 15..25 |
-| wet_harvst | 15..19, 22 |
-| wet_harvst_plnt | 8..17 |
-| frtz_water | 7, 8, 9, 18..25 |
-| feed, frtz, place_animal | (never) |
+| kind | `solve_oxa` INFEASIBLE at n = | falsified by the oracle |
+|---|---|---|
+| plnt | 15..19, 23..25 | 8 (all of them) |
+| wet_harvst | 13, 15..19, 24 | 7 (all of them) |
+| wet_harvst_plnt | 8..25 | 10: n = 8..17; n = 18..25 unproven in the 10 s slice |
+| frtz_water | 7, 8, 9, 20..25 | 6: n = 7, 8, 9, 20, 21, 23; 22, 24, 25 unproven |
+| feed, frtz, place_animal | (never) | — |
 
 R007 failing direction: with `secretary/solvers/oxa_solver.py` reverted to
-its pre-fix state this module fails with the false verdicts listed above;
-the guard's own message names the kind, the n and the oracle's answer.
+its pre-fix state this module reddens. Measured at `PYTHONHASHSEED=0`:
+`pytest -x -q` stops on the sweep test's `plnt` case (`1 failed, 2 passed`),
+and the eight pinned pairs all fail (`8 failed, 13 deselected`) with the
+guard's own message naming the kind, the n and the oracle's answer.
 
 Two more findings came out of the pre-PR review (both measured, docs/F054):
 the tail gap must charge travel only for pairs that ONE worker has to serve
@@ -86,15 +92,17 @@ def test_the_sweep_never_calls_a_feasible_day_infeasible(kind):
 
 @pytest.mark.parametrize("kind,n", [
     # the exact instances of the finding, each measured false-INFEASIBLE
-    # before the fix with the oracle proving them feasible
+    # before the fix with the oracle proving them feasible, at
+    # PYTHONHASHSEED=0 (the pre-fix blob's verdicts follow the hash order;
+    # see the table above and docs/F054's reproducibility section)
     ("plnt", 15),
     ("plnt", 25),
     ("wet_harvst", 15),
-    ("wet_harvst", 22),
+    ("wet_harvst", 24),
     ("wet_harvst_plnt", 8),
     ("wet_harvst_plnt", 17),
     ("frtz_water", 7),
-    ("frtz_water", 25),
+    ("frtz_water", 23),
 ])
 def test_the_measured_false_infeasible_instances_schedule_and_verify(kind, n):
     instance = build(n, kind)

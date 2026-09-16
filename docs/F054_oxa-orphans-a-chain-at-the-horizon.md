@@ -2,8 +2,9 @@
 
 **Summary (<=50 words):** OXA's greedy could commit a task on the horizon's last
 turn, so its successors — pinned by the committed `exec_time` as a hard lower
-bound — could never run, and `solve_oxa` answered INFEASIBLE for 38 days the
-oracle schedules. A chain-tail lookahead in the candidate test fixes every one.
+bound — could never run, and `solve_oxa` answered INFEASIBLE for 31 days of the
+issue-#14 sweep that the oracle schedules. A chain-tail lookahead in the
+candidate test fixes every one.
 
 ## What was measured
 
@@ -12,40 +13,72 @@ The issue-#14 sweep: ten workers (the first entering at hour 0, the rest at hour
 `n = 6..25` (140 instances), shed stock of 200 wheat / 200 fertilizer / 50 of
 each animal. Every INFEASIBLE answer was put to the oracle `cpsat_binarySearch`
 — the oracle by F053, since feasibility under a shrinking pool cap *is* the
-min-worker objective — with `CpSatConfig(time_limit_seconds=10)`.
+min-worker objective — with `CpSatConfig(time_limit_seconds=10)`. The
+instrument is the sweep in `tests/wrs/test_oxa_false_infeasible.py`, run against
+the pre-fix blob with **`PYTHONHASHSEED=0`**:
 
 | kind | `solve_oxa` (pre-fix) INFEASIBLE at n = | the oracle's answer there |
 |---|---|---|
-| `plnt` | 15..25 (11) | `FEASIBLE` (11 of 11) |
-| `wet_harvst` | 15, 16, 17, 18, 19, 22 (6) | `FEASIBLE` (6 of 6) |
+| `plnt` | 15..19, 23..25 (8) | `FEASIBLE` (8 of 8) |
+| `wet_harvst` | 13, 15..19, 24 (7) | `FEASIBLE` (7 of 7) |
 | `wet_harvst_plnt` | 8..25 (18) | `FEASIBLE` at 8..17 (10 of 10); no answer inside its 10 s slice at 18..25 |
-| `frtz_water` | 7, 8, 9, 18..25 (11) | `FEASIBLE`/`OPTIMAL` (11 of 11) |
+| `frtz_water` | 7, 8, 9, 20..25 (9) | `FEASIBLE`/`OPTIMAL` at 7, 8, 9, 20, 21, 23 (6); no answer at 22, 24, 25 |
 | `feed`, `frtz`, `place_animal` | never | — |
 
-**38 verdicts were falsified by the oracle** — 11 + 6 + 10 + 11. The
-`wet_harvst_plnt` rows at n = 18..25 are reported separately as *unproven*:
-CP-SAT neither schedules nor refutes them inside that slice, so they are not
-counted as false, and the sweep's oracle call returned for every one of them
-(none raised). The issue-#14 comment's list (`plnt` 15..19, `wet_harvst`
-13/15..19/22/23, `frtz_water` 7..9/14/20..25) is **not** a subset of this one and
-this one is not a subset of it: n = 13, 14 and 23 came back FEASIBLE pre-fix and
-n = 18, 19 came back INFEASIBLE, so the two lists are measurements of different
-things (the comment's predates 40d9cfa, when the oracle could not complete at
-all). These are the numbers this box measured, at ten workers.
+**31 of those 42 INFEASIBLE verdicts were falsified by the oracle** — 8 + 7 + 10
++ 6. The eleven rows CP-SAT could not decide (`wet_harvst_plnt` 18..25,
+`frtz_water` 22, 24, 25) are reported separately as *unproven*: it neither
+schedules nor refutes them inside that slice, so they are not counted as false,
+and the oracle call returned for every one of them (none raised).
+
+An earlier version of this table said **38** (11 + 6 + 10 + 11) over the sets
+`plnt 15..25`, `wet_harvst 15..19 + 22`, `frtz_water 7..9 + 18..25`. That
+measurement was taken on a solver whose answer depended on the interpreter's
+hash order, and it reproduces under **no** pinned seed I tried (40 of them): see
+*Reproducibility*. The seed is part of the measurement, and the numbers above
+name theirs.
+
+The issue-#14 comment's list (`plnt` 15..19, `wet_harvst` 13/15..19/22/23,
+`frtz_water` 7..9/14/20..25) is **not** a subset of this one and this one is not
+a subset of it: under this measurement `wet_harvst` 22 and 23 and `frtz_water`
+14 came back FEASIBLE pre-fix where the comment calls them false-INFEASIBLE,
+while `plnt` 23..25 and `wet_harvst` 24 are false here and absent from the
+comment. The comment's numbers predate the oracle question being settled — F052
+found the `cpsat_binarySearch`/`solve_cpsat` comparison unstable, the issue
+comment itself says to treat `cpsat_binarySearch` as unverified, and
+ac9a833/40d9cfa/F053 settled that the prefix search *is* the oracle — so the two
+lists are measurements of different things.
 
 Raising the pool to 4, 8, 10, 12 or 16 workers leaves the verdict unchanged
 (`plnt` n=15, `wet_harvst_plnt` n=8, `frtz_water` n=7 are `INFEASIBLE` under
 every one of those pools pre-fix and `FEASIBLE`, `verify_solution`-valid, under
-every one post-fix), so this is not a capacity limit.
+every one post-fix), so this is not a capacity limit. Reproduced by
+`tests/wrs/test_oxa_false_infeasible.py::test_a_bigger_worker_pool_does_not_change_the_verdict`
+(4/8/12/16) and by hand for 10.
 
-Post-fix the same 140 instances all return a schedule `verify_solution`
-accepts, the sweep completes in 0.3 s, and no oracle call is needed because no
-INFEASIBLE answer is left to check. The guard is measured, not assumed, to be
-cheap on F052's feed shape — best-of-50 per call, `validate=False`, two
-interleaved runs: pre-fix 0.11-0.13 / 0.20-0.22 / 0.43-0.51 / 0.67-0.72 ms at
-n = 8/12/20/25 against 0.12-0.16 / 0.25-0.26 / 0.52-0.56 / 0.77-0.82 ms
-post-fix. That is up to +0.1 ms/call, two orders of magnitude inside the 20 ms
-runtime budget.
+Post-fix the same 140 instances all return a schedule `verify_solution` accepts
+(20 `OPTIMAL`, 120 `FEASIBLE`, 0 rejected), and no oracle call is needed because
+no INFEASIBLE answer is left to check. The sweep takes 0.33-0.35 s for all 140
+instances on this box (`tests/wrs/test_oxa_false_infeasible.py`'s sweep loop,
+three runs).
+
+The guard is measured, not assumed, to be cheap on the sweep's feed shape —
+best-of-50 per call, `validate=False`, two interleaved runs, the instrument
+`bench/bench_oxa_guard_cost.py`:
+
+| tiles (`feed`) | pre-fix (40d9cfa) | this commit | delta |
+|---|---|---|---|
+| 8 | 0.076 ms | 0.092 ms | +0.016 |
+| 12 | 0.139 ms | 0.169 ms | +0.030 |
+| 20 | 0.294 ms | 0.355 ms | +0.061 |
+| 25 | 0.452 ms | 0.532 ms | +0.080 |
+
+That is up to about +0.1 ms/call, and the worst case is 0.53-0.55 ms against
+F046's 20 ms runtime budget — under 3% of it. Absolute times move with machine
+load (an earlier run of the same instrument on a loaded box read 1.5x these,
+and repeats on an idle box moved the delta between +0.08 and +0.10 ms/call);
+the headroom is what travels, and the instrument is committed so a reader can
+re-measure on their own silicon.
 
 ## Mechanism (the exact lines)
 
@@ -58,7 +91,8 @@ bound, not a hint. A commit at hour 24 therefore pinned its successor to hour
 25 inside a 24-hour horizon **for every worker**, and the leftover target made
 `solve_oxa` report INFEASIBLE while workers 3..9 sat idle.
 
-Reproduced on `plnt` n=15 (pre-fix module restored, per-worker routes printed):
+Reproduced on `plnt` n=15 (pre-fix module in place, `PYTHONHASHSEED=0`,
+per-worker routes printed):
 
 ```
   w0 -> [... ('m0_plant', 21), ('m0_water', 22), ('m5_plant', 24)]
@@ -75,9 +109,41 @@ remaining workers and each builds an empty route. Same shape on
 
 **The issue-#14 suspicion is refuted.** There is no prefix-size search in this
 module: no `r` loop exists, `compute_lower_bound` is never called by
-`solve_oxa`, and the verdict comes from the plain leftover-targets check at the
-end of the dispatch loop. Extra workers cannot help for the pinning reason
-above — not because a search gave up.
+`solve_oxa` (only `tests/wrs/test_oxa_solver.py` imports it), and the verdict
+comes from the plain leftover-targets check at the end of the dispatch loop.
+Extra workers cannot help for the pinning reason above — not because a search
+gave up.
+
+## Reproducibility (why this document was rewritten)
+
+The first version of F054 — and the two commits before this one — quoted numbers
+a reader could not repeat. `_build_worker_route` built its candidate list by
+iterating the `remaining_targets` **set**, and the greedy's winner was the first
+candidate to reach the minimum of `(cost, tie_breaker)`. Ties were therefore
+broken by the interpreter's hash order, so `solve_oxa` answered differently
+under different `PYTHONHASHSEED` values on the *same* instance. Measured:
+
+| revision | statuses over the 400 fuzz seeds, across hash seeds |
+|---|---|
+| pre-fix (40d9cfa) | `OPTIMAL 97`, `FEASIBLE` 91-94, `INFEASIBLE` 207-209, invalid 2-3 (16 seeds). The document's `97/92/208/3` is the seed-0/1/8 run only |
+| reviewed (this commit) before the ordering fix | `97/99/201/3` at seeds 0 and 7, `97/98/202/3` at seeds 1, 2, 3, 6, 8, 9, 11, 14, 15 |
+| the sweep's per-kind sets | `plnt` INFEASIBLE at 8 values at seed 0, 6 at seed 2, 7 at seed 3 — the document's 11-value set `15..25` at none of 40 seeds |
+
+The fix is that the candidate choice is now a **total order** —
+`key = (cost, tie_breaker, -tail, tid)` — so the winner cannot depend on the
+order the candidates were visited in, and the verdict is a function of the
+instance alone. `-tail` (serve the more constrained task first) is not only
+canonicalisation: it also fixed fuzz seed 307, where the tie between a
+standalone tile and a chain head was resolved the other way and the greedy
+stranded the chain (`tests/wrs/test_oxa_reproducibility.py::
+test_a_side_task_cannot_strand_a_chain`).
+
+Guards for all of it are in `tests/wrs/test_oxa_reproducibility.py`: the audit's
+400 statuses are pinned as the numbers this document reports, and two runs of
+the audit under different hash seeds must produce byte-identical dumps. What
+stays seed-dependent is history: the pre-fix and first-guard blobs in the tables
+below are `PYTHONHASHSEED=0` measurements, and this document names that seed
+wherever it quotes one of them.
 
 ## The pre-PR review pass (three defects, one of them mine)
 
@@ -92,13 +158,25 @@ p at (0,0) -> s at (9,9), horizon 10, two workers
 
 `bench/bench_oxa_fuzz.py` (400 seeded random instances: single tasks, same-cell
 and cross-cell pairs, item chains with paired acquires and groups) measured the
-damage — statuses per solver revision, all on the same seeds:
+damage — statuses per solver revision, all on the same seeds, the old blobs
+pinned to `PYTHONHASHSEED=0`, the diffs counted by
+`bench/bench_oxa_diff.py` (regression = a usable day, `OPTIMAL`/`FEASIBLE`,
+became unusable):
 
 | revision | OPTIMAL | FEASIBLE | INFEASIBLE | invalid | vs pre-fix |
 |---|---|---|---|---|---|
 | pre-fix (40d9cfa) | 97 | 92 | 208 | 3 | — |
-| first guard (committed earlier in this PR) | 97 | 53 | 246 | 4 | **40 regressions**, 3 improvements |
-| reviewed (this commit) | 97 | 99 | 201 | 3 | **0 regressions**, 6 improvements |
+| first guard (committed earlier in this PR) | 97 | 53 | 246 | 4 | **43 regressions**, 4 improvements |
+| reviewed (this commit) | 97 | 99 | 201 | 3 | **0 regressions**, 7 improvements |
+
+The first version of this table said **40 regressions, 3 improvements** for the
+first guard and **6 improvements** for the reviewed one. With the comparison
+definition written down in `bench/bench_oxa_diff.py`, the measured answers are
+43/4 and 0/7 against the seed-0 pre-fix run (0/46 against the first guard), and
+the whole table is reproduced by
+`tests/wrs/test_oxa_reproducibility.py::test_the_audit_reproduces_the_statuses_docs_F054_reports`.
+One seed moves in neither direction by this definition: 93 goes
+`INFEASIBLE -> INVALID_SOLUTION`, both unusable, counted separately by the tool.
 
 So the travel term is now charged only where one worker *must* serve both ends —
 an edge inside a `single_worker_group` — and plain edges cost the one turn
@@ -121,6 +199,9 @@ patched blind.
 
 ## What changed
 
+- `_build_worker_route`'s candidate choice is a total order
+  (`key = (cost, tie_breaker, -tail, tid)`), so the verdict no longer depends on
+  the interpreter's hash order (see *Reproducibility*).
 - `_successor_gaps` + `_unfinished_tail_turns` (`oxa_solver.py`, stdlib only):
   the precedence DAG inverted over the target tasks, each edge carrying the
   minimum turns that must separate its ends — `1`, plus the travel when the two
@@ -132,21 +213,38 @@ patched blind.
   (`fib(0..max_active)`), not the sum over the routes that carry tasks.
 - `tests/wrs/test_oxa_false_infeasible.py`: the sweep as a guard (every
   INFEASIBLE answer put to the oracle), the eight measured instances pinned by
-  name, the worker-pool invariance check, the cross-cell pair, the gap payroll
-  and a positive control that runs the oracle-confirmation branch on green runs.
+  name at the seed the table names, the worker-pool invariance check, the
+  cross-cell pair, the gap payroll and a positive control that runs the
+  oracle-confirmation branch on green runs.
+- `tests/wrs/test_oxa_reproducibility.py`: the audit's statuses pinned as the
+  numbers above, hash-seed independence, and the stranded-chain instance (fuzz
+  seed 307).
 - `bench/bench_oxa_fuzz.py`: the seeded audit that produced the table above
   (`--oracle` confirms INFEASIBLE verdicts too, `--dump` writes per-seed
   statuses for a differential run against another revision).
-- R007 failing direction, all re-checked by re-introducing the bug: with the
-  pre-fix module in place the sweep test reddens on `plnt` n=15
-  (`1 failed, 2 passed`); with the *first* guard in place the cross-cell pair
-  and the gap-payroll tests redden (`2 failed, 18 deselected`); both go green
-  again with this commit's solver (`20 passed`).
+- `bench/bench_oxa_diff.py`: the differential, and the definition of
+  "regression" this document quotes — the number's source, committed next to it.
+- `bench/bench_oxa_guard_cost.py`: the guard-cost instrument behind the timing
+  table.
+- R007 failing direction, all re-checked by re-introducing the bug, with the
+  tests as they stand now and `PYTHONHASHSEED=0`: with the pre-fix module in
+  place the sweep test reddens on `plnt` n=15 (`1 failed, 2 passed`) with
+  *"plnt n=15: OXA said INFEASIBLE but the oracle admits a schedule (FEASIBLE) —
+  the greedy orphaned a chain instead of leaving it to another worker"*, and the
+  eight pinned pairs redden (`8 failed, 13 deselected`); with the *first* guard
+  in place the cross-cell pair and the gap-payroll tests redden
+  (`2 failed, 19 passed`); with the candidate key reverted to
+  `(cost, tie_breaker)` the two reproducibility guards redden
+  (`1 failed, 2 passed`, *"the same instances answered differently under another
+  hash order: ['307']"*). All green again with this commit's solver:
+  `tests/wrs` 104 passed, 1 skipped.
 
 ## Why it matters
 
-OXA is the solver the secretary calls every turn (#14 §6). An INFEASIBLE verdict
-drops every chain, the agent passes the day and `planted_tiles` stays 0 — and
-`wet_harvst_plnt` is exactly F049's harvest-then-replant cycle, the measured
-tile optimum. Nothing in the logs separated "the day did not fit" from "the
-solver is broken"; this guard is that difference.
+OXA is the solver #14 §6 wires in as the secretary's per-turn dispatcher (the
+wiring is not in this tree yet: nothing outside `tests/` and `bench/` calls
+`solve_oxa`). Once it is, an INFEASIBLE verdict drops every chain, the agent
+passes the day and `planted_tiles` stays 0 — and `wet_harvst_plnt` is exactly
+F049's harvest-then-replant cycle, the measured tile optimum. Nothing in the
+logs would separate "the day did not fit" from "the solver is broken"; this
+guard is that difference.

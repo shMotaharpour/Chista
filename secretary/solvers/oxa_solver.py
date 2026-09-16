@@ -90,7 +90,7 @@ def _build_worker_route(
         ]
         
         best_task_id = None
-        best_cost = (float('inf'), float('inf'))
+        best_key = None
         best_actual_exec = -1
         best_setup = 0
         best_item = None
@@ -125,15 +125,21 @@ def _build_worker_route(
             # `_successor_gaps` charges an edge is a lower bound on any
             # completion of it, so skipping the task here can never lose a
             # schedule that fits.
-            if actual_exec + _unfinished_tail_turns(
-                    tid, pending, successor_gaps, tail_turns) > horizon:
+            tail = _unfinished_tail_turns(tid, pending, successor_gaps, tail_turns)
+            if actual_exec + tail > horizon:
                 continue
                 
             cost = actual_exec - current_t
             tie_breaker = -manhattan(entry_cell, task_cell)
-            
-            if (cost, tie_breaker) < best_cost:
-                best_cost = (cost, tie_breaker)
+            # A total order on the candidates: cheapest first, then the entry
+            # cell's travel preference, then the MORE CONSTRAINED task (the
+            # longer unfinished tail -- serving it late is what strands a
+            # chain, fuzz seed 307), then the task id. The id makes the
+            # winner independent of the order the candidates were visited
+            # in, so the verdict is a function of the instance alone.
+            key = (cost, tie_breaker, -tail, tid)
+            if best_key is None or key < best_key:
+                best_key = key
                 best_task_id = tid
                 best_actual_exec = actual_exec
                 best_setup = setup
@@ -448,7 +454,9 @@ def solve_oxa(instance: Instance, config: OxaConfig = OxaConfig()) -> OxaResult:
     # fib(0..m) -- an idle middle worker is legal but still on the payroll.
     # Summing only the routes that carry tasks under-reports whenever the
     # greedy leaves a gap, which the verifier then rejects as
-    # INVALID_SOLUTION (seeds 9/182/205 of the review fuzz).
+    # INVALID_SOLUTION (fuzz seed 9 of the review audit; the other two
+    # seeds that audit reports, 93 and 182/205, fail for the entry-cell
+    # reason docs/F054 records as still open).
     max_active = max((route.worker_index for route in routes), default=-1)
     solution = Solution(
         routes=routes, 

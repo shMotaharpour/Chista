@@ -17,8 +17,18 @@ The audit asserts the two things a verdict must satisfy:
     -- the F054 defect was exactly an INFEASIBLE the oracle could schedule.
 
 `docs/F054`'s differential numbers come from running this script with the
-pre-fix blob in place: `git show <rev>:secretary/solvers/oxa_solver.py >
-/tmp/old.py`, copy it over the module, run, restore.
+pre-fix blob in place -- `git show <rev>:secretary/solvers/oxa_solver.py >
+/tmp/old.py`, copy it over the module, run with `--dump`, restore -- and
+comparing the two dumps with `bench/bench_oxa_diff.py`, which is the
+definition of "regression" the document quotes.
+
+Hash order: this solver's candidate order is a total order now, so its 400
+statuses are the same under every `PYTHONHASHSEED`
+(`tests/wrs/test_oxa_reproducibility.py` holds that). The pre-fix blobs are
+not -- they iterate a set -- so a number taken from one of them is only
+reproducible with the seed named next to it (`PYTHONHASHSEED=0` in F054's
+tables). Run this script with a fixed `PYTHONHASHSEED` when comparing
+against another revision.
 
 A non-zero exit is the audit reporting a defect, not a harness error: today it
 reports the `single_worker_group`/entry-cell placement class of `docs/F054`
