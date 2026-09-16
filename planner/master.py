@@ -233,6 +233,7 @@ class MasterResult:
     converged: bool               # dual movement fell under TOL_DUAL
     used_fallback: bool = False
     fallback_reason: str = ""
+    p_source: str = ""            # where the product price path came from
     history: list = field(default_factory=list)   # per-round max dual move
 
 
@@ -344,6 +345,37 @@ def _idle_column(cost: np.ndarray) -> np.ndarray:
     return np.zeros_like(cost)
 
 
+def _product_price_path(obs, days: int, p_flat: np.ndarray,
+                        config=None) -> tuple[np.ndarray, str]:
+    """The product rows of `p`: the market forecast (#15), or flat quotes.
+
+    F035: prices rise through the season, so the flat stand-in under-prices
+    every later day of the horizon. `secretary/market.py` walks the town's
+    own consumption forward and re-prices through the engine's price
+    function (R002 — imported, never transcribed), so a day-20 harvest is
+    priced on the day-20 curve. Any failure keeps the flat path and SAYS
+    so: the master must never fail for a forecast.
+    """
+    import os
+    if os.environ.get("CHISTA_MARKET_FORECAST", "1") != "1":
+        return p_flat, "flat stand-in (CHISTA_MARKET_FORECAST=0)"
+    try:
+        from secretary.market import forecast as _forecast
+        from secretary.market import price_paths
+        fc = _forecast(obs, days=days, config=config)
+        paths = price_paths(fc, days=days)
+    except Exception as exc:                     # noqa: BLE001 - degrade
+        return p_flat, f"flat stand-in (forecast failed: {type(exc).__name__})"
+    out = p_flat.copy()
+    for item, path in paths.items():
+        rid = RESOURCE_ID.get(item)
+        if rid is None or rid not in MARKET_IDS:
+            continue
+        out[:, rid] = [float(path[min(day, len(path) - 1)])
+                       for day in range(days)]
+    return out, f"market forecast (#15, unlock policy {fc.unlock_policy})"
+
+
 def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
                 w_warm: np.ndarray | None = None,
                 iter_cap: int = ITER_CAP_DEFAULT,
@@ -364,6 +396,9 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
     days = contractor.days
     p_mkt_full, w_stand_full = dual_stand_in(obs)
     p = p_mkt_full[:days]
+    # #15: the product rows of `p` come from the market forecast (F035's
+    # rising path); the flat stand-in is the documented fallback.
+    p, p_source = _product_price_path(obs, days, p)
     p_mkt = p[:, list(MARKET_IDS)]
     # The engine-quote floor (see the publish rule in the docstring):
     # the stand-in wages ARE the engine's own prices for the inputs.
@@ -377,7 +412,7 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
 
     result = MasterResult(p=p, w=published_duals(w_lag, days), duals=w_lag,
                           lam=np.zeros(0), objective=0.0, rounds=0,
-                          converged=False)
+                          converged=False, p_source=p_source)
 
     def _fallback(reason: str) -> MasterResult:
         result.used_fallback = True

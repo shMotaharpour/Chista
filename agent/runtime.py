@@ -103,6 +103,24 @@ def _replanner_rung(runtime, obs):
     return replan_day(runtime, obs)
 
 
+def _attach_market(runtime, action, obs):
+    """The market layer (#15): `CHISTA_MARKET=spread|dump`, else untouched.
+
+    Imported on first use for the same reason as the replanner: a run with
+    the layer off must not pay for `secretary.market`'s engine imports.
+    """
+    mode = getattr(runtime, "_market_mode", "")
+    if mode not in ("spread", "dump"):
+        return action
+    layer = getattr(runtime, "market", None)
+    if layer is None:
+        from agent.market_layer import MarketLayer
+        layer = MarketLayer(mode)
+        runtime.market = layer
+    from agent.market_layer import attach
+    return attach(layer, action, obs)
+
+
 class Runtime:
     """Per-turn state singleton: plans, timing log, fallback ladder."""
 
@@ -116,6 +134,10 @@ class Runtime:
         self.replanner: Any = (_replanner_rung
                                if os.environ.get("CHISTA_REPLAN") == "1"
                                else None)
+        # The market layer (#15). Read once at construction, like the
+        # replanner switch, so a turn never pays for the lookup.
+        self._market_mode = os.environ.get("CHISTA_MARKET", "")
+        self.market: Any = None              # built on first use
         self.last_return_t: float | None = None
         self.day_logged = -1
         self.turn_index = 0
@@ -191,6 +213,12 @@ class Runtime:
                 action = self._rung_greedy(obs)
             if action is None:
                 action = self._rung_pass(obs)
+            # The market half (#15) rides on WHICHEVER rung answered: SELL
+            # reads the shed (F043), and the shed is filled by the nightly
+            # drop regardless of the unit plan, so sells are not a unit
+            # decision. `attach` never raises; on failure the rung's own
+            # action survives.
+            action = _attach_market(self, action, obs)
         except Exception as exc:                     # noqa: BLE001 - never raise
             error = exc
             # the gate holds on this path too: an expired budget hands the
