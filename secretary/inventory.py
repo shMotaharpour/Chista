@@ -151,10 +151,21 @@ def plan_sales(stock: Mapping[str, int], forecast, *, day: int, hour: int = 0,
        through the season (F035) this is normally empty, and it is here so
        the rule exists rather than being assumed away.
 
-    Stock is the SHED's contents (F043: a SELL cannot reach a bag), and the
-    returned sales are spread across the remaining turns of the day: a
-    single basket walks the price ladder down (F036) and its last units
-    fetch less than its first.
+    Stock is the SHED's contents (F043: a SELL cannot reach a bag). The
+    returned sales are spread across the day's remaining turns, and the two
+    measurements behind that choice (probe, 2026-09-16) say what it is
+    worth:
+
+    - grouping orders WITHIN a turn is worth nothing — the engine quotes
+      unit by unit, so 50 wheat as one order and as five orders of 10 both
+      fetched exactly 1,131 coins;
+    - spreading over TURNS pays when the basket is large next to the town's
+      drain: the day-29 liquidation spread across the day beat holding it
+      all to the last turn by ~92 coins a season (mean 3,927 vs 3,835 over
+      12 seeds).
+
+    So the spread is not a price trick on small baskets; it is what keeps a
+    large forced sale from landing as one basket at the seasonal peak.
     """
     held = {item: int(n) for item, n in stock.items() if int(n) > 0}
     if not held:
@@ -202,7 +213,7 @@ def plan_sales(stock: Mapping[str, int], forecast, *, day: int, hour: int = 0,
                 units = held[item] - take.get(item, 0)
                 if units <= 0:
                     continue
-                price = max(1, forecast.price_of(item, int(day) + 1))
+                price = max(1, forecast.price_of(item, int(day)))
                 affordable = int(min(units, -(-need_cash // price)))
                 _release(item, affordable, "cash")
                 need_cash -= affordable * price

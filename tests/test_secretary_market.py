@@ -254,6 +254,37 @@ def test_a_rising_price_path_holds_instead_of_selling():
     assert sales == (), sales
 
 
+def test_a_mid_day_plan_is_indexed_by_the_day_it_is_in():
+    """A plan made at hour 5 must not read tomorrow's row as today's.
+
+    Row 0 is the day the forecast was made on (`first_day`), so an
+    absolute-day lookup returns the state the agent is looking at — the
+    engine's own price for the observed inventory.
+    """
+    sim = _sim(0)
+    for _ in range(24 + 5):                     # day 1, hour 5
+        sim.step([PASS, PASS])
+    obs = sim.observations()[0]
+    fc = forecast(obs, days=30)
+    day = int(obs["day"])
+    assert (int(obs["hour"]), fc.first_day) == (5, day)
+    for item in PRODUCTS:
+        assert fc.price_of(item, day) == K.market_price(
+            item, obs["market"]["inventory"][item]), item
+    from secretary.market import price_paths
+    assert price_paths(fc, 2)["WHEAT"][0] == fc.price_of("WHEAT", day)
+    assert price_paths(fc, 2)["WHEAT"][1] == fc.price_of("WHEAT", day + 1)
+
+
+def test_the_last_day_liquidation_is_spread_not_dumped():
+    """Measured: spreading it beat the last-turn basket by ~92 coins/season."""
+    sales = plan_sales({"WHEAT": 50}, _forecast_stub({}, rising=True),
+                       day=29, hour=0, end_day=29)
+    assert sum(s.units for s in sales) == 50
+    assert len({s.hour for s in sales}) > 1, sales
+    assert max(s.units for s in sales) < 50, sales
+
+
 def test_sell_orders_are_capped_per_turn_and_the_guard_fires():
     """F031: one order per item per turn cannot reach 10 - and an 11th raises."""
     queue = orders_by_hour([Sale(hour=0, item=item, units=1, reason="x")

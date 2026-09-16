@@ -11,8 +11,11 @@ Modes, and why there are two (`CHISTA_MARKET`):
 - `spread` — `secretary/inventory.py::market_queue`: the shed guard (F043,
   destruction is a bug and never a tuning choice), the cash rule (F038), the
   forecast peak rule, the season-end liquidation (F029), spread across the
-  day's remaining turns because one big basket walks the price ladder down
-  (F036) and because the cap is per TURN, not per day (F031).
+  day's remaining turns. The spread's measured worth is in
+  `secretary/inventory.py::plan_sales`: nil for small baskets (the engine
+  quotes unit by unit), ~+92 coins/season for the day-29 liquidation
+  against dumping it on the last turn. The cap is per TURN (F031), so
+  spreading also keeps every turn inside it.
 - `dump` — the baseline `spread` has to beat: every sellable item, one order,
   at hour 0, the moment it is in the shed.
 

@@ -122,14 +122,18 @@ def mean_shop_demand() -> dict[str, float]:
 class MarketForecast:
     """One forward pass over the market: inventory and price per day start.
 
-    `inventory[d]` / `prices[d]` are tuples in `PRODUCTS` order, sampled at
-    day `d`'s hour 0 (the price a sale at the start of that day faces).
-    `day` arguments are clamped to the horizon, so a caller asking about a
-    day past the season gets the last modelled day instead of an error.
+    `inventory[d]` / `prices[d]` are tuples in `PRODUCTS` order. Row 0 is
+    `first_day` — the season day the forecast was made on — and every
+    later row is that day's hour 0. A plan made mid-day is therefore still
+    indexed by the day it is IN: row 0 is the state the agent is looking
+    at, not tomorrow's day start. `day` arguments are ABSOLUTE season days
+    (see `_row`) and are clamped to the horizon, so a caller asking about
+    a day past it gets the last modelled day instead of an error.
     """
 
     start_step: int
     horizon_days: int
+    first_day: int                # the season day row 0 belongs to
     inventory: tuple[tuple[int, ...], ...]
     prices: tuple[tuple[int, ...], ...]
     unlock_policy: str = "mean"
@@ -140,16 +144,18 @@ class MarketForecast:
     def days(self) -> int:
         return len(self.inventory)
 
+    def _index(self, day: int) -> int:
+        """Absolute season day -> row, clamped to the modelled horizon."""
+        return min(max(int(day) - int(self.first_day), 0), self.days - 1)
+
     def _row(self, day: int) -> tuple[int, ...]:
-        d = min(max(int(day), 0), self.days - 1)
-        return self.inventory[d]
+        return self.inventory[self._index(day)]
 
     def inventory_of(self, item: str, day: int) -> int:
         return self._row(day)[_PROD_INDEX[item]]
 
     def price_of(self, item: str, day: int) -> int:
-        d = min(max(int(day), 0), self.days - 1)
-        return self.prices[d][_PROD_INDEX[item]]
+        return self.prices[self._index(day)][_PROD_INDEX[item]]
 
     def price_path(self, item: str) -> tuple[int, ...]:
         return tuple(row[_PROD_INDEX[item]] for row in self.prices)
@@ -230,6 +236,7 @@ def forecast(obs: Any, *, days: int = 30,
 
     horizon = max(1, int(days))
     end = step + horizon * TURNS_PER_DAY
+    first_day = step // TURNS_PER_DAY
     rows_inv: list[tuple[float, ...]] = []
     rows_price: list[tuple[int, ...]] = []
 
@@ -238,6 +245,10 @@ def forecast(obs: Any, *, days: int = 30,
         rows_price.append(tuple(int(K.market_price(item, inv[item], params))
                                 for item in PRODUCTS))
 
+    if step % TURNS_PER_DAY != 0:
+        # mid-day: row 0 is TODAY as we see it, so the day index a caller
+        # passes still means the day they are planning in
+        _snapshot()
     for turn in range(step, end):
         if turn % TURNS_PER_DAY == 0:
             _snapshot()
@@ -267,6 +278,7 @@ def forecast(obs: Any, *, days: int = 30,
                                  if res else "none (named gap, #16)"),
     ]
     return MarketForecast(start_step=step, horizon_days=horizon,
+                          first_day=first_day,
                           inventory=tuple(rows_inv), prices=tuple(rows_price),
                           unlock_policy=unlock_policy, residual=dict(res),
                           assumptions=tuple(assumptions))
@@ -274,6 +286,7 @@ def forecast(obs: Any, *, days: int = 30,
 
 def price_paths(fc: MarketForecast, days: int | None = None,
                 items: Iterable[str] | None = None,
+                from_day: int | None = None,
                 ) -> dict[str, tuple[int, ...]]:
     """`{item: (price, ...)}` for the horizon — what feeds the master's `p_d`.
 
@@ -285,5 +298,6 @@ def price_paths(fc: MarketForecast, days: int | None = None,
     """
     horizon = fc.days if days is None else max(1, int(days))
     wanted = PRODUCTS if items is None else tuple(items)
-    return {item: tuple(fc.price_of(item, day) for day in range(horizon))
+    start = int(fc.first_day) if from_day is None else int(from_day)
+    return {item: tuple(fc.price_of(item, start + d) for d in range(horizon))
             for item in wanted}
