@@ -203,12 +203,13 @@ the failure total still improved (208 + 3 → 201 + 3). It needs its own change
 before the dispatch runs) and its own sweep, so it is recorded here rather than
 patched blind.
 
-Fourth, **still open** (pre-existing at 40d9cfa, 756356a and this commit): the
-dispatch gives each worker one pass, and a task is only *available* once its
-predecessors are committed. A day whose only legal arrangement serves a
-successor from a lower-indexed worker while a later worker serves its
-predecessor is therefore called INFEASIBLE, even though precedence only orders
-the two *times*. The minimal case is two plain tasks far apart on the grid:
+Fourth, **partly fixed in this branch** (pre-existing at 40d9cfa, 756356a and
+6784719): the dispatch gives each worker one pass, and a task is only
+*available* once its predecessors are committed. A day whose only legal
+arrangement serves a successor from a lower-indexed worker while a later worker
+serves its predecessor is therefore called INFEASIBLE, even though precedence
+only orders the two *times*. The minimal case is two plain tasks far apart on
+the grid:
 
 ```
 t0 at (9,0) -> t1 at (0,0), horizon 10, two workers both starting at hour 0
@@ -223,11 +224,24 @@ worker 0's single pass is over, so `t1` is left unserved. In the 400-seed audit
 this is not rare: `bench/bench_oxa_fuzz.py --oracle` reports 15 INFEASIBLE
 verdicts the oracle schedules — seeds 18, 45, 52, 58, 62, 100, 179, 191, 208,
 233, 235, 251, 262, 321, 337 — and all 15 are INFEASIBLE at the pre-fix blob,
-the first guard and this commit (verified one seed at a time against
-`cpsat_binarySearch` at 5 s, `verify_solution`-valid). Fixing it means letting
-the dispatch revisit a worker after another worker's commit — which reroutes
-hands and so interacts with the entry-cell class just above — and it needs its
-own change and its own sweep, like that one.
+the first guard and 6784719 (verified one seed at a time against
+`cpsat_binarySearch` at 5 s, `verify_solution`-valid).
+
+**The pass now repeats over the hands that have no route yet**, which is exactly
+the minimal case's fix: the greedy finds the oracle's day (`w0 -> t1 at 10`,
+`w1 -> t0 at 9`), and fuzz seed 179 goes `INFEASIBLE -> FEASIBLE` — the only one
+of the 400 that moves, with 0 regressions by `bench_oxa_diff.py` (the audited row
+is `97 / 100 / 200 / 3 invalid` against `97 / 99 / 201 / 3`). **14 of the 15 stay
+open**, and their trace says why: they need a *routed* hand's route extended
+after another hand commits, not another pass over the idle ones. Seed 18 routes
+both hands in the first pass (`w0: c0_a 8, c0_b 14`; `w1: c1_acq 1, c1_cons 11`)
+and leaves `c1_tail` with no idle hand left to take it; seed 45 leaves `extra`
+behind with two idle hands that cannot reach it inside its 10-hour horizon at
+all. Rebuilding a route after the fact means re-running its emission phase (the
+batched acquires and their `resolved_qty`) and re-checking the placement rule
+per route, so it is its own change; the 14 seeds are listed here so that change
+starts from a measurement rather than a guess. This is also why the class is
+recorded as *partly* fixed rather than closed.
 
 Fifth, **still open** (pre-existing at 40d9cfa, 756356a and this commit): a
 declared precedence edge *into* an aggregatable pickup is dropped on both sides
@@ -270,6 +284,11 @@ the invalid column, not the INFEASIBLE one.
   the chain to a worker that still has room. It is built once per worker route
   (three calls for this sweep's ten-worker pool, which routes three hands —
   counted, not assumed).
+- `_dispatch` + the repeated pass in `solve_oxa`: the dispatch loop became a
+  helper taking the shared `remaining_targets`/`done_targets`/`exec_times`, and
+  `solve_oxa` runs it again for the hands that have no route yet, so a successor
+  stranded by a later hand's commit can still be served (part of the fourth
+  class; the rest needs route extension and stays open).
 - `reported_cost` now follows the engine's append-only payroll
   (`fib(0..max_active)`), not the sum over the routes that carry tasks.
 - `tests/wrs/test_oxa_false_infeasible.py`: the sweep as a guard (every
