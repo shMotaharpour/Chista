@@ -23,9 +23,6 @@ pandas>=2.0
 matplotlib>=3.8
 seaborn>=0.13
 
-# Tests
-# tests/test_secretary.py drives the suite ported from ChistaWRS
-# (tests/wrs/, issue #14) with pytest and re-reports it in the PASS/FAIL
-# form the other modules use. Every other module in tests/ is
-# one-command-per-module and needs no third-party runner.
-pytest>=8.0
+# Tests: `tests/wrs/` is a faithful pytest-shaped port (F052) and
+# `tests/test_secretary.py` drives it, so pytest is part of the test path.
+pytest>=8

@@ -77,14 +77,20 @@ def _build_worker_route(
         if len(group) == 2 and tasks_by_id[group[0]].action == MinorActionType.PICKUP:
             acquire_partner[group[1]] = group[0]
 
+    successor_gaps = _successor_gaps(instance, tasks_by_id)
+
     while True:
+        # The tail table is constant across this iteration: the candidate
+        # set only changes when a task is committed, and a commit ends it.
+        pending = frozenset(remaining_targets)
+        tail_turns: dict[str, int] = {}
         available = [
             tid for tid in remaining_targets 
             if all(p in done_targets or p in route_task_ids for p in target_preds[tid])
         ]
         
         best_task_id = None
-        best_cost = (float('inf'), float('inf'))
+        best_key = None
         best_actual_exec = -1
         best_setup = 0
         best_item = None
@@ -110,12 +116,30 @@ def _build_worker_route(
             
             if actual_exec > horizon:
                 continue
+            # Do not commit a task at a time where the rest of its own
+            # precedence chain can no longer run inside the horizon: the
+            # emitted exec_time becomes a hard global lower bound for its
+            # successors (`ready_t = exec_times[p] + 1`), so no later
+            # worker can rescue the chain and the leftover target is read
+            # as INFEASIBLE with idle workers sitting right there. The gap
+            # `_successor_gaps` charges an edge is a lower bound on any
+            # completion of it, so skipping the task here can never lose a
+            # schedule that fits.
+            tail = _unfinished_tail_turns(tid, pending, successor_gaps, tail_turns)
+            if actual_exec + tail > horizon:
+                continue
                 
             cost = actual_exec - current_t
             tie_breaker = -manhattan(entry_cell, task_cell)
-            
-            if (cost, tie_breaker) < best_cost:
-                best_cost = (cost, tie_breaker)
+            # A total order on the candidates: cheapest first, then the entry
+            # cell's travel preference, then the MORE CONSTRAINED task (the
+            # longer unfinished tail -- serving it late is what strands a
+            # chain, fuzz seed 307), then the task id. The id makes the
+            # winner independent of the order the candidates were visited
+            # in, so the verdict is a function of the instance alone.
+            key = (cost, tie_breaker, -tail, tid)
+            if best_key is None or key < best_key:
+                best_key = key
                 best_task_id = tid
                 best_actual_exec = actual_exec
                 best_setup = setup
@@ -241,6 +265,58 @@ def _cell_options(task: MinorTask) -> list[Cell]:
         return [task.cell]
     return _ENTRY_CELLS
 
+
+
+def _successor_gaps(
+    instance: Instance, tasks_by_id: dict[str, MinorTask]
+) -> dict[str, list[tuple[str, int]]]:
+    """`instance.precedence` inverted over the target tasks, each edge carrying
+    the *minimum turns that must separate the two tasks*.
+
+    Two tasks in one `single_worker_group` are executed by the same worker, so
+    the successor also pays the travel from the predecessor's cell
+    (`1 + dist`). Every other edge is a plain precedence pair that any worker
+    may serve: only `1` turn is forced (precedence is strict, one action per
+    worker per turn) — charging travel there would reject commits another
+    worker can finish, which is its own false-INFEASIBLE (see docs/F057).
+    """
+    gaps: dict[str, list[tuple[str, int]]] = {tid: [] for tid in instance.target_tasks}
+    for pred, succ in instance.precedence:
+        if pred not in gaps or succ not in gaps:
+            continue
+        gap = 1
+        pred_group = instance.group_of.get(pred)
+        if pred_group is not None and pred_group == instance.group_of.get(succ):
+            gap += _min_dist(_cell_options(tasks_by_id[pred]), _cell_options(tasks_by_id[succ]))
+        gaps[pred].append((succ, gap))
+    return gaps
+
+
+def _unfinished_tail_turns(
+    tid: str,
+    pending: frozenset[str],
+    successor_gaps: dict[str, list[tuple[str, int]]],
+    memo: dict[str, int],
+) -> int:
+    """Turns that must still fit *after* `tid` for every unfinished descendant
+    of `tid` to run: the longest path through the successor DAG, each hop
+    costing the minimum separation `_successor_gaps` assigns that edge.
+
+    Every legal completion needs at least this much time, so refusing to
+    commit a task that cannot afford it is lossless -- see docs/F057 (the
+    false-INFEASIBLE defect).
+    """
+    cached = memo.get(tid)
+    if cached is not None:
+        return cached
+    memo[tid] = 0  # breaks any accidental cycle; the DAG is validated upstream
+    longest = 0
+    for succ, gap in successor_gaps.get(tid, ()):
+        if succ not in pending:
+            continue
+        longest = max(longest, gap + _unfinished_tail_turns(succ, pending, successor_gaps, memo))
+    memo[tid] = longest
+    return longest
 
 
 def compute_lower_bound(instance: Instance) -> int:
@@ -373,9 +449,18 @@ def solve_oxa(instance: Instance, config: OxaConfig = OxaConfig()) -> OxaResult:
     if remaining_targets:
         return OxaResult(status="INFEASIBLE", wall_time_seconds=wall_time)
         
+    # Engine cost accounting (same rule as `verify_solution`): hiring is
+    # append-only, so if the highest hand used is m, hands 0..m were all paid
+    # fib(0..m) -- an idle middle worker is legal but still on the payroll.
+    # Summing only the routes that carry tasks under-reports whenever the
+    # greedy leaves a gap, which the verifier then rejects as
+    # INVALID_SOLUTION (fuzz seed 9 of the review audit; the other two
+    # seeds that audit reports, 93 and 182/205, fail for the entry-cell
+    # reason docs/F057 records as still open).
+    max_active = max((route.worker_index for route in routes), default=-1)
     solution = Solution(
         routes=routes, 
-        reported_cost=sum(fibonacci_cost(r.worker_index) for r in routes)
+        reported_cost=sum(fibonacci_cost(i) for i in range(max_active + 1))
     )
     
     if config.validate:
