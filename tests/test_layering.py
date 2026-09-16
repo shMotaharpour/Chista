@@ -28,6 +28,11 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 ENTRY = REPO / "agent" / "main.py"
 FORBIDDEN_ROOT = "opponents"
+# Third-party packages the submission may never import. `ortools` is the
+# offline exact oracle (`secretary/solvers/cpsat_solver.py`, issue #14);
+# `secretary/solvers/oxa_solver.py` is the runtime one and imports only
+# stdlib, so the closure must reach the second and never the first.
+FORBIDDEN_PACKAGES = ("ortools",)
 
 
 def _imported_modules(path: Path, strict: bool = False) -> set[str]:
@@ -134,6 +139,35 @@ def test_submission_closure_excludes_opponents() -> None:
         f"the submission's import closure reaches `{FORBIDDEN_ROOT}`, which "
         "ships only in this repository and must never reach a submission:"
         "\n  " + "\n  ".join(offenders)
+    )
+
+
+def test_submission_closure_excludes_offline_only_packages() -> None:
+    """The submission may not import `ortools`.
+
+    `secretary/` carries two solvers with the same job and very different
+    costs: `oxa_solver` runs inside the turn on the stdlib alone, and
+    `cpsat_solver` is the exact oracle that pulls `ortools`. The oracle is
+    an offline instrument — it is not shipped with a submission and takes
+    seconds where the runtime budget is milliseconds — so the closure must
+    reach the first and never the second.
+
+    This asserts on the ROOTS the closure walk collects, so it catches
+    `import ortools.sat.python` exactly as it catches `import ortools`.
+
+    Scipy is deliberately NOT on this list. The first version of this guard
+    included it and went red on its first run: the closure already reaches
+    scipy through `planner/master.py` (#12), whose import is guarded exactly
+    so a missing one cannot take the submission down at load, and whose
+    presence on Kaggle is confirmed. A guard that forbids something the
+    project decided to ship is a wrong guard, not a finding.
+    """
+    _closure, roots = submission_closure()
+    reached = sorted(set(FORBIDDEN_PACKAGES) & roots)
+    assert not reached, (
+        "the submission's import closure reaches offline-only packages "
+        f"{reached}: the runtime path must stay on the stdlib solver "
+        "(secretary/solvers/oxa_solver.py), never the oracle"
     )
 
 

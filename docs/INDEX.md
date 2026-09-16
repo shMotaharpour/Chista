@@ -99,6 +99,7 @@ Order: **Rules** (`R<NNN>_<slug>.md`) first, then **Findings**
 - [F049_the-tile-optimum-is-a-cycle-not-a-crop.md](F049_the-tile-optimum-is-a-cycle-not-a-crop.md) — The honest single-cycle maxima of F009 are not the season-optimal policy. With a flat wheat price and zero wages the DP harvests 5 units on day 3 and replants the same day, 48 wheat over 30 days; F009's 6-by-day-4 cycle yields 6 per 4 days. Throughput, not per-cycle yield, is what the tile maximises.
 - [F050_market-coupling-defeats-common-opponent-screen.md](F050_market-coupling-defeats-common-opponent-screen.md) — a fixed-policy reference's own score varies by sd 61,142 across opponents (~330× the adjacent-agent gap): pool results are pair properties, no scalar ranking of the pool exists.
 - [F051_inert-opponent-market-ceiling.md](F051_inert-opponent-market-ceiling.md) — against a PASS opponent the market saturates near 191,812 and distinct competent agents land on that ceiling exactly: baseline columns measured against an inert opponent read the ceiling, not the agents.
+- [F052_wrs-solvers-ported-one-project.md](F052_wrs-solvers-ported-one-project.md) — The workforce/routing solvers came in from ChistaWRS and now live in `secretary/`. `oxa_solver` is the runtime one — pure stdlib, 0.1–0.9 ms against a 20 ms budget. `cpsat_solver` is the offline oracle and imports ortools, which the submission's closure must never reach.
 
 ## Tests & benchmarks
 
