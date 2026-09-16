@@ -145,11 +145,16 @@ def plan_sales(stock: Mapping[str, int], forecast, *, day: int, hour: int = 0,
     2. `shed-guard` — sell enough that tonight's drop cannot overflow
        (`held + harvest_expected` against the room, with a margin).
     3. `cash` — sell enough to cover the day's planned outflow (F038:
-       money binds in the first week; the hire ladder is F039).
-    4. `peak` — sell stock whose price is at its forecast maximum today,
-       i.e. the price path stops rising from here. With prices rising
-       through the season (F035) this is normally empty, and it is here so
-       the rule exists rather than being assumed away.
+       money binds in the first week; the hire ladder is F039). No caller
+       supplies `cash_needed` yet — the plan that owns it is #14's — so the
+       rule is INERT on today's path and the schedule is the guard, the
+       peak rule and the season-end liquidation.
+    4. `peak` — sell stock whose price is at its forecast maximum over the
+       rest of the horizon, i.e. the price path stops rising from here.
+       With prices rising through the season (F035) this is normally empty,
+       and it is here so the rule exists rather than being assumed away.
+       The scan covers the FORECAST's own horizon
+       (`first_day .. first_day + days - 1`), which is not season day 0.
 
     Stock is the SHED's contents (F043: a SELL cannot reach a bag). The
     returned sales are spread across the day's remaining turns, and the two
@@ -158,11 +163,14 @@ def plan_sales(stock: Mapping[str, int], forecast, *, day: int, hour: int = 0,
 
     - grouping orders WITHIN a turn is worth nothing — the engine quotes
       unit by unit, so 50 wheat as one order and as five orders of 10 both
-      fetched exactly 1,131 coins;
+      fetched exactly 1,131 coins (reproduced 2026-09-16: a 50-wheat shed,
+      one `SELL 50` against five `SELL 10` on the same season state);
     - spreading over TURNS pays when the basket is large next to the town's
       drain: the day-29 liquidation spread across the day beat holding it
       all to the last turn by ~92 coins a season (mean 3,927 vs 3,835 over
-      12 seeds).
+      12 seeds; reproduced 2026-09-16: the spread arm against an arm whose
+      day-29 sales all land at hour 23, seeds 0..11, `weedSpawnChance`
+      0.005, means 3,926.5 vs 3,834.2).
 
     So the spread is not a price trick on small baskets; it is what keeps a
     large forced sale from landing as one basket at the seasonal peak.
@@ -221,8 +229,16 @@ def plan_sales(stock: Mapping[str, int], forecast, *, day: int, hour: int = 0,
             if reasons.get(item):           # already claimed by a rule above
                 continue
             price_today = forecast.price_of(item, int(day))
-            horizon = max((forecast.price_of(item, d)
-                           for d in range(int(day), forecast.days)),
+            # The forecast's rows are indexed from ITS OWN start
+            # (`first_day`), not from season day 0: scanning
+            # `range(day, forecast.days)` mixes the two spaces, and the
+            # range collapses to empty once `day >= days` (day 15 of a
+            # 30-day season with `days = SEASON_DAYS - day`), which made the
+            # comparison read today's price against itself and fire on a
+            # rising path. Scan the forecast's own horizon instead.
+            first = int(getattr(forecast, "first_day", int(day)))
+            horizon = max((forecast.price_of(item, first + offset)
+                           for offset in range(max(1, int(forecast.days)))),
                           default=price_today)
             if price_today >= horizon:
                 _release(item, held[item], "peak")

@@ -5,7 +5,10 @@ Run:  .venv/bin/python -m tests.test_secretary_market
 Every guard here is shown to FAIL before it is trusted (R007). The two
 engine-level legs of the shed guard are the pair that matters: the same
 scenario destroys product with the market layer off and destroys none
-with it on, on the real interpreter (`world.fast_sim`).
+with it on, on the real interpreter (`world.fast_sim`). What makes that
+pair red is removing the WHOLE guard rule (measured: 15 units destroyed);
+removing only the margin leaves it green, and the margin's own effect is
+pinned instead by `test_the_guard_keeps_its_margin_below_the_cap`.
 
 Numbers this module asserts without re-measuring are named where they
 appear and reproducible by `bench/bench_market_forecast.py`, which prints
@@ -20,9 +23,10 @@ from kaggle_environments.envs.kaggriculture import kaggriculture as K
 
 from agent.dispatch import dispatch_plan, market_at
 from agent.market_layer import MarketLayer, from_env, _market_row
-from secretary.inventory import (MAX_ORDERS_PER_TURN, Sale, ShedState,
-                                 _assert_within_cap, market_queue,
-                                 orders_by_hour, plan_sales, shed_state)
+from secretary.inventory import (MAX_ORDERS_PER_TURN, SHED_CAPACITY, Sale,
+                                 ShedState, _assert_within_cap, _guard_margin,
+                                 market_queue, orders_by_hour, plan_sales,
+                                 shed_state)
 from secretary.market import (PRODUCTS, MarketForecast, forecast, shop_demand,
                               town_deltas)
 from world.fast_sim import FastSim
@@ -55,9 +59,12 @@ def test_cadence_model_reproduces_the_engine_exactly_to_day_3():
 
     Nothing is random before it: shops unlock at the END of day 2
     (`next_day % townShopUnlockInterval == 0`), so the day-3 day-start row
-    precedes the first shop consumption. This is the leg that proves the
-    cadence (shops every 4 turns, centre every 24, single-product shops at
-    2x) was not guessed.
+    precedes the first shop consumption. What this leg proves against the
+    engine is the TOWN CENTRE cadence (every 24 turns) and the price
+    identity; no shop has consumed inside its window, so it is insensitive
+    to the shop interval and to the single-product 2x rule. Those are
+    covered against the engine by `bench/bench_market_forecast.py --probe`
+    (6,462/6,462 item-step deltas over a full episode) - not by this leg.
     """
     sim = _sim(7)
     fc = forecast(sim.observations()[0], days=30, unlock_policy="none")
@@ -71,14 +78,19 @@ def test_cadence_model_reproduces_the_engine_exactly_to_day_3():
 
 
 def test_day_10_error_stays_inside_the_acceptance_bound():
-    """Worst inventory error over the bench's 20 seeds, per policy.
+    """A 3-seed smoke bound; the 20-seed acceptance table is PRINTED only.
 
     Measured (`bench/bench_market_forecast.py --error --seeds 20`,
     PASS-vs-PASS, no weeds, seeds 0..19): worst |pred - realised| / I0 at
     day 10 is 1.32 % for `none` and 1.14 % for `mean`; at day 3 both are
-    0.000 %. The issue's bound is 5 % at 3 days and 15 % at 10. Asserted at
-    2 % here over seeds 0..2 with the same probe, so this is the same
-    quantity with a stated margin, not a second, looser claim.
+    0.000 %. The issue's bound is 5 % at 3 days and 15 % at 10. This leg
+    asserts a TIGHTER 2 % bound but over seeds 0..2, so it is a smoke check
+    and not the acceptance: the 20-seed table is printed by the bench and
+    nothing asserts it. The per-policy distinction the `mean` default rests
+    on is pinned separately, by
+    `test_the_mean_policy_consumes_more_than_none` - a common bound cannot
+    see a `mean` that stopped adding unlocks (both policies are inside 2 %
+    at day 10).
     """
     for seed in (0, 1, 2):
         sim = _sim(seed)
@@ -201,16 +213,29 @@ def test_shed_state_reads_the_bags_and_blocks_buys_at_the_cap():
 
 # --- the schedule and the queue ------------------------------------------
 
-def _forecast_stub(prices: dict, days: int = 30, rising: bool = False):
-    """A price oracle: flat (its own peak, so `peak` fires) or rising."""
+def _forecast_stub(prices: dict, days: int = 30, rising: bool = False,
+                   first_day: int = 0):
+    """A price oracle, faithful to `MarketForecast`'s contract.
+
+    Flat (its own peak, so `peak` fires) or rising. `days` is the number of
+    rows FROM `first_day`, because that is what `market_queue` hands the
+    schedule (`days=SEASON_DAYS - day`): a stub whose horizon is the same
+    whatever day it is asked about cannot exercise a rule that scans the
+    horizon the way the layer does.
+    """
+    _first = int(first_day)
+    _days = int(days)
+
     class _F:
+        first_day = _first
+
         def price_of(self, item, day):
             base = prices.get(item, 25)
-            return base + (int(day) if rising else 0)
+            return base + (int(day) - _first if rising else 0)
 
         @property
         def days(self):
-            return days
+            return _days
     return _F()
 
 
@@ -218,6 +243,22 @@ def test_shed_guard_sells_the_overflow_plus_its_margin():
     sales = plan_sales({"WHEAT": 120}, _forecast_stub({}, rising=True),
                        day=5, hour=0, harvest_expected=0)
     assert sum(s.units for s in sales) >= 25, sales       # 20 + margin 5
+    assert all(s.reason == "shed-guard" for s in sales)
+
+
+def test_the_guard_keeps_its_margin_below_the_cap():
+    """A shed that exactly fills the cap still releases `_guard_margin` units.
+
+    F043 destroys what does not fit, and the day's incoming is an ESTIMATE,
+    so the guard leaves slack: `held + harvest_expected` equal to the cap
+    still sells the margin (5 of 100). This is the margin's job, pinned as a
+    number - with the margin at 0 the guard releases nothing and this leg
+    fails, which is what the PR's R007 note should have demonstrated
+    (removing the margin does NOT make the engine-level pair go red).
+    """
+    sales = plan_sales({"WHEAT": 100}, _forecast_stub({}, rising=True),
+                       day=5, hour=0, harvest_expected=0)
+    assert sum(s.units for s in sales) == _guard_margin(SHED_CAPACITY) == 5
     assert all(s.reason == "shed-guard" for s in sales)
 
 
@@ -252,6 +293,43 @@ def test_a_rising_price_path_holds_instead_of_selling():
     sales = plan_sales({"WHEAT": 50}, _forecast_stub({}, rising=True),
                        day=3, hour=0)
     assert sales == (), sales
+
+
+def test_a_late_season_rising_path_still_holds():
+    """The peak scan covers the FORECAST's horizon, not season day 0.
+
+    `market_queue` builds the forecast as `days = SEASON_DAYS - day`, so at
+    day 20 the schedule sees 10 rows starting at day 20. A scan written as
+    `range(day, forecast.days)` collapses to an EMPTY range there, the
+    comparison then reads today's price against itself, and the rule
+    releases the whole shed as `peak` on a path that is still rising - the
+    exact behaviour the docstring says cannot happen. This leg fails on that
+    version and passes on the forecast-horizon scan.
+    """
+    sales = plan_sales({"WHEAT": 50},
+                       _forecast_stub({}, days=10, rising=True, first_day=20),
+                       day=20, hour=0)
+    assert sales == (), sales
+
+
+def test_the_mean_policy_consumes_more_than_none():
+    """The two unlock policies must differ: `mean` adds the shop's demand.
+
+    `none` only counts the shops the observation already shows, so it holds
+    MORE inventory and prices it lower (the named bias). Pinned as a strict
+    inequality per day, so a default that silently stopped adding unlocks
+    cannot pass as `mean`: a bound on the error at day 10 cannot see it
+    (both policies are inside 2 % there).
+    """
+    for seed in (0, 1):
+        sim = _sim(seed)
+        obs = sim.observations()[0]
+        mean = forecast(obs, days=30, unlock_policy="mean")
+        none = forecast(obs, days=30, unlock_policy="none")
+        for day in (10, 20):
+            held_mean = sum(mean.inventory_of(i, day) for i in PRODUCTS)
+            held_none = sum(none.inventory_of(i, day) for i in PRODUCTS)
+            assert held_mean < held_none, (seed, day, held_mean, held_none)
 
 
 def test_a_mid_day_plan_is_indexed_by_the_day_it_is_in():
@@ -314,11 +392,29 @@ def test_dispatch_slices_a_per_hour_queue_and_still_takes_the_flat_list():
 
 
 def test_market_queue_reads_the_observation_and_plans_a_day():
+    """Stock past the cap must come back as a queue with real orders in it.
+
+    The previous form passed a fresh day-0 observation (empty shed), so the
+    queue was 24 empty rows and the assertions held for any planning
+    behaviour, including none.
+    """
     sim = _sim(0)
-    obs = sim.observations()[0]
-    queue = market_queue(obs)
+    while int(sim.observations()[0]["day"]) < 1:
+        sim.step([PASS, PASS])
+    shed = sim.state[0].observation.private["shed"]
+    shed["WHEAT"] = 60
+    shed["MELON"] = 60                      # 120 held: the guard must release
+    queue = market_queue(sim.observations()[0])
     assert len(queue) == 24
     assert all(len(row) <= MAX_ORDERS_PER_TURN for row in queue)
+    orders = [o for row in queue for o in row]
+    assert orders and all(o[0] == "SELL" for o in orders), queue
+    # the guard's forcing, in constant-relative form: 120 held - the cap +
+    # the margin. Written against the constant so this leg tests the
+    # observation -> queue path, not the margin's size (which
+    # `test_the_guard_keeps_its_margin_below_the_cap` owns).
+    expected = 120 - SHED_CAPACITY + _guard_margin(SHED_CAPACITY)
+    assert sum(o[2] for o in orders) == expected, (queue, expected)
 
 
 # --- the layer, and its contract with the ladder -------------------------
@@ -382,20 +478,34 @@ def test_mode_switch_reads_the_environment():
 
 
 def test_the_layer_costs_under_ten_milliseconds_at_p99():
-    """The issue's budget, measured on this box (warm, one day plan each)."""
+    """The issue's budget, measured on the PER-TURN entry the ladder calls.
+
+    `attach` is the entry `Runtime.act` uses every turn: it re-plans whenever
+    the (day, hour, stock) signature moves - which the hour term makes
+    every turn - merges the rung's market orders and checks F031's cap.
+    Timing only `plan_day` on a frozen observation would leave that path -
+    the one the budget is about - unmeasured.
+    """
     sim = _sim(0)
     obs = sim.observations()[0]
+    action = {"farmer": ["PASS"], "hands": [], "market": []}
     layer = MarketLayer("spread")
     for _ in range(5):                       # warm the imports and the caches
-        layer.plan_day(obs)
-    samples = []
-    for _ in range(200):
+        layer.attach(dict(action), dict(obs))
+    plan, turn = [], []
+    for i in range(200):
         t0 = time.perf_counter()
         layer.plan_day(obs)
-        samples.append((time.perf_counter() - t0) * 1000.0)
-    samples.sort()
-    p99 = samples[int(0.99 * (len(samples) - 1))]
-    assert p99 <= 10.0, f"p99 {p99:.2f} ms"
+        plan.append((time.perf_counter() - t0) * 1000.0)
+        moved = dict(obs)
+        moved["hour"] = i % 24                # a new signature every turn
+        t0 = time.perf_counter()
+        layer.attach(dict(action), moved)
+        turn.append((time.perf_counter() - t0) * 1000.0)
+    for name, samples in (("plan_day", plan), ("attach", turn)):
+        samples.sort()
+        p99 = samples[int(0.99 * (len(samples) - 1))]
+        assert p99 <= 10.0, f"{name} p99 {p99:.2f} ms"
 
 
 def main() -> int:

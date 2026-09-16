@@ -2,20 +2,22 @@
 
 The fallback ladder (`agent/runtime.py`) decides the UNITS, and units are the
 wrong owner for sells: `SELL` reads the shed (`_commit_unit`), and the shed is
-filled by the nightly drop no matter which rung ran. So the market layer plans
-once per day at hour 0 and attaches that turn's orders to whatever action dict
-the ladder produced — greedy, the replanner's plan, or the all-PASS rung.
+filled by the nightly drop no matter which rung ran. So the market layer
+re-plans on every turn whose (day, hour, stock) signature changed — the hour
+term makes that every turn, which is what keeps the guard looking at the shed
+as it is — and attaches that turn's orders to whatever action dict the ladder
+produced — greedy, the replanner's plan, or the all-PASS rung.
 
 Modes, and why there are two (`CHISTA_MARKET`):
 
 - `spread` — `secretary/inventory.py::market_queue`: the shed guard (F043,
-  destruction is a bug and never a tuning choice), the cash rule (F038), the
-  forecast peak rule, the season-end liquidation (F029), spread across the
-  day's remaining turns. The spread's measured worth is in
-  `secretary/inventory.py::plan_sales`: nil for small baskets (the engine
-  quotes unit by unit), ~+92 coins/season for the day-29 liquidation
-  against dumping it on the last turn. The cap is per TURN (F031), so
-  spreading also keeps every turn inside it.
+  destruction is a bug and never a tuning choice), the cash rule (F038, INERT
+  until #14's plan supplies `cash_needed`), the forecast peak rule, the
+  season-end liquidation (F029), spread across the day's remaining turns. The
+  spread's measured worth is in `secretary/inventory.py::plan_sales`: nil for
+  small baskets (the engine quotes unit by unit), ~+92 coins/season for the
+  day-29 liquidation against dumping it on the last turn. The cap is per TURN
+  (F031), so spreading also keeps every turn inside it.
 - `dump` — the baseline `spread` has to beat: every sellable item, one order,
   at hour 0, the moment it is in the shed.
 
@@ -60,7 +62,7 @@ class MarketLayer:
         self.signature: tuple | None = None
         self.last: dict[str, Any] = {}
 
-    # ---- planning (once per day, hour 0) ----
+    # ---- planning (per turn, cached by the signature) ----
     def plan_day(self, obs: Any) -> list[list[list]]:
         """This day's per-turn order queue (`queue[hour] -> [order, ...]`)."""
         if self.mode == "dump":
@@ -130,11 +132,11 @@ def attach(layer: "MarketLayer | None", action: dict, obs: Any) -> dict:
 def _market_row(layer: "MarketLayer", action: dict, obs: Any) -> list[list]:
     """This turn's merged orders; raises if the row cannot fit F031's cap.
 
-    The day is re-planned whenever the stock moved, not once per day: the
-    sells issued at hour 1 change what the shed holds at hour 2, and the
-    guard must see that. The plan itself reads the CURRENT observation, so
-    a re-plan never double-counts an executed sale — it sees the smaller
-    shed.
+    The day is re-planned on every turn — the hour is part of the signature —
+    and that is deliberate: the sells issued at hour 1 change what the shed
+    holds at hour 2, and the guard must see the shed as it is. The plan reads
+    the CURRENT observation, so a re-plan never double-counts an executed
+    sale — it sees the smaller shed.
     """
     hour = int(obs.get("hour", 0)) if isinstance(obs, dict) else 0
     day = int(obs.get("day", 0)) if isinstance(obs, dict) else 0

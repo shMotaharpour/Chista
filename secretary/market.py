@@ -59,7 +59,7 @@ TOWN_CENTER_PRODUCTS: tuple[str, ...] = tuple(K.TOWN_CENTER_PRODUCTS)
 MAX_SHOP_INSTANCES: int = int(K.MAX_SHOP_INSTANCES)
 PRICE_FLOOR: int = int(K.PRICE_FLOOR)
 
-TURNS_PER_DAY = 24          # engine default; checked by verify_engine_timings
+TURNS_PER_DAY = 24          # engine default (turnsPerDay); F029/F048 pin 30 days
 UNLOCK_POLICIES = ("none", "mean")
 
 _PROD_INDEX = {item: i for i, item in enumerate(PRODUCTS)}
