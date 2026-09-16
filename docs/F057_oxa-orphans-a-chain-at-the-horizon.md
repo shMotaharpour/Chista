@@ -208,12 +208,13 @@ day really is impossible — the oracle answers INFEASIBLE for it too) and seeds
 182/205 becoming valid `FEASIBLE` days. The 140-instance sweep is unchanged: all
 140 verify, none INFEASIBLE.
 
-Fourth, **still open** (pre-existing at 40d9cfa, 756356a and this commit): the
-dispatch gives each worker one pass, and a task is only *available* once its
-predecessors are committed. A day whose only legal arrangement serves a
-successor from a lower-indexed worker while a later worker serves its
-predecessor is therefore called INFEASIBLE, even though precedence only orders
-the two *times*. The minimal case is two plain tasks far apart on the grid:
+Fourth, **partly fixed in this branch** (pre-existing at 40d9cfa, 756356a and
+6784719): the dispatch gives each worker one pass, and a task is only
+*available* once its predecessors are committed. A day whose only legal
+arrangement serves a successor from a lower-indexed worker while a later worker
+serves its predecessor is therefore called INFEASIBLE, even though precedence
+only orders the two *times*. The minimal case is two plain tasks far apart on
+the grid:
 
 ```
 t0 at (9,0) -> t1 at (0,0), horizon 10, two workers both starting at hour 0
@@ -228,11 +229,26 @@ worker 0's single pass is over, so `t1` is left unserved. In the 400-seed audit
 this is not rare: `bench/bench_oxa_fuzz.py --oracle` reports 15 INFEASIBLE
 verdicts the oracle schedules — seeds 18, 45, 52, 58, 62, 100, 179, 191, 208,
 233, 235, 251, 262, 321, 337 — and all 15 are INFEASIBLE at the pre-fix blob,
-the first guard and this commit (verified one seed at a time against
-`cpsat_binarySearch` at 5 s, `verify_solution`-valid). Fixing it means letting
-the dispatch revisit a worker after another worker's commit — which reroutes
-hands and so interacts with the entry-cell class just above — and it needs its
-own change and its own sweep, like that one.
+the first guard and 6784719 (verified one seed at a time against
+`cpsat_binarySearch` at 5 s, `verify_solution`-valid).
+
+**The pass now repeats over the hands that have no route yet**, which is exactly
+the minimal case's fix: the greedy finds the oracle's day (`w0 -> t1 at 10`,
+`w1 -> t0 at 9`), and fuzz seed 179 goes `INFEASIBLE -> FEASIBLE`. With the
+entry-cell fixed point of the third class alongside it, the audited row is
+`97 / 102 / 201 / 0` against `97 / 99 / 201 / 3` — 0 regressions, 3 improvements
+and 1 reason-changed by `bench_oxa_diff.py` (seed 179 from the repeated pass,
+182/205 from the placement, 93's reason changing). **14 of the 15 seeds stay
+open**, and their trace says why: they need a *routed* hand's route extended
+after another hand commits, not another pass over the idle ones. Seed 18 routes
+both hands in the first pass (`w0: c0_a 8, c0_b 14`; `w1: c1_acq 1, c1_cons 11`)
+and leaves `c1_tail` with no idle hand left to take it; seed 45 leaves `extra`
+behind with two idle hands that cannot reach it inside its 10-hour horizon at
+all. Rebuilding a route after the fact means re-running its emission phase (the
+batched acquires and their `resolved_qty`) and re-checking the placement rule
+per route, so it is its own change; the 14 seeds are listed here so that change
+starts from a measurement rather than a guess. This is also why the class is
+recorded as *partly* fixed rather than closed.
 
 Fifth, **fixed in this branch** (was open at 40d9cfa, 756356a and 6784719): a
 declared precedence edge *into* an aggregatable pickup was dropped on both sides
@@ -292,11 +308,15 @@ INFEASIBLE one.
   the chain to a worker that still has room. It is built once per worker route
   (three calls for this sweep's ten-worker pool, which routes three hands —
   counted, not assumed).
-- `_dispatch` + the placement fixed point in `solve_oxa`: the entry-cell
+- `_dispatch` + `_dispatch_rounds` + the placement fixed point in `solve_oxa`:
+  the dispatch became a helper over shared state, repeated for the hands that
+  have no route yet (a successor stranded by a later hand's commit is picked up
+  again — part of the fourth class, the rest stays open), and the entry-cell
   assignment is re-derived from the workers that are actually routed and the
   dispatch re-run until it stops moving, because `verify_solution` recomputes
   the placement over the routed set (constraint 10) and not over every
-  candidate.
+  candidate. The pool cap is applied to the lowest-indexed hands, matching
+  `cpsat_solver` and the engine's append-only payroll.
 - `reported_cost` now follows the engine's append-only payroll
   (`fib(0..max_active)`), not the sum over the routes that carry tasks.
 - `tests/wrs/test_oxa_false_infeasible.py`: the sweep as a guard (every

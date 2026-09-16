@@ -409,22 +409,28 @@ def _validate_preloaded_pickups_have_no_predecessor(instance: Instance) -> None:
 # attempts, and the cap keeps a pathological instance bounded.
 _PLACEMENT_ATTEMPTS = 4
 
+# How many dispatch passes each placement attempt runs (docs/F057, fourth
+# class). Every pass covers the hands that have no route yet, so a further pass
+# only helps when a later hand committed a predecessor for an earlier one;
+# three covers every shape the audit produces.
+_DISPATCH_ROUNDS = 3
+
 
 def _dispatch(
     instance: Instance,
     candidates: list[Worker],
     entry_assignments: dict[int, str],
-) -> tuple[list[WorkerRoute], set[str]]:
-    """One spatial-greedy pass: every candidate in order takes the tasks it can.
+    remaining_targets: set[str],
+    done_targets: set[str],
+    exec_times: dict[str, int],
+) -> list[WorkerRoute]:
+    """One spatial-greedy pass over `candidates`, mutating the shared state.
 
-    Returns the routes it built and the targets it left behind (empty means the
-    day was covered). `entry_assignments` is the cell each candidate starts
-    from; the caller owns its correctness (see the placement fixed point in
-    `solve_oxa`).
+    `remaining_targets`, `done_targets` and `exec_times` carry across passes:
+    what an earlier pass committed is what makes a successor available to a
+    hand in a later one. The caller owns `entry_assignments` and owns running
+    the passes -- see `_dispatch_rounds` and the fixed point in `solve_oxa`.
     """
-    remaining_targets: set[str] = set(instance.target_tasks)
-    done_targets: set[str] = set()
-    exec_times: dict[str, int] = {}
     routes: list[WorkerRoute] = []
 
     for worker in candidates:
@@ -454,6 +460,41 @@ def _dispatch(
                 tasks=sched_tasks,
                 start_cell=WAREHOUSE_ENTRY_CELLS[entry_assignments[worker.index]],
             ))
+
+    return routes
+
+
+def _dispatch_rounds(
+    instance: Instance,
+    candidates: list[Worker],
+    entry_assignments: dict[int, str],
+) -> tuple[list[WorkerRoute], set[str]]:
+    """The dispatch: as many passes as there are idle hands left to try.
+
+    A task is only available once its predecessors are committed, and one pass
+    gives every hand a single chance in index order -- so a day whose legal
+    arrangement serves a successor from a lower-indexed hand while a LATER hand
+    serves its predecessor is missed (docs/F057, fourth class: hand 0 can reach
+    the successor but not the predecessor, hand 1 takes the predecessor, and
+    hand 0's pass is already over). The pass therefore repeats for the hands
+    that still have no route; a routed hand's route is never touched, because
+    extending it would reroute it and neither the emission phase nor the
+    verifier's per-route checks are built for that. Returns the routes and the
+    targets left unscheduled (empty means the day was covered).
+    """
+    remaining_targets: set[str] = set(instance.target_tasks)
+    done_targets: set[str] = set()
+    exec_times: dict[str, int] = {}
+
+    routes: list[WorkerRoute] = []
+    for _round in range(_DISPATCH_ROUNDS):
+        if not remaining_targets:
+            break
+        idle = [w for w in candidates if w.index not in {r.worker_index for r in routes}]
+        if not idle:
+            break
+        routes.extend(_dispatch(
+            instance, idle, entry_assignments, remaining_targets, done_targets, exec_times))
 
     return routes, remaining_targets
 
@@ -495,7 +536,7 @@ def solve_oxa(instance: Instance, config: OxaConfig = OxaConfig()) -> OxaResult:
     if not candidates:
         return OxaResult(status="INFEASIBLE", wall_time_seconds=0.0)
 
-    # 1. Dispatcher state, then the placement fixed point.
+    # 1. The placement fixed point, over the repeated dispatch.
     #
     # `verify_solution` recomputes the entry cells over the workers that are
     # actually ROUTED (constraint 10, `_check_placement`), not over every
@@ -505,11 +546,14 @@ def solve_oxa(instance: Instance, config: OxaConfig = OxaConfig()) -> OxaResult:
     # back INVALID_SOLUTION -- "first task ... reachable too early from entry"
     # (docs/F057, third class, fuzz seeds 93, 182, 205). Which workers are
     # routed is only known after a dispatch, so the assignment is re-derived
-    # from the routed set and the dispatch re-run until it stops moving.
+    # from the routed set and the dispatch re-run until it stops moving; each
+    # of those runs is itself the repeated pass of F057's fourth class
+    # (`_dispatch_rounds`), so a successor stranded on an idle hand is picked up
+    # before the placement is judged.
     entry_assignments = assign_entry_cells([(w.index, w.earliest_start) for w in candidates])
     routes: list[WorkerRoute] = []
     for _attempt in range(_PLACEMENT_ATTEMPTS):
-        routes, remaining_targets = _dispatch(instance, candidates, entry_assignments)
+        routes, remaining_targets = _dispatch_rounds(instance, candidates, entry_assignments)
         if remaining_targets:
             break
         routed = {route.worker_index for route in routes}
