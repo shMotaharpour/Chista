@@ -30,9 +30,15 @@ reproducible with the seed named next to it (`PYTHONHASHSEED=0` in F054's
 tables). Run this script with a fixed `PYTHONHASHSEED` when comparing
 against another revision.
 
-A non-zero exit is the audit reporting a defect, not a harness error: today it
-reports the `single_worker_group`/entry-cell placement class of `docs/F054`
-(`first task ... reachable too early from entry`), which is open there.
+A non-zero exit is the audit reporting a defect, not a harness error. Without
+`--oracle` it reports the `single_worker_group`/entry-cell placement class of
+`docs/F054` (`first task ... reachable too early from entry`, 3 seeds); with
+`--oracle` it also reports the INFEASIBLE verdicts the exact solver schedules
+(15 of them, F054's single-pass dispatch class). The oracle only *abstains* on
+an INFEASIBLE answer it cannot decide inside `--oracle-seconds`: an `UNKNOWN`
+there means "not checked", never "confirmed" -- which is why the sweep test's
+positive control pins a day the oracle decides (`INFEASIBLE`), not one it times
+out on.
 """
 from __future__ import annotations
 

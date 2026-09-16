@@ -178,6 +178,12 @@ the whole table is reproduced by
 One seed moves in neither direction by this definition: 93 goes
 `INFEASIBLE -> INVALID_SOLUTION`, both unusable, counted separately by the tool.
 
+The INFEASIBLE column is a verdict count, not a claim that those days are
+impossible: `bench/bench_oxa_fuzz.py --oracle` reports **15 INFEASIBLE verdicts
+the oracle schedules** (seeds 18, 45, 52, 58, 62, 100, 179, 191, 208, 233, 235,
+251, 262, 321, 337) — pre-existing at all three revisions, and the fourth open
+class below.
+
 So the travel term is now charged only where one worker *must* serve both ends —
 an edge inside a `single_worker_group` — and plain edges cost the one turn
 precedence forces. The same table caught the second defect: an answer with an
@@ -197,6 +203,32 @@ the failure total still improved (208 + 3 → 201 + 3). It needs its own change
 before the dispatch runs) and its own sweep, so it is recorded here rather than
 patched blind.
 
+Fourth, **still open** (pre-existing at 40d9cfa, 756356a and this commit): the
+dispatch gives each worker one pass, and a task is only *available* once its
+predecessors are committed. A day whose only legal arrangement serves a
+successor from a lower-indexed worker while a later worker serves its
+predecessor is therefore called INFEASIBLE, even though precedence only orders
+the two *times*. The minimal case is two plain tasks far apart on the grid:
+
+```
+t0 at (9,0) -> t1 at (0,0), horizon 10, two workers both starting at hour 0
+  solve_oxa:          INFEASIBLE        (pre-fix, first guard and this commit)
+  cpsat_binarySearch: OPTIMAL           w0 -> t1 at 10 from NW, w1 -> t0 at 9 from NE
+                      verify_solution accepts that day (total_cost 1)
+```
+
+Worker 0 can reach `t1` (distance 8) but not `t0` (distance 9 → hour 10, and the
+guard refuses it: `10 + 1 > 10`); worker 1 can reach `t0` at hour 9, and by then
+worker 0's single pass is over, so `t1` is left unserved. In the 400-seed audit
+this is not rare: `bench/bench_oxa_fuzz.py --oracle` reports 15 INFEASIBLE
+verdicts the oracle schedules — seeds 18, 45, 52, 58, 62, 100, 179, 191, 208,
+233, 235, 251, 262, 321, 337 — and all 15 are INFEASIBLE at the pre-fix blob,
+the first guard and this commit (verified one seed at a time against
+`cpsat_binarySearch` at 5 s, `verify_solution`-valid). Fixing it means letting
+the dispatch revisit a worker after another worker's commit — which reroutes
+hands and so interacts with the entry-cell class just above — and it needs its
+own change and its own sweep, like that one.
+
 ## What changed
 
 - `_build_worker_route`'s candidate choice is a total order
@@ -208,14 +240,20 @@ patched blind.
   tasks share a `single_worker_group`. The candidate loop skips a task when
   `actual_exec + tail > horizon`; the figure is a lower bound on any completion
   of that chain, so the refusal can only convert a doomed commit into leaving
-  the chain to a worker that still has room. Built once per solve.
+  the chain to a worker that still has room. It is built once per worker route
+  (three calls for this sweep's ten-worker pool, which routes three hands —
+  counted, not assumed).
 - `reported_cost` now follows the engine's append-only payroll
   (`fib(0..max_active)`), not the sum over the routes that carry tasks.
 - `tests/wrs/test_oxa_false_infeasible.py`: the sweep as a guard (every
   INFEASIBLE answer put to the oracle), the eight measured instances pinned by
   name at the seed the table names, the worker-pool invariance check, the
   cross-cell pair, the gap payroll and a positive control that runs the
-  oracle-confirmation branch on green runs.
+  oracle-confirmation branch on green runs. The guard's strength is the
+  oracle's: when a 10 s slice ends in `UNKNOWN` the branch abstains rather than
+  confirming (pre-fix, that is 8 of the 18 `wet_harvst_plnt` rows), which is
+  why the positive control pins a day the oracle *decides* — it returns
+  `INFEASIBLE` there, not `UNKNOWN`.
 - `tests/wrs/test_oxa_reproducibility.py`: the audit's statuses pinned as the
   numbers above, hash-seed independence, and the stranded-chain instance (fuzz
   seed 307).

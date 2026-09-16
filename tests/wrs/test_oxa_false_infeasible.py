@@ -233,6 +233,13 @@ def test_the_oracle_confirmation_agrees_on_a_genuinely_infeasible_day():
     the oracle finds no schedule either, so the branch that *authorises* an
     INFEASIBLE verdict runs on green runs too (R007's warning about guards
     that only exercise the path production never takes).
+
+    The oracle *decides* this day -- it comes back `INFEASIBLE`, not `UNKNOWN`
+    -- so the control cannot be satisfied by a timeout. That distinction is
+    the guard's honest limit: on a day the oracle cannot decide inside its
+    slice (`UNKNOWN`, `solution is None`) the sweep's assertion abstains rather
+    than confirming, and the pre-fix sweep has eight such rows
+    (`wet_harvst_plnt` 18..25).
     """
     instance = Instance.compile(
         workers=[Worker(index=0, earliest_start=0)],
