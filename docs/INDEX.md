@@ -40,6 +40,11 @@ Order: **Rules** (`R<NNN>_<slug>.md`) first, then **Findings**
   non-negative componentwise; a negative component makes the pruned edge the
   optimum, so the contractor asserts `p >= 0` and `w >= 0` on entry and the
   master projects its duals onto the non-negative orthant.
+- [R007_a-guard-must-be-seen-to-fail.md](R007_a-guard-must-be-seen-to-fail.md) —
+  A test earns the name "regression guard" only after someone has
+  re-introduced the bug and watched it go red. Five guards in this repository
+  passed while guarding nothing, because each exercised a path the production
+  code never takes. Reading cannot find this; two minutes of breaking it can.
 
 ## Findings
 

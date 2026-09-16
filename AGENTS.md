@@ -33,6 +33,12 @@ threshold, budget and constant written anywhere in this project, including
 issues and commit messages. A number that cannot name a finding, the engine, or
 a measurement someone recorded is a defect, not a detail.
 
+R007 (a guard must be seen to fail) binds every test that claims to cover a
+bug: re-introduce the defect, watch the test go red, put it back, and say in
+the PR which bug you broke and what the failure said. Five guards in this
+repository passed while guarding nothing — each exercised a path the production
+code never takes, and every one survived review by reading.
+
 ## Environment
 
 Python 3.11 venv at `.venv/`, CPU-only PyTorch, built from `requirements.txt`:
