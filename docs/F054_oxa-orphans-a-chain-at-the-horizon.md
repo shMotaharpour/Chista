@@ -27,8 +27,11 @@ min-worker objective — with `CpSatConfig(time_limit_seconds=10)`.
 CP-SAT neither schedules nor refutes them inside that slice, so they are not
 counted as false, and the sweep's oracle call returned for every one of them
 (none raised). The issue-#14 comment's list (`plnt` 15..19, `wet_harvst`
-13/15..19/22/23) is a subset of this one; these are the numbers this box
-measured, at ten workers.
+13/15..19/22/23, `frtz_water` 7..9/14/20..25) is **not** a subset of this one and
+this one is not a subset of it: n = 13, 14 and 23 came back FEASIBLE pre-fix and
+n = 18, 19 came back INFEASIBLE, so the two lists are measurements of different
+things (the comment's predates 40d9cfa, when the oracle could not complete at
+all). These are the numbers this box measured, at ten workers.
 
 Raising the pool to 4, 8, 10, 12 or 16 workers leaves the verdict unchanged
 (`plnt` n=15, `wet_harvst_plnt` n=8, `frtz_water` n=7 are `INFEASIBLE` under
@@ -59,12 +62,8 @@ Reproduced on `plnt` n=15 (pre-fix module restored, per-worker routes printed):
 
 ```
   w0 -> [... ('m0_plant', 21), ('m0_water', 22), ('m5_plant', 24)]
-  w1 -> [...]
   w2 -> [('m4_plant', 7), ('m4_water', 8)]
-  w3 -> []
-  w4 -> []
-  ...
-  w9 -> []
+  w3 .. w9 -> []
   UNSCHEDULED: ['m5_water']
 ```
 
@@ -80,33 +79,69 @@ module: no `r` loop exists, `compute_lower_bound` is never called by
 end of the dispatch loop. Extra workers cannot help for the pinning reason
 above — not because a search gave up.
 
+## The pre-PR review pass (three defects, one of them mine)
+
+The first version of the guard charged every precedence hop `1 + dist`, and that
+is wrong for a plain precedence pair, which **two different workers may serve**:
+
+```
+p at (0,0) -> s at (9,9), horizon 10, two workers
+  valid schedule: w0 runs p at t=9, w1 runs s at t=10   (the oracle: OPTIMAL)
+  first guard:    tail(p) = 1 + dist((0,0),(9,9)) = 19 -> refuses p -> INFEASIBLE
+```
+
+`bench/bench_oxa_fuzz.py` (400 seeded random instances: single tasks, same-cell
+and cross-cell pairs, item chains with paired acquires and groups) measured the
+damage — statuses per solver revision, all on the same seeds:
+
+| revision | OPTIMAL | FEASIBLE | INFEASIBLE | invalid | vs pre-fix |
+|---|---|---|---|---|---|
+| pre-fix (40d9cfa) | 97 | 92 | 208 | 3 | — |
+| first guard (committed earlier in this PR) | 97 | 53 | 246 | 4 | **40 regressions**, 3 improvements |
+| reviewed (this commit) | 97 | 99 | 201 | 3 | **0 regressions**, 6 improvements |
+
+So the travel term is now charged only where one worker *must* serve both ends —
+an edge inside a `single_worker_group` — and plain edges cost the one turn
+precedence forces. The same table caught the second defect: an answer with an
+idle hand in the middle (fuzz seed 9) under-reported its `reported_cost`, and
+`verify_solution` answered INVALID_SOLUTION for an otherwise legal schedule.
+The engine's rule is append-only hiring (`verify.py`, COST ACCOUNTING):
+`fib(0..max_active)`, idle middle hands included. Fixed here.
+
+Third, **still open** (pre-existing, not introduced by this PR): the dispatch
+loop assigns warehouse entry cells over *all* candidate workers while
+`verify_solution` recomputes the placement rule over the workers that are
+actually routed, so a worker can be sent out from a cell it does not hold —
+`worker 2: first task 'c0_a' reachable too early from entry`. Measured on fuzz
+seeds 93, 182 and 205; seeds 182/205 already failed this way before the PR, and
+the failure total still improved (208 + 3 → 201 + 3). It needs its own change
+(the assignment has to be re-derived from the active set, which is not known
+before the dispatch runs) and its own sweep, so it is recorded here rather than
+patched blind.
+
 ## What changed
 
-- `_successor_map` + `_unfinished_tail_turns` (`oxa_solver.py`, stdlib only):
-  the longest path through a task's not-yet-scheduled descendants, each hop
-  costing one turn plus the travel to the successor's cell. The candidate loop
-  now skips a task when `actual_exec + tail > horizon`. The figure is a lower
-  bound on any completion of that chain, so the refusal is lossless: it can only
-  convert a doomed commit into leaving the chain for a worker that still has
-  room. The successor map is built once per solve, not per worker.
-- `tests/wrs/test_oxa_false_infeasible.py`: the sweep as a guard
-  (`test_the_sweep_never_calls_a_feasible_day_infeasible`, every INFEASIBLE
-  answer put to the oracle), the eight measured instances pinned by name, and
-  the worker-pool invariance check.
-- The two `cp_sat_direct` fallbacks in `cpsat_binarySearch` were a `NameError`
-  until 40d9cfa — the oracle could not answer at all on the instances whose
-  full-pool probe found nothing — so that landed before any table above.
-- R007 failing direction: with the pre-fix `oxa_solver.py` restored the guard
-  reddens on the first instance it looks at —
-
-  ```
-  E   AssertionError: plnt n=15: OXA said INFEASIBLE but the oracle admits a
-      schedule (FEASIBLE) -- the greedy orphaned a chain instead of leaving it
-      to another worker
-  1 failed, 2 passed in 6.12s
-  ```
-
-  — then the fix goes back in and the same command reports `17 passed`.
+- `_successor_gaps` + `_unfinished_tail_turns` (`oxa_solver.py`, stdlib only):
+  the precedence DAG inverted over the target tasks, each edge carrying the
+  minimum turns that must separate its ends — `1`, plus the travel when the two
+  tasks share a `single_worker_group`. The candidate loop skips a task when
+  `actual_exec + tail > horizon`; the figure is a lower bound on any completion
+  of that chain, so the refusal can only convert a doomed commit into leaving
+  the chain to a worker that still has room. Built once per solve.
+- `reported_cost` now follows the engine's append-only payroll
+  (`fib(0..max_active)`), not the sum over the routes that carry tasks.
+- `tests/wrs/test_oxa_false_infeasible.py`: the sweep as a guard (every
+  INFEASIBLE answer put to the oracle), the eight measured instances pinned by
+  name, the worker-pool invariance check, the cross-cell pair, the gap payroll
+  and a positive control that runs the oracle-confirmation branch on green runs.
+- `bench/bench_oxa_fuzz.py`: the seeded audit that produced the table above
+  (`--oracle` confirms INFEASIBLE verdicts too, `--dump` writes per-seed
+  statuses for a differential run against another revision).
+- R007 failing direction, all re-checked by re-introducing the bug: with the
+  pre-fix module in place the sweep test reddens on `plnt` n=15
+  (`1 failed, 2 passed`); with the *first* guard in place the cross-cell pair
+  and the gap-payroll tests redden (`2 failed, 18 deselected`); both go green
+  again with this commit's solver (`20 passed`).
 
 ## Why it matters
 

@@ -77,7 +77,7 @@ def _build_worker_route(
         if len(group) == 2 and tasks_by_id[group[0]].action == MinorActionType.PICKUP:
             acquire_partner[group[1]] = group[0]
 
-    successors = _successor_map(instance)
+    successor_gaps = _successor_gaps(instance, tasks_by_id)
 
     while True:
         # The tail table is constant across this iteration: the candidate
@@ -121,11 +121,12 @@ def _build_worker_route(
             # emitted exec_time becomes a hard global lower bound for its
             # successors (`ready_t = exec_times[p] + 1`), so no later
             # worker can rescue the chain and the leftover target is read
-            # as INFEASIBLE with idle workers sitting right there. The
-            # tail figure is a lower bound on any completion, so skipping
-            # the task here can never lose a schedule that fits.
+            # as INFEASIBLE with idle workers sitting right there. The gap
+            # `_successor_gaps` charges an edge is a lower bound on any
+            # completion of it, so skipping the task here can never lose a
+            # schedule that fits.
             if actual_exec + _unfinished_tail_turns(
-                    tid, pending, successors, tasks_by_id, tail_turns) > horizon:
+                    tid, pending, successor_gaps, tail_turns) > horizon:
                 continue
                 
             cost = actual_exec - current_t
@@ -260,40 +261,54 @@ def _cell_options(task: MinorTask) -> list[Cell]:
 
 
 
-def _successor_map(instance: Instance) -> dict[str, list[str]]:
-    """`precedence` restricted to target tasks, inverted -- the mirror of
-    `Instance.target_preds`. Acquire pickups are not targets (the preload
-    phase emits them), so they never appear here."""
-    successors: dict[str, list[str]] = {tid: [] for tid in instance.target_tasks}
+def _successor_gaps(
+    instance: Instance, tasks_by_id: dict[str, MinorTask]
+) -> dict[str, list[tuple[str, int]]]:
+    """`instance.precedence` inverted over the target tasks, each edge carrying
+    the *minimum turns that must separate the two tasks*.
+
+    Two tasks in one `single_worker_group` are executed by the same worker, so
+    the successor also pays the travel from the predecessor's cell
+    (`1 + dist`). Every other edge is a plain precedence pair that any worker
+    may serve: only `1` turn is forced (precedence is strict, one action per
+    worker per turn) — charging travel there would reject commits another
+    worker can finish, which is its own false-INFEASIBLE (see docs/F054).
+    """
+    gaps: dict[str, list[tuple[str, int]]] = {tid: [] for tid in instance.target_tasks}
     for pred, succ in instance.precedence:
-        if pred in successors and succ in successors:
-            successors[pred].append(succ)
-    return successors
+        if pred not in gaps or succ not in gaps:
+            continue
+        gap = 1
+        pred_group = instance.group_of.get(pred)
+        if pred_group is not None and pred_group == instance.group_of.get(succ):
+            gap += _min_dist(_cell_options(tasks_by_id[pred]), _cell_options(tasks_by_id[succ]))
+        gaps[pred].append((succ, gap))
+    return gaps
 
 
 def _unfinished_tail_turns(
     tid: str,
     pending: frozenset[str],
-    successors: dict[str, list[str]],
-    tasks_by_id: dict[str, MinorTask],
+    successor_gaps: dict[str, list[tuple[str, int]]],
     memo: dict[str, int],
 ) -> int:
-    """Turns that must still fit *after* `tid` for every one of its
-    not-yet-scheduled descendants to run: the longest path through the
-    successor DAG, each hop costing the successor's own turn plus the
-    travel to its cell. Any completion of the chain needs at least that
-    much time, so refusing to schedule a task that cannot afford it is
-    lossless -- see docs/F054 (the false-INFEASIBLE defect)."""
-    if tid in memo:
-        return memo[tid]
-    memo[tid] = 0  # a malformed (cyclic) successor map must not recurse
+    """Turns that must still fit *after* `tid` for every unfinished descendant
+    of `tid` to run: the longest path through the successor DAG, each hop
+    costing the minimum separation `_successor_gaps` assigns that edge.
+
+    Every legal completion needs at least this much time, so refusing to
+    commit a task that cannot afford it is lossless -- see docs/F054 (the
+    false-INFEASIBLE defect).
+    """
+    cached = memo.get(tid)
+    if cached is not None:
+        return cached
+    memo[tid] = 0  # breaks any accidental cycle; the DAG is validated upstream
     longest = 0
-    for succ in successors.get(tid, ()):
+    for succ, gap in successor_gaps.get(tid, ()):
         if succ not in pending:
             continue
-        hop = 1 + _min_dist(_cell_options(tasks_by_id[tid]), _cell_options(tasks_by_id[succ]))
-        longest = max(longest, hop + _unfinished_tail_turns(
-            succ, pending, successors, tasks_by_id, memo))
+        longest = max(longest, gap + _unfinished_tail_turns(succ, pending, successor_gaps, memo))
     memo[tid] = longest
     return longest
 
@@ -428,9 +443,16 @@ def solve_oxa(instance: Instance, config: OxaConfig = OxaConfig()) -> OxaResult:
     if remaining_targets:
         return OxaResult(status="INFEASIBLE", wall_time_seconds=wall_time)
         
+    # Engine cost accounting (same rule as `verify_solution`): hiring is
+    # append-only, so if the highest hand used is m, hands 0..m were all paid
+    # fib(0..m) -- an idle middle worker is legal but still on the payroll.
+    # Summing only the routes that carry tasks under-reports whenever the
+    # greedy leaves a gap, which the verifier then rejects as
+    # INVALID_SOLUTION (seeds 9/182/205 of the review fuzz).
+    max_active = max((route.worker_index for route in routes), default=-1)
     solution = Solution(
         routes=routes, 
-        reported_cost=sum(fibonacci_cost(r.worker_index) for r in routes)
+        reported_cost=sum(fibonacci_cost(i) for i in range(max_active + 1))
     )
     
     if config.validate:

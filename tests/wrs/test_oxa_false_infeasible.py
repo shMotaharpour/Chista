@@ -21,10 +21,21 @@ tests/wrs/test_cpsat_solver.py's entry point, `cpsat_binarySearch`:
 R007 failing direction: with `secretary/solvers/oxa_solver.py` reverted to
 its pre-fix state this module fails with the false verdicts listed above;
 the guard's own message names the kind, the n and the oracle's answer.
+
+Two more findings came out of the pre-PR review (both measured, docs/F054):
+the tail gap must charge travel only for pairs that ONE worker has to serve
+(`single_worker_group`), because a plain precedence pair can be split across
+two workers -- charging travel there reddens
+`test_a_cross_cell_chain_can_be_served_by_two_workers`; and the day's
+`reported_cost` is the engine's append-only payroll `fib(0..max_active)`,
+not the sum over the routes that carry tasks (which reddens
+`test_a_day_that_skips_lower_index_hands_pays_for_them`).
 """
 import pytest
 
-from secretary.models import Cell, Instance, Item, MajorTask, Worker
+from secretary.fibonacci import fibonacci_cost
+from secretary.models import (Cell, Instance, Item, MajorTask, MinorActionType,
+                              MinorTask, ScheduledTask, Solution, Worker, WorkerRoute)
 from secretary.solvers.cpsat_solver import CpSatConfig, cpsat_binarySearch
 from secretary.solvers.oxa_solver import OxaConfig, solve_oxa
 from secretary.verify import verify_solution
@@ -113,3 +124,117 @@ def test_a_bigger_worker_pool_does_not_change_the_verdict(kind, n):
         verification = verify_solution(instance, result.solution)
         assert verification.is_valid, (kind, n, workers, verification.violations)
     assert len(set(statuses.values())) == 1, statuses
+
+
+# ---------------------------------------------------------------- review findings
+
+
+def test_a_cross_cell_chain_can_be_served_by_two_workers():
+    """A plain precedence pair may be split across two hands.
+
+    `p` at (0,0) then `s` at (9,9), horizon 10, two workers: w0 runs p at
+    t=9 and w1 runs s at t=10, and the oracle calls that day OPTIMAL. A tail
+    that charges the successor the travel from p's cell reads the chain as
+    needing 28 turns and answers INFEASIBLE for a schedulable day -- the
+    first version of the guard did exactly that (docs/F054, review pass).
+    """
+    instance = Instance.compile(
+        workers=[Worker(index=0, earliest_start=0), Worker(index=1, earliest_start=0)],
+        standalone_minor_tasks=[
+            MinorTask(id="p", cell=Cell(0, 0), action=MinorActionType.PASS),
+            MinorTask(id="s", cell=Cell(9, 9), action=MinorActionType.PASS),
+        ],
+        explicit_precedence=[("p", "s")],
+        horizon=10,
+    )
+    result = solve_oxa(instance, OxaConfig(min_workers=1))
+
+    assert result.status in ("OPTIMAL", "FEASIBLE"), result.status
+    verification = verify_solution(instance, result.solution)
+    assert verification.is_valid, verification.violations
+    assert cpsat_binarySearch(instance, ORACLE).solution is not None  # provably schedulable
+
+
+def test_a_day_that_skips_lower_index_hands_pays_for_them():
+    """Engine accounting: hiring is append-only (verify.py's COST ACCOUNTING).
+
+    Four hands are offered and the greedy may well give the day to hand 3 with
+    hand 2 idle (or to hand 2 and skip nothing -- the route set depends on
+    iteration order, both are valid). Whatever it picks, `reported_cost` must
+    be the engine's payroll `fib(0..max_active)`: reporting the sum over the
+    routes that carry tasks under-reported a day with a gap and made the
+    verifier answer INVALID_SOLUTION for an otherwise legal schedule
+    (docs/F054, review pass).
+    """
+    instance = Instance.compile(
+        workers=[Worker(index=i, earliest_start=start)
+                 for i, start in ((0, 0), (1, 1), (2, 1), (3, 0))],
+        standalone_minor_tasks=[
+            MinorTask(id="c0_a", cell=Cell(4, 4), action=MinorActionType.PASS),
+            MinorTask(id="c1_a", cell=Cell(4, 4), action=MinorActionType.PASS),
+            MinorTask(id="c2_acq", cell=None, action=MinorActionType.PICKUP,
+                      item=Item.FERTILIZER, qty=1),
+            MinorTask(id="c2_cons", cell=Cell(2, 3), action=MinorActionType.FERTILIZE,
+                      item=Item.FERTILIZER, qty=1),
+            MinorTask(id="c2_tail", cell=Cell(9, 4), action=MinorActionType.PASS),
+            MinorTask(id="extra", cell=Cell(0, 3), action=MinorActionType.PASS),
+        ],
+        explicit_precedence=[("c2_acq", "c2_cons"), ("c2_cons", "c2_tail")],
+        explicit_single_worker_groups=[["c2_acq", "c2_cons"]],
+        warehouse_stock={Item.FERTILIZER: 1},
+        horizon=8,
+    )
+    result = solve_oxa(instance, OxaConfig(min_workers=1))
+
+    assert result.status in ("OPTIMAL", "FEASIBLE"), result.status
+    verification = verify_solution(instance, result.solution)
+    assert verification.is_valid, verification.violations
+    max_active = max(route.worker_index for route in result.solution.routes)
+    payroll = sum(fibonacci_cost(i) for i in range(max_active + 1))
+    assert result.solution.reported_cost == payroll
+    assert verification.total_cost == payroll
+
+
+def test_the_engine_charges_the_idle_hands_below_the_top_of_the_day():
+    """The payroll rule, pinned deterministically through the verifier.
+
+    One route on hand 3 with hands 0..2 idle is a legal day, and it pays for
+    all four (fib(0..3) = 4). Reporting hand 3's fib alone (2) is the defect
+    the test above caught in the solver.
+    """
+    instance = Instance.compile(
+        workers=[Worker(index=i, earliest_start=0) for i in range(4)],
+        standalone_minor_tasks=[MinorTask(id="t", cell=Cell(4, 4),
+                                          action=MinorActionType.PASS)],
+        horizon=8,
+    )
+    routes = [WorkerRoute(worker_index=3, start_time=0, start_cell=Cell(4, 4),
+                          tasks=[ScheduledTask(task_id="t", exec_time=1,
+                                               resolved_cell=Cell(4, 4))])]
+    paid = verify_solution(instance, Solution(routes=routes, reported_cost=4))
+    assert paid.is_valid, paid.violations
+    assert paid.total_cost == 4
+    under = verify_solution(instance, Solution(routes=routes, reported_cost=2))
+    assert not under.is_valid and "reported_cost" in under.violations[0]
+
+
+def test_the_oracle_confirmation_agrees_on_a_genuinely_infeasible_day():
+    """The sweep's confirmation branch is not a rubber stamp.
+
+    horizon=1 with a chain that needs two turns: OXA answers INFEASIBLE and
+    the oracle finds no schedule either, so the branch that *authorises* an
+    INFEASIBLE verdict runs on green runs too (R007's warning about guards
+    that only exercise the path production never takes).
+    """
+    instance = Instance.compile(
+        workers=[Worker(index=0, earliest_start=0)],
+        standalone_minor_tasks=[
+            MinorTask(id="a", cell=Cell(4, 4), action=MinorActionType.PASS),
+            MinorTask(id="b", cell=Cell(4, 4), action=MinorActionType.PASS),
+        ],
+        explicit_precedence=[("a", "b")],
+        horizon=1,
+    )
+    assert solve_oxa(instance, OxaConfig(min_workers=1)).status == "INFEASIBLE"
+    assert cpsat_binarySearch(instance, ORACLE).solution is None
+
