@@ -19,7 +19,11 @@ negative component on entry (`_check_non_negative`), which IS the guard; this
 script prints that refusal once so the boundary is on record rather than
 implied. The comparison carries its own positive control: a copy of the pruned
 graph with one edge's produce raised must produce different values, otherwise
-"identical" would prove nothing.
+"identical" would prove nothing — and a control that fails exits 2 instead of
+letting the 0-mismatch line read as a clean result.
+
+Exit code: 0 = sound in this regime, 1 = a mismatching sweep, 2 = the positive
+control itself failed.
 """
 
 from __future__ import annotations
@@ -139,6 +143,10 @@ def main() -> int:
     ok = bool(np.abs(Vn - Vp).max() > 0.0)
     print(f"positive control (one edge's produce raised): difference detected "
           f"= {ok}", flush=True)
+    if not ok:
+        print("  CONTROL FAILED: the comparison cannot see a value change it "
+              "must see, so the 0-mismatch result above proves nothing",
+              flush=True)
 
     # R006's other side: the guard itself.
     neg = np.zeros((args.days, G.N_RESOURCE), dtype=np.float32)
@@ -152,6 +160,8 @@ def main() -> int:
               f"designed ({str(exc)[:60]}...)", flush=True)
 
     print(f"elapsed {time.time() - t0:.1f} s", flush=True)
+    if not ok:
+        return 2                     # a broken control, not a clean sweep
     return 1 if mismatches else 0
 
 
