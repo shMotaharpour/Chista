@@ -88,8 +88,8 @@ w_next = np.maximum(w_next, 0)               # R006, projected every round
 
 ## Fallback (required, not optional — #12 brief §3)
 
-If scipy is absent (the module-level import is GUARDED, review round 1
-B1: a bare import would take the whole submission down at load), or the
+If linprog is not importable (the module-level import is GUARDED so a
+bare import cannot take the whole submission down at load), or the
 contractor or a solve fails, the master publishes its LAGGED prices with
 no update — degraded, not dead. `MasterResult.used_fallback` +
 `fallback_reason` carry which path fired, so a run never silently mixes
@@ -113,14 +113,17 @@ import numpy as np
 try:
     from scipy.optimize import linprog
     HAS_SCIPY = True
-except ImportError:                     # the grading image may not carry it
-    # Review round 1, B1: a bare module-level import takes the WHOLE
-    # SUBMISSION down at load if scipy is absent (measured: an import
-    # hook that blocks scipy raises straight out of `import
-    # planner.master`, so the fallback below could never run — there was
-    # nothing left to fall back FROM). The probe also found torch absent
-    # on the local grading-like image, so "scipy is definitely there" is
-    # not a safe assumption. Degrade to the lagged-price path instead.
+except ImportError:                     # scipy is optional at import time
+    # The guard is import hygiene, not a forecast. A bare module-level
+    # import takes the WHOLE SUBMISSION down at load if scipy is missing
+    # (measured: an import hook that blocks scipy raises straight out of
+    # `import planner.master`, so the fallback below could never run —
+    # there is nothing left to fall back FROM). Three lines buy that
+    # back, and they route into the solve-failure path that has to exist
+    # anyway. No claim is made here about what any image carries: the
+    # probe runs that would have measured the grading image returned
+    # nothing, and R005 forbids reasoning from a measurement we do not
+    # have.
     linprog = None
     HAS_SCIPY = False
 
@@ -383,9 +386,9 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
 
     if owned is None:
         owned = _owned_states(runtime, obs)
-    # Fallback trigger 1 (review round 1, B1): scipy absent on the
-    # grading image. The module still imports (guarded import above);
-    # the publish degrades to the warm prices and SAYS so.
+    # Fallback trigger 1: linprog was not importable. The module still
+    # imports (guarded import above); the publish degrades to the warm
+    # prices and SAYS so.
     if not HAS_SCIPY:
         return _fallback("scipy unavailable: linprog not importable")
     deadline = getattr(runtime, "_deadline", None)
