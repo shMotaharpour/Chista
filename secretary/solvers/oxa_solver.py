@@ -379,8 +379,33 @@ def _validate_item_sources(instance: Instance) -> None:
                 f"of that item exists anywhere in the instance"
             )
 
+def _validate_preloaded_pickups_have_no_predecessor(instance: Instance) -> None:
+    """A preloaded pickup may not itself have a predecessor.
+
+    `Instance.compile` marks a pickup *aggregatable* when it precedes its own
+    consume inside a `single_worker_group` (models.py step 5): the solver then
+    executes it as the setup turn at the head of a route and emits it without
+    ever consulting the precedence graph -- such a pickup is not a target task,
+    so `target_preds` does not carry the edge either. An edge *into* it is
+    therefore unrepresentable here: the greedy commits it at its own hour and
+    `verify_solution` rejects the day as `precedence violated`. `cpsat_solver`
+    models the edge, so the input is not refusable at `Instance.compile`
+    without taking that ability away; the formulation's limit is raised here
+    instead of being answered with an unusable day (docs/F054, fifth class).
+    """
+    for pred, succ in instance.precedence:
+        if succ in instance.aggregatable_pickups:
+            raise InfeasibleInputError(
+                f"precedence {pred!r} -> {succ!r} puts a task before a "
+                f"preloaded pickup: {succ!r} is emitted as the setup turn at "
+                f"the head of its route, so it cannot follow another task, "
+                f"and this solver answers INVALID_SOLUTION when asked to"
+            )
+
+
 def solve_oxa(instance: Instance, config: OxaConfig = OxaConfig()) -> OxaResult:
     _validate_item_sources(instance)
+    _validate_preloaded_pickups_have_no_predecessor(instance)
 
     # ---- static input validation: warehouse stock overrun ----------------
     if instance.warehouse_stock:

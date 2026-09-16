@@ -167,6 +167,34 @@ def test_global_stock_overrun_raises_before_solving():
         solve_oxa(instance, OxaConfig(min_workers=1))
 
 
+def test_an_edge_into_a_preloaded_pickup_is_rejected_not_mis_scheduled():
+    # `models.py` marks a pickup *aggregatable* when it precedes its own
+    # consume (here S -> C), and the solver then emits it as the setup turn at
+    # the head of a route without consulting the precedence graph. An edge
+    # *into* S is therefore unrepresentable, and the greedy used to answer
+    # INVALID_SOLUTION for such a day -- `verify_solution` catching
+    # "precedence violated: 'T' must strictly precede 'S'" (docs/F054, fifth
+    # class) -- while `cpsat_binarySearch` scheduled it (OPTIMAL, S at 11,
+    # C at 24, T at 10). R007 failing direction: drop the validation and this
+    # stops raising, returning INVALID_SOLUTION instead.
+    instance = Instance.compile(
+        workers=_workers(0, 1),
+        standalone_minor_tasks=[
+            MinorTask(id="T", cell=NW, action=MinorActionType.PASS),
+            MinorTask(id="S", cell=None, action=MinorActionType.PICKUP,
+                      item=Item.WHEAT, qty=1),
+            MinorTask(id="C", cell=NE, action=MinorActionType.FEED,
+                      item=Item.WHEAT, qty=1),
+        ],
+        explicit_precedence=[("T", "S"), ("S", "C")],
+        explicit_single_worker_groups=[["S", "C"]],
+        warehouse_stock={Item.WHEAT: 5},
+        horizon=24,
+    )
+    with pytest.raises(InfeasibleInputError):
+        solve_oxa(instance, OxaConfig(min_workers=1))
+
+
 def test_empty_instance_is_trivially_optimal_with_zero_cost():
     instance = Instance.compile(workers=_workers(0, 1, 2), standalone_minor_tasks=[])
     result = solve_oxa(instance, OxaConfig(min_workers=1))
