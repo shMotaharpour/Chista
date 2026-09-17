@@ -103,6 +103,29 @@ Chista's own tests and docs before anything here answered to it. It stays
 because it is a good name for the thing, and now it has a referent — which is
 the point of this section, and the reason it is here rather than assumed.
 
+## The sell side — `belief/`
+
+`belief/` holds what the market and the rival are doing, and what to sell (issue
+#54). It is the only place that reads the market's own arithmetic:
+
+- `tracker.py` — the flow residual. Exact for the seven goods that cannot be
+  bought; **net-only** for WHEAT and FERTILIZER, because a buy is quoted at
+  `price(I-1)` and a sale earns `price(I)`, so both channels enter the identity
+  with the same sign. Its docstring carries the measured error.
+- `opponent.py` — the rival's action counts, the closed-form demand forecast
+  (already-open shops are facts; only the future unlocks are random, so both
+  moments are exact without sampling), and the inference of the order they filled
+  their ten slots in, from their realised average price.
+- `solvers.py` — the slot game's exact maximin mix (`linprog(method="highs")`) and
+  its risk-adjusted continuous sibling (`minimize(method="SLSQP")`), plus the
+  season LP whose absorption row is what stops it selling 4,000 units into a
+  525-unit drain.
+- `schemas.py` — the messages the layers exchange. Nobody commands an op across a
+  boundary: a message says what must be true and by when, and the receiving layer
+  owns how.
+- `stubs.py` — what runs until each of those units exists, each naming the issue
+  that retires it.
+
 ## Docs
 
 - `docs/player_agent.md` — getting started: build, test, and submit an agent.
