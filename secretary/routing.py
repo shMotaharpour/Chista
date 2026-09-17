@@ -1,47 +1,11 @@
-"""Secretary A: the day compiler — one chain, one unit, one day the engine accepts.
+"""The day compiler: one chain, one unit, one day the engine accepts.
 
-Issue #14's routing half, and the reason the replan rung was inert (F047): the
-tile graph prices a chain **as if the worker already stands on the tile and its
-inputs are in its bag**. `tile_dp/graph.py::_exec_chain` realises the buys and
-the pickups on a scratch sim where the worker happens to start on a shed-access
-tile, so every chain in the shipped graph is realisable — but only from there.
-At runtime the units are wherever they are, and an op whose precondition is not
-met is refused **in silence**: the day passes and nothing happens.
+The tile graph prices a chain as if the worker already stands on the tile and its
+inputs are in its bag; the engine refuses an unmet precondition in silence (F047).
+This module builds the day that satisfies those preconditions: travel, shed trips,
+pickups, drops, and the market orders the day needs.
 
-So this module answers one question per unit: *what is the exact sequence of
-ops that gets this unit from where it stands, through the shed if it needs to
-carry something, onto its tile, through its chain, and back to the shed with the
-harvest?* It emits only ops whose preconditions it has itself satisfied, and it
-reports what it had to drop.
-
-## The engine facts this is built on (all read out of `kaggriculture.py`)
-
-- **Movement is one tile per op, and the op name is the direction**: the action
-  string is `"NORTH" | "SOUTH" | "EAST" | "WEST"` (`_apply_unit_action:323`), no
-  `MOVE_` prefix. Off-board is a silent no-op; LOCKED tiles are walkable
-  (`:326-331`) — a hand can spawn on one.
-- **PICKUP and DROP require a shed-access tile** (`_is_shed_adjacent:344,359`),
-  which is exactly `_shed_access_tiles`: the four tiles of the shed block,
-  `(4,4) (5,4) (4,5) (5,5)` at the default board size. Anywhere else both are
-  silent no-ops.
-- **Seeds never travel.** `BUY_SEED` credits `private["seeds"]` and `PLANT`
-  consumes that directly (`:367-368, 425-427`), so a crop needs a market order
-  and a worker standing on the tile — never a pickup.
-- **`BUY_PRODUCT` and `BUY_ANIMAL` land in the shed** (`:670, 685`) and are
-  refused outright while `sum(shed) >= shedCapacity` (`:667, 682`). So a buy is
-  only real if the shed has room on that turn — the seller's business (#15).
-- **A purchase is usable the turn after it lands** (F030): the unit acts before
-  the market, so a `BUY_*` at hour `h` can only be picked up at hour `h+1` or
-  later.
-- **`DROP` empties the whole bag** and destroys whatever does not fit
-  (`:343-356`), so it is scheduled as late as the day allows: the day's sales
-  have already made room, and the harvest is in the shed for the next market.
-- **`HARVEST` and `COLLECT_FERTILIZER` put goods in the unit's bag**, and a
-  `SELL` can only reach the shed (`_commit_unit`), so the walk back to the shed
-  is what turns a harvest into money.
-- **Hiring costs the engine's Fibonacci ladder** and the hand spawns on a
-  shed-access tile (`_spawn_hand:533`), which is why a new hand's first pickup
-  is free and its trip to a tile is not.
+Engine facts behind the geometry: `docs/F060`, `docs/ARCHITECTURE.md` §2.
 """
 
 from __future__ import annotations
@@ -51,24 +15,17 @@ from typing import Iterable, Mapping, Sequence
 
 from kaggle_environments.envs.kaggriculture import kaggriculture as K
 
-TURNS_PER_DAY = 24          # the run configuration's turnsPerDay (F058)
+from world.model import (CARRIES, COLLECT_ITEM, MOVE_DELTA, SHED_ACCESS,
+                         compile_chain)
+
+TURNS_PER_DAY = 24          # turnsPerDay (F058)
 DEFAULT_BOARD = 10          # boardSize
-MAX_ORDERS_PER_TURN = 10    # F031 — the engine executes 10 and drops the rest in silence
+MAX_ORDERS_PER_TURN = 10    # F031 — the engine runs 10 and drops the rest silently
 
-#: op name -> (dx, dy); the engine's own table, never transcribed (R002).
-MOVE_OPS: dict[str, tuple[int, int]] = dict(K.FARMER_MOVES)
-
-#: the goods a worker must be carrying, and the op that eats them.
-CARRIED_BY_OP: dict[str, str] = {"FERTILIZE": "FERTILIZER", "FEED": "WHEAT"}
-
-#: ops that need the entity itself in the bag (an animal), not a product.
+MOVE_OPS = MOVE_DELTA       # one tile per op, the engine's table
+CARRIED_BY_OP = CARRIES     # what an op must carry
 PLACE_OPS = ("PLACE", "PLACE_ANIMAL")
-
-#: ops that put goods into the unit's bag, and therefore want a shed trip after.
 BAGGING_OPS = ("HARVEST", "COLLECT_FERTILIZER")
-
-#: ops that name an entity and cannot run without one.
-ENTITY_OPS = ("PLANT", "BUILD", "PLACE", "PLACE_ANIMAL")
 
 
 def shed_access(board: int = DEFAULT_BOARD) -> tuple[tuple[int, int], ...]:
@@ -107,32 +64,8 @@ def nearest_shed(pos: tuple[int, int], board: int = DEFAULT_BOARD) -> tuple[int,
 
 
 def op_turns(ops: Sequence[str], entity: str | None) -> list[tuple[str, ...]]:
-    """A chain's ops -> the worker's op per turn, in canonical order.
-
-    The same expansion `agent/replan.py::chain_turns` has always done, moved
-    here so the compiler owns the whole vocabulary: a chain names an abstract
-    `PLANT`, the engine wants `["PLANT", "WHEAT"]`, and `BUILD` becomes the
-    structure the entity needs.
-    """
-    out: list[tuple[str, ...]] = []
-    for op in ops:
-        if op == "NO_ACT" or op == "PASS":
-            out.append(("PASS",))
-        elif op == "BUILD":
-            if entity not in K.ANIMALS:
-                raise ValueError(f"BUILD {entity!r} is not an animal")
-            out.append((f"BUILD_{K.ANIMALS[entity]['structure']}",))
-        elif op in PLACE_OPS:
-            if entity not in K.ANIMALS:
-                raise ValueError(f"PLACE {entity!r} is not an animal")
-            out.append(("PLACE", str(entity)))
-        elif op == "PLANT":
-            if entity not in K.CROPS:
-                raise ValueError(f"PLANT {entity!r} is not a crop")
-            out.append(("PLANT", str(entity)))
-        else:                                   # WATER, HARVEST, DIG, FERTILIZE,
-            out.append((str(op),))              # FEED, CARE, COLLECT_FERTILIZER
-    return out
+    """A chain -> the worker's op per turn. One expansion: `world/model.py`."""
+    return compile_chain(tuple(ops), entity)
 
 
 @dataclass(frozen=True)
@@ -140,7 +73,7 @@ class Need:
     """One thing the market must deliver, and the last turn it may land on."""
 
     hour: int                # latest landing hour (a pickup needs h_buy < h_pick)
-    order: tuple             # the engine order, e.g. ("BUY_SEED", "WHEAT", 1)
+    order: tuple             # the engine order, e.g. ("BUY_SEED", crop, 1)
     reason: str              # which op wanted it
 
 
@@ -264,7 +197,7 @@ def route_unit(ops: Sequence[str], entity: str | None, pos: tuple[int, int], *,
             bagged[item] = bagged.get(item, 0) + int(yields.get(item, 0))
         elif op[0] == "COLLECT_FERTILIZER":
             bagged_ops += 1
-            bagged["FERTILIZER"] = bagged.get("FERTILIZER", 0) + 1
+            bagged[COLLECT_ITEM] = bagged.get(COLLECT_ITEM, 0) + 1
 
     arrivals: list[tuple[int, str, int]] = []
     if drop and bagged_ops > 0:

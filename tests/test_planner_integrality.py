@@ -29,7 +29,8 @@ import numpy as np
 from kaggle_environments.envs.kaggriculture import kaggriculture as K
 
 from agent.dispatch import dispatch_plan, MAX_MARKET_ORDERS
-from agent.replan import chain_turns, dual_stand_in, load_contractor
+from agent.replan import dual_stand_in, load_contractor
+from world.model import compile_chain
 from agent.obs import decode_world
 from tile_dp.chains import chain_ops, entity_of_code
 from planner.columns import (DAYS, Choice, ClassMix, Plan, assign_tiles,
@@ -187,7 +188,7 @@ def test_repaired_plan_dispatches_and_validates() -> None:
     board = contractor.price(p, w, [state])
     _day, _state, chain_id = board.plans[0][0]
     entity = entity_of_code(int(board.per_day_entity[0, 0]))
-    turns = chain_turns(chain_ops(chain_id), entity)
+    turns = compile_chain(chain_ops(chain_id), entity)
     plan = {"units": [turns], "market": []}
     result = repair_day(plan, obs)
     for day in range(30):

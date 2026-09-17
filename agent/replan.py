@@ -75,8 +75,7 @@ import numpy as np
 from kaggle_environments.envs.kaggriculture import kaggriculture as K
 
 from agent.obs import LOCKED_KEY, WorldView, _nearest_modelled, decode_world
-from tile_dp.chains import (NO_ACT, N_RESOURCE, RESOURCE_ID, chain_ops,
-                            entity_of_code)
+from tile_dp.chains import N_RESOURCE, RESOURCE_ID, chain_ops, entity_of_code
 from secretary.routing import plan_day
 from tile_dp.contractor import HORIZON_DAYS, TileContractor
 from tile_dp.graph import TileGraph
@@ -138,39 +137,6 @@ def dual_stand_in(obs: Any) -> tuple[np.ndarray, np.ndarray]:
     return p, w
 
 
-def chain_turns(ops: tuple[str, ...], entity: str | None) -> list[list[str]]:
-    """One chain -> the unit's op per turn, in canonical order.
-
-    The worker side of the expansion `tile_dp/graph.py::_exec_chain` runs on a
-    scratch sim at build time. The purchases that function also realises are
-    deliberately absent here — see the module docstring: nothing carries them
-    yet (#14).
-    """
-    turns: list[list[str]] = []
-    for op in ops:
-        if op in _ENTITY_OPS and entity is None:
-            raise ValueError(
-                f"chain {ops} runs {op} but names no entity: the graph should "
-                "never carry such an edge")
-        if op == NO_ACT or op == "PASS":
-            turns.append(["PASS"])
-        elif op == "BUILD":
-            if entity not in K.ANIMALS:
-                raise ValueError(f"BUILD {entity!r} is not an animal")
-            turns.append([f"BUILD_{K.ANIMALS[entity]['structure']}"])
-        elif op in ("PLACE", "PLACE_ANIMAL"):
-            if entity not in K.ANIMALS:
-                raise ValueError(f"PLACE {entity!r} is not an animal")
-            turns.append(["PLACE", str(entity)])
-        elif op == "PLANT":
-            if entity not in K.CROPS:
-                raise ValueError(f"PLANT {entity!r} is not a crop")
-            turns.append(["PLANT", str(entity)])
-        else:                      # WATER, HARVEST, DIG, FERTILIZE, FEED, CARE,
-            turns.append([op])     # COLLECT_FERTILIZER - single worker ops
-    return turns
-
-
 def unit_positions(view: WorldView) -> list[tuple[int, int]]:
     """The farmer first, then the hands in `hands` order (F030)."""
     positions = [(int(view.me.farmer[0]), int(view.me.farmer[1]))]
@@ -198,24 +164,6 @@ def unit_state_ids(view: WorldView, graph: TileGraph) -> list[int | None]:
             state_id = _nearest_modelled(key, known)
         ids.append(int(state_id))
     return ids
-
-
-def project_day(board, columns: list[int | None]) -> dict:
-    """The priced chains -> the dispatcher's plan for this day.
-
-    Superseded by `secretary/routing.py::plan_day`, which assigns tiles to units
-    and compiles movement, carries and the market queue. Kept because the
-    pre-compiler projection is what the older guards pin.
-    """
-    units: list[list[list[str]]] = []
-    for column in columns:
-        if column is None:
-            units.append([])
-            continue
-        _day, _state_id, chain_id = board.plans[column][0]
-        entity = entity_of_code(int(board.per_day_entity[column, 0]))
-        units.append(chain_turns(chain_ops(chain_id), entity))
-    return {"units": units, "market": []}
 
 
 def owned_tiles(view: WorldView, graph: TileGraph) -> list[tuple[tuple[int, int], int]]:

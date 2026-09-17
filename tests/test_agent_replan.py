@@ -27,8 +27,8 @@ from world.fast_sim import FastSim
 from world.actions import validate_action
 
 from agent.dispatch import dispatch_plan
-from agent.replan import (chain_turns, dual_stand_in, load_contractor,
-                          project_day, replan_day, unit_state_ids)
+from agent.replan import (dual_stand_in, load_contractor, replan_day,
+                          unit_state_ids)
 from agent.runtime import Deadline, Runtime
 from tile_dp.chains import CHAIN_NAMES, ENTITY_NAMES, N_RESOURCE, RESOURCE_ID
 from tile_dp.contractor import HORIZON_DAYS
@@ -83,38 +83,6 @@ def test_dual_stand_in_is_non_negative_and_sourced() -> None:
 
 # --------------------------------------------------------------- the projection
 
-def test_chain_turns_covers_the_registry() -> None:
-    """Every chain in the registry expands to a per-turn op list."""
-    for ops in CHAIN_NAMES:
-        entity = None
-        for name in ENTITY_NAMES:              # the first entity that fits
-            try:
-                turns = chain_turns(ops, name)
-            except ValueError:
-                continue
-            entity = name
-            break
-        if any(op in ("PLANT", "BUILD", "PLACE", "PLACE_ANIMAL") for op in ops):
-            assert entity is not None, f"no entity fits {ops}"
-        else:
-            turns = chain_turns(ops, None)
-        assert turns, ops
-        for turn in turns:
-            assert isinstance(turn, list) and turn, ops
-            assert all(isinstance(part, str) for part in turn), ops
-        assert len(turns) <= 24, f"{ops} needs more than a day"
-
-
-def test_chain_turns_refuses_an_entityless_constructive_op() -> None:
-    """A PLANT with no entity is a graph bug and must not become a plan."""
-    try:
-        chain_turns(("PLANT", "WATER"), None)
-    except ValueError as exc:
-        assert "names no entity" in str(exc), exc
-    else:
-        raise AssertionError("an entityless PLANT became a plan")
-
-
 def test_units_work_the_tile_they_stand_on() -> None:
     """LOCKED tiles are dropped (F042), not guessed at; units map to columns."""
     graph, _ = _resources()
@@ -129,7 +97,6 @@ def test_units_work_the_tile_they_stand_on() -> None:
     view = decode_world(locked, at_day_start=True,
                         graph_keys=frozenset(graph.key_index))
     assert unit_state_ids(view, graph) == [None]
-    assert project_day(_board_for(view, graph), [None])["units"] == [[]]
 
 
 def _board_for(view, graph):

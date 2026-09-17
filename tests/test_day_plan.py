@@ -1,23 +1,6 @@
-"""The day plan, replayed on the real engine: does every op the plan emits DO something?
+"""The day plan replayed on the engine: every op must move what it promises.
 
-Issue #57's acceptance instrument. The failure class this milestone exists for is
-F047: the engine refuses an op whose precondition is unmet **in silence**, so a
-plan can look busy for 720 steps and do nothing (the replan rung measured exactly
-3,000 — starting money untouched — for a whole season that way).
-
-Two instruments, because they catch different lies:
-
-1. **Per op**: every op the plan emits must move the thing that op promises — a
-   MOVE must move that unit, a PLANT must turn that tile into a plant, a HARVEST
-   must fill a bag or empty a tile, a BUY must spend money. This attributes the
-   failure to the unit and the turn.
-2. **Per turn**: if a turn emitted any op and the whole farm's fingerprint is
-   identical, something was refused that no rule above covers.
-
-The chains the instrument runs are chosen by the graph's own applicability filter
-(`chains_for`), never invented: a HARVEST on an immature crop is a no-op by the
-rules (`kaggriculture.py:453`), and testing the compiler with one would be
-testing the wrong thing.
+See `docs/ARCHITECTURE.md` §2 and issue #57.
 """
 
 from __future__ import annotations
@@ -221,7 +204,7 @@ def _plan_for(sim: FastSim, **over):
 
 
 def test_every_op_moves_what_it_promises() -> None:
-    """The instrument: eight days of compiled days, every op checked per unit."""
+    """Eight compiled days, every emitted op checked against its promise."""
     sim = FastSim(configuration={"seed": 3, "episodeSteps": 720}, validate="dev")
     silent: list[tuple[int, int, int, tuple, str]] = []
     checked = 0
@@ -263,7 +246,7 @@ def test_every_op_moves_what_it_promises() -> None:
 
 
 def test_the_plan_actually_farms_the_day_it_promised() -> None:
-    """The same day, read as an outcome: seeds bought, crops planted, a hand hired."""
+    """The day as an outcome: seeds bought, crops planted, a hand hired."""
     sim = FastSim(configuration={"seed": 3, "episodeSteps": 720}, validate="dev")
     plan, obs = _plan_for(sim)
     day = int(obs["day"])
@@ -285,14 +268,7 @@ def test_the_plan_actually_farms_the_day_it_promised() -> None:
 
 
 def test_the_hand_spawns_after_the_turns_unit_actions() -> None:
-    """HIRE settles in the market, so the hand takes the tile the farmer left.
-
-    `_process_market` runs after the units of that turn, so the farmer's turn-0
-    move is already visible to `_spawn_hand`. A compiler that predicts the spawn
-    from the day-start positions puts every new hand one tile out and every one
-    of its ops on the wrong tile — measured before the fix: a hand planned for
-    (5,4) spawned on (4,4) and its PLANT was refused in silence (F047).
-    """
+    """HIRE settles after the units act, so the hand takes the farmer's old tile (F060)."""
     sim = FastSim(configuration={"seed": 3, "episodeSteps": 720}, validate="dev")
     obs = sim.observations()[0]
     farm = obs["farms"][obs["player"]]
@@ -311,7 +287,7 @@ def test_the_hand_spawns_after_the_turns_unit_actions() -> None:
 
 
 def test_the_plan_never_buys_what_it_cannot_pay_for() -> None:
-    """A refused buy is a silent no-op, so a broke farm gets a PASS day."""
+    """A refused buy is a silent no-op: a broke farm gets a PASS day."""
     sim = FastSim(configuration={"seed": 3, "episodeSteps": 720}, validate="dev")
     plan, _obs = _plan_for(sim, money=0.0)
     buys = [order for row in plan.market for order in row
@@ -323,7 +299,7 @@ def test_the_plan_never_buys_what_it_cannot_pay_for() -> None:
 
 
 def test_assignment_is_nearest_first_and_idle_units_are_counted() -> None:
-    """Farmer first, then hands, nearest tile each; leftovers are reported."""
+    """Nearest tile per unit, farmer first; idle units counted."""
     tiles = [((1, 1), ("PLANT",), "WHEAT"), ((2, 1), ("PLANT",), "WHEAT"),
              ((1, 2), ("PLANT",), "CARROT")]
     plan = plan_day(tiles, [(1, 1), (9, 9)], new_hands=0, money=10000.0,
@@ -339,7 +315,7 @@ def test_assignment_is_nearest_first_and_idle_units_are_counted() -> None:
 
 
 def test_the_market_queue_follows_f032_and_the_cap() -> None:
-    """Sells, then hires, then buys - and the 11th order raises instead of vanishing."""
+    """F032 order inside a turn, and the 11th order raises."""
     from secretary.routing import Need
     sells = [[["SELL", "WHEAT", 5]], []]
     needs = [Need(hour=3, order=("BUY_SEED", "WHEAT", 1), reason="PLANT")]
@@ -364,13 +340,7 @@ def test_the_market_queue_follows_f032_and_the_cap() -> None:
 
 
 def test_the_compilers_own_output_dispatches_per_hour() -> None:
-    """The plan's market rows are per-hour, and the dispatcher must read them so.
-
-    `market_at`'s shape heuristic once treated a row of HIRE orders as a flat
-    order list and replayed hour 0's orders on every turn: measured on a season,
-    five HIREs landed 120 times a day and the farm went broke. The compiler's own
-    output is the shape that guard has to accept.
-    """
+    """The compiler's market rows are per-hour; the dispatcher must read them so."""
     from agent.dispatch import market_at
     sim = FastSim(configuration={"seed": 3, "episodeSteps": 720}, validate="dev")
     plan, _obs = _plan_for(sim)
@@ -383,7 +353,7 @@ def test_the_compilers_own_output_dispatches_per_hour() -> None:
 
 
 def test_hire_cost_is_the_engines_ladder() -> None:
-    """1, 1, 2, 3, 5 - the Fibonacci cost the engine charges for the n-th hand."""
+    """The engine's Fibonacci hire ladder."""
     assert hire_cost(0, 1) == 1.0
     assert hire_cost(0, 2) == 2.0
     assert hire_cost(1, 1) == 1.0
