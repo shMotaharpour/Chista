@@ -44,6 +44,10 @@ def market_at(market, hour: int) -> list:
     if per_hour:
         row = market[hour] if 0 <= hour < len(market) else []
         return [list(order) for order in (row or [])]
+    # A day plan may queue orders as a FLAT list of orders (the M1 shape and the
+    # compiler's own output) or as naive rows without being nested one level
+    # deeper than an order. Both mean "hour 0"; only a row whose elements are
+    # lists is a per-hour row.
     return [list(order) for order in market] if hour == 0 else []
 
 
