@@ -86,7 +86,7 @@ state for crops and animals; the two selections are what the graphs pick from:
 | `PLANT` mature | 33 | subsets of {FERTILIZE, WATER, HARVEST} + the layering |
 | `PLANT` young | 9 | the same without HARVEST (F026) |
 | `ANIMAL` | 12 | subsets of {FEED, CARE, HARVEST, COLLECT_FERTILIZER}, no DIG; CARE only together with FEED (`(CARE,)` and its three supersets are not offered: a no-op) |
-| `EMPTY_STRUCTURE` | 8 | `NO_ACT`, `PLACE_ANIMAL` + the layering |
+| `EMPTY_STRUCTURE` | 8 | `NO_ACT`, `PLACE` + the layering |
 
 `BUILD` is a single worker action that turns `NONE` into a structure, so
 `EMPTY_STRUCTURE` is a real state again (`NONE → EMPTY_STRUCTURE → ANIMAL`, and
@@ -111,7 +111,7 @@ Cost model (contract, 2026-09-14) — `chain_requirements` is the single source:
   (`BUY_*`) are the market's action and a `PICKUP` is a carry of the day
   layer, so both cost 0 hours: `(BUILD, PLACE, FEED)` = 3, `(PICKUP,)` = 0.
 - Inputs per op, summed by the chain: `PLANT` 1 seed of the entity's crop,
-  `FERTILIZE` 1 fertilizer, `FEED` 1 wheat, and `PLACE` / `PLACE_ANIMAL` 1
+  `FERTILIZE` 1 fertilizer, `FEED` 1 wheat, and `PLACE` 1
   animal of the entity's species (`ANIMAL_GOOSE` / `ANIMAL_COW` /
   `ANIMAL_SHEEP`).
 - Money is NOT in the state (out of scope by design); the shed is not modelled.

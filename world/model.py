@@ -91,9 +91,6 @@ WORKER_OPS: frozenset[str] = frozenset((
 CHAIN_OPS: frozenset[str] = WORKER_OPS | frozenset(
     ("BUY_SEED", "BUY_PRODUCT", "BUY_ANIMAL", "NO_ACT"))
 
-#: The DP's duplicate, kept for the shipped graph's on-disk chains.
-LEGACY_ALIASES: Mapping[str, str] = {"PLACE_ANIMAL": "PLACE"}
-
 # --- what an op needs ------------------------------------------------------- #
 
 #: Goods an op must carry (engine handlers).
@@ -103,18 +100,17 @@ CARRIES: Mapping[str, str] = {"FERTILIZE": "FERTILIZER", "FEED": "WHEAT"}
 COLLECT_ITEM = "FERTILIZER"
 
 #: Ops that carry the entity itself (an animal).
-PLACING_OPS: frozenset[str] = frozenset(("PLACE", "PLACE_ANIMAL"))
+PLACING_OPS: frozenset[str] = frozenset(("PLACE",))
 
 #: Ops that need a seed in `private["seeds"]`; seeds never travel.
 SEED_OPS: frozenset[str] = frozenset(("PLANT",))
 
 #: Ops that name the entity they construct.
-ENTITY_OPS: frozenset[str] = frozenset(("PLANT", "BUILD", "PLACE", "PLACE_ANIMAL"))
+ENTITY_OPS: frozenset[str] = frozenset(("PLANT", "BUILD", "PLACE"))
 
 
 def compile_op(op: str, entity: str | None = None) -> tuple[str, ...]:
     """One chain op -> the engine action it means. Raises on an unknown op."""
-    op = LEGACY_ALIASES.get(op, op)
     if op not in CHAIN_OPS:
         raise ValueError(f"{op!r} is not a chain op: {sorted(CHAIN_OPS)}")
     if op == "BUILD":

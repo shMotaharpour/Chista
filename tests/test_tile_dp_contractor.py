@@ -402,7 +402,13 @@ def test_budget_sweep_and_recovery() -> None:
     owned = list(range(0, min(100, graph.n_states)))
     one = min(_time_ms(contractor.price, p, w, [0]) for _ in range(5))
     hundred = min(_time_ms(contractor.price, p, w, owned) for _ in range(5))
-    recovery = max(0.0, hundred - one)
+    # The recovery is a DIFFERENCE of two readings, so both must see the same
+    # machine: measured under the six-worker suite, taking the minimum of each
+    # separately inflated it (16.6 ms and 6.6 ms on runs whose solo readings were
+    # unchanged) because `hundred` caught another process while `one` did not.
+    # Paired back-to-back, then the floor of the pairs.
+    recovery = min(max(0.0, _time_ms(contractor.price, p, w, owned)
+                       - _time_ms(contractor.price, p, w, [0])) for _ in range(5))
     print(f"  sweep {solo:.2f} ms  price(1 tile) {one:.2f} ms  "
           f"price(100 tiles) {hundred:.2f} ms  recovery {recovery:.2f} ms")
     assert solo <= SWEEP_CEILING_MS, f"sweep {solo:.2f} ms"

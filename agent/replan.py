@@ -95,11 +95,6 @@ HOURS_PER_HAND = 23
 # day's travel eats the work it buys.
 MAX_HANDS = 5
 
-# Ops that name the entity a chain constructs, and therefore cannot be
-# dispatched without one.
-_ENTITY_OPS = frozenset(("PLANT", "BUILD", "PLACE", "PLACE_ANIMAL"))
-
-
 def load_contractor() -> TileContractor:
     """The shipped graph, cast once per process — never rebuilt at runtime."""
     return TileContractor(TileGraph.load(GRAPH_PATH))

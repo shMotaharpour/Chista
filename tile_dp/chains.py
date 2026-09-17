@@ -7,7 +7,7 @@ physical item - LABOR_HOURS, FERTILIZER, WHEAT, SEED_WHEAT, SEED_CARROT,
 SEED_TOMATO, SEED_STRAWBERRY, SEED_MELON, CARROT, TOMATO, STRAWBERRY, MELON,
 EGG, MILK, WOOL, ANIMAL_GOOSE, ANIMAL_COW, ANIMAL_SHEEP. RES_WHEAT is the
 engine's own product id "WHEAT" (it used to be `WHEAT_FOOD`) and the generic
-RES_ANIMAL is gone: PLACE / PLACE_ANIMAL always name the species. PRODUCT_RES
+RES_ANIMAL is gone: PLACE always name the species. PRODUCT_RES
 maps an entity to the resource it yields (K.CROPS[name].get("product", name),
 K.ANIMALS[name]["product"]).
 
@@ -26,7 +26,7 @@ Cost model (contract, 2026-09-14):
     passes and the tile state advances by one day. The engine's PASS action
     costs 1 hour and is deliberately NOT used in chain definitions.
   * requirements per op: PLANT -> 1 seed of that crop, FERTILIZE -> 1
-    fertilizer, FEED -> 1 wheat, PLACE / PLACE_ANIMAL -> 1 animal of the
+    fertilizer, FEED -> 1 wheat, PLACE -> 1 animal of the
     entity's species (ANIMAL_GOOSE / ANIMAL_COW / ANIMAL_SHEEP).
   * `chain_requirements` is the single source of truth: it returns the labour
     hours (RES_LABOR) plus the inputs; `chain_labor` is a view of the same
@@ -59,7 +59,7 @@ to `chains_for`.
 Entity (v16, decision 10): `ENTITY_NAMES` / `ENTITY_CODE` give each entity a small
 int code (1..8, 0 = none) for the artifact's `entity_code` field and
 `CONSTRUCTIVE_OPS` names the ops that parameterise a chain by entity (PLANT /
-BUILD / PLACE / PLACE_ANIMAL). `domain_ok` is the domain filter: a crop entity
+BUILD / PLACE). `domain_ok` is the domain filter: a crop entity
 never runs an animal op, an animal entity never plants.
 """
 
@@ -96,7 +96,7 @@ RES_WOOL = "WOOL"
 RES_ANIMAL_GOOSE = "ANIMAL_GOOSE"
 RES_ANIMAL_COW = "ANIMAL_COW"
 RES_ANIMAL_SHEEP = "ANIMAL_SHEEP"
-# 1 animal per PLACE / PLACE_ANIMAL, species taken from the entity (2026-09-14)
+# 1 animal per PLACE, species taken from the entity (2026-09-14)
 ANIMAL_RES = {"GOOSE": RES_ANIMAL_GOOSE, "COW": RES_ANIMAL_COW,
               "SHEEP": RES_ANIMAL_SHEEP}
 # 1 seed per PLANT, crop taken from the entity (same names as tile_state)
@@ -126,32 +126,34 @@ RESOURCE_NAMES: tuple[str, ...] = (RES_LABOR, RES_FERTILIZER, RES_WHEAT,
 RESOURCE_ID: dict[str, int] = {n: i for i, n in enumerate(RESOURCE_NAMES)}
 N_RESOURCE = len(RESOURCE_NAMES)
 
-# NO_ACT: day-pass op for a tile the worker does not touch (0 hours).
+# The op vocabulary is `world/model.py`'s; these are views of it (ARCHITECTURE §5
+# step 6), so a chain cannot name an op the model does not have.
+from world.model import CHAIN_OPS as _CHAIN_OPS
+from world.model import MARKET_ACTIONS as _MARKET_ACTIONS
+from world.model import WORKER_OPS as _WORKER_OPS
+
 NO_ACT = "NO_ACT"
-# Market ops: executed by the market, not by the worker (= 0 worker ops).
-MARKET_OPS = ("BUY_SEED", "BUY_PRODUCT", "BUY_ANIMAL")
-# Worker ops = the only ops that cost hours (contract 2026-09-14): market buys
-# are the market's action and a PICKUP is a carry of the day layer, so
-# both stay outside this set and cost 0 worker hours.
-WORKER_OPS = frozenset(("PLANT", "WATER", "FERTILIZE", "HARVEST", "DIG",
-                        "BUILD", "PLACE", "PLACE_ANIMAL", "FEED", "CARE",
-                        "COLLECT_FERTILIZER"))
-# Every op a chain may name: worker ops + the market ops + the day-pass op.
-# The registry vocabulary (tests assert every chain draws from this set).
-ALL_OPS: frozenset[str] = WORKER_OPS | set(MARKET_OPS) | {NO_ACT}
+# Market ops a chain may name: the buys it needs. The market's other actions
+# (SELL, HIRE, BUY_LAND) are the market layer's, never a chain's.
+MARKET_OPS: tuple[str, ...] = tuple(sorted(_MARKET_ACTIONS & set(_CHAIN_OPS)))
+# Worker ops = the only ops that cost hours: market buys are the market's action
+# and a PICKUP is a carry of the day layer, so both cost 0 worker hours.
+WORKER_OPS: frozenset[str] = frozenset(_WORKER_OPS)
+# Every op a chain may name.
+ALL_OPS: frozenset[str] = frozenset(_CHAIN_OPS)
 
 CROP_OPS = ("FERTILIZE", "WATER", "HARVEST")
 ANIMAL_OPS = ("FEED", "CARE", "HARVEST", "COLLECT_FERTILIZER")
 # Ops the two domains do NOT share (v16, decision 9 domain filter): HARVEST is
 # the only op both kinds have, so these are exactly the ones one side must never
 # run. PLANT is the only crop-only op (an animal tile holds its animal).
-ANIMAL_ONLY_OPS = frozenset(("BUILD", "PLACE", "PLACE_ANIMAL", "FEED", "CARE",
+ANIMAL_ONLY_OPS = frozenset(("BUILD", "PLACE", "FEED", "CARE",
                             "COLLECT_FERTILIZER"))
 CROP_ONLY_OPS = frozenset(("PLANT",))
 # Constructive ops (v16, decision 10): the ops that name the entity a chain
 # creates, so they are what `entity_code` is read from. A chain has at most one
 # domain's worth of them (the domain filter guarantees the match).
-CONSTRUCTIVE_OPS = ("PLANT", "BUILD", "PLACE", "PLACE_ANIMAL")
+CONSTRUCTIVE_OPS = ("PLANT", "BUILD", "PLACE")
 
 
 def _canonical_subsets(ops: tuple[str, ...]) -> list[tuple[str, ...]]:
@@ -181,9 +183,9 @@ _ANIMAL_SUBSETS: list[tuple[str, ...]] = [
 #                    HARVEST is dropped for age < 0 (F026) by the filter
 #  ANIMAL          : subsets of {FEED, CARE, HARVEST, COLLECT_FERTILIZER};
 #                    CARE only together with FEED (no-op otherwise)
-#  EMPTY_COOP      : NO_ACT | PLACE_ANIMAL     (+ the DIG layering); only the
+#  EMPTY_COOP      : NO_ACT | PLACE     (+ the DIG layering); only the
 #                    GOOSE candidates are tried on it
-#  EMPTY_PASTURE   : NO_ACT | PLACE_ANIMAL     (+ the DIG layering); only the
+#  EMPTY_PASTURE   : NO_ACT | PLACE     (+ the DIG layering); only the
 #                    COW / SHEEP candidates are tried on it
 # BUILD_* need a NONE tile and DIG frees any of these back to NONE
 # (kaggriculture.py:484-503, probed 2026-09-14): a structure appears only on a
@@ -225,7 +227,7 @@ def _kind_after(kind: str, ops: tuple[str, ...],
         elif op == "BUILD":
             if entity in K.ANIMALS:
                 kind = EMPTY_KIND_OF_STRUCTURE[K.ANIMALS[entity]["structure"]]
-        elif op in ("PLACE", "PLACE_ANIMAL"):
+        elif op == "PLACE":
             kind = KIND_ANIMAL
         elif op == "DIG":
             kind = KIND_NONE
@@ -276,7 +278,7 @@ WEED_CHAINS: tuple[tuple[str, ...], ...] = _layer(
 # candidates do that filter) and can be dug back to NONE; BUILD is absent here
 # on purpose, the engine builds on a NONE tile only.
 EMPTY_STRUCTURE_BASE: tuple[tuple[str, ...], ...] = ((NO_ACT,),
-                                                    ("PLACE_ANIMAL",))
+                                                    ("PLACE",))
 EMPTY_COOP_CHAINS: tuple[tuple[str, ...], ...] = _layer(KIND_EMPTY_COOP,
                                                         EMPTY_STRUCTURE_BASE)
 EMPTY_PASTURE_CHAINS: tuple[tuple[str, ...], ...] = _layer(
@@ -346,7 +348,7 @@ def chain_labor(ops: tuple[str, ...]) -> int:
 # cost exactly one step (WATER, CARE, DIG, HARVEST, COLLECT_FERTILIZER); NO_ACT
 # is the idle chain and asks no worker for anything, so it costs none.
 OP_STEPS: dict[str, int] = {"PLANT": 2, "FERTILIZE": 3, "FEED": 3,
-                            "PLACE": 3, "PLACE_ANIMAL": 3, NO_ACT: 0}
+                            "PLACE": 3, "PLACE": 3, NO_ACT: 0}
 
 
 def chain_steps(ops: tuple[str, ...]) -> int:
@@ -430,7 +432,7 @@ def chain_requirements(entity: str | None,
     Single source of truth for the cost model (2026-09-14): the labour hours
     (RES_LABOR) are produced here too, so nobody outside has to count ops
     again. PLANT -> 1 seed of the entity's crop, FERTILIZE -> 1 fertilizer,
-    FEED -> 1 wheat, PLACE / PLACE_ANIMAL -> 1 animal of the entity's species.
+    FEED -> 1 wheat, PLACE -> 1 animal of the entity's species.
     """
     req: dict[str, int] = {RES_LABOR: _worker_hours(ops)}
     for op in ops:
@@ -444,7 +446,7 @@ def chain_requirements(entity: str | None,
             req[RES_FERTILIZER] = req.get(RES_FERTILIZER, 0) + 1
         elif op == "FEED":
             req[RES_WHEAT] = req.get(RES_WHEAT, 0) + 1
-        elif op in ("PLACE", "PLACE_ANIMAL"):
+        elif op == "PLACE":
             key = ANIMAL_RES.get(entity)
             if key is None:
                 raise ValueError(f"chain {ops} places an animal, but entity "

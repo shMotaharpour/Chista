@@ -37,7 +37,7 @@ Assertions (decision 8): a wrong edge must fail the build, never be stored.
     invariant sim inheritance rests on;
   * after every edge the branch sim's tile is decoded and compared with the
     expected next state: a chain that changes the tile (PLANT / BUILD / PLACE /
-    PLACE_ANIMAL / DIG) must land exactly on the modelled state, full TileState
+    PLACE / DIG) must land exactly on the modelled state, full TileState
     equality, else StateMismatch with both describe() strings;
   * a growth day (no kind change) must carry the tile's identity one day forward
     - same kind/crop/animal/structure, age advanced exactly one day, and the
@@ -377,7 +377,7 @@ def _op_probe_sequences(op: str, entity: str) -> list[list]:
         return [(["PASS"], [["BUY_PRODUCT", "WHEAT", 1]]),
                 (["PICKUP", "WHEAT", 1], []),
                 (["FEED"], [])]
-    if op in ("PLACE", "PLACE_ANIMAL"):
+    if op == "PLACE":
         return [(["PASS"], [["BUY_ANIMAL", entity, 1]]),
                 (["PICKUP", entity, 1], []),
                 (["PLACE", entity], [])]
@@ -397,7 +397,7 @@ def verify_op_steps() -> None:
     """
     cases = [("PLANT", "CARROT", None), ("FERTILIZE", "CARROT", None),
              ("FEED", "COW", None), ("PLACE", "COW", None),
-             ("PLACE_ANIMAL", "GOOSE", None)]
+             ("PLACE", "GOOSE", None)]
     for op, entity, _unused in cases:
         want = OP_STEPS.get(op, 1)
         sim = _new_sim()
@@ -407,7 +407,7 @@ def verify_op_steps() -> None:
             sim.step([_act(["PASS"], [["BUY_SEED", entity, 1]]),
                       _act(["PASS"])])
             sim.step([_act(["PLANT", entity]), _act(["PASS"])])
-        elif op in ("FEED", "PLACE", "PLACE_ANIMAL"):
+        elif op in ("FEED", "PLACE"):
             # feed / place need the structure the animal lives in; FEED also
             # needs the animal ON the structure (a feed on an empty one is a
             # silent refusal), so the setup places it with the same sequence
@@ -425,8 +425,7 @@ def verify_op_steps() -> None:
         effects = {"PLANT": ("crop", entity),
                    "FERTILIZE": ("fertilized_until_day", None),
                    "FEED": ("fed_today", True),
-                   "PLACE": ("animal", entity),
-                   "PLACE_ANIMAL": ("animal", entity)}
+                   "PLACE": ("animal", entity)}
         field, value = effects[op]
         seq = _op_probe_sequences(op, entity)
         assert len(seq) == want, (op, len(seq), want)
@@ -480,7 +479,7 @@ def _expected_next(state: TileState, ops: tuple[str, ...],
         base = 0 if spec.get("ongoing") else 1
         return TileState(KIND_PLANT, entity, None, None,
                          1 - crop_age_origin(spec), 0, 0, 0, 0, base)
-    if "PLACE" in ops or "PLACE_ANIMAL" in ops:
+    if "PLACE" in ops:
         spec = K.ANIMALS[entity]
         # Placement day, then the nightly refresh: FEED keeps the animal fed,
         # CARE together with FEED banks one care day (engine
@@ -621,7 +620,7 @@ def _exec_chain(sim: FastSim, state: TileState, ops: tuple[str, ...],
             # animal itself is bought later (by PLACE, day stand-in).
             sim.step([_act([f"BUILD_{_STRUCTURE_OF[entity]}"]),
                       _act(["PASS"])])
-        elif op in ("PLACE", "PLACE_ANIMAL"):
+        elif op == "PLACE":
             sim.step([_act(["PASS"], [["BUY_ANIMAL", entity, 1]]),
                       _act(["PASS"])])
             sim.step([_act(["PICKUP", entity, 1]), _act(["PASS"])])

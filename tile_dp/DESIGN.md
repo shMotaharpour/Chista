@@ -25,10 +25,10 @@
 - **Cost model** (`chain_requirements` is the single source): `LABOR_HOURS` =
   number of ops in the `WORKER_OPS` allow-list (market buys and `PICKUP` cost 0
   hours), inputs per op: `PLANT` 1 seed of the entity's crop, `FERTILIZE` 1
-  fertilizer, `FEED` 1 wheat, `PLACE` / `PLACE_ANIMAL` 1 animal of the entity's
+  fertilizer, `FEED` 1 wheat, `PLACE` 1 animal of the entity's
   species. **`LABOR_HOURS` is a floor, not the whole day**: the executor
   actually spends `edge_steps` engine steps per edge (shipped beside
-  `edge_cost` — PLANT 2, FERTILIZE / FEED / PLACE / PLACE_ANIMAL 3, the rest 1,
+  `edge_cost` — PLANT 2, FERTILIZE / FEED / PLACE 3, the rest 1,
   from `OP_STEPS`), because the day layer does not exist yet and the
   purchases are realised inline. In isolation `LABOR_HOURS` under-charges a
   chain exactly as `edge_steps` over-charges it (a PICKUP can carry several

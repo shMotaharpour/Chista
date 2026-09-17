@@ -110,7 +110,7 @@ def test_every_chain_op_compiles_to_an_engine_action() -> None:
         entity = {"PLANT": "WHEAT", "BUILD": "COW"}.get(
             op, "COW" if op in M.PLACING_OPS else None)
         assert M.compile_op(op, entity)[0] in M.ACTIONS
-    assert M.compile_op("PLACE_ANIMAL", "COW") == ("PLACE", "COW"), "the legacy alias"
+    assert "PLACE_ANIMAL" not in M.CHAIN_OPS, "the duplicate is retired"
     for bad in (("NOT_AN_OP", None), ("PLANT", "COW"), ("BUILD", "WHEAT")):
         try:
             M.compile_chain((bad[0],), bad[1])

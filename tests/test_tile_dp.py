@@ -94,8 +94,8 @@ def test_chain_order_canonical() -> None:
                 assert seg.index("WATER") < seg.index("HARVEST"), ops
             # PLACE lands an animal in a structure: either the same day's
             # BUILD (build before place) or the tile's own empty structure.
-            if "PLACE" in seg or "PLACE_ANIMAL" in seg:
-                place = seg.index("PLACE" if "PLACE" in seg else "PLACE_ANIMAL")
+            if "PLACE" in seg:
+                place = seg.index("PLACE")
                 if "BUILD" in seg:
                     assert seg.index("BUILD") < place, ops
         # One PLANT per chain even across DIGs: the registry never replants
