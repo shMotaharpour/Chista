@@ -6,8 +6,22 @@ single, validated, and fully pre-processed domain model.
 
 from __future__ import annotations
 from dataclasses import dataclass, field
-from enum import Enum
-from typing import Literal, NamedTuple, Optional
+from typing import NamedTuple, Optional
+
+from world.model import (ANIMALS, ANIMAL_STRUCTURE, CARRIES, CROPS, ENTITY_OPS,
+                         MOVEMENT, PRODUCTS, Action, Item, SHED_ACCESS_ORDERED,
+                         TileKind, compile_chain)
+
+# Derived views of the one vocabulary (ARCHITECTURE §5 step 4). PASS counts as a
+# movement here because it is what a unit does instead of moving.
+MOVEMENT_ACTIONS: frozenset[str] = frozenset(MOVEMENT) | {Action.PASS}
+PRODUCE_ACTIONS: frozenset[str] = frozenset(
+    (Action.PICKUP, Action.HARVEST, Action.COLLECT_FERTILIZER))
+CONSUME_ACTIONS: frozenset[str] = frozenset(
+    (Action.PLACE, Action.FEED, Action.FERTILIZE))
+ANIMAL_ITEMS: frozenset[str] = frozenset(ANIMALS)
+CROP_ITEMS: frozenset[str] = frozenset(CROPS)
+PRODUCT_ITEMS: frozenset[str] = frozenset(PRODUCTS)
 
 # ============================================================================
 # 1. Basic Enums and Data Structures
@@ -17,71 +31,15 @@ class Cell(NamedTuple):
     x: int
     y: int
 
-class CellType(str, Enum):
-    NONE = "None"
-    PLANT = "Plant"
-    WEED = "Weed"
-    PASTURE = "Pasture"
-    COOP = "Coop"
-
-class Item(str, Enum):
-    WHEAT = "wheat"
-    FERTILIZER = "fertilizer"
-    COW = "cow"
-    SHEEP = "sheep"
-    GOOSE = "goose"
-    MELON = "melon"
-    TOMATO = "tomato"
-    STRAWBERRY = "strawberry"
-    CARROT = "carrot"
-    MILK = "milk"
-    WOOL = "wool"
-    EGG = "egg"
-
-ANIMAL_ITEMS = frozenset({Item.COW, Item.SHEEP, Item.GOOSE})
-CROP_ITEMS = frozenset({Item.MELON, Item.TOMATO, Item.STRAWBERRY, Item.CARROT, Item.WHEAT})
-PRODUCT_ITEMS = frozenset({Item.MILK, Item.WOOL, Item.EGG})
-
-ANIMAL_STRUCTURE: dict[Item, CellType] = {
-    Item.COW: CellType.PASTURE,
-    Item.SHEEP: CellType.PASTURE,
-    Item.GOOSE: CellType.COOP,
-}
-
-class MinorActionType(str, Enum):
-    NORTH = "NORTH"
-    SOUTH = "SOUTH"
-    EAST = "EAST"
-    WEST = "WEST"
-    PASS = "PASS"
-    PICKUP = "PICKUP"
-    PLACE = "PLACE"
-    DROP = "DROP"
-    PLANT = "PLANT"
-    WATER = "WATER"
-    HARVEST = "HARVEST"
-    FERTILIZE = "FERTILIZE"
-    BUILD_COOP = "BUILD_COOP"
-    BUILD_PASTURE = "BUILD_PASTURE"
-    FEED = "FEED"
-    COLLECT_FERTILIZER = "COLLECT_FERTILIZER"
-    CARE = "CARE"
-    DIG = "DIG"
-
-
-MOVEMENT_ACTIONS = frozenset(
-    {MinorActionType.NORTH, MinorActionType.SOUTH, MinorActionType.EAST, MinorActionType.WEST, MinorActionType.PASS}
-)
-PRODUCE_ACTIONS = frozenset({MinorActionType.PICKUP, MinorActionType.HARVEST, MinorActionType.COLLECT_FERTILIZER})
-CONSUME_ACTIONS = frozenset({MinorActionType.PLACE, MinorActionType.FEED, MinorActionType.FERTILIZE})
-
+# The shed's four access tiles, in the engine's NWSE order (world/model.py).
 WAREHOUSE_ENTRY_ORDER: tuple[str, ...] = ("NW", "NE", "SW", "SE")
-WAREHOUSE_ENTRY_CELLS: dict[str, Cell] = {"NW": Cell(4, 4), "NE": Cell(5, 4), "SW": Cell(4, 5), "SE": Cell(5, 5)}
+WAREHOUSE_ENTRY_CELLS: dict[str, Cell] = {
+    name: Cell(*tile) for name, tile in zip(WAREHOUSE_ENTRY_ORDER, SHED_ACCESS_ORDERED)}
 
 
 @dataclass
 class CellState:
-    type: CellType = CellType.NONE
+    type: Optional[TileKind] = None
     is_wheat: bool = False
     watered: Optional[bool] = None
     fertilized: Optional[bool] = None
@@ -97,7 +55,7 @@ class CellState:
 class MinorTask:
     id: str
     cell: Optional[Cell]
-    action: MinorActionType
+    action: Action
     item: Optional[Item] = None
     qty: int = 1
     crop: Optional[Item] = None
@@ -140,67 +98,92 @@ class Solution:
 # 2. Major Task Definitions & Expansion Logic
 # ============================================================================
 
-MajorTaskType = Literal["feed", "frtz", "wet_harvst", "plnt", "wet_harvst_plnt", "frtz_water", "place_animal"]
-_SINGLE_WORKER_TYPES = frozenset({"feed", "frtz", "frtz_water", "place_animal"})
+#: The scheduling types the WSR's solvers are built on. Each is a chain from the
+#: DP registry, so there is no second definition of a day's work.
+#: `wet_harvst_plnt` is the exception: the registry's rotation is
+#: WATER-HARVEST-DIG-PLANT-WATER, and the solver's measured tables (F057) were
+#: taken on the four-op form, so re-basing it is a re-measure, not a rename.
+MAJOR_CHAINS: dict[str, tuple[str, ...]] = {
+    "feed": ("FEED",),
+    "frtz": ("FERTILIZE",),
+    "frtz_water": ("FERTILIZE", "WATER"),
+    "plnt": ("PLANT", "WATER"),
+    "wet_harvst": ("WATER", "HARVEST"),
+    "wet_harvst_plnt": ("WATER", "HARVEST", "PLANT", "WATER"),
+    "place_animal": ("PLACE",),
+}
 
 @dataclass
 class MajorTask:
     id: str
-    type: MajorTaskType
+    type: str              # a key of MAJOR_CHAINS
     cell: Cell
     crop: Optional[Item] = None
     harvested_item: Optional[Item] = None
     harvested_qty: int = 1
     item: Optional[Item] = None
 
+
 ExpansionResult = tuple[list[MinorTask], list[tuple[str, str]], list[str]]
 
-def _acquire_minor(task_id: str, item: Item) -> MinorTask:
-    return MinorTask(id=task_id, cell=None, action=MinorActionType.PICKUP, item=item, qty=1)
 
 def expand_major_task(major: MajorTask) -> ExpansionResult:
+    """A major task -> its minor tasks, precedences and material-critical ids.
+
+    Derived from the type's chain (`MAJOR_CHAINS`) through `world/model.py`: the
+    chain's ops in order, each op that eats a carried good preceded by its
+    PICKUP. The chain's order IS the precedence.
+    """
+    chain = MAJOR_CHAINS.get(major.type)
+    if chain is None:
+        raise ValueError(f"unknown major_task type: {major.type!r}")
     tid = major.id
-    if major.type == "wet_harvst":
-        water = MinorTask(id=f"{tid}_water", cell=major.cell, action=MinorActionType.WATER)
-        harvest = MinorTask(id=f"{tid}_harvest", cell=major.cell, action=MinorActionType.HARVEST, item=major.harvested_item, qty=major.harvested_qty)
-        return [water, harvest], [(water.id, harvest.id)], []
-    
-    if major.type == "plnt":
-        plant = MinorTask(id=f"{tid}_plant", cell=major.cell, action=MinorActionType.PLANT, crop=major.crop)
-        water = MinorTask(id=f"{tid}_water", cell=major.cell, action=MinorActionType.WATER)
-        return [plant, water], [(plant.id, water.id)], []
-    
-    if major.type == "wet_harvst_plnt":
-        water1 = MinorTask(id=f"{tid}_water1", cell=major.cell, action=MinorActionType.WATER)
-        harvest = MinorTask(id=f"{tid}_harvest", cell=major.cell, action=MinorActionType.HARVEST, item=major.harvested_item, qty=major.harvested_qty)
-        plant = MinorTask(id=f"{tid}_plant", cell=major.cell, action=MinorActionType.PLANT, crop=major.crop)
-        water2 = MinorTask(id=f"{tid}_water2", cell=major.cell, action=MinorActionType.WATER)
-        return [water1, harvest, plant, water2], [(water1.id, harvest.id), (harvest.id, plant.id), (plant.id, water2.id)], []
-    
-    if major.type == "feed":
-        acquire = _acquire_minor(f"{tid}_acquire", Item.WHEAT)
-        feed = MinorTask(id=f"{tid}_feed", cell=major.cell, action=MinorActionType.FEED, item=Item.WHEAT)
-        return [acquire, feed], [(acquire.id, feed.id)], [acquire.id, feed.id]
-    
-    if major.type == "frtz":
-        acquire = _acquire_minor(f"{tid}_acquire", Item.FERTILIZER)
-        frtz = MinorTask(id=f"{tid}_fertilize", cell=major.cell, action=MinorActionType.FERTILIZE, item=Item.FERTILIZER)
-        return [acquire, frtz], [(acquire.id, frtz.id)], [acquire.id, frtz.id]
-    
-    if major.type == "frtz_water":
-        acquire = _acquire_minor(f"{tid}_acquire", Item.FERTILIZER)
-        frtz = MinorTask(id=f"{tid}_fertilize", cell=major.cell, action=MinorActionType.FERTILIZE, item=Item.FERTILIZER)
-        water = MinorTask(id=f"{tid}_water", cell=major.cell, action=MinorActionType.WATER)
-        return [acquire, frtz, water], [(acquire.id, frtz.id), (frtz.id, water.id)], [acquire.id, frtz.id]
-    
-    if major.type == "place_animal":
-        if major.item is None:
-            raise ValueError(f"'place_animal' major_task {tid!r} requires an item")
-        pickup = MinorTask(id=f"{tid}_pickup", cell=None, action=MinorActionType.PICKUP, item=major.item, qty=1)
-        place = MinorTask(id=f"{tid}_place", cell=major.cell, action=MinorActionType.PLACE, item=major.item, qty=1)
-        return [pickup, place], [(pickup.id, place.id)], [pickup.id, place.id]
-    
-    raise ValueError(f"unknown major_task type: {major.type!r}")
+    minors: list[MinorTask] = []
+    prec: list[tuple[str, str]] = []
+    critical: list[str] = []
+    seen: dict[str, int] = {}
+    previous: Optional[str] = None
+
+    def fresh(name: str) -> str:
+        seen[name] = seen.get(name, 0) + 1
+        return f"{tid}_{name}" if seen[name] == 1 else f"{tid}_{name}{seen[name]}"
+
+    for op in chain:
+        # The minor task's action is the chain op itself: the WSR schedules an
+        # abstract day, and `compile_op`'s validation belongs to the engine-facing
+        # compiler (a `PLANT` minor task carries its crop in `crop`, and the
+        # solver's instances legitimately leave it out).
+        if op == "BUILD":
+            name = f"BUILD_{ANIMAL_STRUCTURE[major.item]}"
+        elif op == "NO_ACT":
+            name = "PASS"
+        else:
+            name = op
+        carried = CARRIES.get(name)
+        if carried is not None:
+            carried = Item(carried)          # the model's name -> the enum member
+        elif name == "PLACE":
+            carried = major.item
+        if carried is not None:
+            acquire = MinorTask(id=fresh("acquire"), cell=None, action=Action.PICKUP,
+                                item=carried, qty=1)
+            minors.append(acquire)
+            if previous is not None:
+                prec.append((previous, acquire.id))
+            previous = acquire.id
+            critical.append(acquire.id)
+        minor = MinorTask(
+            id=fresh(name.lower()), cell=major.cell, action=Action(name),
+            item=major.harvested_item if name == "HARVEST" else carried,
+            qty=major.harvested_qty if name == "HARVEST" else 1,
+            crop=major.crop if name == "PLANT" else None)
+        minors.append(minor)
+        if previous is not None:
+            prec.append((previous, minor.id))
+        previous = minor.id
+        if carried is not None:
+            critical.append(minor.id)
+    return minors, prec, critical
 
 
 # ============================================================================
@@ -271,7 +254,7 @@ class Instance:
         for group in self.single_worker_groups:
             if len(group) == 2:
                 t1, t2 = self.tasks_by_id[group[0]], self.tasks_by_id[group[1]]
-                pickup = t1 if t1.action == MinorActionType.PICKUP else (t2 if t2.action == MinorActionType.PICKUP else None)
+                pickup = t1 if t1.action == Action.PICKUP else (t2 if t2.action == Action.PICKUP else None)
                 consume = t2 if pickup == t1 else (t1 if pickup == t2 else None)
                 
                 if (pickup and consume and pickup.item and pickup.cell is None and 

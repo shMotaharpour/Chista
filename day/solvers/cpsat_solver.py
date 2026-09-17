@@ -21,7 +21,7 @@ from ..models import (
     PRODUCE_ACTIONS,
     Instance,
     Item,
-    MinorActionType,
+    Action,
     MinorTask,
     WAREHOUSE_ENTRY_CELLS,
     WAREHOUSE_ENTRY_ORDER,
@@ -153,7 +153,7 @@ def _find_aggregatable_pickups(instance: Instance, task_index: dict[str, int]) -
         for p, c in ((i0, i1), (i1, i0)):
             pickup, consume = tasks[p], tasks[c]
             if (
-                pickup.action == MinorActionType.PICKUP
+                pickup.action == Action.PICKUP
                 and pickup.cell is None
                 and pickup.item is not None
                 and consume.action in CONSUME_ACTIONS
@@ -178,13 +178,13 @@ def _validate_item_sources(instance: Instance) -> None:
     the same item somewhere in the instance (preload-able). Raises
     InfeasibleInputError otherwise."""
     pickup_items = {t.item for t in instance.minor_tasks
-                    if t.action == MinorActionType.PICKUP and t.item is not None}
+                    if t.action == Action.PICKUP and t.item is not None}
     for t in instance.minor_tasks:
         if t.action not in CONSUME_ACTIONS or t.item is None:
             continue
         has_partner = any(
             t.id in g and any(
-                instance.tasks_by_id[tid].action == MinorActionType.PICKUP and
+                instance.tasks_by_id[tid].action == Action.PICKUP and
                 instance.tasks_by_id[tid].item == t.item
                 for tid in g if tid != t.id
             )
@@ -213,7 +213,7 @@ def solve_cpsat(instance: Instance, config: CpSatConfig = CpSatConfig()) -> CpSa
     if instance.warehouse_stock:
         picked: dict[Item, int] = {}
         for task in tasks:
-            if (task.action == MinorActionType.PICKUP and task.item is not None):
+            if (task.action == Action.PICKUP and task.item is not None):
                 picked[task.item] = picked.get(task.item, 0) + task.qty
         for item, amount in picked.items():
             stock = instance.warehouse_stock.get(item, 0)
@@ -422,7 +422,7 @@ def solve_cpsat(instance: Instance, config: CpSatConfig = CpSatConfig()) -> CpSa
     drop_idxs = [i for i, tsk in enumerate(tasks) if tsk.action.name == "DROP"]
     if drop_idxs:
         pickup_idxs = [i for i, tsk in enumerate(tasks)
-                       if tsk.action == MinorActionType.PICKUP and tsk.item is not None]
+                       if tsk.action == Action.PICKUP and tsk.item is not None]
         for ci, tsk in enumerate(tasks):
             if tsk.action not in CONSUME_ACTIONS or tsk.item is None:
                 continue

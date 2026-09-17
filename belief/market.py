@@ -219,10 +219,12 @@ def forecast(obs: Any, *, days: int = 30,
                          f"got {unlock_policy!r}")
     params = K.MARKET_PARAMS if market_params is None else market_params
     step = _step_of(obs)
-    market = obs.get("market", {}) if isinstance(obs, dict) else {}
-    raw_inv = dict(market.get("inventory", {}) or {})
-    inv: dict[str, float] = {item: float(raw_inv.get(item, 0))
-                             for item in PRODUCTS}
+    # The one snapshot (ARCHITECTURE §5 step 5): the forecast is a view of
+    # `MarketState`, so the market has a single reader.
+    from belief.schemas import MarketState
+    state = MarketState.from_obs(obs)
+    inv: dict[str, float] = {item: float(state.inventory[i])
+                             for i, item in enumerate(PRODUCTS)}
     shops = [str(s) for s in
              (obs.get("town", {}).get("unlocked_shops", ()) or ())]
     shop_interval = max(1, int(_get(config, "townShopSellInterval", 4)))

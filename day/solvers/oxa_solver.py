@@ -16,7 +16,7 @@ from ..distances import assign_entry_cells, manhattan
 from ..fibonacci import fibonacci_cost
 from ..models import (
     CONSUME_ACTIONS,
-    MinorActionType,
+    Action,
     WAREHOUSE_ENTRY_CELLS,
     Worker,
     Cell,
@@ -75,7 +75,7 @@ def _build_worker_route(
     
     acquire_partner: dict[str, str] = {}
     for group in instance.single_worker_groups:
-        if len(group) == 2 and tasks_by_id[group[0]].action == MinorActionType.PICKUP:
+        if len(group) == 2 and tasks_by_id[group[0]].action == Action.PICKUP:
             acquire_partner[group[1]] = group[0]
 
     successor_gaps = _successor_gaps(instance, tasks_by_id)
@@ -181,7 +181,7 @@ def _build_worker_route(
     # new item, so the route tasks keep their greedy times.
     acquire_partner: dict[str, str] = {}
     for group in instance.single_worker_groups:
-        if len(group) == 2 and tasks_by_id[group[0]].action == MinorActionType.PICKUP:
+        if len(group) == 2 and tasks_by_id[group[0]].action == Action.PICKUP:
             acquire_partner[group[1]] = group[0]
 
     first_consume_time: dict[str, int] = {}
@@ -362,13 +362,13 @@ def _validate_item_sources(instance: Instance) -> None:
     the same item somewhere in the instance (preload-able). Raises
     InfeasibleInputError otherwise."""
     pickup_items = {t.item for t in instance.minor_tasks
-                    if t.action == MinorActionType.PICKUP and t.item is not None}
+                    if t.action == Action.PICKUP and t.item is not None}
     for t in instance.minor_tasks:
         if t.action not in CONSUME_ACTIONS or t.item is None:
             continue
         has_partner = any(
             t.id in g and any(
-                instance.tasks_by_id[tid].action == MinorActionType.PICKUP and
+                instance.tasks_by_id[tid].action == Action.PICKUP and
                 instance.tasks_by_id[tid].item == t.item
                 for tid in g if tid != t.id
             )
@@ -507,7 +507,7 @@ def solve_oxa(instance: Instance, config: OxaConfig = OxaConfig()) -> OxaResult:
     if instance.warehouse_stock:
         picked: dict[Item, int] = {}
         for _t in instance.minor_tasks:
-            if _t.action == MinorActionType.PICKUP and _t.item is not None:
+            if _t.action == Action.PICKUP and _t.item is not None:
                 picked[_t.item] = picked.get(_t.item, 0) + _t.qty
         for _item, _amount in picked.items():
             _stock = instance.warehouse_stock.get(_item, 0)

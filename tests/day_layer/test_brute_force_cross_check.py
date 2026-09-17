@@ -6,7 +6,7 @@ CP-SAT formulation itself, not just its implementation.
 """
 import pytest
 
-from day.models import Instance, Item, MajorTask, WAREHOUSE_ENTRY_CELLS, MinorActionType, MinorTask, Worker
+from day.models import Instance, Item, MajorTask, WAREHOUSE_ENTRY_CELLS, Action, MinorTask, Worker
 from day.solvers.cpsat_solver import CpSatConfig, solve_cpsat
 from day.verify import verify_solution
 from tests.day_layer.brute_force import brute_force_optimal_cost
@@ -37,7 +37,7 @@ def _assert_matches_brute_force(instance):
 
 
 def test_single_task():
-    task = MinorTask(id="t1", cell=NW, action=MinorActionType.PASS)
+    task = MinorTask(id="t1", cell=NW, action=Action.PASS)
     instance = Instance.compile(workers=_workers(0, 1, 2), standalone_minor_tasks=[task])
     _assert_matches_brute_force(instance)
 
@@ -45,15 +45,15 @@ def test_single_task():
 def test_two_independent_far_apart_tasks_with_tight_horizon_needs_two_workers():
     # (0,0) and (9,9) are 18 apart -- one worker can't do both within a
     # horizon of 5, so a second worker is required.
-    task1 = MinorTask(id="t1", cell=(0, 0), action=MinorActionType.PASS)
-    task2 = MinorTask(id="t2", cell=(9, 9), action=MinorActionType.PASS)
+    task1 = MinorTask(id="t1", cell=(0, 0), action=Action.PASS)
+    task2 = MinorTask(id="t2", cell=(9, 9), action=Action.PASS)
     instance = Instance.compile(workers=_workers(0, 1, 2, 3), standalone_minor_tasks=[task1, task2], horizon=5)
     _assert_matches_brute_force(instance)
 
 
 def test_precedence_chain_across_two_cells():
-    task_a = MinorTask(id="a", cell=NW, action=MinorActionType.PASS)
-    task_b = MinorTask(id="b", cell=NE, action=MinorActionType.PASS)
+    task_a = MinorTask(id="a", cell=NW, action=Action.PASS)
+    task_b = MinorTask(id="b", cell=NE, action=Action.PASS)
     instance = Instance.compile(
         workers=_workers(0, 1, 2),
         standalone_minor_tasks=[task_a, task_b],
@@ -63,8 +63,8 @@ def test_precedence_chain_across_two_cells():
 
 
 def test_single_worker_group_with_fixed_cell_pickup():
-    pickup = MinorTask(id="pickup", cell=NW, action=MinorActionType.PICKUP, item=Item.WHEAT, qty=1)
-    feed = MinorTask(id="feed", cell=NE, action=MinorActionType.FEED, item=Item.WHEAT, qty=1)
+    pickup = MinorTask(id="pickup", cell=NW, action=Action.PICKUP, item=Item.WHEAT, qty=1)
+    feed = MinorTask(id="feed", cell=NE, action=Action.FEED, item=Item.WHEAT, qty=1)
     instance = Instance.compile(
         workers=_workers(0, 1, 2),
         standalone_minor_tasks=[pickup, feed],
@@ -88,7 +88,7 @@ def test_infeasible_instance_is_reported_as_infeasible_by_both():
 
 
 def test_zero_horizon_forces_exactly_two_workers():
-    task1 = MinorTask(id="t1", cell=NW, action=MinorActionType.PASS)
-    task2 = MinorTask(id="t2", cell=NE, action=MinorActionType.PASS)
+    task1 = MinorTask(id="t1", cell=NW, action=Action.PASS)
+    task2 = MinorTask(id="t2", cell=NE, action=Action.PASS)
     instance = Instance.compile(workers=_workers(0, 1, 2, 3), standalone_minor_tasks=[task1, task2], horizon=0)
     _assert_matches_brute_force(instance)

@@ -40,7 +40,7 @@ not the sum over the routes that carry tasks (which reddens
 import pytest
 
 from day.fibonacci import fibonacci_cost
-from day.models import (Cell, Instance, Item, MajorTask, MinorActionType,
+from day.models import (Cell, Instance, Item, MajorTask, Action,
                               MinorTask, ScheduledTask, Solution, Worker, WorkerRoute)
 from day.solvers.cpsat_solver import CpSatConfig, cpsat_binarySearch
 from day.solvers.oxa_solver import OxaConfig, solve_oxa
@@ -149,8 +149,8 @@ def test_a_cross_cell_chain_can_be_served_by_two_workers():
     instance = Instance.compile(
         workers=[Worker(index=0, earliest_start=0), Worker(index=1, earliest_start=0)],
         standalone_minor_tasks=[
-            MinorTask(id="p", cell=Cell(0, 0), action=MinorActionType.PASS),
-            MinorTask(id="s", cell=Cell(9, 9), action=MinorActionType.PASS),
+            MinorTask(id="p", cell=Cell(0, 0), action=Action.PASS),
+            MinorTask(id="s", cell=Cell(9, 9), action=Action.PASS),
         ],
         explicit_precedence=[("p", "s")],
         horizon=10,
@@ -178,14 +178,14 @@ def test_a_day_that_skips_lower_index_hands_pays_for_them():
         workers=[Worker(index=i, earliest_start=start)
                  for i, start in ((0, 0), (1, 1), (2, 1), (3, 0))],
         standalone_minor_tasks=[
-            MinorTask(id="c0_a", cell=Cell(4, 4), action=MinorActionType.PASS),
-            MinorTask(id="c1_a", cell=Cell(4, 4), action=MinorActionType.PASS),
-            MinorTask(id="c2_acq", cell=None, action=MinorActionType.PICKUP,
+            MinorTask(id="c0_a", cell=Cell(4, 4), action=Action.PASS),
+            MinorTask(id="c1_a", cell=Cell(4, 4), action=Action.PASS),
+            MinorTask(id="c2_acq", cell=None, action=Action.PICKUP,
                       item=Item.FERTILIZER, qty=1),
-            MinorTask(id="c2_cons", cell=Cell(2, 3), action=MinorActionType.FERTILIZE,
+            MinorTask(id="c2_cons", cell=Cell(2, 3), action=Action.FERTILIZE,
                       item=Item.FERTILIZER, qty=1),
-            MinorTask(id="c2_tail", cell=Cell(9, 4), action=MinorActionType.PASS),
-            MinorTask(id="extra", cell=Cell(0, 3), action=MinorActionType.PASS),
+            MinorTask(id="c2_tail", cell=Cell(9, 4), action=Action.PASS),
+            MinorTask(id="extra", cell=Cell(0, 3), action=Action.PASS),
         ],
         explicit_precedence=[("c2_acq", "c2_cons"), ("c2_cons", "c2_tail")],
         explicit_single_worker_groups=[["c2_acq", "c2_cons"]],
@@ -213,7 +213,7 @@ def test_the_engine_charges_the_idle_hands_below_the_top_of_the_day():
     instance = Instance.compile(
         workers=[Worker(index=i, earliest_start=0) for i in range(4)],
         standalone_minor_tasks=[MinorTask(id="t", cell=Cell(4, 4),
-                                          action=MinorActionType.PASS)],
+                                          action=Action.PASS)],
         horizon=8,
     )
     routes = [WorkerRoute(worker_index=3, start_time=0, start_cell=Cell(4, 4),
@@ -244,8 +244,8 @@ def test_the_oracle_confirmation_agrees_on_a_genuinely_infeasible_day():
     instance = Instance.compile(
         workers=[Worker(index=0, earliest_start=0)],
         standalone_minor_tasks=[
-            MinorTask(id="a", cell=Cell(4, 4), action=MinorActionType.PASS),
-            MinorTask(id="b", cell=Cell(4, 4), action=MinorActionType.PASS),
+            MinorTask(id="a", cell=Cell(4, 4), action=Action.PASS),
+            MinorTask(id="b", cell=Cell(4, 4), action=Action.PASS),
         ],
         explicit_precedence=[("a", "b")],
         horizon=1,

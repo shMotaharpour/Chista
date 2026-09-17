@@ -10,7 +10,7 @@ from day.models import (
     MajorTask,
     WAREHOUSE_ENTRY_CELLS,
     Item,
-    MinorActionType,
+    Action,
     MinorTask,
     ScheduledTask,
     Solution,
@@ -196,8 +196,8 @@ def test_cost_floor_forces_more_workers_than_the_unconstrained_optimum():
     # INFEASIBLE. Two genuinely independent tasks are used instead, so a
     # real 2-worker split exists for the floor to force.
     tasks = [
-        MinorTask(id="t1", cell=NW, action=MinorActionType.PASS),
-        MinorTask(id="t2", cell=WAREHOUSE_ENTRY_CELLS["NE"], action=MinorActionType.PASS),
+        MinorTask(id="t1", cell=NW, action=Action.PASS),
+        MinorTask(id="t2", cell=WAREHOUSE_ENTRY_CELLS["NE"], action=Action.PASS),
     ]
     workers = [Worker(index=i, earliest_start=0) for i in range(4)]
     instance = Instance.compile(workers=workers, standalone_minor_tasks=tasks)
@@ -305,7 +305,7 @@ def test_prefix_search_reaches_the_same_proven_optimum_as_the_monolithic_solve()
 def test_prefix_search_reports_infeasible_without_scanning_every_prefix():
     # No wheat anywhere, so FEED can never happen. The static source
     # check settles this before any solve (no prefix walk at all).
-    feed = MinorTask(id="feed", cell=NW, action=MinorActionType.FEED, item=Item.WHEAT, qty=1)
+    feed = MinorTask(id="feed", cell=NW, action=Action.FEED, item=Item.WHEAT, qty=1)
     instance = Instance.compile(workers=[Worker(index=0, earliest_start=0)], standalone_minor_tasks=[feed])
     with pytest.raises(InfeasibleInputError):
         cpsat_binarySearch(instance, FAST)
@@ -364,7 +364,7 @@ def test_worker_pool_cap_truncates_the_pool_and_says_so():
         WAREHOUSE_ENTRY_CELLS["NW"], WAREHOUSE_ENTRY_CELLS["NE"], WAREHOUSE_ENTRY_CELLS["SW"],
         WAREHOUSE_ENTRY_CELLS["SE"], WAREHOUSE_ENTRY_CELLS["NW"], WAREHOUSE_ENTRY_CELLS["NE"],
     ]
-    tasks = [MinorTask(id=f"t{i}", cell=c, action=MinorActionType.PASS) for i, c in enumerate(cells)]
+    tasks = [MinorTask(id=f"t{i}", cell=c, action=Action.PASS) for i, c in enumerate(cells)]
     workers = [Worker(index=i, earliest_start=0) for i in range(8)]
     instance = Instance.compile(workers=workers, standalone_minor_tasks=tasks, horizon=1)
 
@@ -394,14 +394,14 @@ def test_worker_pool_cap_is_not_flagged_when_it_truncates_nothing():
 def test_infeasible_instance_reports_infeasible_status():
     # No wheat anywhere -- FEED can never happen. The static source
     # check rejects this before the model is built.
-    feed = MinorTask(id="feed", cell=NW, action=MinorActionType.FEED, item=Item.WHEAT, qty=1)
+    feed = MinorTask(id="feed", cell=NW, action=Action.FEED, item=Item.WHEAT, qty=1)
     instance = Instance.compile(workers=[Worker(index=0, earliest_start=0)], standalone_minor_tasks=[feed])
     with pytest.raises(InfeasibleInputError):
         solve_cpsat(instance, FAST)
 
 
 def test_global_stock_overrun_raises_before_solving():
-    pickup = MinorTask(id="pickup", cell=None, action=MinorActionType.PICKUP, item=Item.WHEAT, qty=10)
+    pickup = MinorTask(id="pickup", cell=None, action=Action.PICKUP, item=Item.WHEAT, qty=10)
     instance = Instance.compile(
         workers=[Worker(index=0, earliest_start=0)],
         standalone_minor_tasks=[pickup],
@@ -412,7 +412,7 @@ def test_global_stock_overrun_raises_before_solving():
 
 
 def test_time_limit_is_honored_and_still_finds_the_optimum_on_a_tiny_instance():
-    task = MinorTask(id="t1", cell=NW, action=MinorActionType.PASS)
+    task = MinorTask(id="t1", cell=NW, action=Action.PASS)
     instance = Instance.compile(workers=[Worker(index=0, earliest_start=0)], standalone_minor_tasks=[task])
     result = solve_cpsat(instance, CpSatConfig(time_limit_seconds=1))
     assert result.status == "OPTIMAL"
@@ -440,8 +440,8 @@ def test_regression_drop_actually_resets_inventory_across_unrelated_chains():
         MajorTask(id="m4", type="feed", cell=(8, 2)),
     ]
     drops = [
-        MinorTask(id="m1_drop", cell=None, action=MinorActionType.DROP),
-        MinorTask(id="m2_drop", cell=None, action=MinorActionType.DROP),
+        MinorTask(id="m1_drop", cell=None, action=Action.DROP),
+        MinorTask(id="m2_drop", cell=None, action=Action.DROP),
     ]
     workers = [Worker(index=i, earliest_start=0) for i in range(5)]
     instance = Instance.compile(
@@ -476,7 +476,7 @@ def test_regression_active_workers_always_form_a_contiguous_prefix():
     # this is the shape of instance where a solver under time pressure
     # could plausibly skip one.
     cells = [(0, 0), (9, 9), (0, 9), (9, 0), (5, 5)]
-    tasks = [MinorTask(id=f"t{i}", cell=c, action=MinorActionType.PASS) for i, c in enumerate(cells)]
+    tasks = [MinorTask(id=f"t{i}", cell=c, action=Action.PASS) for i, c in enumerate(cells)]
     workers = [Worker(index=i, earliest_start=0) for i in range(5)]
     instance = Instance.compile(workers=workers, standalone_minor_tasks=tasks, horizon=9)
 
@@ -500,8 +500,8 @@ def test_regression_first_task_needs_its_own_turn_not_just_travel_time():
     # the old off-by-one, one worker alone looked sufficient (t1 at
     # "t=0", t2 at "t=1" both <= horizon=1), reporting a wrong OPTIMAL
     # cost of 0 -- exactly what this regression test would catch.
-    task1 = MinorTask(id="t1", cell=NW, action=MinorActionType.PASS)
-    task2 = MinorTask(id="t2", cell=WAREHOUSE_ENTRY_CELLS["NE"], action=MinorActionType.PASS)
+    task1 = MinorTask(id="t1", cell=NW, action=Action.PASS)
+    task2 = MinorTask(id="t2", cell=WAREHOUSE_ENTRY_CELLS["NE"], action=Action.PASS)
     workers = [Worker(index=i, earliest_start=0) for i in range(2)]
     instance = Instance.compile(workers=workers, standalone_minor_tasks=[task1, task2], horizon=1)
 

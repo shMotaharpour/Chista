@@ -20,10 +20,10 @@ from typing import Optional
 
 from day.distances import assign_entry_cells, manhattan
 from day.fibonacci import fibonacci_cost
-from day.models import WAREHOUSE_ENTRY_CELLS, Instance, Item, MinorActionType, MinorTask
+from day.models import WAREHOUSE_ENTRY_CELLS, Instance, Item, Action, MinorTask
 
-_PRODUCE_ACTIONS = frozenset({MinorActionType.PICKUP, MinorActionType.HARVEST, MinorActionType.COLLECT_FERTILIZER})
-_CONSUME_ACTIONS = frozenset({MinorActionType.PLACE, MinorActionType.FEED, MinorActionType.FERTILIZE})
+_PRODUCE_ACTIONS = frozenset({Action.PICKUP, Action.HARVEST, Action.COLLECT_FERTILIZER})
+_CONSUME_ACTIONS = frozenset({Action.PLACE, Action.FEED, Action.FERTILIZE})
 
 
 def _earliest_times(
@@ -88,7 +88,7 @@ def _feasible_for_fixed_plan(
         balance: dict[Item, int] = {}
         for i in order:
             task = tasks[i]
-            if task.action == MinorActionType.DROP:
+            if task.action == Action.DROP:
                 balance.clear()
                 continue
             if task.item is None:
@@ -104,14 +104,14 @@ def _feasible_for_fixed_plan(
     # DROP within the deadline.
     entry_cells = set(WAREHOUSE_ENTRY_CELLS.values())
     for w, order in per_worker_order.items():
-        harvest_positions = [pos for pos, i in enumerate(order) if tasks[i].action == MinorActionType.HARVEST]
+        harvest_positions = [pos for pos, i in enumerate(order) if tasks[i].action == Action.HARVEST]
         if not harvest_positions:
             continue
         last_harvest_pos = max(harvest_positions)
         ok = False
         for pos in range(last_harvest_pos + 1, len(order)):
             i = order[pos]
-            if tasks[i].action == MinorActionType.DROP and tasks[i].cell in entry_cells and tau[i] <= instance.clct_deadline:
+            if tasks[i].action == Action.DROP and tasks[i].cell in entry_cells and tau[i] <= instance.clct_deadline:
                 ok = True
                 break
         if not ok:

@@ -48,6 +48,11 @@ VECTOR: tuple[str, ...] = (
 _HANDLERS = ("_apply_unit_action", "_commit_unit", "_parse_order")
 
 
+def engine_tile_kinds() -> frozenset[str]:
+    """Tile-kind strings the engine writes into a tile dict, read from its source."""
+    return frozenset(re.findall(r'"kind": "([A-Z_]+)"', inspect.getsource(K)))
+
+
 def engine_action_names() -> frozenset[str]:
     """Every action string the engine's handlers test for, read from their source."""
     names: set[str] = set()
@@ -64,14 +69,27 @@ def engine_action_names() -> frozenset[str]:
 #: 24 actions today.
 ACTIONS: frozenset[str] = engine_action_names()
 
+#: What a tile's `kind` can be: a crop is "PLANT", a structure "COOP"/"PASTURE",
+#: a weed "WEED". A bare tile is None, which no enum member can express.
+TILE_KINDS: frozenset[str] = engine_tile_kinds()
+
+#: Anything the farm holds or trades: the 9 products plus the 3 species.
+ITEMS: tuple[str, ...] = PRODUCTS + tuple(a for a in ANIMALS if a not in PRODUCTS)
+
+#: Species -> the structure it lives in, from the engine's own table.
+ANIMAL_STRUCTURE: Mapping[str, str] = {
+    a: str(K.ANIMALS[a]["structure"]) for a in ANIMALS}
+
 #: One tile per op, in the engine's own table.
 MOVEMENT: tuple[str, ...] = tuple(str(move) for move in K.FARMER_MOVES)
 MOVE_DELTA: Mapping[str, tuple[int, int]] = {str(k): (int(v[0]), int(v[1]))
                                              for k, v in K.FARMER_MOVES.items()}
 
-#: The four shed-access tiles: PICKUP and DROP work nowhere else.
-SHED_ACCESS: frozenset[tuple[int, int]] = frozenset(
+#: The four shed-access tiles, in the engine's NWSE order: PICKUP and DROP work
+#: nowhere else.
+SHED_ACCESS_ORDERED: tuple[tuple[int, int], ...] = tuple(
     (int(x), int(y)) for x, y in K._shed_access_tiles(10))
+SHED_ACCESS: frozenset[tuple[int, int]] = frozenset(SHED_ACCESS_ORDERED)
 
 #: Market actions: the market layer's, never a worker's. `SELL`, `BUY_LAND` and
 #: `HIRE` are the market's own decisions; the `BUY_*` three are also what a chain
@@ -150,6 +168,8 @@ def _names(cls_name: str, values) -> Enum:
     return Enum(cls_name, {str(v): str(v) for v in values}, type=str, module=__name__)
 
 
+Item = _names("Item", ITEMS)
+TileKind = _names("TileKind", sorted(TILE_KINDS))
 Good = _names("Good", GOODS)
 Crop = _names("Crop", CROPS)
 Species = _names("Species", ANIMALS)

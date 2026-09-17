@@ -128,13 +128,16 @@ right, it goes to `main` in one PR. No piecemeal merges. Steps:
    *(Done: `agent/replan.py` lost `chain_turns`/`project_day`.)*
 3. The packages move: market and shed to `belief/`, routing and scheduling to
    `day/`, `secretary/` deleted. *(Done.)*
-4. The WSR's enums and `expand_major_task` are deleted; `MajorTask` is written over
-   a chain tuple, and the scheduling value types use the named views.
-5. `belief/market.py::forecast` and the rival model become views of `MarketState`,
-   or are deleted where the belief already answers them. The ported market tests are
-   the acceptance.
-6. The DP's op sets become computed views of `world/model.py`; `PLACE_ANIMAL` is
-   retired with the graph rebuild.
+4. The WSR's enums are deleted; the scheduling layer uses the named views, and its
+   seven task types are **keys into a chain table** (`day/models.py::MAJOR_CHAINS`),
+   expanded by the model's own `CARRIES`/`PLACING_OPS`. *(Done.)* One exception,
+   named rather than hidden: `wet_harvst_plnt` is the registry's rotation
+   `WATER-HARVEST-DIG-PLANT-WATER`, and the four-op form it keeps is what F057's
+   measured tables were taken on — re-basing it is a re-measure, not a rename.
+5. `belief/market.py::forecast` is seeded from `MarketState` (one reader), and the
+   market tests are the acceptance. *(Done.)*
+6. The DP's op sets are computed views of `world/model.py`, and `PLACE_ANIMAL` is
+   retired with the graph rebuild. *(Done.)*
 
 Each step ends with the full suite green, and the name ratchet in `tests/test_model.py`
 counts what is left to move.

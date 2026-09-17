@@ -29,7 +29,7 @@ from .models import (
     CONSUME_ACTIONS,
     PRODUCE_ACTIONS,
     Item,
-    MinorActionType,
+    Action,
     WAREHOUSE_ENTRY_CELLS,
     Cell,
     Instance,
@@ -111,7 +111,7 @@ def verify_solution(instance: Instance, solution: Solution,
             task = tasks_by_id.get(scheduled.task_id)
             if task is None:
                 continue
-            if task.action == MinorActionType.PICKUP and task.item is not None:
+            if task.action == Action.PICKUP and task.item is not None:
                 qty = scheduled.resolved_qty if scheduled.resolved_qty is not None else task.qty
                 balance[task.item] += qty
                 route_supply[route.worker_index][task.item] += qty
@@ -120,10 +120,11 @@ def verify_solution(instance: Instance, solution: Solution,
                 route_demand[route.worker_index][task.item] += task.qty
                 if balance[task.item] < 0:
                     violations.append(
-                        f"worker {route.worker_index}: inventory of {task.item.value!r} goes negative "
+                        f"worker {route.worker_index}: inventory of "
+                            f"{getattr(task.item, 'value', task.item)!r} goes negative "
                         f"({balance[task.item]}) at task {scheduled.task_id!r} (t={scheduled.exec_time})"
                     )
-            elif task.action == MinorActionType.DROP:
+            elif task.action == Action.DROP:
                 balance.clear()
 
     # missing tasks: unscheduled acquire tasks covered by an aggregated
@@ -132,13 +133,13 @@ def verify_solution(instance: Instance, solution: Solution,
     for task in instance.minor_tasks:
         if task.id in seen_at:
             continue
-        if task.action != MinorActionType.PICKUP or task.item is None:
+        if task.action != Action.PICKUP or task.item is None:
             continue
         group = next((g for g in instance.single_worker_groups if task.id in g), None)
         if group is None:
             continue
         partner_w = {assigned_worker[t] for t in group
-                     if t in seen_at and tasks_by_id[t].action != MinorActionType.PICKUP}
+                     if t in seen_at and tasks_by_id[t].action != Action.PICKUP}
         if len(partner_w) != 1:
             continue
         w = partner_w.pop()
@@ -162,7 +163,7 @@ def verify_solution(instance: Instance, solution: Solution,
     for task in instance.minor_tasks:
         if task.id in scheduled_ids:
             continue
-        if task.action != MinorActionType.PICKUP or task.item is None:
+        if task.action != Action.PICKUP or task.item is None:
             continue
         # find the route that covers its consumes (single-worker group partner)
         group = next((g for g in instance.single_worker_groups if task.id in g), None)
@@ -170,7 +171,7 @@ def verify_solution(instance: Instance, solution: Solution,
             violations.append(f"acquire task {task.id!r} never scheduled and not part of any group")
             continue
         partner_w = {assigned_worker[t] for t in group if t in scheduled_ids and
-                     tasks_by_id[t].action != MinorActionType.PICKUP}
+                     tasks_by_id[t].action != Action.PICKUP}
         if len(partner_w) != 1:
             violations.append(f"acquire task {task.id!r} unscheduled but its group has no single scheduled consumer")
             continue

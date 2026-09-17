@@ -134,17 +134,18 @@ def test_every_registry_chain_compiles() -> None:
             raise AssertionError(f"no entity compiles {ops}")
 
 
-def test_the_legacy_vocabularies_stay_pinned() -> None:
-    """The WSR's enums name real objects; its two divergences are pinned."""
-    engine_names = set(M.GOODS) | set(M.CROPS) | set(M.ANIMALS)
-    for item in wsr.Item:
-        assert item.value.upper() in engine_names, f"{item.value!r} is not an engine name"
-    for action in wsr.MinorActionType:
-        assert action.value in M.ACTIONS, f"{action.value} is not an engine action"
-    assert {i.value.upper() for i in wsr.PRODUCT_ITEMS} == {"MILK", "WOOL", "EGG"}, (
-        "PRODUCT_ITEMS changed: if it now equals the products, delete this pin "
-        "and the enum (ARCHITECTURE §5)")
-    assert {a.value for a in wsr.MOVEMENT_ACTIONS} == set(M.MOVEMENT) | {"PASS"}
+def test_the_duplicate_vocabularies_are_gone() -> None:
+    """The WSR's own enums are deleted; its sets are views of the one model."""
+    for gone in ("MinorActionType", "CellType", "MajorTaskType", "ANIMAL_STRUCTURE"):
+        assert not isinstance(getattr(wsr, gone, None), type), (
+            f"day/models.py still defines {gone}")
+    assert wsr.Item is M.Item, "the scheduling layer has its own Item again"
+    assert wsr.Action is M.Action, "the scheduling layer has its own action enum"
+    assert wsr.TileKind is M.TileKind
+    assert {a for a in wsr.MOVEMENT_ACTIONS} == set(M.MOVEMENT) | {"PASS"}
+    assert {i for i in wsr.PRODUCT_ITEMS} == set(M.PRODUCTS)
+    for name, chain in wsr.MAJOR_CHAINS.items():
+        assert set(chain) <= set(M.CHAIN_OPS), f"{name}: {chain} is not chain vocabulary"
 
 
 def test_no_module_may_grow_its_own_good_names() -> None:

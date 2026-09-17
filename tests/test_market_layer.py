@@ -124,6 +124,29 @@ def test_unlock_policy_none_is_biased_toward_higher_prices():
     assert worse == 0, f"{worse} item-days dipped below the realised inventory"
 
 
+def test_the_forecast_is_a_view_of_the_one_snapshot():
+    """ARCHITECTURE §5 step 5: the market has one reader, and this is the seam.
+
+    The snapshot's prices must be the engine's own quote function at the observed
+    inventory, and the forecast's first row must be that same inventory - if the
+    seed is dropped, the forecast silently prices yesterday's market.
+    """
+    from belief.schemas import MarketState
+    sim = _sim()
+    obs = sim.observations()[0]
+    state = MarketState.from_obs(obs)
+    raw = obs["market"]["inventory"]
+    for i, item in enumerate(PRODUCTS):
+        assert state.prices[i] == K.market_price(item, raw[item]), (
+            f"{item}: the snapshot's price is not the engine's")
+        assert state.inventory[i] == raw[item]
+    fc = forecast(obs, days=3)
+    assert tuple(int(v) for v in state.inventory) == fc.inventory[0], (
+        "the forecast's row 0 is not the snapshot's inventory")
+    assert int(state.shed_room) == SHED_CAPACITY - sum(
+        int(v) for v in (obs["private"]["shed"] or {}).values())
+
+
 def test_price_is_the_engine_function_not_a_copy():
     """Patch `K.market_price` and watch every forecast price move with it."""
     sim = _sim(0)

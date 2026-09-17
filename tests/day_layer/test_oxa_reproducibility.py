@@ -33,7 +33,7 @@ import sys
 from collections import Counter
 from pathlib import Path
 
-from day.models import Cell, Instance, Item, MinorActionType, MinorTask, Worker
+from day.models import Cell, Instance, Item, Action, MinorTask, Worker
 from day.solvers.cpsat_solver import CpSatConfig, cpsat_binarySearch
 from day.solvers.oxa_solver import OxaConfig, solve_oxa
 from day.verify import verify_solution
@@ -93,7 +93,7 @@ def test_the_entry_cell_is_assigned_over_the_routed_workers():
     """
     instance = Instance.compile(
         workers=[Worker(index=0, earliest_start=0), Worker(index=1, earliest_start=0)],
-        standalone_minor_tasks=[MinorTask(id="t0", cell=Cell(5, 0), action=MinorActionType.PASS)],
+        standalone_minor_tasks=[MinorTask(id="t0", cell=Cell(5, 0), action=Action.PASS)],
         horizon=5,
     )
     result = solve_oxa(instance, OxaConfig(min_workers=1))
@@ -117,8 +117,8 @@ def test_a_stranded_successor_goes_to_an_earlier_hand_that_still_waits():
     instance = Instance.compile(
         workers=[Worker(index=0, earliest_start=0), Worker(index=1, earliest_start=0)],
         standalone_minor_tasks=[
-            MinorTask(id="t0", cell=Cell(9, 0), action=MinorActionType.PASS),
-            MinorTask(id="t1", cell=Cell(0, 0), action=MinorActionType.PASS),
+            MinorTask(id="t0", cell=Cell(9, 0), action=Action.PASS),
+            MinorTask(id="t1", cell=Cell(0, 0), action=Action.PASS),
         ],
         explicit_precedence=[("t0", "t1")],
         horizon=10,
@@ -157,9 +157,9 @@ def test_a_side_task_cannot_strand_a_chain():
                  Worker(index=1, earliest_start=1),
                  Worker(index=2, earliest_start=1)],
         standalone_minor_tasks=[
-            MinorTask(id="c0_a", cell=Cell(9, 0), action=MinorActionType.PASS),
-            MinorTask(id="c1_a", cell=Cell(0, 9), action=MinorActionType.PASS),
-            MinorTask(id="c1_b", cell=Cell(2, 4), action=MinorActionType.PASS),
+            MinorTask(id="c0_a", cell=Cell(9, 0), action=Action.PASS),
+            MinorTask(id="c1_a", cell=Cell(0, 9), action=Action.PASS),
+            MinorTask(id="c1_b", cell=Cell(2, 4), action=Action.PASS),
         ],
         explicit_precedence=[("c1_a", "c1_b")],
         horizon=12,

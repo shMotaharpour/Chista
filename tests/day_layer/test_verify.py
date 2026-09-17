@@ -16,7 +16,7 @@ from day.models import (
     Instance,
     Item,
     MajorTask,
-    MinorActionType,
+    Action,
     MinorTask,
     ScheduledTask,
     Solution,
@@ -34,7 +34,7 @@ def _worker(index: int, earliest_start: int = 0) -> Worker:
 
 
 def _single_task_instance() -> Instance:
-    task = MinorTask(id="t1", cell=NW, action=MinorActionType.DIG)
+    task = MinorTask(id="t1", cell=NW, action=Action.DIG)
     return Instance.compile(workers=[_worker(0)], standalone_minor_tasks=[task])
 
 
@@ -54,8 +54,8 @@ def test_valid_single_task_solution_passes():
 
 
 def test_missing_task_is_caught():
-    task1 = MinorTask(id="t1", cell=NW, action=MinorActionType.DIG)
-    task2 = MinorTask(id="t2", cell=NW, action=MinorActionType.PASS)
+    task1 = MinorTask(id="t1", cell=NW, action=Action.DIG)
+    task2 = MinorTask(id="t2", cell=NW, action=Action.PASS)
     instance = Instance.compile(workers=[_worker(0)], standalone_minor_tasks=[task1, task2])
     solution = Solution(
         routes=[WorkerRoute(worker_index=0, start_time=0, tasks=[ScheduledTask(task_id="t1", exec_time=0)])],
@@ -70,9 +70,9 @@ def test_resolved_qty_overrides_the_pickups_fixed_qty_for_inventory_accounting()
     # brought back 2 -- enough to cover two same-item FEEDs from a single
     # trip. Mirrors CP-SAT's aggregated-PICKUP output (resolved_cell's
     # sibling field on ScheduledTask).
-    pickup = MinorTask(id="pickup", cell=None, action=MinorActionType.PICKUP, item=Item.WHEAT, qty=1)
-    feed1 = MinorTask(id="feed1", cell=NW, action=MinorActionType.FEED, item=Item.WHEAT, qty=1)
-    feed2 = MinorTask(id="feed2", cell=NW, action=MinorActionType.FEED, item=Item.WHEAT, qty=1)
+    pickup = MinorTask(id="pickup", cell=None, action=Action.PICKUP, item=Item.WHEAT, qty=1)
+    feed1 = MinorTask(id="feed1", cell=NW, action=Action.FEED, item=Item.WHEAT, qty=1)
+    feed2 = MinorTask(id="feed2", cell=NW, action=Action.FEED, item=Item.WHEAT, qty=1)
     instance = Instance.compile(
         workers=[_worker(0)],
         standalone_minor_tasks=[pickup, feed1, feed2],
@@ -113,7 +113,7 @@ def test_resolved_qty_overrides_the_pickups_fixed_qty_for_inventory_accounting()
     )
     result = verify_solution(instance, unresolved)
     assert not result.is_valid
-    assert any("inventory of 'wheat' goes negative" in v for v in result.violations)
+    assert any("inventory of 'WHEAT' goes negative" in v for v in result.violations)
 
 
 def test_duplicate_task_is_caught():
@@ -133,8 +133,8 @@ def test_duplicate_task_is_caught():
 
 
 def test_precedence_violation_is_caught():
-    water = MinorTask(id="water", cell=NW, action=MinorActionType.WATER)
-    harvest = MinorTask(id="harvest", cell=NW, action=MinorActionType.HARVEST)
+    water = MinorTask(id="water", cell=NW, action=Action.WATER)
+    harvest = MinorTask(id="harvest", cell=NW, action=Action.HARVEST)
     instance = Instance.compile(
         workers=[_worker(0)],
         standalone_minor_tasks=[water, harvest],
@@ -157,19 +157,19 @@ def test_precedence_violation_is_caught():
 
 def test_negative_inventory_is_caught():
     # FEED with no prior PICKUP of wheat: consumes wheat it never had.
-    feed = MinorTask(id="feed", cell=NW, action=MinorActionType.FEED, item=Item.WHEAT, qty=1)
+    feed = MinorTask(id="feed", cell=NW, action=Action.FEED, item=Item.WHEAT, qty=1)
     instance = Instance.compile(workers=[_worker(0)], standalone_minor_tasks=[feed])
     solution = Solution(
         routes=[WorkerRoute(worker_index=0, start_time=0, tasks=[ScheduledTask(task_id="feed", exec_time=0)])],
     )
     result = verify_solution(instance, solution)
     assert not result.is_valid
-    assert any("inventory of 'wheat' goes negative" in v for v in result.violations)
+    assert any("inventory of 'WHEAT' goes negative" in v for v in result.violations)
 
 
 def test_pickup_then_feed_keeps_inventory_non_negative():
-    pickup = MinorTask(id="pickup", cell=None, action=MinorActionType.PICKUP, item=Item.WHEAT, qty=1)
-    feed = MinorTask(id="feed", cell=NW, action=MinorActionType.FEED, item=Item.WHEAT, qty=1)
+    pickup = MinorTask(id="pickup", cell=None, action=Action.PICKUP, item=Item.WHEAT, qty=1)
+    feed = MinorTask(id="feed", cell=NW, action=Action.FEED, item=Item.WHEAT, qty=1)
     instance = Instance.compile(
         workers=[_worker(0)],
         standalone_minor_tasks=[pickup, feed],
@@ -196,7 +196,7 @@ def test_pickup_then_feed_keeps_inventory_non_negative():
                          "the Instance field exists but dumps never populate it. "
                          "Re-enable when shed stock modeling is added.")
 def test_warehouse_stock_overrun_is_caught():
-    pickup = MinorTask(id="pickup", cell=None, action=MinorActionType.PICKUP, item=Item.WHEAT, qty=10)
+    pickup = MinorTask(id="pickup", cell=None, action=Action.PICKUP, item=Item.WHEAT, qty=10)
     instance = Instance.compile(
         workers=[_worker(0)], standalone_minor_tasks=[pickup], warehouse_stock={Item.WHEAT: 3}
     )
@@ -241,7 +241,7 @@ def test_clct_is_currently_not_enforced():
     # docs/problem-formulation.*.md constraint 9's "History" note); clct
     # is disabled everywhere until it's rebuilt as a proper major_task.
     # A HARVEST with no follow-up DROP at all must therefore be valid.
-    harvest = MinorTask(id="harvest", cell=NW, action=MinorActionType.HARVEST, item=Item.WHEAT, qty=1)
+    harvest = MinorTask(id="harvest", cell=NW, action=Action.HARVEST, item=Item.WHEAT, qty=1)
     instance = Instance.compile(workers=[_worker(0)], standalone_minor_tasks=[harvest], clct_deadline=23)
     solution = Solution(
         routes=[WorkerRoute(worker_index=0, start_time=0, tasks=[ScheduledTask(task_id="harvest", exec_time=1)])],
@@ -252,8 +252,8 @@ def test_clct_is_currently_not_enforced():
 
 def test_travel_time_violation_is_caught():
     # (0,0) and (9,9) are 18 apart -> can't both be done one turn apart.
-    task1 = MinorTask(id="t1", cell=(0, 0), action=MinorActionType.PASS)
-    task2 = MinorTask(id="t2", cell=(9, 9), action=MinorActionType.PASS)
+    task1 = MinorTask(id="t1", cell=(0, 0), action=Action.PASS)
+    task2 = MinorTask(id="t2", cell=(9, 9), action=Action.PASS)
     instance = Instance.compile(workers=[_worker(0)], standalone_minor_tasks=[task1, task2])
     solution = Solution(
         routes=[
@@ -270,7 +270,7 @@ def test_travel_time_violation_is_caught():
 
 
 def test_horizon_violation_is_caught():
-    task = MinorTask(id="t1", cell=NW, action=MinorActionType.PASS)
+    task = MinorTask(id="t1", cell=NW, action=Action.PASS)
     instance = Instance.compile(workers=[_worker(0)], standalone_minor_tasks=[task], horizon=24)
     solution = Solution(
         routes=[WorkerRoute(worker_index=0, start_time=0, tasks=[ScheduledTask(task_id="t1", exec_time=30)])],
@@ -281,7 +281,7 @@ def test_horizon_violation_is_caught():
 
 
 def test_earliest_start_violation_is_caught():
-    task = MinorTask(id="t1", cell=NW, action=MinorActionType.PASS)
+    task = MinorTask(id="t1", cell=NW, action=Action.PASS)
     instance = Instance.compile(workers=[_worker(3, earliest_start=5)], standalone_minor_tasks=[task])
     solution = Solution(
         routes=[WorkerRoute(worker_index=3, start_time=0, tasks=[ScheduledTask(task_id="t1", exec_time=0)])],
@@ -307,8 +307,8 @@ def test_gap_in_worker_activation_is_legal_but_paid():
     # 0, 1, 2 were all hired and paid, even though hand 1 sits idle. A gap
     # is legal; it just costs fib(1) extra. (Replaces the removed
     # prefix-activation constraint 11 -- "only the money matters".)
-    task0 = MinorTask(id="t0", cell=NW, action=MinorActionType.PASS)
-    task2 = MinorTask(id="t2", cell=NE, action=MinorActionType.PASS)
+    task0 = MinorTask(id="t0", cell=NW, action=Action.PASS)
+    task2 = MinorTask(id="t2", cell=NE, action=Action.PASS)
     instance = Instance.compile(
         workers=[_worker(0), _worker(1), _worker(2)], standalone_minor_tasks=[task0, task2]
     )
@@ -330,8 +330,8 @@ def test_gap_in_worker_activation_is_legal_but_paid():
 def test_contiguous_worker_activation_passes():
     # Workers 0 and 1 active (a genuine prefix of the 0,1,2 candidate list),
     # worker 2 correctly left idle (never hired).
-    task0 = MinorTask(id="t0", cell=NW, action=MinorActionType.PASS)
-    task1 = MinorTask(id="t1", cell=NE, action=MinorActionType.PASS)
+    task0 = MinorTask(id="t0", cell=NW, action=Action.PASS)
+    task1 = MinorTask(id="t1", cell=NE, action=Action.PASS)
     instance = Instance.compile(
         workers=[_worker(0), _worker(1), _worker(2)], standalone_minor_tasks=[task0, task1]
     )
@@ -356,7 +356,7 @@ def test_worker_capacity_is_horizon_minus_start_time():
     horizon = 24
     start = 5
     n = horizon - start
-    tasks = [MinorTask(id=f"t{i}", cell=NW, action=MinorActionType.PASS) for i in range(n)]
+    tasks = [MinorTask(id=f"t{i}", cell=NW, action=Action.PASS) for i in range(n)]
     instance = Instance.compile(
         workers=[_worker(0, earliest_start=start)], standalone_minor_tasks=tasks, horizon=horizon
     )
@@ -373,7 +373,7 @@ def test_worker_cannot_fit_one_more_action_than_horizon_minus_start_time_allows(
     horizon = 24
     start = 5
     n = horizon - start + 1
-    tasks = [MinorTask(id=f"t{i}", cell=NW, action=MinorActionType.PASS) for i in range(n)]
+    tasks = [MinorTask(id=f"t{i}", cell=NW, action=Action.PASS) for i in range(n)]
     instance = Instance.compile(
         workers=[_worker(0, earliest_start=start)], standalone_minor_tasks=tasks, horizon=horizon
     )
@@ -388,8 +388,8 @@ def test_total_cost_sums_fibonacci_up_to_the_highest_active_worker():
     # Engine accounting: hiring is append-only -- worker 3 working means
     # hands 0, 1, 2 were all hired and paid too (idle or not), so the cost
     # is fib(0)+fib(1)+fib(2)+fib(3) = 0+1+1+2 = 4.
-    task1 = MinorTask(id="t1", cell=NW, action=MinorActionType.PASS)
-    task2 = MinorTask(id="t2", cell=(5, 4), action=MinorActionType.PASS)  # NE
+    task1 = MinorTask(id="t1", cell=NW, action=Action.PASS)
+    task2 = MinorTask(id="t2", cell=(5, 4), action=Action.PASS)  # NE
     instance = Instance.compile(workers=[_worker(0), _worker(3)], standalone_minor_tasks=[task1, task2])
     solution = Solution(
         routes=[

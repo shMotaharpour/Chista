@@ -19,7 +19,7 @@ from day.models import (
     WAREHOUSE_ENTRY_CELLS,
     Instance,
     Item,
-    MinorActionType,
+    Action,
     MinorTask,
     ScheduledTask,
     Solution,
@@ -45,7 +45,7 @@ def _workers(*indices: int, earliest_start: int = 0) -> list[Worker]:
 def _single_task_case() -> HandSolvedCase:
     # One task, one candidate worker. The cheapest possible worker (index 0,
     # cost 0) always suffices for a single task at a shed cell.
-    task = MinorTask(id="t1", cell=NW, action=MinorActionType.PASS)
+    task = MinorTask(id="t1", cell=NW, action=Action.PASS)
     instance = Instance.compile(workers=_workers(0, 1, 2), standalone_minor_tasks=[task])
     solution = Solution(
         routes=[WorkerRoute(worker_index=0, start_time=0, tasks=[ScheduledTask(task_id="t1", exec_time=1)])],
@@ -58,8 +58,8 @@ def _two_independent_tasks_case() -> HandSolvedCase:
     # Two independent (no precedence) tasks at the same cell: a single
     # worker can do both, one turn apart, so the optimum is still worker 0
     # alone (cost 0) even though several workers are offered as candidates.
-    task1 = MinorTask(id="t1", cell=NW, action=MinorActionType.PASS)
-    task2 = MinorTask(id="t2", cell=NW, action=MinorActionType.PASS)
+    task1 = MinorTask(id="t1", cell=NW, action=Action.PASS)
+    task2 = MinorTask(id="t2", cell=NW, action=Action.PASS)
     instance = Instance.compile(workers=_workers(0, 1, 2), standalone_minor_tasks=[task1, task2])
     solution = Solution(
         routes=[
@@ -151,8 +151,8 @@ def _one_step_horizon_forces_two_workers_case() -> HandSolvedCase:
     # worker zero usable actions, not one, so the instance is now expressed
     # at horizon=1 instead; the "one action isn't enough for two tasks"
     # property this fixture exists to test is unchanged.
-    task1 = MinorTask(id="t1", cell=NW, action=MinorActionType.PASS)
-    task2 = MinorTask(id="t2", cell=WAREHOUSE_ENTRY_CELLS["NE"], action=MinorActionType.PASS)
+    task1 = MinorTask(id="t1", cell=NW, action=Action.PASS)
+    task2 = MinorTask(id="t2", cell=WAREHOUSE_ENTRY_CELLS["NE"], action=Action.PASS)
     instance = Instance.compile(workers=_workers(0, 1, 2, 3), standalone_minor_tasks=[task1, task2], horizon=1)
     solution = Solution(
         routes=[

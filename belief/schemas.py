@@ -48,6 +48,33 @@ class MarketState:
     rival_bag: np.ndarray          # (9,) not-yet-dropped lower bound
     shed_room: int                 # SHED_CAP - sum(our shed)
 
+    @classmethod
+    def from_obs(cls, obs: Any) -> "MarketState":
+        """The snapshot, from the observation alone.
+
+        Inventory and prices are the observation's and the engine's own quote
+        function (`world.prices`, parity-tested); the drain is the closed form in
+        `belief.opponent`. The rival fields stay zero and say so: they need the
+        tracker's residual history, and a caller that has it passes its own state.
+        """
+        from belief.opponent import drain_forecast
+        from world.prices import price_table
+        from world.vocabulary import GOODS
+
+        market = obs.get("market", {}) if isinstance(obs, dict) else {}
+        raw = market.get("inventory", {}) or {}
+        inventory = np.array([int(raw.get(g, 0)) for g in GOODS], dtype=float)
+        mean, sd = drain_forecast(obs, 1)
+        private = obs.get("private", {}) if isinstance(obs, dict) else {}
+        shed = sum(int(v) for v in (private.get("shed", {}) or {}).values())
+        return cls(
+            turn=int(obs.get("step", 0)) if isinstance(obs, dict) else 0,
+            inventory=inventory, prices=np.asarray(price_table(inventory), dtype=float),
+            drain_mean=np.asarray(mean, dtype=float),
+            drain_sd=np.asarray(sd, dtype=float),
+            rival_sales=np.zeros(len(GOODS)), rival_stock=np.zeros(len(GOODS)),
+            rival_bag=np.zeros(len(GOODS)), shed_room=int(SHED_CAP) - shed)
+
 
 # --- what the season planner asks for --------------------------------------- #
 

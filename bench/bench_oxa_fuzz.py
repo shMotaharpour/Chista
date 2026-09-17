@@ -48,7 +48,7 @@ import argparse
 import random
 from collections import Counter
 
-from day.models import (Cell, Instance, Item, MinorActionType, MinorTask, Worker)
+from day.models import (Cell, Instance, Item, Action, MinorTask, Worker)
 from day.solvers.oxa_solver import OxaConfig, solve_oxa
 from day.verify import verify_solution
 
@@ -69,29 +69,29 @@ def build(seed: int) -> Instance:
         shape = rng.choice(['solo', 'pair_same', 'pair_cross', 'triple_mixed'])
         cell_a, cell_b = rng.choice(CELLS), rng.choice(CELLS)
         if shape == 'solo':
-            minors.append(MinorTask(id=f'c{c}_a', cell=cell_a, action=MinorActionType.PASS))
+            minors.append(MinorTask(id=f'c{c}_a', cell=cell_a, action=Action.PASS))
         elif shape == 'pair_same':
-            minors.append(MinorTask(id=f'c{c}_a', cell=cell_a, action=MinorActionType.PASS))
-            minors.append(MinorTask(id=f'c{c}_b', cell=cell_a, action=MinorActionType.PASS))
+            minors.append(MinorTask(id=f'c{c}_a', cell=cell_a, action=Action.PASS))
+            minors.append(MinorTask(id=f'c{c}_b', cell=cell_a, action=Action.PASS))
             precedence.append((f'c{c}_a', f'c{c}_b'))
         elif shape == 'pair_cross':
-            minors.append(MinorTask(id=f'c{c}_a', cell=cell_a, action=MinorActionType.PASS))
-            minors.append(MinorTask(id=f'c{c}_b', cell=cell_b, action=MinorActionType.PASS))
+            minors.append(MinorTask(id=f'c{c}_a', cell=cell_a, action=Action.PASS))
+            minors.append(MinorTask(id=f'c{c}_b', cell=cell_b, action=Action.PASS))
             precedence.append((f'c{c}_a', f'c{c}_b'))
         else:
             item = rng.choice([Item.WHEAT, Item.FERTILIZER])
-            action = MinorActionType.FEED if item is Item.WHEAT else MinorActionType.FERTILIZE
+            action = Action.FEED if item is Item.WHEAT else Action.FERTILIZE
             acq = f'c{c}_acq'
-            minors.append(MinorTask(id=acq, cell=None, action=MinorActionType.PICKUP,
+            minors.append(MinorTask(id=acq, cell=None, action=Action.PICKUP,
                                     item=item, qty=1))
             minors.append(MinorTask(id=f'c{c}_cons', cell=cell_a, action=action,
                                     item=item, qty=1))
-            minors.append(MinorTask(id=f'c{c}_tail', cell=cell_b, action=MinorActionType.PASS))
+            minors.append(MinorTask(id=f'c{c}_tail', cell=cell_b, action=Action.PASS))
             precedence += [(acq, f'c{c}_cons'), (f'c{c}_cons', f'c{c}_tail')]
             groups.append([acq, f'c{c}_cons'])
             stock[item] = stock.get(item, 0) + rng.randint(1, 3)
     if rng.random() < 0.3:
-        minors.append(MinorTask(id='extra', cell=rng.choice(CELLS), action=MinorActionType.PASS))
+        minors.append(MinorTask(id='extra', cell=rng.choice(CELLS), action=Action.PASS))
 
     return Instance.compile(workers=workers, standalone_minor_tasks=minors,
                             explicit_precedence=precedence,

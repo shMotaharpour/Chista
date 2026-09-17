@@ -12,7 +12,7 @@ from day.models import (
     Item,
     MajorTask,
     WAREHOUSE_ENTRY_CELLS,
-    MinorActionType,
+    Action,
     MinorTask,
     Worker,
 )
@@ -46,7 +46,7 @@ def _assert_valid_and_never_beats_brute_force(instance):
 
 
 def test_single_task():
-    task = MinorTask(id="t1", cell=NW, action=MinorActionType.PASS)
+    task = MinorTask(id="t1", cell=NW, action=Action.PASS)
     instance = Instance.compile(workers=_workers(0, 1, 2), standalone_minor_tasks=[task])
     _assert_valid_and_never_beats_brute_force(instance)
 
@@ -55,8 +55,8 @@ def test_two_independent_far_apart_tasks_needs_two_workers():
     # (0,0) and (9,9): entry NW(4,4) is 8 from t1 and 13 from t2. One
     # worker needs 9 + 1 + 18 = 28 turns for both; two workers (one per
     # task) finish by 9 and 10. horizon=20 forces exactly 2 workers.
-    task1 = MinorTask(id="t1", cell=(0, 0), action=MinorActionType.PASS)
-    task2 = MinorTask(id="t2", cell=(9, 9), action=MinorActionType.PASS)
+    task1 = MinorTask(id="t1", cell=(0, 0), action=Action.PASS)
+    task2 = MinorTask(id="t2", cell=(9, 9), action=Action.PASS)
     instance = Instance.compile(workers=_workers(0, 1, 2, 3), standalone_minor_tasks=[task1, task2], horizon=20)
     _assert_valid_and_never_beats_brute_force(instance)
     r = solve_oxa(instance, OxaConfig(min_workers=1))
@@ -65,8 +65,8 @@ def test_two_independent_far_apart_tasks_needs_two_workers():
 
 
 def test_precedence_chain_across_two_cells():
-    task_a = MinorTask(id="a", cell=NW, action=MinorActionType.PASS)
-    task_b = MinorTask(id="b", cell=NE, action=MinorActionType.PASS)
+    task_a = MinorTask(id="a", cell=NW, action=Action.PASS)
+    task_b = MinorTask(id="b", cell=NE, action=Action.PASS)
     instance = Instance.compile(
         workers=_workers(0, 1, 2),
         standalone_minor_tasks=[task_a, task_b],
@@ -76,8 +76,8 @@ def test_precedence_chain_across_two_cells():
 
 
 def test_single_worker_group_with_fixed_cell_pickup():
-    pickup = MinorTask(id="pickup", cell=NW, action=MinorActionType.PICKUP, item=Item.WHEAT, qty=1)
-    feed = MinorTask(id="feed", cell=NE, action=MinorActionType.FEED, item=Item.WHEAT, qty=1)
+    pickup = MinorTask(id="pickup", cell=NW, action=Action.PICKUP, item=Item.WHEAT, qty=1)
+    feed = MinorTask(id="feed", cell=NE, action=Action.FEED, item=Item.WHEAT, qty=1)
     instance = Instance.compile(
         workers=_workers(0, 1, 2),
         standalone_minor_tasks=[pickup, feed],
@@ -89,8 +89,8 @@ def test_single_worker_group_with_fixed_cell_pickup():
 
 
 def test_one_step_horizon_forces_exactly_two_workers():
-    task1 = MinorTask(id="t1", cell=NW, action=MinorActionType.PASS)
-    task2 = MinorTask(id="t2", cell=NE, action=MinorActionType.PASS)
+    task1 = MinorTask(id="t1", cell=NW, action=Action.PASS)
+    task2 = MinorTask(id="t2", cell=NE, action=Action.PASS)
     instance = Instance.compile(workers=_workers(0, 1, 2, 3), standalone_minor_tasks=[task1, task2], horizon=1)
     result = solve_oxa(instance, OxaConfig(min_workers=1))
     assert result.status in ("OPTIMAL", "FEASIBLE"), result.status
@@ -104,7 +104,7 @@ def test_entry_cell_placement_tie_break_all_four_cells():
     # One task colocated with each of the 4 shed-adjacent cells, horizon=1:
     # four workers needed, entries must be NW,NE,SW,SE in that order.
     cells = [WAREHOUSE_ENTRY_CELLS[n] for n in ("NW", "NE", "SW", "SE")]
-    tasks = [MinorTask(id=f"t{i}", cell=c, action=MinorActionType.PASS) for i, c in enumerate(cells)]
+    tasks = [MinorTask(id=f"t{i}", cell=c, action=Action.PASS) for i, c in enumerate(cells)]
     instance = Instance.compile(
         workers=_workers(0, 1, 2, 3), standalone_minor_tasks=tasks, horizon=1
     )
@@ -121,7 +121,7 @@ def test_entry_cell_placement_tie_break_all_four_cells():
 def test_regression_first_task_needs_its_own_turn_not_just_travel_time():
     # Constraint 3: exec >= start + 1 + dist. A single task at NW with
     # start_time=0 must have exec >= 1, never 0.
-    task = MinorTask(id="t1", cell=NW, action=MinorActionType.PASS)
+    task = MinorTask(id="t1", cell=NW, action=Action.PASS)
     instance = Instance.compile(workers=[Worker(index=0, earliest_start=0)], standalone_minor_tasks=[task])
     result = solve_oxa(instance, OxaConfig(min_workers=1))
     st = result.solution.routes[0].tasks[0]
@@ -129,11 +129,11 @@ def test_regression_first_task_needs_its_own_turn_not_just_travel_time():
 
 
 def test_drop_genuinely_resets_inventory_between_two_pickup_place_rounds():
-    pickup1 = MinorTask(id="pickup1", cell=None, action=MinorActionType.PICKUP, item=Item.WHEAT, qty=1)
-    place1 = MinorTask(id="place1", cell=NW, action=MinorActionType.PLACE, item=Item.WHEAT, qty=1)
-    drop = MinorTask(id="drop", cell=NE, action=MinorActionType.DROP)
-    pickup2 = MinorTask(id="pickup2", cell=None, action=MinorActionType.PICKUP, item=Item.WHEAT, qty=1)
-    place2 = MinorTask(id="place2", cell=NE, action=MinorActionType.PLACE, item=Item.WHEAT, qty=1)
+    pickup1 = MinorTask(id="pickup1", cell=None, action=Action.PICKUP, item=Item.WHEAT, qty=1)
+    place1 = MinorTask(id="place1", cell=NW, action=Action.PLACE, item=Item.WHEAT, qty=1)
+    drop = MinorTask(id="drop", cell=NE, action=Action.DROP)
+    pickup2 = MinorTask(id="pickup2", cell=None, action=Action.PICKUP, item=Item.WHEAT, qty=1)
+    place2 = MinorTask(id="place2", cell=NE, action=Action.PLACE, item=Item.WHEAT, qty=1)
     instance = Instance.compile(
         workers=_workers(0),
         standalone_minor_tasks=[pickup1, place1, drop, pickup2, place2],
@@ -152,14 +152,14 @@ def test_unsourcable_feed_is_reported_not_raised():
     # it unscheduled) or INVALID_SOLUTION (verify catches the negative
     # inventory). Both mean "no valid day plan" - never an exception and
     # never a silently-wrong FEASIBLE.
-    feed = MinorTask(id="feed", cell=NW, action=MinorActionType.FEED, item=Item.WHEAT, qty=1)
+    feed = MinorTask(id="feed", cell=NW, action=Action.FEED, item=Item.WHEAT, qty=1)
     instance = Instance.compile(workers=[_worker(0)], standalone_minor_tasks=[feed])
     with pytest.raises(InfeasibleInputError):
         solve_oxa(instance, OxaConfig(min_workers=1))
 
 
 def test_global_stock_overrun_raises_before_solving():
-    pickup = MinorTask(id="pickup", cell=None, action=MinorActionType.PICKUP, item=Item.WHEAT, qty=10)
+    pickup = MinorTask(id="pickup", cell=None, action=Action.PICKUP, item=Item.WHEAT, qty=10)
     instance = Instance.compile(
         workers=[_worker(0)], standalone_minor_tasks=[pickup], warehouse_stock={Item.WHEAT: 3}
     )
@@ -180,10 +180,10 @@ def test_an_edge_into_a_preloaded_pickup_is_rejected_not_mis_scheduled():
     instance = Instance.compile(
         workers=_workers(0, 1),
         standalone_minor_tasks=[
-            MinorTask(id="T", cell=NW, action=MinorActionType.PASS),
-            MinorTask(id="S", cell=None, action=MinorActionType.PICKUP,
+            MinorTask(id="T", cell=NW, action=Action.PASS),
+            MinorTask(id="S", cell=None, action=Action.PICKUP,
                       item=Item.WHEAT, qty=1),
-            MinorTask(id="C", cell=NE, action=MinorActionType.FEED,
+            MinorTask(id="C", cell=NE, action=Action.FEED,
                       item=Item.WHEAT, qty=1),
         ],
         explicit_precedence=[("T", "S"), ("S", "C")],
@@ -214,7 +214,7 @@ def test_the_worker_pool_is_the_lowest_indices_not_the_given_order():
     instance = Instance.compile(
         workers=[_worker(3), _worker(0), _worker(1)],
         standalone_minor_tasks=[
-            MinorTask(id="t", cell=WAREHOUSE_ENTRY_CELLS["SE"], action=MinorActionType.PASS)
+            MinorTask(id="t", cell=WAREHOUSE_ENTRY_CELLS["SE"], action=Action.PASS)
         ],
         worker_pool_size=1,
         horizon=24,
@@ -228,7 +228,7 @@ def test_the_worker_pool_is_the_lowest_indices_not_the_given_order():
 
 
 def test_no_workers_available_is_infeasible_when_tasks_exist():
-    task = MinorTask(id="t1", cell=NW, action=MinorActionType.PASS)
+    task = MinorTask(id="t1", cell=NW, action=Action.PASS)
     instance = Instance.compile(workers=[], standalone_minor_tasks=[task])
     result = solve_oxa(instance, OxaConfig(min_workers=1))
     assert result.status == "INFEASIBLE"
