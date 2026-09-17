@@ -104,11 +104,14 @@ MarketState = {
 | layer | owns | must not |
 |---|---|---|
 | `world/` | the vocabulary (`model.py`), the town (`vocabulary.py`), the engine binding, config | hold policy |
-| `belief/` | the market and rival beliefs, the schemas | decide actions, read the board |
+| `belief/` | the one belief: the market, the rival, the demand, the shed projection and the sell plan, and the schemas | decide actions, read the board |
 | `tile_dp/` | the chain registry, the per-tile DP | know units, travel, or the market queue |
 | `planner/` | the season: what to grow, when to sell, hire, buy, expand | emit engine actions |
-| `day/` | the day: routing, carries, drops, the market queue, the shed guard; the WSR schedulers (`oxa_solver` — **our** algorithm, copied into this repo and running inside the turn) | re-price what the master or the belief priced; touch the market |
+| `day/` | the day: routing, carries, drops, the per-turn market queue, and the WSR schedulers (`oxa_solver` — **our** algorithm, copied into this repo and running inside the turn) | re-price what the master or the belief priced; touch the market |
 | `agent/` | the spine: decode, dispatch, deadline, fallback | plan |
+
+`secretary/` is gone: its market and shed halves are `belief/`, its routing and
+scheduling halves are `day/`.
 
 ---
 
@@ -118,15 +121,19 @@ All world changes land on **one branch** (`world/definition`); when the world is
 right, it goes to `main` in one PR. No piecemeal merges. Steps:
 
 1. `world/model.py` — names, the resource/product split, the market/worker split,
-   the compile table. Guards: `tests/test_model.py`.
+   the compile table, and the named views (`Good`, `Crop`, `Species`, `Resource`,
+   `Product`, `Vector`, `Action`, `WorkerOp`, `MarketAction`, `ChainOp`). Guards:
+   `tests/test_model.py`. *(Done.)*
 2. The compiler imports `compile_chain`; the duplicated expansions are deleted.
-   *(Done on this branch: `agent/replan.py` lost `chain_turns`/`project_day`.)*
-3. The WSR's enums and `expand_major_task` are deleted; `MajorTask` is written over
-   a chain tuple.
-4. `day/market.py::forecast` and `day/opponent.py` become views of
-   `MarketState`, or are deleted where `belief/` already answers them. The ported
-   market tests are the acceptance.
-5. The DP's op sets become computed views of `world/model.py`; `PLACE_ANIMAL` is
+   *(Done: `agent/replan.py` lost `chain_turns`/`project_day`.)*
+3. The packages move: market and shed to `belief/`, routing and scheduling to
+   `day/`, `secretary/` deleted. *(Done.)*
+4. The WSR's enums and `expand_major_task` are deleted; `MajorTask` is written over
+   a chain tuple, and the scheduling value types use the named views.
+5. `belief/market.py::forecast` and the rival model become views of `MarketState`,
+   or are deleted where the belief already answers them. The ported market tests are
+   the acceptance.
+6. The DP's op sets become computed views of `world/model.py`; `PLACE_ANIMAL` is
    retired with the graph rebuild.
 
 Each step ends with the full suite green, and the name ratchet in `tests/test_model.py`
