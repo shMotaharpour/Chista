@@ -4,6 +4,8 @@
 
 - English only in all repo files.
 - Never commit directly to `main` — feature branch → PR → squash-merge.
+- All changes that define the world (vocabulary, belief, DP/WSR contracts, the day
+  compiler) land on ONE branch and go to `main` in one PR. No piecemeal merges.
 - Every commit by the agent MUST use `~/.local/bin/agent-commit -m "..."`,
   which appends the `Co-authored-by: Hermes (GLM via OpenRouter)
   <hermes@local>` trailer. Never plain `git commit`.
