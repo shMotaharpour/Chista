@@ -118,6 +118,8 @@ Order: **Rules** (`R<NNN>_<slug>.md`) first, then **Findings**
 
 ## Tests & benchmarks
 
+- [ARCHITECTURE.md](ARCHITECTURE.md) — **the** system shape: the layers and what each owns, the one vocabulary (`world/model.py`, engine-derived), the DP ↔ WSR alignment (a major task *is* a chain, one expansion), the one belief (`belief/`, the only reader of the market and the rival), and the migration order that retires the three duplicate vocabularies.
+
 Executable checks — `.venv/bin/python -m tests.<module>` (no pytest required; they also run under pytest):
 
 - [../tests/test_world_parity.py](../tests/test_world_parity.py) — full agent-facing parity: same seed + same actions ⇒ identical per-turn observations, money and final rewards on the harness path and `world.fast_sim`.
@@ -125,6 +127,7 @@ Executable checks — `.venv/bin/python -m tests.<module>` (no pytest required; 
 - [../tests/test_import_identity.py](../tests/test_import_identity.py) — R002 name test, no transcribed rule tables, configuration matches the shipped spec, and the pinned kaggle-environments version equals the installed one.
 - [../tests/test_replay_agent.py](../tests/test_replay_agent.py) — a recorded episode replays bit-exactly on both paths, at either seat or both at once; a missing step answers PASS and the record is never mutated.
 - [../tests/test_tile_dp.py](../tests/test_tile_dp.py) — tile graph contracts: day-start decode round-trip, engine calendars as truth, chain and labour cost model, no-op and dominance pruning.
+- [../tests/test_model.py](../tests/test_model.py) — the one vocabulary: every canonical name equals its engine source, the action vocabulary is **extracted from the engine's handlers** (24 actions) rather than typed, the compile table is total over the chain vocabulary and all 54 registry chains, the DP's and the WSR's legacy vocabularies are measured against the model with their two remaining divergences pinned, and a name-debt ratchet over 12 modules makes "no layer spells its own good names" enforceable.
 - [../tests/test_opponents.py](../tests/test_opponents.py) — vendored competitor agents: every slug complete, every payload matching its recorded SHA-256 (the Apache 4(b) claim), nothing reaching outside the process, packed payloads actually decoded, and no doc pointing at a path this repo lacks.
 - [../tests/test_layering.py](../tests/test_layering.py) — `opponents/` is evaluation input, never submission input: nothing outside it imports it, and the guard proves it can see the files it guards.
 - [../tests/test_episode_boundary.py](../tests/test_episode_boundary.py) — F048 pinned on the official harness path: 720 states vs 719 decisions, day/hour following the step, day 29 one decision short, the step-718 action processed in money, and no call past it.
