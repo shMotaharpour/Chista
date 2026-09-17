@@ -457,7 +457,12 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
         revenue = (produce_mkt * p_mkt[None, :, :]).sum(axis=(1, 2))
         # the idle column (see _idle_column): tiles fall back to it
         n_tiles = cost.shape[0]
-        idle = np.zeros_like(cost)
+        # ONE column, not a copy of the tensor: `np.zeros_like(cost)` doubles the
+        # column count, and with a single tile (1 + 1) that accidentally matched
+        # the revenue vector, so the bug only appeared once the board carried
+        # more than one priced tile (measured: 100 tiles -> A_ub 200 columns
+        # against a 101-long objective, linprog refused the problem).
+        idle = np.zeros((1,) + cost.shape[1:], dtype=cost.dtype)
         cost = np.vstack([cost, idle])
         revenue = np.append(revenue, 0.0)
 

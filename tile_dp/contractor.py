@@ -206,7 +206,7 @@ class TileContractor:
         per_day_produce = np.zeros_like(per_day_cost)
         rows = np.empty((days, n_owned), dtype=np.intp)
         states_at = np.empty((days, n_owned), dtype=np.intp)
-        entities_at = np.empty((days, n_owned), dtype=np.int8)
+        entities_at = np.empty((n_owned, days), dtype=np.int8)
         lane = np.arange(n_owned, dtype=np.intp)
         states = np.asarray(owned, dtype=np.intp).copy()
         for d in range(days):
@@ -223,7 +223,11 @@ class TileContractor:
             chosen = edge_ix[hits[np.searchsorted(segment[hits], lane)]]
             rows[d] = chosen
             states_at[d] = states
-            entities_at[d] = self.graph.edge_entity[chosen]
+            # transposed on purpose: every per-day array the board
+            # publishes is (n_owned, days), and this one was (days, n_owned).
+            # It never showed until the rung priced MORE than one tile
+            # (measured: 100 tiles -> IndexError at [column, 0]).
+            entities_at[:, d] = self.graph.edge_entity[chosen]
             # Per-day coefficients, not only the sum: the master (#12) couples
             # on labour[d], inputs[r][d] and produce[r][d].
             per_day_cost[:, d, :] = self.graph.edge_cost[chosen]
