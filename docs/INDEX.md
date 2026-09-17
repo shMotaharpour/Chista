@@ -113,6 +113,8 @@ Order: **Rules** (`R<NNN>_<slug>.md`) first, then **Findings**
   not a forced one-day lag: a shed-adjacent unit that DROPs and SELLs in the
   same turn is paid that turn (+27 coins, day 2, fast_sim seed 0).
 
+- [F058_grading-platform-measured-from-inside.md](F058_grading-platform-measured-from-inside.md) — Two submissions measured the grader: the 60 s bank is per seat and stopped one seat at step 503 of 719 while the other finished; `scipy.optimize.milp` present, `ortools` absent, PyMC unimportable; a shared turn costs +41 % on SciPy-shaped work; env vars and the environment itself do not cross seats.
+
 ## Tests & benchmarks
 
 Executable checks — `.venv/bin/python -m tests.<module>` (no pytest required; they also run under pytest):
@@ -140,3 +142,15 @@ Executable checks — `.venv/bin/python -m tests.<module>` (no pytest required; 
 - [../tests/test_planner_integrality.py](../tests/test_planner_integrality.py) — the master's λ rounded: one plan per tile deterministically, LOCKED tiles never planned (F042), the coupling rows checked and demoted (20 boards), F047's drops counted by rule (F031/F004/F043/F042/F032), the repaired plan legal for 30 days, and the land enumeration on the engine's prefix table with its cadence cap. (The integrality gap and the land budget need #12; see `planner/DESIGN.md`.)
 - [../tests/test_secretary_market.py](../tests/test_secretary_market.py) — Secretary B: the town cadence model reproduced against the engine exactly, the forecast error bound at 3/10 days per unlock policy (3 seeds — the 20-seed table is the bench's), the `mean`-vs-`none` policy distinction the default rests on, prices proven to come from `market_price` (not a copy), the peak rule holding on a late-season rising path, the guard's margin pinned as a number, the shed guard destroying nothing on the real interpreter while the same day without the layer destroys 15 units (R007 pair), season-end liquidation, the F031 per-turn cap guard, per-hour dispatch, and the layer's own p99 on the per-turn `attach` entry.
 - [../bench/bench_market_forecast.py](../bench/bench_market_forecast.py) — the #15 measurements the acceptance numbers name: the cadence probe (6,462/6,462 deltas), the 20-seed forecast error table in %I0 and coins per unlock policy, the `d+1` revenue contract probe, and the market layer's own p50/p99.
+
+## Kaggle probes
+
+Agents submitted to the platform itself to measure the machine the competition
+grades on — the evidence behind F058. Each probe ships with its reading and the
+raw logs:
+
+- [../KaggleProbes/kaggle_probe-1.py](../KaggleProbes/kaggle_probe-1.py) — probe 1: machine census, per-turn billing probe, reference-bench drift, contention windows, deliberate error ladder.
+- [../KaggleProbes/kaggle_probe-1-analysis.md](../KaggleProbes/kaggle_probe-1-analysis.md) — the reading of probe 1's two logs (719 and 325 turns), with the tags to re-check every number.
+- [../KaggleProbes/kaggle_probe-2.py](../KaggleProbes/kaggle_probe-2.py) — probe 2: SciPy/PyMC inference at market dimensions, the daily bank drain, solo/pair/overlap contention arms, and the env-sandbox and env-var checks.
+- [../KaggleProbes/kaggle_probe-2-analysis.md](../KaggleProbes/kaggle_probe-2-analysis.md) — the reading of probe 2's two logs (719 and 504 turns), including the defects the run exposed in the probe itself.
+- [../KaggleProbes/kaggle_probes_results.zip](../KaggleProbes/kaggle_probes_results.zip) — the four raw logs (`kaggle_probe-1_*.json`, `kaggle_probe-2_*.json`), sha256 `15468939…d8188`.
