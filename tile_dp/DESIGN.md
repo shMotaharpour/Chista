@@ -29,11 +29,11 @@
   species. **`LABOR_HOURS` is a floor, not the whole day**: the executor
   actually spends `edge_steps` engine steps per edge (shipped beside
   `edge_cost` — PLANT 2, FERTILIZE / FEED / PLACE / PLACE_ANIMAL 3, the rest 1,
-  from `OP_STEPS`), because the secretary layer does not exist yet and the
+  from `OP_STEPS`), because the day layer does not exist yet and the
   purchases are realised inline. In isolation `LABOR_HOURS` under-charges a
   chain exactly as `edge_steps` over-charges it (a PICKUP can carry several
   units; one PASS carries up to ten market orders — F031); the truth depends
-  on how the secretary batches (#14). The master's labour row (#12) gets the
+  on how the day batches (#14). The master's labour row (#12) gets the
   bracket, not a guess.
 - **Resource vocabulary**: 18 names, exactly one id per physical item —
   `LABOR_HOURS, FERTILIZER, WHEAT, SEED_WHEAT, SEED_CARROT, SEED_TOMATO,
@@ -86,7 +86,7 @@
   same production, wasted fertilizer (engine-probed) → pruned by the
   generic dominance filter.
 - Nightly auto-drop returns unit inventory to the shed → a chain that
-  fertilizes re-PICKUPs the fertilizer first (the secretary layer's job).
+  fertilizes re-PICKUPs the fertilizer first (the day layer's job).
 - Market purchases land one turn before the op that needs them (F030).
 
 ## Numbers (engine-verified, build_graph)
@@ -164,4 +164,4 @@ measurements that changed the code rather than decorating it:
 `agent/replan.py` wires it into the runtime as the hour-0 rung (the pricing
 oracle in place): duals and routing are stood in for by the engine's own quotes
 (#12) and by "each unit works the tile it stands on" (#14), so the rung is
-opt-in behind `CHISTA_REPLAN=1` until the secretary can carry its inputs.
+opt-in behind `CHISTA_REPLAN=1` until the day can carry its inputs.

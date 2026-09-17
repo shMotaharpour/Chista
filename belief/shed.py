@@ -15,7 +15,7 @@ What this module owns, and what it deliberately does not:
   day, and why), and the per-turn order queue the dispatcher consumes.
 - **does not own** movement, PICKUP/DROP trips and hiring (#14), the
   opponent's sell pressure (#16), or the price curve itself — the latter
-  is `market_price` in the engine, called through `secretary/market.py`.
+  is `market_price` in the engine, called through `day/market.py`.
 
 Two engine facts the schedule is built around, both measured here rather
 than assumed (`bench/bench_market_forecast.py --lag`):
@@ -37,7 +37,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping, Sequence
 
-from secretary.market import PRODUCTS, TURNS_PER_DAY
+from belief.market import PRODUCTS, TURNS_PER_DAY
 
 SHED_CAPACITY = 100          # engine default; the run's config can override it
 MAX_ORDERS_PER_TURN = 10     # F031 - the engine drops the 11th silently
@@ -305,7 +305,7 @@ def market_queue(obs: Any, forecast_obj=None, *, harvest_expected: int = 0,
     (`harvest_expected`); until that is wired in, the caller passes its own
     estimate and this module says so on the result's assumptions.
     """
-    from secretary.market import forecast as _forecast
+    from belief.market import forecast as _forecast
     capacity = int(_get(config, "shedCapacity", SHED_CAPACITY))
     state = shed_state(obs, capacity=capacity)
     day = int(obs.get("day", 0)) if isinstance(obs, dict) else 0

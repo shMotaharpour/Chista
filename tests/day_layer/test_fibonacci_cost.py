@@ -1,6 +1,6 @@
 import pytest
 
-from secretary.fibonacci import fibonacci_cost
+from day.fibonacci import fibonacci_cost
 
 
 def test_known_values():

@@ -17,14 +17,14 @@ The audit asserts the two things a verdict must satisfy:
     -- the F057 defect was exactly an INFEASIBLE the oracle could schedule.
 
 `docs/F057`'s differential numbers come from running this script with the
-pre-fix blob in place -- `git show <rev>:secretary/solvers/oxa_solver.py >
+pre-fix blob in place -- `git show <rev>:day/solvers/oxa_solver.py >
 /tmp/old.py`, copy it over the module, run with `--dump`, restore -- and
 comparing the two dumps with `bench/bench_oxa_diff.py`, which is the
 definition of "regression" the document quotes.
 
 Hash order: this solver's candidate order is a total order now, so its 400
 statuses are the same under every `PYTHONHASHSEED`
-(`tests/wrs/test_oxa_reproducibility.py` holds that). The pre-fix blobs are
+(`tests/day_layer/test_oxa_reproducibility.py` holds that). The pre-fix blobs are
 not -- they iterate a set -- so a number taken from one of them is only
 reproducible with the seed named next to it (`PYTHONHASHSEED=0` in F057's
 tables). Run this script with a fixed `PYTHONHASHSEED` when comparing
@@ -48,9 +48,9 @@ import argparse
 import random
 from collections import Counter
 
-from secretary.models import (Cell, Instance, Item, MinorActionType, MinorTask, Worker)
-from secretary.solvers.oxa_solver import OxaConfig, solve_oxa
-from secretary.verify import verify_solution
+from day.models import (Cell, Instance, Item, MinorActionType, MinorTask, Worker)
+from day.solvers.oxa_solver import OxaConfig, solve_oxa
+from day.verify import verify_solution
 
 CELLS = [Cell(x, y) for x in (0, 2, 4, 9) for y in (0, 3, 4, 9)]
 
@@ -112,7 +112,7 @@ def main() -> int:
 
     oracle = None
     if args.oracle:
-        from secretary.solvers.cpsat_solver import CpSatConfig, cpsat_binarySearch
+        from day.solvers.cpsat_solver import CpSatConfig, cpsat_binarySearch
         oracle = CpSatConfig(time_limit_seconds=args.oracle_seconds)
 
     statuses: Counter[str] = Counter()

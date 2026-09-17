@@ -1,4 +1,4 @@
-"""Guards for `secretary/routing.py` — the day compiler.
+"""Guards for `day/routing.py` — the day compiler.
 
 Every number and every op name here comes from the engine (`kaggriculture.py`),
 and the module's own precondition check runs on every route it produces: a
@@ -18,7 +18,7 @@ if str(REPO) not in sys.path:
 
 from kaggle_environments.envs.kaggriculture import kaggriculture as K
 
-from secretary.routing import (MOVE_OPS, shed_access, nearest_shed, op_turns,
+from day.routing import (MOVE_OPS, shed_access, nearest_shed, op_turns,
                                route_unit, walk)
 
 # Every op the compiler may emit, with the engine line that accepts it
@@ -150,7 +150,7 @@ def test_the_compiler_refuses_a_pickup_off_the_shed() -> None:
     this module exists to close. Pinning that the check fires keeps it from
     becoming decoration.
     """
-    import secretary.routing as routing
+    import day.routing as routing
     original = routing.nearest_shed
     routing.nearest_shed = lambda pos, board=10: (1, 0)     # near, not shed-access
     try:

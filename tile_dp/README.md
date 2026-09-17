@@ -108,7 +108,7 @@ case). The longest chain is 8 hours
 
 Cost model (contract, 2026-09-14) — `chain_requirements` is the single source:
 - `LABOR_HOURS` = number of ops in the `WORKER_OPS` allow-list. Market buys
-  (`BUY_*`) are the market's action and a `PICKUP` is a carry of the secretary
+  (`BUY_*`) are the market's action and a `PICKUP` is a carry of the day
   layer, so both cost 0 hours: `(BUILD, PLACE, FEED)` = 3, `(PICKUP,)` = 0.
 - Inputs per op, summed by the chain: `PLANT` 1 seed of the entity's crop,
   `FERTILIZE` 1 fertilizer, `FEED` 1 wheat, and `PLACE` / `PLACE_ANIMAL` 1
@@ -150,7 +150,7 @@ chain's constructive op (`PLANT` / `BUILD` / `PLACE`), else the state's own,
 0 = none.
 
 **Secretary gap (open):** the inputs (seed / fertilizer / wheat / animal) have
-to be bought and carried by a secretary layer that does NOT exist yet; until
+to be bought and carried by a day layer that does NOT exist yet; until
 then the graph executor realises the purchase inline as a stand-in.
 
 Engine-verified notes:
@@ -230,4 +230,4 @@ identical.
   0.005/tile/day would make a bare tile's next state a function of the RNG).
 - No precondition checks on edges: an op that the engine refuses is only caught
   by `ChainNotRealised` for the plant / place / build chains.
-- Selling = harvesting at the secretary's day-price; no warehousing.
+- Selling = harvesting at the day's day-price; no warehousing.

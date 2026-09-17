@@ -6,10 +6,10 @@ CP-SAT formulation itself, not just its implementation.
 """
 import pytest
 
-from secretary.models import Instance, Item, MajorTask, WAREHOUSE_ENTRY_CELLS, MinorActionType, MinorTask, Worker
-from secretary.solvers.cpsat_solver import CpSatConfig, solve_cpsat
-from secretary.verify import verify_solution
-from tests.wrs.brute_force import brute_force_optimal_cost
+from day.models import Instance, Item, MajorTask, WAREHOUSE_ENTRY_CELLS, MinorActionType, MinorTask, Worker
+from day.solvers.cpsat_solver import CpSatConfig, solve_cpsat
+from day.verify import verify_solution
+from tests.day_layer.brute_force import brute_force_optimal_cost
 
 NW = WAREHOUSE_ENTRY_CELLS["NW"]
 NE = WAREHOUSE_ENTRY_CELLS["NE"]

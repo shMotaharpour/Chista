@@ -24,9 +24,9 @@ the internal prices only where the tiles' shared stocks actually bind. The
 measured table below predates the master; the F047 execution gap it reports
 is unchanged (the chains' purchases still ride on #14).
 
-**The secretary (#14).** The contractor prices ONE TILE at a time; turning tile
+**The day (#14).** The contractor prices ONE TILE at a time; turning tile
 chains into per-unit op lists — movement, pickups, market batching — is the
-secretary's job and is not written. So each unit works the tile it already
+day's job and is not written. So each unit works the tile it already
 stands on, and only the chain's own worker ops are dispatched: the purchases and
 carries the chain assumes are missing, and the engine refuses an op whose input
 the unit does not carry, **in silence** (F047).
@@ -76,7 +76,7 @@ from kaggle_environments.envs.kaggriculture import kaggriculture as K
 
 from agent.obs import LOCKED_KEY, WorldView, _nearest_modelled, decode_world
 from tile_dp.chains import N_RESOURCE, RESOURCE_ID, chain_ops, entity_of_code
-from secretary.routing import plan_day
+from day.routing import plan_day
 from tile_dp.contractor import HORIZON_DAYS, TileContractor
 from tile_dp.graph import TileGraph
 
@@ -275,7 +275,7 @@ def replan_day(runtime, obs, graph: TileGraph | None = None,
     # The sell side (#15): the shed guard needs to know what today will bring in.
     # The compiler knows exactly (one unit per harvest chain is a lower bound for
     # the guard; the routes themselves publish the real arrivals to the queue).
-    from secretary.inventory import market_queue
+    from belief.shed import market_queue
     harvest_estimate = sum(sum(y.values()) for y in yields)
     sells = market_queue(obs, harvest_expected=harvest_estimate)
     _poll(deadline)

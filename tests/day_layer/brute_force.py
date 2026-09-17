@@ -1,5 +1,5 @@
 """A brute-force optimal-cost finder, completely independent of the CP-SAT
-formulation in secretary/solvers/cpsat_solver.py -- plain Python
+formulation in day/solvers/cpsat_solver.py -- plain Python
 enumeration + a from-scratch longest-path feasibility check. This is the
 ground truth tests/test_brute_force_cross_check.py compares CP-SAT
 against: it exists specifically to catch bugs in the *model itself*
@@ -18,9 +18,9 @@ from __future__ import annotations
 import itertools
 from typing import Optional
 
-from secretary.distances import assign_entry_cells, manhattan
-from secretary.fibonacci import fibonacci_cost
-from secretary.models import WAREHOUSE_ENTRY_CELLS, Instance, Item, MinorActionType, MinorTask
+from day.distances import assign_entry_cells, manhattan
+from day.fibonacci import fibonacci_cost
+from day.models import WAREHOUSE_ENTRY_CELLS, Instance, Item, MinorActionType, MinorTask
 
 _PRODUCE_ACTIONS = frozenset({MinorActionType.PICKUP, MinorActionType.HARVEST, MinorActionType.COLLECT_FERTILIZER})
 _CONSUME_ACTIONS = frozenset({MinorActionType.PLACE, MinorActionType.FEED, MinorActionType.FERTILIZE})

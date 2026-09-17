@@ -24,7 +24,7 @@ Two things are deliberately *not* here:
   it is `planner/columns.py::violations` over the `stored` row, checked against
   the assignment while it is still numbers.
 - Routing and pickups. A unit works the tile it stands on and the plans carry no
-  movement; filling that in is the secretary's (#14), so this module can only
+  movement; filling that in is the day's (#14), so this module can only
   refuse what it can see, never invent a route.
 """
 

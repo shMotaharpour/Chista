@@ -10,11 +10,11 @@ produced — greedy, the replanner's plan, or the all-PASS rung.
 
 Modes, and why there are two (`CHISTA_MARKET`):
 
-- `spread` — `secretary/inventory.py::market_queue`: the shed guard (F043,
+- `spread` — `day/inventory.py::market_queue`: the shed guard (F043,
   destruction is a bug and never a tuning choice), the cash rule (F038, INERT
   until #14's plan supplies `cash_needed`), the forecast peak rule, the
   season-end liquidation (F029), spread across the day's remaining turns. The
-  spread's measured worth is in `secretary/inventory.py::plan_sales`: nil for
+  spread's measured worth is in `day/inventory.py::plan_sales`: nil for
   small baskets (the engine quotes unit by unit), ~+92 coins/season for the
   day-29 liquidation against dumping it on the last turn. The cap is per TURN
   (F031), so spreading also keeps every turn inside it.
@@ -73,7 +73,7 @@ class MarketLayer:
         """This day's per-turn order queue (`queue[hour] -> [order, ...]`)."""
         if self.mode == "dump":
             return self._dump_queue(obs)
-        from secretary.inventory import market_queue
+        from belief.shed import market_queue
         queue = market_queue(obs, config=self.config, sort_market=_sort_market)
         self.last = {"mode": self.mode, "hours_with_orders":
                      sum(1 for row in queue if row)}

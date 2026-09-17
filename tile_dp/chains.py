@@ -19,7 +19,7 @@ the two sides are never netted nor collapsed into one vector.
 
 Cost model (contract, 2026-09-14):
   * labour = number of ops that are in WORKER_OPS (allow-list below). Market
-    buys are the market's action and a PICKUP is a carry of the secretary
+    buys are the market's action and a PICKUP is a carry of the day
     layer, so both cost 0 hours: supplying the inputs (seed / fertilizer /
     wheat / animal) is the SECRETARY layer's job.
   * NO_ACT = the worker does nothing on this tile (0 hours), but the day still
@@ -34,8 +34,8 @@ Cost model (contract, 2026-09-14):
 
 SECRETARY GAP: for a pure graph search every chain must also supply its
 prerequisites (buy seed/fertilizer/wheat/animal and carry it to the tile). That
-is the secretary layer, which does not exist yet, so the graph executor realises
-the purchases inline as a stand-in. When the secretary appears, this is where
+is the day layer, which does not exist yet, so the graph executor realises
+the purchases inline as a stand-in. When the day appears, this is where
 the split happens.
 
 Applicability (2026-09-14): `chains_for` drops chains that can do nothing on the
@@ -131,7 +131,7 @@ NO_ACT = "NO_ACT"
 # Market ops: executed by the market, not by the worker (= 0 worker ops).
 MARKET_OPS = ("BUY_SEED", "BUY_PRODUCT", "BUY_ANIMAL")
 # Worker ops = the only ops that cost hours (contract 2026-09-14): market buys
-# are the market's action and a PICKUP is a carry of the secretary layer, so
+# are the market's action and a PICKUP is a carry of the day layer, so
 # both stay outside this set and cost 0 worker hours.
 WORKER_OPS = frozenset(("PLANT", "WATER", "FERTILIZE", "HARVEST", "DIG",
                         "BUILD", "PLACE", "PLACE_ANIMAL", "FEED", "CARE",

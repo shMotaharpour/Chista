@@ -2,7 +2,7 @@
 manual/logical computation. These are the correctness ground truth for the
 solvers built in later milestones: their answer's cost must equal
 `optimal_cost` on every case here, and `example_optimal_solution` (when
-given) must pass `secretary.verify.verify_solution` and match that cost
+given) must pass `day.verify.verify_solution` and match that cost
 exactly (checked by tests/test_hand_solved_fixtures.py, independent of any
 solver).
 
@@ -14,8 +14,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
-from secretary.models import MajorTask
-from secretary.models import (
+from day.models import MajorTask
+from day.models import (
     WAREHOUSE_ENTRY_CELLS,
     Instance,
     Item,

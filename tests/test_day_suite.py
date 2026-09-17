@@ -1,8 +1,8 @@
 """The ported WRS solvers, run under Chista's one-command convention.
 
-Run:  .venv/bin/python -m tests.test_secretary
+Run:  .venv/bin/python -m tests.test_day
 
-`secretary/` carries the routing and workforce solvers ported from
+`day/` carries the routing and workforce solvers ported from
 ChistaWRS (issue #14): `oxa_solver` is the RUNTIME one — pure Python,
 no third-party imports — and `cpsat_solver` is the OFFLINE exact
 oracle, which imports `ortools` and therefore must never enter the
@@ -21,12 +21,12 @@ import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
-SUITE = REPO / "tests" / "wrs"
+SUITE = REPO / "tests" / "day_layer"
 
 
 def main() -> int:
     if not SUITE.is_dir():
-        print(f"FAIL secretary suite: {SUITE} missing")
+        print(f"FAIL day suite: {SUITE} missing")
         return 1
     proc = subprocess.run(
         [sys.executable, "-m", "pytest", str(SUITE), "-q", "--no-header",
@@ -37,9 +37,9 @@ def main() -> int:
     tail = [ln for ln in proc.stdout.splitlines() if ln.strip()][-1:]
     summary = tail[0] if tail else "(no pytest output)"
     if proc.returncode == 0:
-        print(f"PASS secretary solvers: {summary}")
+        print(f"PASS day solvers: {summary}")
         return 0
-    print(f"FAIL secretary solvers: {summary}")
+    print(f"FAIL day solvers: {summary}")
     for line in proc.stdout.splitlines():
         if line.startswith("FAILED") or line.startswith("ERROR"):
             print(f"  {line}")

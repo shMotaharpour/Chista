@@ -35,7 +35,7 @@ from kaggle_environments.envs.kaggriculture import kaggriculture as K
 
 from agent.greedy import greedy_action
 from agent.market_layer import MarketLayer
-from secretary.market import PRODUCTS, forecast, town_deltas
+from belief.market import PRODUCTS, forecast, town_deltas
 from world.fast_sim import FastSim
 
 PASS = {"farmer": ["PASS"], "hands": [], "market": []}

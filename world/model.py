@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import inspect
 import re
+from enum import Enum
 from typing import Mapping
 
 from kaggle_environments.envs.kaggriculture import kaggriculture as K
@@ -139,3 +140,27 @@ def compile_chain(ops: tuple[str, ...], entity: str | None = None
     if "NO_ACT" in ops and len(ops) > 1:
         raise ValueError(f"NO_ACT is a whole-chain op, got {ops}")
     return [compile_op(op, entity) for op in ops]
+
+
+# --- named views ------------------------------------------------------------ #
+
+def _names(cls_name: str, values) -> Enum:
+    """An `str` enum whose member names and values are the engine's own strings.
+
+    `Good.WHEAT == "WHEAT"`, so a member is usable wherever the string is, and the
+    member set is built from the engine table above — never typed. Members can be
+    added to by the engine and removed only by it.
+    """
+    return Enum(cls_name, {str(v): str(v) for v in values}, type=str, module=__name__)
+
+
+Good = _names("Good", GOODS)
+Crop = _names("Crop", CROPS)
+Species = _names("Species", ANIMALS)
+Resource = _names("Resource", RESOURCES)
+Product = _names("Product", PRODUCTS)
+Vector = _names("Vector", VECTOR)
+Action = _names("Action", sorted(ACTIONS))
+WorkerOp = _names("WorkerOp", sorted(WORKER_OPS))
+MarketAction = _names("MarketAction", sorted(MARKET_ACTIONS))
+ChainOp = _names("ChainOp", sorted(CHAIN_OPS))

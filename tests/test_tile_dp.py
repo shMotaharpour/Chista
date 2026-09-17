@@ -217,7 +217,7 @@ def test_dominated_fert_harvest_absent() -> None:
     fert-less YOUNG state (age<0, no harvest possible) the pair must be
     pruned by the dominance filter. Mature states can legitimately keep
     both edges: FERTILIZE before the next cycle's window is a real
-    choice the secretary prices."""
+    choice the day prices."""
     g = _carrot()
     for i in range(g.n_states):
         s = g.state_of(i)

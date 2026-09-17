@@ -16,7 +16,7 @@ if str(REPO) not in sys.path:
 from kaggle_environments.envs.kaggriculture import kaggriculture as K
 
 import tile_dp.chains as chains
-from secretary import models as wsr
+from day import models as wsr
 from world import model as M
 
 #: Hand-spelled good names per module (R002 debt), measured 2026-09-17. A module

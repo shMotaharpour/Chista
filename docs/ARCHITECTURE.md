@@ -5,10 +5,10 @@ they may read, and what the words mean. Where this document and a module disagre
 the engine and this document win; the module is the bug.
 
 It exists because three vocabularies grew for one world — the engine's action
-strings, the tile DP's chain ops, and the WSR secretary's enums — and every
+strings, the tile DP's chain ops, and the WSR day's enums — and every
 consumer paid: the DP's market ops looked incomplete, `PLACE` existed twice, the
-secretary's `PRODUCT_ITEMS` lacked every crop, and one chain was expanded twice
-(`tile_dp/graph.py::_exec_chain` at build time, `secretary/models.py::expand_major_task`
+day's `PRODUCT_ITEMS` lacked every crop, and one chain was expanded twice
+(`tile_dp/graph.py::_exec_chain` at build time, `day/models.py::expand_major_task`
 at runtime).
 
 ---
@@ -43,7 +43,7 @@ Rules:
 4. **An op outside the vocabulary is never emitted** — the engine ignores it in
    silence (F047).
 
-Legacy, to be deleted (see §5): `secretary/models.py`'s `Item`, `MinorActionType`,
+Legacy, to be deleted (see §5): `day/models.py`'s `Item`, `MinorActionType`,
 `CellType`, `expand_major_task`; the DP's `PLACE_ANIMAL` alias.
 
 ---
@@ -66,7 +66,7 @@ mechanical — it depends on what grows on the tile:
   that is in the chain.
 
 So the conversion is: **one chain → one tile-day, wrapped by the compiler into one
-unit-day**. The compiler (`secretary/routing.py`) owns travel, shed trips, pickups,
+unit-day**. The compiler (`day/routing.py`) owns travel, shed trips, pickups,
 drops, hour assignment and the market queue; the DP owns which chain runs on which
 tile; the WSR's value types are the scheduling half of the same day, and their
 expansion is `compile_chain`.
@@ -88,8 +88,8 @@ MarketState = {
 }
 ```
 
-- **Only `belief/` reads the market.** `secretary/market.py::forecast` and
-  `secretary/opponent.py` become views of `MarketState`, or are deleted where they
+- **Only `belief/` reads the market.** `day/market.py::forecast` and
+  `day/opponent.py` become views of `MarketState`, or are deleted where they
   duplicate it.
 - **Consumers**: the master prices revenue at `prices` and internal scarcity at its
   own duals; the compiler schedules sells at `drain`; the runtime publishes timing.
@@ -107,7 +107,7 @@ MarketState = {
 | `belief/` | the market and rival beliefs, the schemas | decide actions, read the board |
 | `tile_dp/` | the chain registry, the per-tile DP | know units, travel, or the market queue |
 | `planner/` | the season: what to grow, when to sell, hire, buy, expand | emit engine actions |
-| `secretary/` | the day: routing, carries, drops, the market queue, the shed guard; the WSR schedulers (`oxa_solver` — **our** algorithm, copied into this repo and running inside the turn) | re-price what the master or the belief priced; touch the market |
+| `day/` | the day: routing, carries, drops, the market queue, the shed guard; the WSR schedulers (`oxa_solver` — **our** algorithm, copied into this repo and running inside the turn) | re-price what the master or the belief priced; touch the market |
 | `agent/` | the spine: decode, dispatch, deadline, fallback | plan |
 
 ---
@@ -123,7 +123,7 @@ right, it goes to `main` in one PR. No piecemeal merges. Steps:
    *(Done on this branch: `agent/replan.py` lost `chain_turns`/`project_day`.)*
 3. The WSR's enums and `expand_major_task` are deleted; `MajorTask` is written over
    a chain tuple.
-4. `secretary/market.py::forecast` and `secretary/opponent.py` become views of
+4. `day/market.py::forecast` and `day/opponent.py` become views of
    `MarketState`, or are deleted where `belief/` already answers them. The ported
    market tests are the acceptance.
 5. The DP's op sets become computed views of `world/model.py`; `PLACE_ANIMAL` is

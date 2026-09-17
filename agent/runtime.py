@@ -107,7 +107,7 @@ def _attach_market(runtime, action, obs):
     """The market layer (#15): `CHISTA_MARKET=spread|dump`, else untouched.
 
     Imported on first use for the same reason as the replanner: a run with
-    the layer off must not pay for `secretary.market`'s engine imports.
+    the layer off must not pay for `belief.market`'s engine imports.
     """
     mode = getattr(runtime, "_market_mode", "")
     if mode not in ("spread", "dump"):
@@ -130,7 +130,7 @@ class Runtime:
         # The replanner rung (#11). `None` means the socket is empty and the
         # ladder falls through to greedy: the rung prices one tile per unit and
         # cannot yet carry the inputs its chains assume (see agent/replan.py),
-        # so it stays opt-in until the secretary layer (#14) exists.
+        # so it stays opt-in until the day layer (#14) exists.
         self.replanner: Any = (_replanner_rung
                                if os.environ.get("CHISTA_REPLAN") == "1"
                                else None)

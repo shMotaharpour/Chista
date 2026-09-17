@@ -1,4 +1,4 @@
-from secretary.distances import assign_entry_cells
+from day.distances import assign_entry_cells
 
 
 def test_worked_example_from_spec():

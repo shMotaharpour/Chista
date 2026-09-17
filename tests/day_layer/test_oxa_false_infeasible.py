@@ -8,7 +8,7 @@ with 10 x 24 of those against at most 4n actions the answer is a
 capacity question, not a construction one.
 
 Measured before the fix (docs/F057) with the oracle from
-tests/wrs/test_cpsat_solver.py's entry point, `cpsat_binarySearch`. The
+tests/day_layer/test_cpsat_solver.py's entry point, `cpsat_binarySearch`. The
 pre-fix `_build_worker_route` iterated the `remaining_targets` set, so its
 verdicts moved with the interpreter's hash order -- the sets below are the
 `PYTHONHASHSEED=0` run, and a reader comparing them must pin the same seed
@@ -22,7 +22,7 @@ verdicts moved with the interpreter's hash order -- the sets below are the
 | frtz_water | 7, 8, 9, 20..25 | 6: n = 7, 8, 9, 20, 21, 23; 22, 24, 25 unproven |
 | feed, frtz, place_animal | (never) | — |
 
-R007 failing direction: with `secretary/solvers/oxa_solver.py` reverted to
+R007 failing direction: with `day/solvers/oxa_solver.py` reverted to
 its pre-fix state this module reddens. Measured at `PYTHONHASHSEED=0`:
 `pytest -x -q` stops on the sweep test's `plnt` case (`1 failed, 2 passed`),
 and the eight pinned pairs all fail (`8 failed, 13 deselected`) with the
@@ -39,12 +39,12 @@ not the sum over the routes that carry tasks (which reddens
 """
 import pytest
 
-from secretary.fibonacci import fibonacci_cost
-from secretary.models import (Cell, Instance, Item, MajorTask, MinorActionType,
+from day.fibonacci import fibonacci_cost
+from day.models import (Cell, Instance, Item, MajorTask, MinorActionType,
                               MinorTask, ScheduledTask, Solution, Worker, WorkerRoute)
-from secretary.solvers.cpsat_solver import CpSatConfig, cpsat_binarySearch
-from secretary.solvers.oxa_solver import OxaConfig, solve_oxa
-from secretary.verify import verify_solution
+from day.solvers.cpsat_solver import CpSatConfig, cpsat_binarySearch
+from day.solvers.oxa_solver import OxaConfig, solve_oxa
+from day.verify import verify_solution
 
 STOCK = {Item.WHEAT: 200, Item.FERTILIZER: 200, Item.COW: 50, Item.SHEEP: 50, Item.GOOSE: 50}
 

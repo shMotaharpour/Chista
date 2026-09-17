@@ -5,8 +5,8 @@ hold *before* any solver exists — it's what makes these fixtures a
 """
 import pytest
 
-from secretary.verify import verify_solution
-from tests.wrs.fixtures.hand_solved_instances import HAND_SOLVED_CASES
+from day.verify import verify_solution
+from tests.day_layer.fixtures.hand_solved_instances import HAND_SOLVED_CASES
 
 
 @pytest.mark.parametrize("case", HAND_SOLVED_CASES, ids=lambda case: case.name)

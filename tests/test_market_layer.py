@@ -1,6 +1,6 @@
 """Secretary B (#15): the forecast, the shed guard, the queue, the layer.
 
-Run:  .venv/bin/python -m tests.test_secretary_market
+Run:  .venv/bin/python -m tests.test_day_market
 
 Every guard here is shown to FAIL before it is trusted (R007). The two
 engine-level legs of the shed guard are the pair that matters: the same
@@ -23,11 +23,11 @@ from kaggle_environments.envs.kaggriculture import kaggriculture as K
 
 from agent.dispatch import dispatch_plan, market_at
 from agent.market_layer import MarketLayer, from_env, _market_row
-from secretary.inventory import (MAX_ORDERS_PER_TURN, SHED_CAPACITY, Sale,
+from belief.shed import (MAX_ORDERS_PER_TURN, SHED_CAPACITY, Sale,
                                  ShedState, _assert_within_cap, _guard_margin,
                                  market_queue, orders_by_hour, plan_sales,
                                  shed_state)
-from secretary.market import (PRODUCTS, MarketForecast, forecast, shop_demand,
+from belief.market import (PRODUCTS, MarketForecast, forecast, shop_demand,
                               town_deltas)
 from world.fast_sim import FastSim
 
@@ -366,7 +366,7 @@ def test_a_mid_day_plan_is_indexed_by_the_day_it_is_in():
     for item in PRODUCTS:
         assert fc.price_of(item, day) == K.market_price(
             item, obs["market"]["inventory"][item]), item
-    from secretary.market import price_paths
+    from belief.market import price_paths
     assert price_paths(fc, 2)["WHEAT"][0] == fc.price_of("WHEAT", day)
     assert price_paths(fc, 2)["WHEAT"][1] == fc.price_of("WHEAT", day + 1)
 
@@ -539,7 +539,7 @@ def main() -> int:
     if failures:
         print(f"{failures} test(s) failed")
         return 1
-    print("all secretary-market tests passed")
+    print("all day-market tests passed")
     return 0
 
 

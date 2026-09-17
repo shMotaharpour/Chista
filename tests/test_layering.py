@@ -29,8 +29,8 @@ REPO = Path(__file__).resolve().parents[1]
 ENTRY = REPO / "agent" / "main.py"
 FORBIDDEN_ROOT = "opponents"
 # Third-party packages the submission may never import. `ortools` is the
-# offline exact oracle (`secretary/solvers/cpsat_solver.py`, issue #14);
-# `secretary/solvers/oxa_solver.py` is the runtime one and imports only
+# offline exact oracle (`day/solvers/cpsat_solver.py`, issue #14);
+# `day/solvers/oxa_solver.py` is the runtime one and imports only
 # stdlib, so the closure must reach the second and never the first.
 FORBIDDEN_PACKAGES = ("ortools",)
 
@@ -145,7 +145,7 @@ def test_submission_closure_excludes_opponents() -> None:
 def test_submission_closure_excludes_offline_only_packages() -> None:
     """The submission may not import `ortools`.
 
-    `secretary/` carries two solvers with the same job and very different
+    `day/` carries two solvers with the same job and very different
     costs: `oxa_solver` runs inside the turn on the stdlib alone, and
     `cpsat_solver` is the exact oracle that pulls `ortools`. The oracle is
     an offline instrument — it is not shipped with a submission and takes
@@ -167,7 +167,7 @@ def test_submission_closure_excludes_offline_only_packages() -> None:
     assert not reached, (
         "the submission's import closure reaches offline-only packages "
         f"{reached}: the runtime path must stay on the stdlib solver "
-        "(secretary/solvers/oxa_solver.py), never the oracle"
+        "(day/solvers/oxa_solver.py), never the oracle"
     )
 
 

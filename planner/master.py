@@ -31,7 +31,7 @@ Two rows the #12 body lists are deliberately NOT here in M3, both named:
   TODO(#12 M4): the cash row, once that contract is probed.
 - **shed capacity** (F043) binds unsold produce; the columns carry no
   unsold-stock state, so the row has nothing to couple yet.
-  TODO(#14): the secretary owns storage; the row lands with it.
+  TODO(#14): the day owns storage; the row lands with it.
 
 ## The LP (one solve per round)
 
@@ -194,8 +194,8 @@ ITER_CAP_DEFAULT = 8
 ROUND_BUDGET_MS = 45.0
 
 # The M3 overhead the #12 brief names for H_d ("start at 35% and
-# measure"): hours the secretary's routing/carry will eat.
-# TODO(#14): replace with the realised fraction the secretary reports.
+# measure"): hours the day's routing/carry will eat.
+# TODO(#14): replace with the realised fraction the day reports.
 HOURS_OVERHEAD = 0.35
 
 
@@ -350,7 +350,7 @@ def _product_price_path(obs, days: int, p_flat: np.ndarray,
     """The product rows of `p`: the market forecast (#15), or flat quotes.
 
     F035: prices rise through the season, so the flat stand-in under-prices
-    every later day of the horizon. `secretary/market.py` walks the town's
+    every later day of the horizon. `day/market.py` walks the town's
     own consumption forward and re-prices through the engine's price
     function (R002 — imported, never transcribed), so a day-20 harvest is
     priced on the day-20 curve. Any failure keeps the flat path and SAYS
@@ -360,8 +360,8 @@ def _product_price_path(obs, days: int, p_flat: np.ndarray,
     if os.environ.get("CHISTA_MARKET_FORECAST", "1") != "1":
         return p_flat, "flat stand-in (CHISTA_MARKET_FORECAST=0)"
     try:
-        from secretary.market import forecast as _forecast
-        from secretary.market import price_paths
+        from belief.market import forecast as _forecast
+        from belief.market import price_paths
         fc = _forecast(obs, days=days, config=config)
         paths = price_paths(fc, days=days)
     except Exception as exc:                     # noqa: BLE001 - degrade

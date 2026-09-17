@@ -13,7 +13,7 @@ Contracts under test:
   would only ever see a replan that had already spent the turn).
 - It runs once per day through `Runtime.act`, and dispatches for the rest.
 - It is OFF by default: the rung cannot carry the inputs its chains assume
-  until the secretary (#14) exists, so greedy stays the honest brain.
+  until the day (#14) exists, so greedy stays the honest brain.
 """
 
 from __future__ import annotations
@@ -179,7 +179,7 @@ def test_replanner_runs_once_per_day() -> None:
 
 
 def test_replanner_is_off_by_default() -> None:
-    """The rung is opt-in until the secretary (#14) can carry the inputs."""
+    """The rung is opt-in until the day (#14) can carry the inputs."""
     assert "CHISTA_REPLAN" not in os.environ or \
         os.environ["CHISTA_REPLAN"] != "1"
     assert Runtime().replanner is None

@@ -598,7 +598,7 @@ def _exec_chain(sim: FastSim, state: TileState, ops: tuple[str, ...],
                 entity: str | None) -> ChainOutcome:
     """Execute one daily chain on `sim` (mutated in place) and price it.
 
-    Every chain supplies its own prerequisites (buy + carry) as the secretary
+    Every chain supplies its own prerequisites (buy + carry) as the day
     layer's stand-in, and `cost_vector` counts them. One chain is exactly one
     day: the day is filled and a chain that would bleed into day+1 raises
     ChainSpansDays. `entity` is None only for a chain that names no constructive
@@ -618,7 +618,7 @@ def _exec_chain(sim: FastSim, state: TileState, ops: tuple[str, ...],
             sim.step([_act(["PASS"]), _act(["PASS"])])
         elif op == "BUILD":
             # BUILD = one worker action: a NONE tile becomes a structure. The
-            # animal itself is bought later (by PLACE, secretary stand-in).
+            # animal itself is bought later (by PLACE, day stand-in).
             sim.step([_act([f"BUILD_{_STRUCTURE_OF[entity]}"]),
                       _act(["PASS"])])
         elif op in ("PLACE", "PLACE_ANIMAL"):

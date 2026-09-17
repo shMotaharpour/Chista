@@ -7,7 +7,7 @@ r-search algorithm are gone with that algorithm.
 """
 import pytest
 
-from secretary.models import (
+from day.models import (
     Instance,
     Item,
     MajorTask,
@@ -16,9 +16,9 @@ from secretary.models import (
     MinorTask,
     Worker,
 )
-from secretary.solvers.oxa_solver import InfeasibleInputError, OxaConfig, compute_lower_bound, solve_oxa
-from secretary.verify import verify_solution
-from tests.wrs.brute_force import brute_force_optimal_cost
+from day.solvers.oxa_solver import InfeasibleInputError, OxaConfig, compute_lower_bound, solve_oxa
+from day.verify import verify_solution
+from tests.day_layer.brute_force import brute_force_optimal_cost
 
 NW = WAREHOUSE_ENTRY_CELLS["NW"]
 NE = WAREHOUSE_ENTRY_CELLS["NE"]
