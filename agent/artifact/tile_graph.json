@@ -2,9 +2,9 @@
   "name": "tile_graph",
   "kind": "tile_graph",
   "file": "tile_graph.npz",
-  "contract": "tile-dp/reg=d847851eca5c0625+eng=a2278746+tpd=24+pb=30+bld=30030004+chn=a89e4fb4",
+  "contract": "tile-dp/reg=d847851eca5c0625+eng=a2278746+tpd=24+pb=30+bld=30030004+chn=aaf1cd2d",
   "engine": "a2278746",
-  "registry": "d847851eca5c0625",
+  "registry": "b45e4290980711cc",
   "stats": {
     "states": 703,
     "edges": 11942,
@@ -29,5 +29,5 @@
     }
   },
   "source": "offline_lab.build.graph:build_graph",
-  "created_utc": "2026-09-18T16:58:49Z"
+  "created_utc": "2026-09-18T17:12:34Z"
 }
