@@ -23,8 +23,8 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Optional
 
-from .distances import assign_entry_cells, manhattan
-from .models import (
+from agent.wsr.distances import assign_entry_cells, manhattan
+from agent.wsr.models import (
     CONSUME_ACTIONS,
     PRODUCE_ACTIONS,
     Item,
