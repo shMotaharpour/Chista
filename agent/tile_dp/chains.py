@@ -57,15 +57,19 @@ RES_WHEAT = Column.WHEAT.value
 #: the market layer decides the order and the price.
 MARKET_OPS: tuple[str, ...] = ("BUY_SEED", "BUY_PRODUCT", "BUY_ANIMAL")
 
-#: The ops that cost a worker hour: every unit op except the idle PASS. A shed trip is
-#: not here — the day layer schedules it, the contractor does not price it.
+#: The ops that cost a worker hour: every unit op except PASS. A shed trip is not here
+#: — the day layer schedules it, the contractor does not price it.
 TILE_OPS: frozenset[str] = frozenset(
     op.value for op in UnitAction if op is not UnitAction.PASS)
 
-#: Every op a chain may name.
-ALL_OPS: frozenset[str] = TILE_OPS | set(MARKET_OPS) | {UnitAction.PASS.value}
+#: The case with no action at all: no worker touches the tile that day and the tile
+#: simply goes on to the next one. It is not `PASS` — PASS is a turn spent waiting, which
+#: is the builder's business when it has to let a market purchase land, and a chain never
+#: names it.
+NO_ACTION: tuple[str, ...] = ()
 
-PASS = UnitAction.PASS.value
+#: Every op a chain may name.
+ALL_OPS: frozenset[str] = TILE_OPS | set(MARKET_OPS)
 BUILD_OF_STRUCTURE: dict[Structure, str] = {Structure.COOP: UnitAction.BUILD_COOP.value,
                                             Structure.PASTURE: UnitAction.BUILD_PASTURE.value}
 
@@ -99,8 +103,8 @@ DIGGABLE_KINDS: frozenset[TileKind] = frozenset(
 # --- the chains, generated ------------------------------------------------------ #
 
 def _subsets(ops: tuple[str, ...]) -> list[tuple[str, ...]]:
-    """Every subset of `ops`, in the order the pool lists them; the empty one is PASS."""
-    return [tuple(op for op in ops if op in combo) or (PASS,)
+    """Every subset of `ops`; the empty one is the no-action case."""
+    return [tuple(op for op in ops if op in combo) or NO_ACTION
             for r in range(len(ops) + 1)
             for combo in combinations(ops, r)]
 
@@ -113,9 +117,13 @@ _ANIMAL_SUBSETS: list[tuple[str, ...]] = [
 
 #: What may start on a bare tile: a crop plants, an animal builds its own structure and
 #: moves in. The two selections below are what the graph picks from — NONE is one state.
-NONE_CHAINS_CROP: tuple[tuple[str, ...], ...] = (
-    (PASS,), (UnitAction.PLANT.value, UnitAction.WATER.value))
-NONE_CHAINS_ANIMAL: tuple[tuple[str, ...], ...] = tuple(
+#: ONE list, with no crop/animal split: what a worker can do on a bare tile. The split
+#: belongs to the process that builds the graph, never to the chains themselves — the
+#: graph and the registry must not know that a tile was "meant" for a crop or an animal.
+NONE_CHAINS: tuple[tuple[str, ...], ...] = (
+    NO_ACTION,
+    (UnitAction.PLANT.value, UnitAction.WATER.value),
+) + tuple(
     chain for structure in (Structure.COOP, Structure.PASTURE)
     for chain in ((BUILD_OF_STRUCTURE[structure],),
                   (BUILD_OF_STRUCTURE[structure], UnitAction.PLACE.value),
@@ -123,9 +131,6 @@ NONE_CHAINS_ANIMAL: tuple[tuple[str, ...], ...] = tuple(
                    UnitAction.FEED.value),
                   (BUILD_OF_STRUCTURE[structure], UnitAction.PLACE.value,
                    UnitAction.FEED.value, UnitAction.CARE.value)))
-NONE_CHAINS: tuple[tuple[str, ...], ...] = (NONE_CHAINS_CROP
-                                            + tuple(c for c in NONE_CHAINS_ANIMAL
-                                                    if c != (PASS,)))
 
 
 def _kind_after(kind: TileKind, ops: tuple[str, ...]) -> TileKind:
@@ -159,7 +164,7 @@ def _dig_tail(kind: TileKind, head: tuple[str, ...]) -> list[tuple[str, ...]]:
         return []
     out = [head + (UnitAction.DIG.value,)]
     out += [head + (UnitAction.DIG.value,) + follow for follow in NONE_CHAINS
-            if follow != (PASS,)]
+            if follow != NO_ACTION]
     return out
 
 
@@ -175,11 +180,11 @@ def _layer(kind: TileKind, base: tuple[tuple[str, ...], ...]
 
 
 WEED_CHAINS: tuple[tuple[str, ...], ...] = _layer(
-    TileKind.WEED, ((PASS,), (UnitAction.DIG.value,)))
+    TileKind.WEED, (NO_ACTION, (UnitAction.DIG.value,)))
 #: An empty structure takes an animal of its own structure and can be dug back; BUILD is
 #: absent here on purpose — the engine builds on a bare tile only.
 EMPTY_STRUCTURE_BASE: tuple[tuple[str, ...], ...] = (
-    (PASS,), (UnitAction.PLACE.value,))
+    NO_ACTION, (UnitAction.PLACE.value,))
 EMPTY_COOP_CHAINS: tuple[tuple[str, ...], ...] = _layer(TileKind.EMPTY_COOP,
                                                         EMPTY_STRUCTURE_BASE)
 EMPTY_PASTURE_CHAINS: tuple[tuple[str, ...], ...] = _layer(TileKind.EMPTY_PASTURE,
@@ -202,9 +207,8 @@ CHAINS_BY_KIND: dict[TileKind, tuple[tuple[str, ...], ...]] = {
 }
 
 _REGISTRY: list[tuple[str, ...]] = []
-for _chain in (NONE_CHAINS_CROP + NONE_CHAINS_ANIMAL + WEED_CHAINS
-               + EMPTY_COOP_CHAINS + EMPTY_PASTURE_CHAINS + CROP_CHAINS
-               + ANIMAL_CHAINS):
+for _chain in (NONE_CHAINS + WEED_CHAINS + EMPTY_COOP_CHAINS + EMPTY_PASTURE_CHAINS
+               + CROP_CHAINS + ANIMAL_CHAINS):
     if _chain not in _REGISTRY:
         _REGISTRY.append(_chain)
 
@@ -228,8 +232,8 @@ def chain_id_of(ops: tuple[str, ...]) -> int:
 
 
 def chain_name(ops: tuple[str, ...]) -> str:
-    """Stable name of a chain ('FERTILIZE+WATER+HARVEST', 'PASS')."""
-    return "+".join(ops)
+    """Stable name of a chain ('FERTILIZE+WATER+HARVEST', 'NO_ACTION')."""
+    return "+".join(ops) if ops else "NO_ACTION"
 
 
 def ops_of_name(name: str) -> tuple[str, ...]:
@@ -247,8 +251,7 @@ def chain_labor(ops: tuple[str, ...]) -> int:
 #: Engine steps one op fills: a market buy rides along with a PASS, so neither costs a
 #: turn here; the ops absent from this table cost one.
 OP_STEPS: dict[str, int] = {UnitAction.PLANT.value: 2, UnitAction.FERTILIZE.value: 3,
-                            UnitAction.FEED.value: 3, UnitAction.PLACE.value: 3,
-                            PASS: 0}
+                            UnitAction.FEED.value: 3, UnitAction.PLACE.value: 3}
 
 
 def chain_steps(ops: tuple[str, ...]) -> int:
@@ -401,17 +404,17 @@ def _applicable(ops: tuple[str, ...], age: int | None, yield_units: int | None,
     return True
 
 
-def chains_for(kind: TileKind, age: int | None = None, animal_graph: bool = False,
+def chains_for(kind: TileKind, age: int | None = None,
                yield_units: int | None = None, entity: str | None = None
                ) -> list[tuple[str, ...]]:
     """The applicable chains of a node, before pruning.
 
-    `animal_graph` selects the animal half of the bare-tile list (NONE is one state; the
-    graph decides which starts it may run). `age`, `yield_units` and `entity` are the
-    node's own, so the windows come from the engine's tables.
+    The selection is by the tile's KIND only; `age`, `yield_units` and `entity` are the
+    node's own, so the windows come from the engine's tables and a chain the entity
+    cannot run is filtered out rather than never offered.
     """
     if kind is TileKind.NONE:
-        base = NONE_CHAINS_ANIMAL if animal_graph else NONE_CHAINS_CROP
+        base = NONE_CHAINS
     elif kind is TileKind.PLANT:
         base = CROP_CHAINS_YOUNG if (age is not None and age < 0) else CROP_CHAINS
     elif kind in CHAINS_BY_KIND:

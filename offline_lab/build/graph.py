@@ -54,7 +54,7 @@ from offline_lab.fast_sim import FastSim
 from agent.artifact import artifact_path, write_info
 from agent.world.rules import ANIMAL_RULES, CROP_RULES
 from agent.tile_dp.chains import (CONSTRUCTIVE_OPS, ENTITY_CODE, ENTITY_NAMES,
-                                  MARKET_OPS, N_RESOURCE, OP_STEPS, PASS,
+                                  MARKET_OPS, N_RESOURCE, OP_STEPS,
                                   RESOURCE_ID, chain_id_of, chain_name, chain_ops,
                                   chain_steps, chains_for, contract_id, cost_vector,
                                   domain_ok, entity_code_of, entity_of_code,
@@ -406,15 +406,15 @@ def _exec_chain(sim: FastSim, state: TileState, ops: tuple[str, ...],
     op on a state that owns no entity (a bare / weed tile) - such a chain builds
     nothing, so it never needs one.
     """
-    if PASS in ops and len(ops) > 1:
-        raise ValueError(f"PASS is a whole-chain op, got {ops}")
+    if UnitAction.PASS.value in ops:
+        raise ValueError(f"PASS is not a chain op, got {ops}")
     day0 = int(sim.observations()[0]["day"])
     harvest = 0
     fert_collect = 0
     for op in ops:
         if op in MARKET_OPS:
             continue        # the market buys inside the op that needs it
-        if op == PASS:
+        if op == UnitAction.PASS.value:
             # Nothing on this tile: the worker idles, the day still passes.
             sim.step([_act(["PASS"]), _act(["PASS"])])
         elif op in ("BUILD_COOP", "BUILD_PASTURE"):
@@ -551,7 +551,7 @@ def _plan(state: TileState, restrict: str | None
     plan: list[tuple[str | None, tuple[str, ...], int]] = []
     seen: set[tuple[int, tuple[str, ...]]] = set()
     for ent in _candidates(state, restrict):
-        for ops in chains_for(state.kind, age=age, animal_graph=is_animal(ent),
+        for ops in chains_for(state.kind, age=age, ),
                               yield_units=state.yield_units, entity=own):
             if not domain_ok(ops, ent):
                 continue         # domain filter (decision 9)
