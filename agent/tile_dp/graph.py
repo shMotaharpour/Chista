@@ -66,6 +66,7 @@ class BuildReport:
     n_expanded: int
     n_noop_edges: int
     kinds: dict[str, int]
+    n_dominated_edges: int = 0      # dropped by the Pareto sweep
 
     def describe(self) -> str:
         return (f"{self.spec.entity or 'TILE'}: states {self.n_states}, "

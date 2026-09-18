@@ -622,7 +622,9 @@ def _prune(state_id: int, edges: list[Edge]) -> tuple[list[Edge], int]:
     final = [e for e in kept
              if not any(_dominates(other, e) for other in kept
                         if other is not e)]
-    return final, len(edges) - len(kept)
+    # Both counts, so the report shows the Pareto sweep really ran: no-op drops and
+    # dominated drops are different laws and only the first one was being reported.
+    return final, len(edges) - len(kept), len(kept) - len(final)
 
 
 # --------------------------------------------------------------------- build
@@ -699,10 +701,12 @@ def build_graph(entity: str | None = None, progress: bool = False) -> TileGraph:
     step_rows: list[int] = []
     offsets = np.zeros(n_states + 1, dtype=np.int64)
     n_noop = 0
+    n_dominated = 0
     for sid in range(n_states):
         offsets[sid] = len(edge_next)
-        kept, dropped = _prune(sid, edges.get(sid, []))
+        kept, dropped, dominated = _prune(sid, edges.get(sid, []))
         n_noop += dropped
+        n_dominated += dominated
         for edge in kept:
             edge_next.append(edge.to_id)
             edge_chain.append(edge.chain_id)
@@ -717,6 +721,7 @@ def build_graph(entity: str | None = None, progress: bool = False) -> TileGraph:
         kinds[state.kind] = kinds.get(state.kind, 0) + 1
     report = BuildReport(spec=spec, n_states=n_states, n_edges=len(edge_next),
                          n_expanded=len(visited), n_noop_edges=n_noop,
+                         n_dominated_edges=n_dominated,
                          kinds=kinds)
     return TileGraph(
         spec=spec, report=report, n_states=n_states,
@@ -738,6 +743,8 @@ def main() -> int:
     g = build_graph()
     g.save(GRAPH_PATH)
     print("MERGED", g.report.describe(), flush=True)
+    print("MERGED no-op dropped", g.report.n_noop_edges,
+          "| dominated dropped", g.report.n_dominated_edges, flush=True)
     print("MERGED kinds", g.report.kinds, flush=True)
     print("MERGED bytes", os.path.getsize(GRAPH_PATH),
           "build_s", round(time.time() - t0, 1), "peak_rss_mb",
