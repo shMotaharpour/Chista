@@ -13,6 +13,8 @@ REPO = pathlib.Path(__file__).resolve().parents[1]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
+import inspect
+
 from kaggle_environments.envs.kaggriculture import kaggriculture as K
 
 import tile_dp.chains as chains
@@ -40,6 +42,23 @@ NAME_DEBT = {
 
 #: Vendored code, tests that assert against the engine, and the probes.
 EXEMPT = ("opponents/", "tests/", "KaggleProbes/", "world/model.py")
+
+
+def _engine_action_names() -> frozenset[str]:
+    """The engine's action literals, re-extracted here so the model cannot drift."""
+    names: set[str] = set()
+    for handler in ("_apply_unit_action", "_commit_unit", "_parse_order"):
+        source = inspect.getsource(getattr(K, handler))
+        names.update(re.findall(r'op == "([A-Z_]+)"', source))
+        for group in re.findall(r"op in \(([^)]*)\)", source):
+            names.update(re.findall(r'"([A-Z_]+)"', group))
+    names.update(str(move) for move in K.FARMER_MOVES)
+    names.add("PASS")
+    return frozenset(names)
+
+
+def _engine_tile_kinds() -> frozenset[str]:
+    return frozenset(re.findall(r'"kind": "([A-Z_]+)"', inspect.getsource(K)))
 
 
 def _spelled(path: pathlib.Path) -> int:
@@ -76,6 +95,8 @@ def test_resources_are_not_products() -> None:
 def test_the_graph_vector_is_the_union_in_the_stored_order() -> None:
     """The DP's 18 columns are resources + products, order-compatible with the graph."""
     assert set(M.VECTOR) == set(M.RESOURCES) | set(M.PRODUCTS)
+    assert M.PRICE_VECTORS == ("PRODUCE", "INPUT")
+    assert M.RESULT_VECTORS == ("COST", "PRODUCE")
     assert len(M.VECTOR) == 18
     assert tuple(chains.RESOURCE_NAMES) == M.VECTOR, (
         "the stored column order changed: the shipped graph indexes it")
@@ -83,25 +104,26 @@ def test_the_graph_vector_is_the_union_in_the_stored_order() -> None:
 
 def test_the_market_and_the_worker_do_not_share_ops() -> None:
     """No market action is a worker op; the contractor and the WSR stay out of the market."""
-    assert not (M.WORKER_OPS & M.MARKET_ACTIONS)
-    assert {"SELL", "BUY_LAND", "HIRE"} <= M.MARKET_ACTIONS
-    assert {"BUY_SEED", "BUY_PRODUCT", "BUY_ANIMAL"} <= M.MARKET_ACTIONS
-    for op in sorted(M.CHAIN_OPS - {"NO_ACT"}):
+    assert not (set(M.WORKER_OPS) & set(M.MARKET_ACTIONS))
+    assert {"SELL", "BUY_LAND", "HIRE"} <= set(M.MARKET_ACTIONS)
+    assert {"BUY_SEED", "BUY_PRODUCT", "BUY_ANIMAL"} <= set(M.MARKET_ACTIONS)
+    for op in sorted(set(M.CHAIN_OPS) - {"NO_ACT"}):
         if op.startswith("BUY_"):
             assert op in M.MARKET_ACTIONS, f"{op} is a market op"
         else:
             assert op in M.WORKER_OPS, f"{op} is not a worker op"
 
 
-def test_the_action_vocabulary_is_extracted() -> None:
-    """`ACTIONS` is read out of the engine's handlers, not typed."""
-    assert M.ACTIONS == M.engine_action_names()
+def test_the_action_vocabulary_matches_the_engine() -> None:
+    """The hard-coded `ACTIONS` still equals what the engine's handlers accept."""
+    assert set(M.ACTIONS) == _engine_action_names()
+    assert set(M.TILE_KINDS) == _engine_tile_kinds()
     for op in ("PASS", "PLANT", "WATER", "HARVEST", "PICKUP", "DROP", "PLACE",
                "FEED", "CARE", "COLLECT_FERTILIZER", "FERTILIZE", "DIG",
                "BUILD_COOP", "BUILD_PASTURE", "SELL", "BUY_SEED", "BUY_PRODUCT",
                "BUY_ANIMAL", "HIRE", "BUY_LAND"):
         assert op in M.ACTIONS, f"the engine accepts {op} and the model lost it"
-    assert set(M.MOVEMENT) <= M.ACTIONS
+    assert set(M.MOVEMENT) <= set(M.ACTIONS)
 
 
 def test_every_chain_op_compiles_to_an_engine_action() -> None:

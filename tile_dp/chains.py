@@ -135,7 +135,7 @@ from world.model import WORKER_OPS as _WORKER_OPS
 NO_ACT = "NO_ACT"
 # Market ops a chain may name: the buys it needs. The market's other actions
 # (SELL, HIRE, BUY_LAND) are the market layer's, never a chain's.
-MARKET_OPS: tuple[str, ...] = tuple(sorted(_MARKET_ACTIONS & set(_CHAIN_OPS)))
+MARKET_OPS: tuple[str, ...] = tuple(sorted(set(_MARKET_ACTIONS) & set(_CHAIN_OPS)))
 # Worker ops = the only ops that cost hours: market buys are the market's action
 # and a PICKUP is a carry of the day layer, so both cost 0 worker hours.
 WORKER_OPS: frozenset[str] = frozenset(_WORKER_OPS)

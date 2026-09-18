@@ -1,148 +1,165 @@
-"""Canonical names for the whole system, derived from the engine (R002).
+"""The canonical names: enums, hard-coded, for every layer to read.
 
-See `docs/ARCHITECTURE.md` §1. Nothing here is typed by hand: the goods, crops
-and species are the engine's tables, and the action set is extracted from the
-engine's own handlers.
+`docs/ARCHITECTURE.md` §1. These are the engine's names, pinned as members so an
+agent can read a definition instead of calling a function. The values were
+extracted from the engine once (`kaggriculture`'s tables, `FARMER_MOVES`, and the
+action literals in `_apply_unit_action` / `_commit_unit` / `_parse_order`) and
+`tests/test_model.py` re-extracts them on every run, so drift is caught there
+rather than computed here.
+
+Two vectors are read over the same 18 columns (`Vector`):
+
+- the **price vector**, the DP's input — `p` for what a produced unit is worth and
+  `w` for what a consumed unit costs;
+- the **result vector**, the tile's day — `cost` for what it consumed and
+  `produce` for what it made.
+
+Wheat and fertiliser are NOT duplicated: they are one column, non-zero on both
+sides of the result pair (a harvest makes wheat, FEED eats it; COLLECT_FERTILIZER
+makes fertiliser, FERTILIZE eats it). What *is* two numbers is their market price:
+the engine quotes a buy at `price(I-1)` and pays a sale at `price(I)` (F033), and
+that spread belongs to the market layer, not to this column space.
 """
 
 from __future__ import annotations
 
-import inspect
-import re
 from enum import Enum
 from typing import Mapping
 
-from kaggle_environments.envs.kaggriculture import kaggriculture as K
-
 # --- what exists ------------------------------------------------------------ #
 
-GOODS: tuple[str, ...] = tuple(str(g) for g in K.PRODUCTS)      # 9, all sellable
-PRODUCTS: tuple[str, ...] = GOODS                               # the market's goods
-CROPS: tuple[str, ...] = tuple(str(c) for c in K.CROPS)         # 5
-ANIMALS: tuple[str, ...] = tuple(str(a) for a in K.ANIMALS)     # 3
+#: The 9 goods the market trades and the farm sells.
+GOODS: tuple[str, ...] = ("WHEAT", "CARROT", "TOMATO", "STRAWBERRY", "MELON",
+                          "EGG", "MILK", "WOOL", "FERTILIZER")
+PRODUCTS: tuple[str, ...] = GOODS
+CROPS: tuple[str, ...] = ("WHEAT", "CARROT", "TOMATO", "STRAWBERRY", "MELON")
+ANIMALS: tuple[str, ...] = ("GOOSE", "COW", "SHEEP")
 
 #: Wheat and fertiliser are both: the farm buys them and the market sells them.
 DUAL: tuple[str, ...] = ("WHEAT", "FERTILIZER")
 
-#: Resources: what the farm buys or consumes. 11 — labour, fertiliser, wheat,
-#: the five seeds, the three animals. Crops and animal products are NOT resources.
-RESOURCES: tuple[str, ...] = (
-    "LABOR_HOURS", "FERTILIZER", "WHEAT",
-    *(f"SEED_{crop}" for crop in CROPS),
-    *(f"ANIMAL_{species}" for species in ANIMALS),
-)
+#: Resources: what the farm buys or consumes. 11 — labour, fertiliser, wheat, the
+#: five seeds, the three animals. Crops and animal products are products only.
+RESOURCES: tuple[str, ...] = ("LABOR_HOURS", "FERTILIZER", "WHEAT",
+                              "SEED_WHEAT", "SEED_CARROT", "SEED_TOMATO",
+                              "SEED_STRAWBERRY", "SEED_MELON",
+                              "ANIMAL_GOOSE", "ANIMAL_COW", "ANIMAL_SHEEP")
 
-#: The DP graph's 18 columns = resources + products, in the order the shipped
-#: graph stores them (11 + 9 − 2 shared = 18).
-VECTOR: tuple[str, ...] = (
-    "LABOR_HOURS", "FERTILIZER", "WHEAT",
-    *(f"SEED_{crop}" for crop in CROPS),
-    "CARROT", "TOMATO", "STRAWBERRY", "MELON",
-    "EGG", "MILK", "WOOL",
-    *(f"ANIMAL_{species}" for species in ANIMALS),
-)
-
-# --- what can be done ------------------------------------------------------- #
-
-#: Handlers whose source defines the action vocabulary.
-_HANDLERS = ("_apply_unit_action", "_commit_unit", "_parse_order")
-
-
-def engine_tile_kinds() -> frozenset[str]:
-    """Tile-kind strings the engine writes into a tile dict, read from its source."""
-    return frozenset(re.findall(r'"kind": "([A-Z_]+)"', inspect.getsource(K)))
-
-
-def engine_action_names() -> frozenset[str]:
-    """Every action string the engine's handlers test for, read from their source."""
-    names: set[str] = set()
-    for handler in _HANDLERS:
-        source = inspect.getsource(getattr(K, handler))
-        names.update(re.findall(r'op == "([A-Z_]+)"', source))
-        for group in re.findall(r"op in \(([^)]*)\)", source):
-            names.update(re.findall(r'"([A-Z_]+)"', group))
-    names.update(str(move) for move in K.FARMER_MOVES)
-    names.add("PASS")
-    return frozenset(names)
-
-
-#: 24 actions today.
-ACTIONS: frozenset[str] = engine_action_names()
-
-#: What a tile's `kind` can be: a crop is "PLANT", a structure "COOP"/"PASTURE",
-#: a weed "WEED". A bare tile is None, which no enum member can express.
-TILE_KINDS: frozenset[str] = engine_tile_kinds()
+#: The DP's 18 columns = resources + products, in the order the shipped graph
+#: stores them (11 + 9 − 2 shared = 18). Both vectors are read over this space.
+VECTOR: tuple[str, ...] = ("LABOR_HOURS", "FERTILIZER", "WHEAT",
+                           "SEED_WHEAT", "SEED_CARROT", "SEED_TOMATO",
+                           "SEED_STRAWBERRY", "SEED_MELON",
+                           "CARROT", "TOMATO", "STRAWBERRY", "MELON",
+                           "EGG", "MILK", "WOOL",
+                           "ANIMAL_GOOSE", "ANIMAL_COW", "ANIMAL_SHEEP")
 
 #: Anything the farm holds or trades: the 9 products plus the 3 species.
-ITEMS: tuple[str, ...] = PRODUCTS + tuple(a for a in ANIMALS if a not in PRODUCTS)
+ITEMS: tuple[str, ...] = PRODUCTS + ("GOOSE", "COW", "SHEEP")
 
-#: Species -> the structure it lives in, from the engine's own table.
-ANIMAL_STRUCTURE: Mapping[str, str] = {
-    a: str(K.ANIMALS[a]["structure"]) for a in ANIMALS}
+#: The two vectors, named. `PRICE` is the DP's input, `RESULT` its output.
+PRICE_VECTORS: tuple[str, ...] = ("PRODUCE", "INPUT")     # p, w
+RESULT_VECTORS: tuple[str, ...] = ("COST", "PRODUCE")     # per_day_cost, per_day_produce
 
-#: One tile per op, in the engine's own table.
-MOVEMENT: tuple[str, ...] = tuple(str(move) for move in K.FARMER_MOVES)
-MOVE_DELTA: Mapping[str, tuple[int, int]] = {str(k): (int(v[0]), int(v[1]))
-                                             for k, v in K.FARMER_MOVES.items()}
+#: What a tile's `kind` can be; a bare tile is None, which no member expresses.
+TILE_KINDS: tuple[str, ...] = ("PLANT", "COOP", "PASTURE", "WEED")
 
-#: The four shed-access tiles, in the engine's NWSE order: PICKUP and DROP work
-#: nowhere else.
-SHED_ACCESS_ORDERED: tuple[tuple[int, int], ...] = tuple(
-    (int(x), int(y)) for x, y in K._shed_access_tiles(10))
-SHED_ACCESS: frozenset[tuple[int, int]] = frozenset(SHED_ACCESS_ORDERED)
-
-#: Market actions: the market layer's, never a worker's. `SELL`, `BUY_LAND` and
-#: `HIRE` are the market's own decisions; the `BUY_*` three are also what a chain
-#: names when it needs an input.
-MARKET_ACTIONS: frozenset[str] = frozenset((
+#: The engine's action vocabulary: what its handlers act on. Anything else is a
+#: silent no-op (F047).
+ACTIONS: tuple[str, ...] = (
+    "PASS", "NORTH", "SOUTH", "EAST", "WEST", "PICKUP", "DROP", "PLACE",
+    "PLANT", "WATER", "HARVEST", "FERTILIZE", "DIG", "FEED", "CARE",
+    "COLLECT_FERTILIZER", "BUILD_COOP", "BUILD_PASTURE",
     "SELL", "BUY_SEED", "BUY_PRODUCT", "BUY_ANIMAL", "HIRE", "BUY_LAND",
-))
+)
+
+#: One tile per op.
+MOVEMENT: tuple[str, ...] = ("NORTH", "SOUTH", "EAST", "WEST")
+MOVE_DELTA: Mapping[str, tuple[int, int]] = {
+    "NORTH": (0, -1), "SOUTH": (0, 1), "EAST": (1, 0), "WEST": (-1, 0)}
+
+#: The market's own actions, never a worker's. `SELL`, `BUY_LAND` and `HIRE` are
+#: the market layer's decisions; the three `BUY_*` are also what a chain names
+#: when it needs an input.
+MARKET_ACTIONS: tuple[str, ...] = ("SELL", "BUY_SEED", "BUY_PRODUCT",
+                                   "BUY_ANIMAL", "HIRE", "BUY_LAND")
 
 #: Worker ops: what a unit spends a turn on. No market op appears here — the
-#: contractor and the WSR do not touch the market.
-WORKER_OPS: frozenset[str] = frozenset((
-    "PLANT", "WATER", "FERTILIZE", "HARVEST", "DIG", "BUILD", "PLACE", "FEED",
-    "CARE", "COLLECT_FERTILIZER",
-))
+#: contractor and the WSR never touch the market.
+WORKER_OPS: tuple[str, ...] = ("PLANT", "WATER", "FERTILIZE", "HARVEST", "DIG",
+                               "BUILD", "PLACE", "FEED", "CARE",
+                               "COLLECT_FERTILIZER")
 
-#: Chain ops a chain may name: worker ops + the market buys it needs + the day pass.
-CHAIN_OPS: frozenset[str] = WORKER_OPS | frozenset(
-    ("BUY_SEED", "BUY_PRODUCT", "BUY_ANIMAL", "NO_ACT"))
+#: What a chain may name: worker ops + the market buys it needs + the day pass.
+CHAIN_OPS: tuple[str, ...] = WORKER_OPS + ("BUY_SEED", "BUY_PRODUCT",
+                                           "BUY_ANIMAL", "NO_ACT")
 
-# --- what an op needs ------------------------------------------------------- #
-
-#: Goods an op must carry (engine handlers).
+#: What an op must carry (engine handlers), and what COLLECT_FERTILIZER yields.
 CARRIES: Mapping[str, str] = {"FERTILIZE": "FERTILIZER", "FEED": "WHEAT"}
-
-#: What COLLECT_FERTILIZER yields into the bag (`_inv_add(inv, "FERTILIZER", 1)`).
 COLLECT_ITEM = "FERTILIZER"
 
-#: Ops that carry the entity itself (an animal).
-PLACING_OPS: frozenset[str] = frozenset(("PLACE",))
+#: Ops that carry the entity itself, need a seed, or name what they construct.
+PLACING_OPS: tuple[str, ...] = ("PLACE",)
+SEED_OPS: tuple[str, ...] = ("PLANT",)
+ENTITY_OPS: tuple[str, ...] = ("PLANT", "BUILD", "PLACE")
 
-#: Ops that need a seed in `private["seeds"]`; seeds never travel.
-SEED_OPS: frozenset[str] = frozenset(("PLANT",))
+#: Species -> the structure it lives in.
+ANIMAL_STRUCTURE: Mapping[str, str] = {"GOOSE": "COOP", "COW": "PASTURE",
+                                       "SHEEP": "PASTURE"}
 
-#: Ops that name the entity they construct.
-ENTITY_OPS: frozenset[str] = frozenset(("PLANT", "BUILD", "PLACE"))
+#: The shed's four access tiles, in the engine's NWSE order. PICKUP and DROP work
+#: nowhere else.
+SHED_ACCESS_ORDERED: tuple[tuple[int, int], ...] = ((4, 4), (5, 4), (4, 5), (5, 5))
+SHED_ACCESS: frozenset[tuple[int, int]] = frozenset(SHED_ACCESS_ORDERED)
+
+# --- named views ------------------------------------------------------------ #
+
+def _names(cls_name: str, values) -> Enum:
+    """A `str` enum whose member names and values are the engine's own strings."""
+    return Enum(cls_name, {str(v): str(v) for v in values}, type=str, module=__name__)
+
+
+Good = _names("Good", GOODS)
+Crop = _names("Crop", CROPS)
+Species = _names("Species", ANIMALS)
+Resource = _names("Resource", RESOURCES)
+Product = _names("Product", PRODUCTS)
+Item = _names("Item", ITEMS)
+Vector = _names("Vector", VECTOR)
+Price = _names("Price", PRICE_VECTORS)
+Result = _names("Result", RESULT_VECTORS)
+TileKind = _names("TileKind", TILE_KINDS)
+Action = _names("Action", ACTIONS)
+WorkerOp = _names("WorkerOp", WORKER_OPS)
+MarketAction = _names("MarketAction", MARKET_ACTIONS)
+ChainOp = _names("ChainOp", CHAIN_OPS)
+Move = _names("Move", MOVEMENT)
+
+# --- the compile table ------------------------------------------------------ #
+
+#: A chain op -> the engine action it means. `{entity}` is filled from the chain's
+#: own entity; an op absent from this table means "the op is the action".
+COMPILE: Mapping[str, tuple[str, ...]] = {
+    "PLANT": ("PLANT", "{entity}"),
+    "PLACE": ("PLACE", "{entity}"),
+    "BUILD": ("BUILD_{structure}",),
+    "NO_ACT": ("PASS",),
+}
 
 
 def compile_op(op: str, entity: str | None = None) -> tuple[str, ...]:
     """One chain op -> the engine action it means. Raises on an unknown op."""
     if op not in CHAIN_OPS:
-        raise ValueError(f"{op!r} is not a chain op: {sorted(CHAIN_OPS)}")
+        raise ValueError(f"{op!r} is not a chain op: {list(CHAIN_OPS)}")
     if op == "BUILD":
-        if entity not in K.ANIMALS:
+        if entity not in ANIMAL_STRUCTURE:
             raise ValueError(f"BUILD {entity!r} is not an animal")
-        return (f"BUILD_{K.ANIMALS[entity]['structure']}",)
-    if op in PLACING_OPS:
-        if entity not in K.ANIMALS:
-            raise ValueError(f"{op} {entity!r} is not an animal")
-        return ("PLACE", str(entity))
-    if op == "PLANT":
-        if entity not in K.CROPS:
-            raise ValueError(f"PLANT {entity!r} is not a crop")
-        return ("PLANT", str(entity))
+        return (f"BUILD_{ANIMAL_STRUCTURE[entity]}",)
+    if op in ("PLANT", "PLACE"):
+        known = CROPS if op == "PLANT" else ANIMALS
+        if entity not in known:
+            raise ValueError(f"{op} {entity!r} is not a {'crop' if op == 'PLANT' else 'species'}")
+        return (op, str(entity))
     if op == "NO_ACT":
         return ("PASS",)
     return (str(op),)
@@ -154,29 +171,3 @@ def compile_chain(ops: tuple[str, ...], entity: str | None = None
     if "NO_ACT" in ops and len(ops) > 1:
         raise ValueError(f"NO_ACT is a whole-chain op, got {ops}")
     return [compile_op(op, entity) for op in ops]
-
-
-# --- named views ------------------------------------------------------------ #
-
-def _names(cls_name: str, values) -> Enum:
-    """An `str` enum whose member names and values are the engine's own strings.
-
-    `Good.WHEAT == "WHEAT"`, so a member is usable wherever the string is, and the
-    member set is built from the engine table above — never typed. Members can be
-    added to by the engine and removed only by it.
-    """
-    return Enum(cls_name, {str(v): str(v) for v in values}, type=str, module=__name__)
-
-
-Item = _names("Item", ITEMS)
-TileKind = _names("TileKind", sorted(TILE_KINDS))
-Good = _names("Good", GOODS)
-Crop = _names("Crop", CROPS)
-Species = _names("Species", ANIMALS)
-Resource = _names("Resource", RESOURCES)
-Product = _names("Product", PRODUCTS)
-Vector = _names("Vector", VECTOR)
-Action = _names("Action", sorted(ACTIONS))
-WorkerOp = _names("WorkerOp", sorted(WORKER_OPS))
-MarketAction = _names("MarketAction", sorted(MARKET_ACTIONS))
-ChainOp = _names("ChainOp", sorted(CHAIN_OPS))
