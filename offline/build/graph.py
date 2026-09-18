@@ -1,60 +1,49 @@
-"""tile_dp graph build — v16: ONE tile graph, built by simulation inheritance.
+"""Build the shipped tile graph model — offline only.
 
-One graph covers the whole tile: every crop and every animal (a bare tile can
-start any of them), the DIG bridges between them and the weed / empty-structure
-states. `build_graph()` builds that merged graph; `build_graph(entity)` runs the
-same search restricted to one entity's chains (test scaffolding: the
-per-entity views the tests build, not artifacts).
+Run from the repo root:
 
-Node = the tile state at a day start, key = TileState.pack() (day-invariant: the
-day is a DP dimension and prices are a DP input, so neither is in the artifact).
-Edge = exactly one day, with `from`, `to`, `chain_id`, `entity_code`, `cost[]`
-and `produce[]`. `cost` = inputs consumed + LABOR_HOURS; `produce` = harvest
-units of the entity's product + collected fertilizer. The two are SEPARATE
-18-vectors and are never netted: wheat is both the FEED input and the WHEAT
-crop's product.
+    .venv/bin/python -m offline.build.graph
+
+Writes `tile_dp/models/graph_tile_lifecycle.npz` (the merged graph) and
+`agent/tile_dp/models/build_report.json`, then reloads the written file to prove the
+round-trip works. The artifact is a tracked model file: it is committed, and this
+builder is the only thing that writes it.
+
+It lives outside `agent/` on purpose: it drives the simulator
+(`offline/fast_sim.FastSim`), the submission never imports it, and the runtime reads
+the artifact with `agent.tile_dp.graph.TileGraph.load`.
 
 Simulation inheritance (decision 6): a node is expanded with the SAME sim that
-produced it (`dict[state_id, FastSim]`, `offline/fast_sim.py`), so its edges are computed from the true
-state of the tile that reached it; only the root (NONE, day 0) gets a fresh sim.
-The earlier builder replayed a hand-written canonical history per node instead,
-which regularly landed on another day-start state - measured 184/394 nodes on
-the current chains (186/456 on the older build) - so every edge of such a node
-was computed from the wrong state. `_replay_crop` / `_replay_animal` /
-`_replay_structure` / `_replay_node` and the `replay_mismatch` script were
-deleted, and no older-version artifact or test remains in the tree.
-
-Hossein's age conventions, enforced by the decode that labels every edge.
-Crops: age 0 = START OF THE GOLDEN WINDOW for one-shot crops
-((max_yield_day + 1) // 2) and max_yield_day for ongoing crops; the day the plant
-starts turning into a weed (the engine's max_lifespan_step day) decodes as WEED,
-so it is never a planned PLANT day. Animals: the positive age is the production
-phase 0..interval-1 (it wraps); the negative range 1-first_yield_day..-1 is
-growing up. care_bank is capped at max_held (contract).
+produced it (`dict[state_id, FastSim]`), so its edges are computed from the true state
+of the tile that reached it; only the root (NONE, day 0) gets a fresh sim. The earlier
+builder replayed a hand-written canonical history per node instead, which regularly
+landed on another day-start state - measured 184/394 nodes on the current chains
+(186/456 on the older build) - so every edge of such a node was computed from the
+wrong state. `_replay_*` and the `replay_mismatch` script were deleted.
 
 Assertions (decision 8): a wrong edge must fail the build, never be stored.
-  * before expanding a node, its own sim must decode to the node's state - the
-    invariant sim inheritance rests on;
-  * after every edge the branch sim's tile is decoded and compared with the
-    expected next state: a chain that changes the tile (PLANT / BUILD / PLACE /
-    PLACE / DIG) must land exactly on the modelled state, full TileState
-    equality, else StateMismatch with both describe() strings;
-  * a growth day (no kind change) must carry the tile's identity one day forward
-    - same kind/crop/animal/structure, age advanced exactly one day, and the
+  * before expanding a node, its own sim must decode to the node's state;
+  * after every edge the branch sim's tile is decoded and compared with the expected
+    next state: a chain that changes the tile (PLANT / BUILD / PLACE / DIG) must land
+    exactly on the modelled state, full TileState equality, else StateMismatch with
+    both describe() strings;
+  * a growth day (no kind change) must carry the tile's identity one day forward -
+    same kind/crop/animal/structure, age advanced exactly one day, and the
     engine-independent day bookkeeping implied by the ops (consec / unfed /
-    fert_left). The growth dims themselves (yield_units, care_bank) and the
-    engine's destroy paths (weed death, a one-shot crop harvested away, an
-    escaped animal) are the engine's own answer: they are read from
-    `decode_tile`, because this repo never re-implements the game (R003);
+    fert_left). The growth dims themselves (yield_units, care_bank) and the engine's
+    destroy paths are the engine's own answer, read from `decode_tile`, because this
+    repo never re-implements the game (R003);
   * NO_ACT is a whole-chain op: NO_ACT inside a multi-op chain is rejected.
 """
 
 from __future__ import annotations
 
+import json
+import os
+import resource
+import time
 from collections import deque
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator
 
 import numpy as np
 
@@ -62,225 +51,70 @@ from kaggle_environments.envs.kaggriculture import kaggriculture as K
 
 from offline.fast_sim import FastSim
 
-from tile_dp.chains import (CONSTRUCTIVE_OPS, ENTITY_CODE, ENTITY_NAMES,
-                            MARKET_OPS, N_RESOURCE, NO_ACT, OP_STEPS,
-                            RESOURCE_ID, chain_id_of, chain_name, chain_ops,
-                            chain_steps, chains_for, contract_id, cost_vector,
-                            domain_ok, entity_code_of, entity_of_code,
-                            is_animal, produce_vector, registry_fingerprint)
-from tile_dp.tile_state import (EMPTY_KIND_OF_STRUCTURE, EMPTY_KINDS,
-                                KIND_ANIMAL, KIND_EMPTY_COOP,
-                                KIND_EMPTY_PASTURE, KIND_NONE, KIND_PLANT,
-                                KIND_WEED, TURNS_PER_DAY, TileState,
-                                crop_age_origin, decode_tile)
+import agent.tile_dp as _tile_dp
+from agent.tile_dp.chains import (CONSTRUCTIVE_OPS, ENTITY_CODE, ENTITY_NAMES,
+                                  MARKET_OPS, N_RESOURCE, NO_ACT, OP_STEPS,
+                                  RESOURCE_ID, chain_id_of, chain_name, chain_ops,
+                                  chain_steps, chains_for, contract_id, cost_vector,
+                                  domain_ok, entity_code_of, entity_of_code,
+                                  is_animal, produce_vector, registry_fingerprint)
+from agent.tile_dp.graph import (BuildReport, BuildSpec, ChainOutcome, Edge,
+                                 TileGraph)
+from agent.tile_dp.tile_state import (EMPTY_KIND_OF_STRUCTURE, EMPTY_KINDS,
+                                      KIND_ANIMAL, KIND_EMPTY_COOP,
+                                      KIND_EMPTY_PASTURE, KIND_NONE, KIND_PLANT,
+                                      KIND_WEED, TURNS_PER_DAY, TileState,
+                                      crop_age_origin, decode_tile)
 
-# Identity of the artifact contract, COMPUTED from its inputs (chains.
-# contract_id): no hand-typed version number exists here on purpose - a version
-# is a property of the product, and the first state is not finished yet. The
-# name is kept because build.py and the paused tests import it.
-CONTRACT_ID = contract_id()
-ENGINE_TAG = CONTRACT_ID
-
-# Which structure an entity lives in (engine data: BUILD needs it, and it is
-# how the EMPTY_STRUCTURE candidates are decided). Crops are absent on purpose.
+# Which structure an entity lives in (engine data: BUILD needs it, and it is how the
+# EMPTY_STRUCTURE candidates are decided). Crops are absent on purpose.
 _STRUCTURE_OF = {name: K.ANIMALS[name]["structure"] for name in K.ANIMALS}
 
-
-@dataclass(frozen=True)
-class BuildSpec:
-    """What a build asks for: the merged tile graph or one entity's graph."""
-
-    entity: str | None = None
-    progress: bool = False
-
-    @property
-    def entity_kind(self) -> str:
-        """'tile' for the merged graph, else 'crop' / 'animal'."""
-        if self.entity is None:
-            return "tile"
-        return "animal" if is_animal(self.entity) else "crop"
+# The artifact the runtime loads, inside the agent folder (AGENTS.md: the submission
+# is agent/, and the builders write their artifacts into it).
+MODEL_DIR = Path(_tile_dp.__file__).resolve().parent / "models"
+GRAPH_PATH = MODEL_DIR / "graph_tile_lifecycle.npz"
+REPORT_PATH = MODEL_DIR / "build_report.json"
 
 
-@dataclass(frozen=True)
-class BuildReport:
-    """Build metadata kept beside the artifact (no `life_days`: a horizon guess
-    the merged graph does not have any more)."""
+def main() -> int:
+    MODEL_DIR.mkdir(parents=True, exist_ok=True)
+    t0 = time.time()
+    g = build_graph()
+    g.save(GRAPH_PATH)
+    print("MERGED", g.report.describe(), flush=True)
+    print("MERGED kinds", g.report.kinds, flush=True)
+    print("MERGED bytes", os.path.getsize(GRAPH_PATH),
+          "build_s", round(time.time() - t0, 1), "peak_rss_mb",
+          round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024, 1),
+          flush=True)
 
-    spec: BuildSpec
-    n_states: int
-    n_edges: int
-    n_expanded: int
-    n_noop_edges: int
-    kinds: dict[str, int]
+    by_entity: dict[str, int] = {}
+    for code in g.edge_entity:
+        name = entity_of_code(int(code)) or "TILE"
+        by_entity[name] = by_entity.get(name, 0) + 1
+    report = {"contract": g.engine_tag,
+              "registry": registry_fingerprint(),
+              "entities": {"TILE": {"nodes": g.n_states, "edges": g.n_edges,
+                                    "kinds": g.report.kinds,
+                                    "merged_edges_for_entity": by_entity}}}
 
-    def describe(self) -> str:
-        return (f"{self.spec.entity or 'TILE'}: states {self.n_states}, "
-                f"edges {self.n_edges}, expanded {self.n_expanded}, "
-                f"no-op edges dropped {self.n_noop_edges}")
-
-
-@dataclass(frozen=True)
-class ChainOutcome:
-    """What one executed chain produced (decision 11)."""
-
-    next_state: TileState
-    harvest: int
-    fert_collect: int
-    cost: list[int]
-    produce: list[int]
-
-
-@dataclass(frozen=True)
-class Edge:
-    """One CSR edge, decoded: `from_id -> to_id` by `chain_id`, for `entity_code`."""
-
-    from_id: int
-    to_id: int
-    chain_id: int
-    entity_code: int
-    cost: tuple[int, ...]
-    produce: tuple[int, ...]
-
-    @property
-    def ops(self) -> tuple[str, ...]:
-        return chain_ops(self.chain_id)
-
-    @property
-    def name(self) -> str:
-        return chain_name(self.ops)
-
-    @property
-    def entity(self) -> str | None:
-        return entity_of_code(self.entity_code)
+    REPORT_PATH.write_text(json.dumps(report, indent=2) + "\n")
+    back = TileGraph.load(GRAPH_PATH)
+    print("RELOAD", back.n_states, back.n_edges, back.entity, back.engine_tag)
+    try:
+        shown = GRAPH_PATH.relative_to(Path.cwd()).as_posix()
+    except ValueError:      # run from another cwd: print the absolute path
+        shown = GRAPH_PATH.as_posix()
+    print("model:", shown)
+    return 0
 
 
-@dataclass(frozen=True)
-class TileGraph:
-    """One tile's lifecycle graph: day-invariant states, one-day edges (CSR).
-
-    `edge_cost` / `edge_produce` are (n_edges, N_RESOURCE) int matrices and are
-    never netted. State `s` owns the edge slice
-    [edge_offsets[s], edge_offsets[s + 1]).
-    """
-
-    spec: BuildSpec
-    report: BuildReport
-    n_states: int
-    state_keys: np.ndarray
-    key_index: dict[int, int]
-    edge_offsets: np.ndarray
-    edge_next: np.ndarray
-    edge_chain: np.ndarray
-    edge_entity: np.ndarray
-    edge_cost: np.ndarray
-    edge_produce: np.ndarray
-    edge_steps: np.ndarray            # engine steps the chain spends (upper
-                                      # bracket on LABOR_HOURS, which counts
-                                      # worker ops only - see chains.OP_STEPS)
-    engine_tag: str
-
-    @property
-    def entity(self) -> str | None:
-        return self.spec.entity
-
-    @property
-    def entity_kind(self) -> str:
-        return self.spec.entity_kind
-
-    @property
-    def n_edges(self) -> int:
-        return int(self.edge_offsets[-1])
-
-    def state_id_of(self, state: TileState) -> int:
-        pos = self.key_index.get(state.pack())
-        if pos is None:
-            raise KeyError(f"state {state.describe()} not in graph")
-        return pos
-
-    def state_of(self, state_id: int) -> TileState:
-        return TileState.unpack(int(self.state_keys[state_id]))
-
-    def edges_of(self, state_id: int) -> tuple[int, int]:
-        return (int(self.edge_offsets[state_id]),
-                int(self.edge_offsets[state_id + 1]))
-
-    def cost_of(self, edge: int, res: str) -> int:
-        """Cost units of one edge, by resource name."""
-        return int(self.edge_cost[edge][RESOURCE_ID[res]])
-
-    def produce_of(self, edge: int, res: str) -> int:
-        """Produced units of one edge, by resource name."""
-        return int(self.edge_produce[edge][RESOURCE_ID[res]])
-
-    def edge_at(self, state_id: int, row: int) -> Edge:
-        """Decode CSR row `row` (a global edge index) of `state_id`."""
-        return Edge(state_id, int(self.edge_next[row]),
-                    int(self.edge_chain[row]), int(self.edge_entity[row]),
-                    tuple(int(v) for v in self.edge_cost[row]),
-                    tuple(int(v) for v in self.edge_produce[row]))
-
-    def edges_from(self, state_id: int) -> Iterator[Edge]:
-        lo, hi = self.edges_of(state_id)
-        return (self.edge_at(state_id, row) for row in range(lo, hi))
-
-    def save(self, path: Path) -> None:
-        """Write the artifact: CSR arrays, cost/produce matrices, metadata."""
-        path = Path(path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        np.savez_compressed(
-            path, entity=self.spec.entity or "",
-            merged=bool(self.spec.entity is None),
-            entity_kind=self.entity_kind, n_states=self.n_states,
-            state_keys=self.state_keys, edge_offsets=self.edge_offsets,
-            edge_next=self.edge_next, edge_chain=self.edge_chain,
-            edge_entity=self.edge_entity, edge_cost=self.edge_cost,
-            edge_produce=self.edge_produce, edge_steps=self.edge_steps,
-            engine_tag=self.engine_tag,
-            registry=registry_fingerprint(),
-            n_expanded=self.report.n_expanded,
-            n_noop_edges=self.report.n_noop_edges)
-
-    @classmethod
-    def load(cls, path: Path) -> "TileGraph":
-        """Read an artifact written by `save` (tag and registry must match).
-
-        An edge stores its chain as an id, i.e. as a POSITION in `CHAIN_NAMES`
-        (owner's item 7), so an artifact is only readable together with the
-        registry that produced it; a mismatch means the ids would decode into
-        other chains and is refused instead.
-        """
-        data = np.load(Path(path), allow_pickle=True)
-        tag = str(data["engine_tag"])
-        if tag != ENGINE_TAG:
-            raise ValueError(f"graph engine tag {tag!r} != {ENGINE_TAG!r}; "
-                             "rebuild the cache")
-        registry = str(data["registry"])
-        if registry != registry_fingerprint():
-            raise ValueError(
-                f"artifact built with chain registry {registry!r}, this code has "
-                f"{registry_fingerprint()!r}: chain ids shifted, rebuild it")
-        entity = str(data["entity"]) or None
-        keys = data["state_keys"]
-        kinds: dict[str, int] = {}
-        for key in keys:
-            kind = TileState.unpack(int(key)).kind
-            kinds[kind] = kinds.get(kind, 0) + 1
-        spec = BuildSpec(entity=entity)
-        return cls(
-            spec=spec,
-            report=BuildReport(spec=spec, n_states=int(data["n_states"]),
-                               n_edges=int(data["edge_offsets"][-1]),
-                               n_expanded=int(data["n_expanded"]),
-                               n_noop_edges=int(data["n_noop_edges"]),
-                               kinds=kinds),
-            n_states=int(data["n_states"]), state_keys=keys,
-            key_index={int(k): i for i, k in enumerate(keys)},
-            edge_offsets=data["edge_offsets"], edge_next=data["edge_next"],
-            edge_chain=data["edge_chain"], edge_entity=data["edge_entity"],
-            edge_cost=data["edge_cost"], edge_produce=data["edge_produce"],
-            edge_steps=data["edge_steps"], engine_tag=tag)
+if __name__ == "__main__":
+    raise SystemExit(main())
 
 
+# ------------------------------------------------------- sim + state helpers
 # ------------------------------------------------------- sim + state helpers
 
 class ChainSpansDays(RuntimeError):

@@ -24,7 +24,7 @@ import numpy as np
 
 from agent.world.vocabulary import DUAL, G_IX, GOODS, MAX_ORDERS, SHED_CAP
 
-from belief.schemas import DaySchedule, MarketState, OrderBook, SellIntent, field_of
+from agent.belief.schemas import DaySchedule, MarketState, OrderBook, SellIntent, field_of
 
 
 def rival_supply_stub(goods: tuple[str, ...] = GOODS) -> tuple[np.ndarray, float]:

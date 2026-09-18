@@ -37,7 +37,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping, Sequence
 
-from belief.market import PRODUCTS, TURNS_PER_DAY
+from agent.belief.market import PRODUCTS, TURNS_PER_DAY
 
 SHED_CAPACITY = 100          # engine default; the run's config can override it
 MAX_ORDERS_PER_TURN = 10     # F031 - the engine drops the 11th silently
@@ -305,7 +305,7 @@ def market_queue(obs: Any, forecast_obj=None, *, harvest_expected: int = 0,
     (`harvest_expected`); until that is wired in, the caller passes its own
     estimate and this module says so on the result's assumptions.
     """
-    from belief.market import forecast as _forecast
+    from agent.belief.market import forecast as _forecast
     capacity = int(_get(config, "shedCapacity", SHED_CAPACITY))
     state = shed_state(obs, capacity=capacity)
     day = int(obs.get("day", 0)) if isinstance(obs, dict) else 0

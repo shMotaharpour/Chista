@@ -5,10 +5,10 @@ Entities: 5 crops (WHEAT, CARROT, TOMATO, STRAWBERRY, MELON) + 3 animals
 engine-verified edges (R003) and engine-driven pruning.
 """
 
-from tile_dp.tile_state import TileState, decode_tile
-from tile_dp.chains import CHAIN_NAMES, CHAIN_ID_OF, chain_ops, chain_id_of
-from tile_dp.graph import TileGraph, build_graph
-from tile_dp.contractor import (HORIZON_DAYS, PricedBoard, TileContractor,
+from agent.tile_dp.tile_state import TileState, decode_tile
+from agent.tile_dp.chains import CHAIN_NAMES, CHAIN_ID_OF, chain_ops, chain_id_of
+from agent.tile_dp.graph import TileGraph
+from agent.tile_dp.contractor import (HORIZON_DAYS, PricedBoard, TileContractor,
                                 price_board)
 
 __all__ = [

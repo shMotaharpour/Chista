@@ -37,8 +37,8 @@ from typing import Sequence
 
 import numpy as np
 
-from tile_dp.chains import N_RESOURCE, RESOURCE_ID
-from tile_dp.graph import TileGraph
+from agent.tile_dp.chains import N_RESOURCE, RESOURCE_ID
+from agent.tile_dp.graph import TileGraph
 
 # F029: 720 turns of 24 = 30 days, and shed goods at the end are worth
 # nothing — there is no liquidation day, so the horizon's value is exactly 0.

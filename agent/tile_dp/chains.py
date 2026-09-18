@@ -70,7 +70,7 @@ from pathlib import Path
 
 from kaggle_environments.envs.kaggriculture import kaggriculture as K
 
-from tile_dp.tile_state import (EMPTY_KIND_OF_STRUCTURE, EMPTY_KINDS,
+from agent.tile_dp.tile_state import (EMPTY_KIND_OF_STRUCTURE, EMPTY_KINDS,
                                 KIND_ANIMAL, KIND_EMPTY_COOP,
                                 KIND_EMPTY_PASTURE, KIND_NONE, KIND_PLANT,
                                 KIND_WEED, KEY_BITS, TURNS_PER_DAY,

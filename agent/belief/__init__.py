@@ -1,4 +1,4 @@
-"""belief/ — what the market and the rival are doing, and what to sell.
+"""agent/belief/ — what the market and the rival are doing, and what to sell.
 
 The sell side of the agent (issue #54, parent #8). Four pieces and a contract:
 
@@ -19,19 +19,19 @@ The sell side of the agent (issue #54, parent #8). Four pieces and a contract:
 docstrings; `tests/test_market_analyzer.py` guards the claims that matter.
 """
 
-from belief.opponent import (
+from agent.belief.opponent import (
     OpponentModel, drain_forecast, expected_price_curve, infer_rival_slot,
     quantile_price_floor,
 )
-from belief.schemas import (
+from agent.belief.schemas import (
     CarryRequirement, DaySchedule, DropRequirement, MarketState, OrderBook,
     PurchaseIntent, SellIntent, TileRequirement,
 )
-from belief.solvers import (
+from agent.belief.solvers import (
     default_schedules, maximin_mixed_lp, maximin_mixed_slsqp, round_tiles,
     season_plan_maximin, slot_game_matrix,
 )
-from belief.tracker import FlowRecord, MarketTracker
+from agent.belief.tracker import FlowRecord, MarketTracker
 
 __all__ = [
     "CarryRequirement", "DaySchedule", "DropRequirement", "FlowRecord",

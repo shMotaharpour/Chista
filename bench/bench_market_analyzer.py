@@ -33,11 +33,11 @@ from offline.fast_sim import FastSim
 from agent.world.prices import price_of, price_vec
 from agent.world.vocabulary import G_IX, GOODS, MAX_ORDERS, SHED_ACCESS, SHED_CAP
 
-from belief.opponent import OpponentModel, drain_forecast, infer_rival_slot
-from belief.solvers import (default_schedules, maximin_mixed_lp,
+from agent.belief.opponent import OpponentModel, drain_forecast, infer_rival_slot
+from agent.belief.solvers import (default_schedules, maximin_mixed_lp,
                             maximin_mixed_slsqp, season_plan_maximin,
                             slot_game_matrix, round_tiles)
-from belief.tracker import MarketTracker, committed_flow
+from agent.belief.tracker import MarketTracker, committed_flow
 
 NW_TARGETS = [(1, 1), (2, 2), (3, 1), (1, 3), (3, 3), (2, 4), (4, 2)]
 

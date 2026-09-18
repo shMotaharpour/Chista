@@ -20,16 +20,16 @@ budget are named TODOs on `columns.py` / `land.py` — the LP now exists, so the
 are measurable, but neither is computed here and no run claims them.
 """
 
-from planner.columns import (Choice, ClassMix, DAYS, Plan, ROW_NAMES,
+from agent.planner.columns import (Choice, ClassMix, DAYS, Plan, ROW_NAMES,
                              Violation, assign_tiles, counts,
                              demote_to_feasible, plan_from_board,
                              rounded_value, row_use, violations)
-from planner.land import (Candidate, LandPlanner, LandResult, best_land,
+from agent.planner.land import (Candidate, LandPlanner, LandResult, best_land,
                           candidates, prefix_cost)
-from planner.master import (ALPHA, COUPLING_IDS, ITER_CAP_DEFAULT, MARKET_IDS,
+from agent.planner.master import (ALPHA, COUPLING_IDS, ITER_CAP_DEFAULT, MARKET_IDS,
                             MasterResult, TOL_DUAL, CouplingSupply,
                             equilibrate, published_duals, supply_from_obs)
-from planner.repair import (Drop, RepairResult, land_step_price, order_cost,
+from agent.planner.repair import (Drop, RepairResult, land_step_price, order_cost,
                             repair_day)
 
 __all__ = [

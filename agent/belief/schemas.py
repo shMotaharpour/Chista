@@ -57,7 +57,7 @@ class MarketState:
         `belief.opponent`. The rival fields stay zero and say so: they need the
         tracker's residual history, and a caller that has it passes its own state.
         """
-        from belief.opponent import drain_forecast
+        from agent.belief.opponent import drain_forecast
         from agent.world.prices import price_table
         from agent.world.vocabulary import GOODS
 

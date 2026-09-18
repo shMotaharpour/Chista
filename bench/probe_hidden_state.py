@@ -35,8 +35,8 @@ import re
 
 from offline.fast_sim import FastSim
 
-from tile_dp import graph as G
-from tile_dp.tile_state import decode_tile
+from agent.tile_dp import graph as G
+from agent.tile_dp.tile_state import decode_tile
 
 
 def _decoder_keys() -> set[str]:

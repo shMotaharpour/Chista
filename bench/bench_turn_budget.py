@@ -104,12 +104,12 @@ def bench_sweep(runs: int = 5) -> int:
     tests/test_tile_dp_contractor.py): the sweep is what every replan pays for
     the whole board at once.
     """
-    from tile_dp.chains import N_RESOURCE, RESOURCE_ID
-    from tile_dp.contractor import TileContractor
-    from tile_dp.graph import TileGraph
+    from agent.tile_dp.chains import N_RESOURCE, RESOURCE_ID
+    from agent.tile_dp.contractor import TileContractor
+    from agent.tile_dp.graph import TileGraph
     from pathlib import Path
 
-    graph = TileGraph.load(Path("tile_dp/models/graph_tile_lifecycle.npz"))
+    graph = TileGraph.load(Path("agent/tile_dp/models/graph_tile_lifecycle.npz"))
     contractor = TileContractor(graph)
     p = np.zeros(N_RESOURCE)
     w = np.zeros(N_RESOURCE)

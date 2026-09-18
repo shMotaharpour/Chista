@@ -221,7 +221,7 @@ def forecast(obs: Any, *, days: int = 30,
     step = _step_of(obs)
     # The one snapshot (ARCHITECTURE §5 step 5): the forecast is a view of
     # `MarketState`, so the market has a single reader.
-    from belief.schemas import MarketState
+    from agent.belief.schemas import MarketState
     state = MarketState.from_obs(obs)
     inv: dict[str, float] = {item: float(state.inventory[i])
                              for i, item in enumerate(PRODUCTS)}

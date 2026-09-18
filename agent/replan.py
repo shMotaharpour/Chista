@@ -75,14 +75,15 @@ import numpy as np
 from kaggle_environments.envs.kaggriculture import kaggriculture as K
 
 from agent.obs import LOCKED_KEY, WorldView, _nearest_modelled, decode_world
-from tile_dp.chains import N_RESOURCE, RESOURCE_ID, chain_ops, entity_of_code
-from day.routing import plan_day
-from tile_dp.contractor import HORIZON_DAYS, TileContractor
-from tile_dp.graph import TileGraph
+from agent.tile_dp.chains import N_RESOURCE, RESOURCE_ID, chain_ops, entity_of_code
+from agent.day.routing import plan_day
+from agent.tile_dp.contractor import HORIZON_DAYS, TileContractor
+import agent.tile_dp as _tile_dp
+from agent.tile_dp.graph import TileGraph
 
 from pathlib import Path
 
-GRAPH_PATH = (Path(__file__).resolve().parents[1] / "tile_dp" / "models"
+GRAPH_PATH = (Path(_tile_dp.__file__).resolve().parent / "models"
               / "graph_tile_lifecycle.npz")
 
 # The engine's own hire cost is imported, never transcribed (R002): the n-th
@@ -238,7 +239,7 @@ def replan_day(runtime, obs, graph: TileGraph | None = None,
     # `CHISTA_MASTER=0` falls back to the flat stand-in quotes.
     import os
     if os.environ.get("CHISTA_MASTER", "1") == "1":
-        from planner.master import equilibrate, supply_from_obs
+        from agent.planner.master import equilibrate, supply_from_obs
         master = equilibrate(runtime, obs, contractor,
                              supply_from_obs(obs),
                              w_warm=getattr(runtime, "_master_w", None),
@@ -270,7 +271,7 @@ def replan_day(runtime, obs, graph: TileGraph | None = None,
     # The sell side (#15): the shed guard needs to know what today will bring in.
     # The compiler knows exactly (one unit per harvest chain is a lower bound for
     # the guard; the routes themselves publish the real arrivals to the queue).
-    from belief.shed import market_queue
+    from agent.belief.shed import market_queue
     harvest_estimate = sum(sum(y.values()) for y in yields)
     sells = market_queue(obs, harvest_expected=harvest_estimate)
     _poll(deadline)

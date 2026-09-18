@@ -51,7 +51,7 @@ def _sort_market(orders: list[list]) -> list[list]:
     from drifting. It is private there, which is why this is a thin
     wrapper rather than a copy.
     """
-    from planner.repair import _sort_market as sorter
+    from agent.planner.repair import _sort_market as sorter
     return sorter(orders)
 
 
@@ -73,7 +73,7 @@ class MarketLayer:
         """This day's per-turn order queue (`queue[hour] -> [order, ...]`)."""
         if self.mode == "dump":
             return self._dump_queue(obs)
-        from belief.shed import market_queue
+        from agent.belief.shed import market_queue
         queue = market_queue(obs, config=self.config, sort_market=_sort_market)
         self.last = {"mode": self.mode, "hours_with_orders":
                      sum(1 for row in queue if row)}

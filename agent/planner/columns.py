@@ -44,7 +44,7 @@ from typing import Iterable, Sequence
 
 import numpy as np
 
-from tile_dp.chains import N_RESOURCE, RESOURCE_ID
+from agent.tile_dp.chains import N_RESOURCE, RESOURCE_ID
 
 # F029: 720 turns of 24 = 30 days, and the season ends with no liquidation.
 DAYS = 30

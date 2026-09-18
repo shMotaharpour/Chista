@@ -117,7 +117,7 @@ except ImportError:                     # scipy is optional at import time
     # The guard is import hygiene, not a forecast. A bare module-level
     # import takes the WHOLE SUBMISSION down at load if scipy is missing
     # (measured: an import hook that blocks scipy raises straight out of
-    # `import planner.master`, so the fallback below could never run —
+    # `import agent.planner.master`, so the fallback below could never run —
     # there is nothing left to fall back FROM). Three lines buy that
     # back, and they route into the solve-failure path that has to exist
     # anyway. No claim is made here about what any image carries: the
@@ -128,8 +128,8 @@ except ImportError:                     # scipy is optional at import time
     HAS_SCIPY = False
 
 from agent.replan import dual_stand_in
-from tile_dp.chains import N_RESOURCE, RESOURCE_ID
-from tile_dp.contractor import PricedBoard
+from agent.tile_dp.chains import N_RESOURCE, RESOURCE_ID
+from agent.tile_dp.contractor import PricedBoard
 
 LABOR_ID = RESOURCE_ID["LABOR_HOURS"]
 FERT_ID = RESOURCE_ID["FERTILIZER"]
@@ -360,8 +360,8 @@ def _product_price_path(obs, days: int, p_flat: np.ndarray,
     if os.environ.get("CHISTA_MARKET_FORECAST", "1") != "1":
         return p_flat, "flat stand-in (CHISTA_MARKET_FORECAST=0)"
     try:
-        from belief.market import forecast as _forecast
-        from belief.market import price_paths
+        from agent.belief.market import forecast as _forecast
+        from agent.belief.market import price_paths
         fc = _forecast(obs, days=days, config=config)
         paths = price_paths(fc, days=days)
     except Exception as exc:                     # noqa: BLE001 - degrade

@@ -42,8 +42,8 @@ from agent.world.vocabulary import (
 
 from kaggle_environments.envs.kaggriculture import kaggriculture as K
 
-from belief.schemas import field_of
-from belief.tracker import FlowRecord, MarketTracker
+from agent.belief.schemas import field_of
+from agent.belief.tracker import FlowRecord, MarketTracker
 
 
 class OpponentModel:

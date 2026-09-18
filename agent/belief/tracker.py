@@ -32,7 +32,7 @@ from agent.world.vocabulary import (
     CENTER_INTERVAL, CENTER_PRODUCTS, DUAL, G_IX, GOODS, MAX_ORDERS,  # noqa: F401
     SELL_ONLY, SHED_ACCESS, SHED_CAP, SHOP_BASKET, SHOP_INTERVAL,
 )
-from belief.schemas import Turn, field_of
+from agent.belief.schemas import Turn, field_of
 
 from kaggle_environments.envs.kaggriculture import kaggriculture as K
 
