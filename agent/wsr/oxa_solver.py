@@ -440,7 +440,7 @@ def _dispatch(
         if not remaining_targets:
             break
 
-        entry_cell = SHED_ACCESS[entry_assignments[worker.index]]
+        entry_cell = SHED_ACCESS[SHED_ACCESS_NAMES.index(entry_assignments[worker.index])]
         sched_tasks = _build_worker_route(
             worker_index=worker.index,
             earliest_start=worker.earliest_start,
@@ -461,7 +461,7 @@ def _dispatch(
                 worker_index=worker.index,
                 start_time=worker.earliest_start,
                 tasks=sched_tasks,
-                start_cell=SHED_ACCESS[entry_assignments[worker.index]],
+                start_cell=SHED_ACCESS[SHED_ACCESS_NAMES.index(entry_assignments[worker.index])],
             ))
 
     return routes

@@ -242,7 +242,7 @@ def _check_placement(instance: Instance, solution: Solution, tasks_by_id: dict[s
             continue
         entry_name = entry_assignment.get(route.worker_index)
         if entry_name is None: continue
-        entry_cell = SHED_ACCESS[entry_name]
+        entry_cell = SHED_ACCESS[SHED_ACCESS_NAMES.index(entry_name)]
         first = route.tasks[0]
         task = tasks_by_id.get(first.task_id)
         if task is None: continue
