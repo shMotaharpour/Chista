@@ -39,7 +39,7 @@ not the sum over the routes that carry tasks (which reddens
 """
 import pytest
 
-from agent.wsr.fibonacci import fibonacci_cost
+from agent.world.rules import hire_cost
 from agent.wsr.models import (Cell, Instance, Item, MajorTask, Action,
                               MinorTask, ScheduledTask, Solution, Worker, WorkerRoute)
 from agent.wsr.solvers.cpsat_solver import CpSatConfig, cpsat_binarySearch
@@ -198,7 +198,7 @@ def test_a_day_that_skips_lower_index_hands_pays_for_them():
     verification = verify_solution(instance, result.solution)
     assert verification.is_valid, verification.violations
     max_active = max(route.worker_index for route in result.solution.routes)
-    payroll = sum(fibonacci_cost(i) for i in range(max_active + 1))
+    payroll = sum(hire_cost(i) for i in range(max_active + 1))
     assert result.solution.hired == payroll
     assert verification.total_cost == payroll
 
