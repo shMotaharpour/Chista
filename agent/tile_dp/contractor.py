@@ -1,33 +1,28 @@
-"""TileContractor — the pricing oracle: a vectorised backward DP over the tile
-graph, plus forward plan recovery (issue #11, M2/D2-4).
+"""TileContractor — the pricing oracle: a backward DP over the tile graph, plus forward
+plan recovery.
 
-The graph (`agent/artifact/tile_graph.npz`) is **day-invariant and
-position-invariant**: every tile on the board, on every day, faces the same
-state-action graph. So one backward sweep prices the whole board at once —
-there is no per-tile solve and no per-day graph rebuild. A loop over tiles in
-the sweep means the property the architecture rests on has been lost.
-
-The recurrence (F029: the season ends with no liquidation, so `V_days ≡ 0`):
+The graph (`agent/artifact/tile_graph.npz`) is day-invariant and position-invariant: every
+tile, on every day, faces the same state-action graph. One backward sweep therefore prices
+the whole board — no per-tile solve and no per-day rebuild. A loop over tiles in the sweep
+means that property has been lost.
 
     V_d(s) = max over edges e out of s of
                  produce(e)·p_d − cost(e)·w_d + V_{d+1}(next(e))
 
-Three array ops per day, over the shipped CSR: matvec, add, segmented max. The
-argument max is **not** stored (that would be 30 × 15708 policies instead of an
-80 KB table); plans are recovered forward, for the tiles we actually own.
+The season ends with no liquidation, so the terminal row of `V` is zero. The argmax is not
+stored; plans are recovered forward, for the tiles we own.
 
 Two contracts come with the graph:
 
-- **R006 — non-negativity.** The graph is dominance-pruned, which is
-  optimality-preserving only while `p >= 0` and `w >= 0` componentwise. The
-  check runs on entry, every call: a negative component makes the pruned graph
-  silently wrong, with no symptom to notice.
-- **No empty edge slices.** `np.maximum.reduceat` returns the element *at* the
-  index for an empty group rather than an identity, so a state with no
-  out-edges would price as garbage instead of raising. Checked at construction.
+- **R006 — non-negativity.** The graph is dominance-pruned, and that pruning preserves the
+  optimum only while `p >= 0` and `w >= 0` componentwise. A negative component makes a
+  pruned edge the true optimum and this DP silently wrong, so the check runs on entry.
+- **No empty edge slices.** `np.maximum.reduceat` returns the element *at* the index for an
+  empty group instead of an identity, so a state with no out-edges would price as garbage.
+  Checked at construction.
 
-Cost and production are kept as two separate matrices and are never netted:
-they are priced by different vectors (`produce` at prices, `cost` at wages).
+Cost and production are two matrices and are never netted: they are priced by different
+vectors (`produce` at prices, `cost` at wages).
 """
 
 from __future__ import annotations
@@ -41,11 +36,11 @@ from agent.world.rules import TURNS_PER_DAY
 from agent.tile_dp.ledger import RES_LABOR, N_RESOURCE, RESOURCE_ID
 from agent.tile_dp.graph import TileGraph
 
-# F029: 720 turns of 24 = 30 days, and shed goods at the end are worth
-# nothing — there is no liquidation day, so the horizon's value is exactly 0.
+# The season's days. Shed goods at the end are worth nothing: there is no liquidation, so
+# the horizon's value is exactly zero.
 HORIZON_DAYS = 30
-# The sweep's arithmetic dtype (issue #11 §2): float32 keeps the two 18217×18
-# matrices at ~1.1 MB each and stops numpy upcasting per call.
+# The sweep's arithmetic dtype: the edge matrices are held in it, so numpy does not
+# upcast the whole sweep on every call.
 DTYPE = np.float32
 LABOR_ID = RESOURCE_ID[RES_LABOR]
 
@@ -53,9 +48,7 @@ LABOR_ID = RESOURCE_ID[RES_LABOR]
 def _check_non_negative(name: str, values: np.ndarray) -> None:
     """R006's guard: the pruned graph is only optimal for non-negative vectors.
 
-    Runs in dev mode AND in fast mode (R004): the check is one pass over 18
-    numbers, and the failure it prevents is silent, so there is nothing to be
-    saved by skipping it.
+    The failure it prevents is silent, so the check is not skipped for speed.
     """
     if values.size and float(np.min(values)) < 0.0:
         worst = float(np.min(values))
@@ -64,18 +57,17 @@ def _check_non_negative(name: str, values: np.ndarray) -> None:
             "is dominance-pruned and that pruning is optimality-preserving "
             "only while every price and wage is >= 0 componentwise. A negative "
             "component makes a pruned edge the true optimum, so this DP would "
-            "return a silently wrong plan. The master (#12) must clamp its "
-            "duals onto the non-negative orthant before pricing.")
+            "return a silently wrong plan: clamp the duals onto the non-negative "
+            "orthant before pricing.")
 
 
 @dataclass(frozen=True)
 class PricedBoard:
-    """What the master (#12) needs back from one pricing call.
+    """What one pricing call gives back.
 
-    `values` is the whole sweep — `(days + 1, n_states)`, with the terminal
-    row identically zero. `plans` are the recovered columns' schedules,
-    `columns` their resource use and `produce` their output, one row per owned
-    tile, in the order `owned_states` was given.
+    `values` is the whole sweep, with the terminal row zero. `columns` and `produce` are one
+    row per owned tile, in the order `owned_states` was given, and `plans` are the recovered
+    schedules.
     """
 
     values: np.ndarray            # (days + 1, n_states) float32 — V[d, s]
@@ -100,12 +92,11 @@ class PricedBoard:
 
 
 class TileContractor:
-    """The sweep's buffers, cast once: the runtime prices the board every day.
+    """The sweep's buffers, cast once.
 
-    `price_board()` builds one of these per call, which is the convenient path
-    for tests and one-off pricing; a caller that prices every turn (the
-    replanner) holds one contractor and reuses it, so the float32 casts and the
-    slice check happen once per process rather than once per turn.
+    `price_board()` builds one per call, which is the convenient path for a one-off pricing;
+    a caller that prices every turn holds one contractor and reuses it, so the casts and the
+    slice check happen once per process instead of once per turn.
     """
 
     def __init__(self, graph: TileGraph, days: int = HORIZON_DAYS) -> None:
@@ -116,8 +107,7 @@ class TileContractor:
         self.edge_next = np.ascontiguousarray(graph.edge_next, dtype=np.intp)
         self.edge_chain = np.ascontiguousarray(graph.edge_chain, dtype=np.int64)
         self.edge_starts = self.edge_offsets[:-1]
-        # C-contiguous float32 once at load (issue #11 §2): 18217×18 is 1.1 MB
-        # per matrix, and casting per call would upcast the whole sweep.
+        # Cast once at load: casting per call would upcast the whole sweep.
         self.EP = np.ascontiguousarray(graph.edge_produce, dtype=DTYPE)
         self.EC = np.ascontiguousarray(graph.edge_cost, dtype=DTYPE)
         self._assert_no_empty_slices()
@@ -126,9 +116,8 @@ class TileContractor:
     def _assert_no_empty_slices(self) -> None:
         """Every state must own at least one edge (see the module docstring).
 
-        This is the `reduceat` trap: an empty group prices as the element at
-        that index, i.e. as a plausible wrong number rather than an error.
-        Asserted at load, not discovered as a silent wrong value.
+        The `reduceat` trap: an empty group prices as the element at that index, a plausible
+        wrong number instead of an error.
         """
         widths = np.diff(self.edge_offsets)
         empty = np.flatnonzero(widths == 0) if widths.size else []
@@ -166,16 +155,12 @@ class TileContractor:
                ) -> tuple[np.ndarray, np.ndarray]:
         n_edges = int(self.edge_next.size)
         rewards = np.empty((self.days, n_edges), dtype=DTYPE)
-        # V[days] is the terminal condition itself, not a modelling choice:
-        # F029 — no liquidation, shed goods are worth nothing at season end.
+        # The terminal row is the season's own end: no liquidation, so shed goods are worth
+        # nothing and V[days] is zero.
         V = np.zeros((self.days + 1, self.n_states), dtype=DTYPE)
         for d in range(self.days - 1, -1, -1):
-            # Two matvecs, priced by their own vector — and measured: folding
-            # produce and cost into one [EP | −EC] @ [p ; w] looks cheaper (one
-            # pass over the matrices instead of two) and is not. On this box it
-            # cost 85-126 ms a sweep against 8.5-10.4 ms here, because the wider
-            # gemv loses to BLAS thread dispatch. The two-matvec form is the
-            # measured one; do not "optimise" it back.
+            # Produce and cost are priced by their own vector, in two passes. Folding them
+            # into one wider matvec measures slower: the wider gemv loses to BLAS dispatch.
             r = self.EP @ p[d] - self.EC @ w[d]
             rewards[d] = r
             cand = r + V[d + 1][self.edge_next]
@@ -186,20 +171,12 @@ class TileContractor:
     def _recover(self, V: np.ndarray, rewards: np.ndarray, owned: np.ndarray):
         """Forward walk for every owned tile, in lockstep over the days.
 
-        The sweep does not keep the argmax (30 × 15708 policies is not worth
-        an 80 KB value table), so plans are recovered forward.
+        The sweep does not keep the argmax, so plans are recovered forward. The tiles walk
+        together: each day gathers the candidates for all owned tiles once and segments them
+        once, instead of one small argmax per tile per day — per-tile slices pay full numpy
+        dispatch cost and do not fit.
 
-        The tiles walk TOGETHER: on day `d` the candidate array is gathered once
-        for all owned tiles and segmented once, instead of 30 × n_owned small
-        argmaxes. That is not a micro-optimisation: measured on the dev box
-        (issue #11 §7), the obvious per-tile loop costs **20.8 ms for 100
-        tiles** against this issue's 5 ms ceiling, because every ~25-element
-        slice pays full numpy dispatch cost. The lockstep form is what fits.
-
-        Ties break to the **lowest edge index** — `searchsorted` takes the first
-        element equal to the segment maximum — so a plan is reproducible run to
-        run. A plan that varied would make the arena's measurements
-        unrepeatable.
+        Ties break to the lowest edge index, so a plan is reproducible run to run.
         """
         days = self.days
         n_owned = int(owned.size)
@@ -224,13 +201,11 @@ class TileContractor:
             chosen = edge_ix[hits[np.searchsorted(segment[hits], lane)]]
             rows[d] = chosen
             states_at[d] = states
-            # transposed on purpose: every per-day array the board
-            # publishes is (n_owned, days), and this one was (days, n_owned).
-            # It never showed until the rung priced MORE than one tile
-            # (measured: 100 tiles -> IndexError at [column, 0]).
+            # Transposed on purpose: every per-day array the board publishes is
+            # (n_owned, days).
             entities_at[:, d] = self.graph.edge_entity[chosen]
-            # Per-day coefficients, not only the sum: the master (#12) couples
-            # on labour[d], inputs[r][d] and produce[r][d].
+            # Per-day coefficients, not only the sum: a coupling layer works on
+            # labour[d], inputs[r][d] and produce[r][d].
             per_day_cost[:, d, :] = self.graph.edge_cost[chosen]
             per_day_produce[:, d, :] = self.graph.edge_produce[chosen]
             states = self.edge_next[chosen]
@@ -246,9 +221,7 @@ class TileContractor:
     def price(self, p, w, owned_states) -> PricedBoard:
         """Price the board: one sweep for every owned tile, plus their columns.
 
-        `owned_states` are graph state ids, one per tile we own — produced by
-        `agent/obs.py`'s decode (#10), which already maps keys the graph does
-        not model onto their nearest modelled neighbour.
+        `owned_states` are graph state ids, one per tile we own.
         """
         p = self._as_dual(p, "prices")
         w = self._as_dual(w, "wages")
@@ -275,9 +248,9 @@ class TileContractor:
 
 def price_board(graph: TileGraph, p, w, owned_states: Sequence[int],
                 days: int = HORIZON_DAYS) -> PricedBoard:
-    """One pricing call: the sweep plus the recovered columns (issue #11 §5).
+    """One pricing call: the sweep plus the recovered columns.
 
-    Builds a `TileContractor`, so the float32 casts pay once per call. A caller
-    pricing every turn should hold the contractor instead — see the class.
+    Builds a `TileContractor`, so the casts pay once per call; a caller pricing every turn
+    should hold the contractor instead.
     """
     return TileContractor(graph, days=days).price(p, w, owned_states)
