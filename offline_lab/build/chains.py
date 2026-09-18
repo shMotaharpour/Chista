@@ -295,18 +295,6 @@ def applicable(ops: tuple[str, ...], age: int | None, yield_units: int | None,
         low, high = _fert_window(crop)
         if not low <= age <= high:
             return False
-    if crop is not None and UnitAction.HARVEST.value in ops:
-        # HARVEST leaves the tile bare on a ONE-SHOT crop and leaves the plant standing on
-        # an ongoing one, so what may follow differs. The chains are entity-agnostic and
-        # carry both branches; this is where the crop decides which one is real. A chain
-        # that gets it wrong is refused by the engine and the tile turns to WEED
-        # (kaggriculture.py:453-468, :920-933).
-        after = ops[ops.index(UnitAction.HARVEST.value) + 1:]
-        if after:
-            allowed = (ACTIONS_BY_KIND[TileKind.PLANT] if CROP_RULES[crop]["ongoing"]
-                       else ACTIONS_BY_KIND[TileKind.NONE])
-            if after[0] not in allowed:
-                return False
     if "HARVEST" in ops:
         if yield_units is not None and yield_units <= 0:
             return False
