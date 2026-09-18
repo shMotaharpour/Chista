@@ -32,7 +32,7 @@ import numpy as np
 
 from agent.tile_dp.chains import (chain_name, chain_ops, contract_id,
                                   registry_fingerprint)
-from agent.tile_dp.tile_state import KEY_BITS, TileState
+from agent.tile_dp.tile_state import KEY_BITS, TileState, TileZeroCode
 
 #: Identity of the artifact contract, COMPUTED from its inputs (chains.contract_id).
 CONTRACT_ID = contract_id()
@@ -152,7 +152,7 @@ class TileGraph:
         return pos
 
     def state_of(self, state_id: int) -> TileState:
-        return TileState.unpack(int(self.state_keys[state_id]))
+        return TileState.unpack(TileZeroCode(int(self.state_keys[state_id])))
 
     def edges_of(self, state_id: int) -> tuple[int, int]:
         return (int(self.edge_offsets[state_id]),

@@ -1,0 +1,33 @@
+{
+  "name": "tile_graph",
+  "kind": "tile_graph",
+  "file": "tile_graph.npz",
+  "contract": "tile-dp/reg=afcd49e1fb3d1f3c+eng=a2278746+tpd=24+pb=30+bld=eddb1014",
+  "engine": "a2278746",
+  "registry": "afcd49e1fb3d1f3c",
+  "stats": {
+    "states": 685,
+    "edges": 18217,
+    "kinds": {
+      "NONE": 1,
+      "PLANT": 402,
+      "EMPTY_COOP": 1,
+      "ANIMAL": 279,
+      "EMPTY_PASTURE": 1,
+      "WEED": 1
+    },
+    "edges_per_entity": {
+      "WHEAT": 883,
+      "CARROT": 825,
+      "TOMATO": 1351,
+      "STRAWBERRY": 1980,
+      "MELON": 1284,
+      "GOOSE": 3340,
+      "COW": 4084,
+      "SHEEP": 4469,
+      "TILE": 1
+    }
+  },
+  "source": "offline_lab.build.graph:build_graph",
+  "created_utc": "2026-09-17T15:27:00Z"
+}

@@ -51,14 +51,15 @@ from kaggle_environments.envs.kaggriculture import kaggriculture as K
 
 from offline_lab.fast_sim import FastSim
 
-import agent.tile_dp as _tile_dp
+from agent.artifact import artifact_path, write_info
 from agent.world.rules import ANIMAL_RULES, CROP_RULES
 from agent.tile_dp.chains import (CONSTRUCTIVE_OPS, ENTITY_CODE, ENTITY_NAMES,
                                   MARKET_OPS, N_RESOURCE, OP_STEPS, PASS,
                                   RESOURCE_ID, chain_id_of, chain_name, chain_ops,
                                   chain_steps, chains_for, contract_id, cost_vector,
                                   domain_ok, entity_code_of, entity_of_code,
-                                  is_animal, produce_vector, registry_fingerprint)
+                                  engine_fingerprint, is_animal, produce_vector,
+                                  registry_fingerprint)
 from agent.tile_dp.graph import (ENGINE_TAG, BuildReport, BuildSpec, ChainOutcome,
                                  Edge, TileGraph)
 from agent.tile_dp.tile_state import (EMPTY_KIND_OF_STRUCTURE, EMPTY_KINDS,
@@ -716,7 +717,7 @@ def build_graph(entity: str | None = None, progress: bool = False) -> TileGraph:
 
 
 def main() -> int:
-    MODEL_DIR.mkdir(parents=True, exist_ok=True)
+    GRAPH_PATH.parent.mkdir(parents=True, exist_ok=True)
     t0 = time.time()
     g = build_graph()
     g.save(GRAPH_PATH)
@@ -731,13 +732,15 @@ def main() -> int:
     for code in g.edge_entity:
         name = entity_of_code(int(code)) or "TILE"
         by_entity[name] = by_entity.get(name, 0) + 1
-    report = {"contract": g.engine_tag,
-              "registry": registry_fingerprint(),
-              "entities": {"TILE": {"nodes": g.n_states, "edges": g.n_edges,
-                                    "kinds": g.report.kinds,
-                                    "merged_edges_for_entity": by_entity}}}
-
-    REPORT_PATH.write_text(json.dumps(report, indent=2) + "\n")
+    info = write_info(NAME, kind="tile_graph", file=GRAPH_PATH.name,
+                      contract=g.engine_tag,
+                      engine=engine_fingerprint(),
+                      registry=registry_fingerprint(),
+                      stats={"states": g.n_states, "edges": g.n_edges,
+                             "kinds": g.report.kinds,
+                             "edges_per_entity": by_entity},
+                      source="offline_lab.build.graph:build_graph")
+    print("info:", info.name)
     back = TileGraph.load(GRAPH_PATH)
     print("RELOAD", back.n_states, back.n_edges, back.entity, back.engine_tag)
     try:

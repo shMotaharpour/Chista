@@ -14,6 +14,7 @@ always did, now defined once in world.
 from __future__ import annotations
 
 from dataclasses import dataclass, fields
+from typing import NewType
 
 from kaggle_environments.envs.kaggriculture import kaggriculture as K
 
@@ -81,11 +82,16 @@ KEY_FIELDS: tuple[tuple[str, int], ...] = (
 KEY_BITS = sum(width for _, width in KEY_FIELDS)
 
 
+#: The packed code of a day-start tile: an int, but not any int - it is a position in
+#: the bit layout below, and `unpack` is the only way back to a state.
+TileZeroCode = NewType("TileZeroCode", int)
+
+
 @dataclass(frozen=True)
 class TileState(TileHourZero):
     """A day-start tile that can be packed into the DP's node key."""
 
-    def pack(self) -> int:
+    def pack(self) -> TileZeroCode:
         # Layout and widths live in KEY_FIELDS: the shift of every field is derived from
         # the widths, never hand-written, so fields cannot overlap.
         key = 0
@@ -97,10 +103,10 @@ class TileState(TileHourZero):
                                  f"bits ({self.describe()})")
             key |= value << shift
             shift += width
-        return key
+        return TileZeroCode(key)
 
     @classmethod
-    def unpack(cls, key: int) -> "TileState":
+    def unpack(cls, key: TileZeroCode) -> "TileState":
         """Inverse of `pack` (a key outside the layout raises)."""
         if not 0 <= key < (1 << KEY_BITS):
             raise ValueError(f"tile key {key} is outside the {KEY_BITS}-bit layout")

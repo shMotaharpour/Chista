@@ -78,13 +78,12 @@ from agent.obs import LOCKED_KEY, WorldView, _nearest_modelled, decode_world
 from agent.tile_dp.chains import N_RESOURCE, RESOURCE_ID, chain_ops, entity_of_code
 from agent.day.routing import plan_day
 from agent.tile_dp.contractor import HORIZON_DAYS, TileContractor
-import agent.tile_dp as _tile_dp
+from agent.artifact import artifact_path
 from agent.tile_dp.graph import TileGraph
 
 from pathlib import Path
 
-GRAPH_PATH = (Path(_tile_dp.__file__).resolve().parent / "models"
-              / "graph_tile_lifecycle.npz")
+GRAPH_PATH = artifact_path("tile_graph", ".npz")
 
 # The engine's own hire cost is imported, never transcribed (R002): the n-th
 # hire of a day costs `_hire_cost(n)`. A hand hired at hour 0 first acts at
