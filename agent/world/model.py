@@ -23,6 +23,10 @@ The engine's own vocabulary, in its own words:
 Each enum is written out rather than generated, so a reader (and a type checker) sees
 the members; the tuple constants are then derived from the enums, so there is still
 one source for each name.
+
+These are `str` enums, so a member equals its string (`Product.WHEAT == "WHEAT"`) and
+can be used as a dict key either way. One trap: `str(member)` is `"Product.WHEAT"`, not
+`"WHEAT"` — read `.value` when a plain string is wanted.
 """
 
 from __future__ import annotations

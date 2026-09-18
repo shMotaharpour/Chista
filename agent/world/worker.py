@@ -15,10 +15,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 
+from agent.world.action import Action
 from agent.world.board import Cell, in_board
 from agent.world.model import Move
 from agent.world.rules import TURNS_PER_DAY
-from agent.world.tile import Action
 
 #: What a move does to a cell (kaggriculture.py:88-93).
 DELTA_OF_MOVE: dict[str, Cell] = {
@@ -45,7 +45,7 @@ class WorkerTrace:
         if not 0 <= hour < len(self.hours):
             raise ValueError(f"hour {hour} is outside the {len(self.hours)}-turn day")
         hours = list(self.hours)
-        hours[hour] = tuple(action) if action is not None else None
+        hours[hour] = action
         return replace(self, hours=tuple(hours))
 
     # --- what it did -------------------------------------------------------- #
@@ -69,7 +69,7 @@ class WorkerTrace:
 
     def ops(self) -> tuple[str, ...]:
         """The op of every recorded action, in hour order."""
-        return tuple(str(a[0]) for a in self.hours if a is not None)
+        return tuple(str(a.op.value) for a in self.hours if a is not None)
 
     # --- where it is -------------------------------------------------------- #
 
@@ -79,8 +79,8 @@ class WorkerTrace:
         is ignored here too."""
         x, y = self.start
         for action in self.hours[:hour]:
-            if action is not None and action[0] in DELTA_OF_MOVE:
-                dx, dy = DELTA_OF_MOVE[action[0]]
+            if action is not None and action.op in DELTA_OF_MOVE:
+                dx, dy = DELTA_OF_MOVE[action.op]
                 if in_board((x + dx, y + dy)):
                     x, y = x + dx, y + dy
         return (x, y)

@@ -16,6 +16,14 @@ Cell = tuple[int, int]
 QUADRANTS: tuple[str, ...] = ("NW", "NE", "SW", "SE")
 
 
+def tile_at(tiles: list, cell: Cell) -> object:
+    """The engine stores the board as `tiles[y][x]`: the OUTER list is y, the inner one
+    x (kaggriculture.py:145-149, and the observation format in the environment's README
+    says the same). Every read goes through here so the order is written down once."""
+    x, y = cell
+    return tiles[y][x]
+
+
 def quadrant_of(cell: Cell, board_size: int = BOARD_SIZE) -> str:
     """Which quadrant a cell is in (kaggriculture.py:127-129)."""
     x, y = cell

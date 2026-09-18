@@ -15,6 +15,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from agent.world.model import Animal, Crop, Product
+
 
 @dataclass(frozen=True)
 class ActionRule:
@@ -130,6 +132,27 @@ MARKET_ORDERS: dict[str, ActionRule] = {
                                         "fewer than three quadrants bought so far"),
                            ("money -= the price; the next quadrant in LAND_ORDER is"
                             " unlocked",), "579-581, 712-725"),
+}
+
+#: What an op's arguments are: does it name an item, does it take a count. Read from
+#: the engine's handlers — `_apply_unit_action` (:312-530) for the unit ops, where
+#: PICKUP and PLACE take `[item, n]`, PLANT takes a crop, and the rest take nothing;
+#: `_parse_order` (:631-649) for the market's, where SELL and the three BUY_* need
+#: `[item, n]` and HIRE and BUY_LAND need neither. An op not listed takes neither.
+SIGNATURE: dict[str, tuple[bool, bool]] = {
+    "PICKUP": (True, True), "PLACE": (True, True), "PLANT": (True, False),
+    "SELL": (True, True), "BUY_SEED": (True, True), "BUY_PRODUCT": (True, True),
+    "BUY_ANIMAL": (True, True),
+}
+
+#: The item vocabulary each op accepts, from the same handlers: PLANT a crop, PLACE an
+#: animal, PICKUP anything the shed holds (products and animals), SELL a product,
+#: BUY_SEED a crop, BUY_PRODUCT a product (only WHEAT and FERTILIZER survive the
+#: engine's own check, :598), BUY_ANIMAL an animal.
+ITEM_OF: dict[str, tuple[type, ...]] = {
+    "PICKUP": (Product, Animal), "PLACE": (Animal,), "PLANT": (Crop,),
+    "SELL": (Product,), "BUY_SEED": (Crop,), "BUY_PRODUCT": (Product,),
+    "BUY_ANIMAL": (Animal,),
 }
 
 #: The ops that only work from one of the four shed-access tiles (:343-410). They use

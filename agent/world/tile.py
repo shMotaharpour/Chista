@@ -38,11 +38,9 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Any
 
+from agent.world.action import Action
 from agent.world.model import Animal, Crop, Product, Structure, TileKind, UnitAction
 from agent.world.rules import ANIMAL_RULES, CROP_RULES
-
-#: An engine-shaped action: `["WATER"]`, `["PLANT", "MELON"]`, `["PICKUP", "WHEAT", 2]`.
-Action = tuple[Any, ...]
 
 #: The kinds that hold nothing a unit can work on.
 HOLDS_NOTHING: frozenset[TileKind] = frozenset(
@@ -365,15 +363,15 @@ def delta(later: TileInDay, earlier: TileInDay) -> tuple[Action, ...]:
 
     acts: list[Action] = []
     if later.watered_today and not earlier.watered_today:
-        acts.append((UnitAction.WATER,))
+        acts.append(Action(UnitAction.WATER))
     if later.fertilized_today and not earlier.fertilized_today:
-        acts.append((UnitAction.FERTILIZE,))
+        acts.append(Action(UnitAction.FERTILIZE))
     if later.fertilizer_collected_today and not earlier.fertilizer_collected_today:
-        acts.append((UnitAction.COLLECT_FERTILIZER,))
+        acts.append(Action(UnitAction.COLLECT_FERTILIZER))
     if later.fed_today and not earlier.fed_today:
-        acts.append((UnitAction.FEED,))
+        acts.append(Action(UnitAction.FEED))
     if later.cared_today and not earlier.cared_today:
-        acts.append((UnitAction.CARE,))
+        acts.append(Action(UnitAction.CARE))
 
     if not same_kind:
         explained = _kind_change_actions(later, earlier)
@@ -383,7 +381,7 @@ def delta(later: TileInDay, earlier: TileInDay) -> tuple[Action, ...]:
                              "action explains it")
         acts.extend(explained)
     elif later.yield_units < earlier.yield_units:
-        acts.append((UnitAction.HARVEST,))
+        acts.append(Action(UnitAction.HARVEST))
     return tuple(acts)
 
 
@@ -395,21 +393,21 @@ def _kind_change_actions(later: TileInDay, earlier: TileInDay) -> tuple[Action, 
     make one kind out of another (:417-429, :493-503, :384-392).
     """
     if earlier.is_none and later.is_plant:
-        return ((UnitAction.PLANT, later.crop),)
+        return (Action(UnitAction.PLANT, later.crop),)
     if earlier.is_none and later.is_empty_structure:
-        return ((UnitAction.BUILD_COOP if later.structure is Structure.COOP
-                 else UnitAction.BUILD_PASTURE,),)
+        return (Action(UnitAction.BUILD_COOP if later.structure is Structure.COOP
+                       else UnitAction.BUILD_PASTURE),)
     if earlier.is_empty_structure and later.is_animal:
-        return ((UnitAction.PLACE, later.animal),)
+        return (Action(UnitAction.PLACE, later.animal),)
     if later.is_none and earlier.is_weed:
-        return ((UnitAction.DIG,),)
+        return (Action(UnitAction.DIG),)
     if later.is_none and earlier.is_plant:
         # A one-shot crop: it had something on it, so it was HARVESTed; it had nothing,
         # so it was DUG. (The engine would let a DIG remove a plant that has yield too
         # (:484-491), but a plan does not dig a crop it could harvest - the owner's
         # rule, and the only reading a tile can support.)
-        return (((UnitAction.HARVEST,),) if earlier.yield_units > 0
-                else ((UnitAction.DIG,),))
+        return ((Action(UnitAction.HARVEST),) if earlier.yield_units > 0
+                else (Action(UnitAction.DIG),))
     if later.is_none and earlier.is_empty_structure:
-        return ((UnitAction.DIG,),)
+        return (Action(UnitAction.DIG),)
     return ()
