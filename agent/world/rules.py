@@ -184,3 +184,9 @@ END_OF_DAY_ORDER: tuple[str, ...] = (
 #: Which structure each species lives in. A definition, so it lives beside the rules it is
 #: read from: the builder and the domain filter both need it.
 ANIMAL_STRUCTURE: dict[str, str] = {a: spec["structure"] for a, spec in ANIMAL_RULES.items()}
+
+
+#: The engine's default board and its per-turn market limit: it executes this many orders a
+#: turn and drops the rest in silence.
+DEFAULT_BOARD: int = 10
+MAX_ORDERS_PER_TURN: int = 10

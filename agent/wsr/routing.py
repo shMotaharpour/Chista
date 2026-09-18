@@ -1,11 +1,13 @@
 """The day compiler: one chain, one unit, one day the engine accepts.
 
-The tile graph prices a chain as if the worker already stands on the tile and its
-inputs are in its bag; the engine refuses an unmet precondition in silence (F047).
-This module builds the day that satisfies those preconditions: travel, shed trips,
-pickups, drops, and the market orders the day needs.
+The tile graph prices a chain as if the worker already stood on the tile with its inputs in
+its bag. The engine does not: it refuses an unmet precondition in silence, which looks like
+work in the log. This module builds the day that satisfies the preconditions - the walk, the
+shed trips, the pickups, the drop - and names whatever it could not fit rather than emitting
+an op the engine would refuse.
 
-Engine facts behind the geometry: `docs/F060`, `docs/ARCHITECTURE.md` §2.
+What the day needs from the market is reported, not scheduled: when a purchase lands is the
+secretary's decision, and so is when hands are hired.
 """
 
 from __future__ import annotations
@@ -15,24 +17,22 @@ from typing import Iterable, Mapping, Sequence
 
 from kaggle_environments.envs.kaggriculture import kaggriculture as K
 
+from agent.tile_dp.chains import actions_of
 from agent.world.action_rules import CARRIES, YIELDS
 from agent.world.board import MOVE_DELTA
-from agent.world.rules import SHED_ACCESS
-from agent.tile_dp.chains import actions_of
+from agent.world.rules import (DEFAULT_BOARD, MAX_ORDERS_PER_TURN, SHED_ACCESS,
+                               TURNS_PER_DAY)
 
-TURNS_PER_DAY = 24          # turnsPerDay (F058)
-DEFAULT_BOARD = 10          # boardSize
-MAX_ORDERS_PER_TURN = 10    # F031 — the engine runs 10 and drops the rest silently
 
-MOVE_OPS = MOVE_DELTA       # one tile per op, the engine's table
-CARRIED_BY_OP = CARRIES     # what an op must carry
-PLACE_OPS = ("PLACE", "PLACE_ANIMAL")
-BAGGING_OPS = ("HARVEST", "COLLECT_FERTILIZER")
 
 
 def shed_access(board: int = DEFAULT_BOARD) -> tuple[tuple[int, int], ...]:
-    """The tiles from which PICKUP and DROP work — the engine's own list."""
-    return tuple((int(x), int(y)) for x, y in K._shed_access_tiles(board))
+    """The tiles from which PICKUP and DROP work.
+
+    A definition, so it comes from the world rather than from the engine's private helper:
+    `SHED_ACCESS` is the same four inner-corner tiles in the engine's NWSE order.
+    """
+    return tuple((int(x), int(y)) for x, y in SHED_ACCESS)
 
 
 def walk(start: tuple[int, int], goal: tuple[int, int],
@@ -48,11 +48,11 @@ def walk(start: tuple[int, int], goal: tuple[int, int],
     out: list[tuple[str, ...]] = []
     while x != gx:
         step = "EAST" if gx > x else "WEST"
-        x += MOVE_OPS[step][0]
+        x += MOVE_DELTA[step][0]
         out.append((step,))
     while y != gy:
         step = "SOUTH" if gy > y else "NORTH"
-        y += MOVE_OPS[step][1]
+        y += MOVE_DELTA[step][1]
         out.append((step,))
     if not (0 <= x < board and 0 <= y < board):
         raise ValueError(f"walk({start}, {goal}) leaves the board")
@@ -63,11 +63,6 @@ def nearest_shed(pos: tuple[int, int], board: int = DEFAULT_BOARD) -> tuple[int,
     """The closest shed-access tile, ties broken by the engine's NWSE order."""
     tiles = shed_access(board)
     return min(tiles, key=lambda t: (abs(t[0] - pos[0]) + abs(t[1] - pos[1]), tiles.index(t)))
-
-
-def op_turns(ops: Sequence[str], entity: str | None) -> list[tuple[str, ...]]:
-    """A chain -> the worker's op per turn. One expansion: `world/model.py`."""
-    return actions_of(tuple(ops), entity)
 
 
 @dataclass(frozen=True)
@@ -102,9 +97,9 @@ class UnitRoute:
 
 def carried_item(op: tuple[str, ...], entity: str | None) -> str | None:
     """What this op needs in the unit's bag, or None if it needs nothing."""
-    if op[0] in PLACE_OPS:
+    if op[0] == "PLACE":
         return entity
-    return CARRIED_BY_OP.get(op[0])
+    return CARRIES.get(op[0])
 
 
 def _buy_order(item: str) -> tuple:
@@ -129,14 +124,14 @@ def route_unit(ops: Sequence[str], entity: str | None, pos: tuple[int, int], *,
 
     Ops whose preconditions cannot be met inside `hours` are **dropped and
     named**, never emitted: an op the engine refuses is worse than an op that
-    was never sent, because it looks like work in the log (F047).
+    was never sent, because it looks like work in the log.
     """
     target = (int((target or pos)[0]), int((target or pos)[1]))
     bag = {k: int(v) for k, v in (carried or {}).items()}
     yields = dict(harvest_yields or {})
     bagged: dict[str, int] = {}
     bagged_ops = 0
-    turns = op_turns(ops, entity)
+    turns = actions_of(tuple(ops), entity)
     seq: list[tuple[str, ...]] = []
     needs: list[Need] = []
     dropped: list[str] = []
@@ -151,7 +146,7 @@ def route_unit(ops: Sequence[str], entity: str | None, pos: tuple[int, int], *,
     def push(steps: Iterable[tuple[str, ...]]) -> None:
         nonlocal walked
         for step in steps:
-            if step and step[0] in MOVE_OPS:
+            if step and step[0] in MOVE_DELTA:
                 walked += 1
             seq.append(step)
 
@@ -165,8 +160,8 @@ def route_unit(ops: Sequence[str], entity: str | None, pos: tuple[int, int], *,
                 dropped.append(" ".join(op))
                 continue
             push(trip)
-            # the pickup happens before that turn's market, so the buy must land
-            # on the turn BEFORE the pickup (F030)
+            # the pickup resolves before that turn's market, so the buy must land on an
+            # earlier turn than the pickup
             pickup_turn = hour + len(seq) - len(back) - 1
             needs.append(Need(hour=pickup_turn - 1, order=_buy_order(item),
                               reason=" ".join(op)))
@@ -183,10 +178,9 @@ def route_unit(ops: Sequence[str], entity: str | None, pos: tuple[int, int], *,
             dropped.append(" ".join(op))
             continue
         if op[0] == "PLANT":
-            # seeds ride in private["seeds"] and PLANT consumes them directly:
-            # one market order, and a worker standing on the tile. No carrying.
-            # The buy still lands after that turn's units, so it must be on an
-            # EARLIER turn than the plant (F030) - the same rule as a pickup.
+            # Seeds ride in `private["seeds"]` and PLANT consumes them directly: one market
+            # order and a worker on the tile, with nothing to carry. The buy still lands after
+            # that turn's units, so it must be on an earlier turn than the plant.
             needs.append(Need(hour=hour + len(seq) - 1,
                               order=("BUY_SEED", op[1], 1), reason="PLANT"))
         push([op])
@@ -240,8 +234,8 @@ def _assert_shed_ops_are_reachable(route: UnitRoute, start: tuple[int, int],
     for index, op in enumerate(route.ops):
         if not op:
             continue
-        if op[0] in MOVE_OPS:
-            dx, dy = MOVE_OPS[op[0]]
+        if op[0] in MOVE_DELTA:
+            dx, dy = MOVE_DELTA[op[0]]
             pos = (pos[0] + dx, pos[1] + dy)
         elif op[0] in ("PICKUP", "DROP") and pos not in tiles:
             raise AssertionError(
@@ -277,7 +271,7 @@ class DayPlan:
     """A whole farm-day: what each unit does, and what the market does."""
 
     units: tuple[tuple[tuple[str, ...], ...], ...]
-    market: tuple[tuple[tuple, ...], ...]        # per hour, in F032 order
+    market: tuple[tuple[tuple, ...], ...]        # per hour, in the engine's own order
     needs: tuple[Need, ...]
     hires: int
     dropped: tuple[str, ...]                     # ops the day could not carry
@@ -306,7 +300,7 @@ def needs_cost(needs: Sequence[Need], prices: Mapping[str, float] | None = None)
 
 
 def hire_cost(hires_today: int, count: int) -> float:
-    """The engine's Fibonacci ladder, from the hires already made today (F039)."""
+    """The engine's own hire ladder, from the hires already made today."""
     return float(sum(K._hire_cost(int(hires_today) + i) for i in range(int(count))))
 
 
@@ -315,22 +309,20 @@ def merge_market(sells: Sequence[Sequence[Sequence]], needs: Sequence[Need], *,
                  hours: int = TURNS_PER_DAY,
                  harvest_sells: Sequence[tuple[int, str, int]] = ()
                  ) -> tuple[list[list[tuple]], list[Need]]:
-    """Sells, hires and the routes' buys -> one queue, in F032 order per turn.
+    """Sells, hires and the routes' buys -> one queue, per turn.
 
-    F032 fixes the order inside a turn: land, sells, hires, purchases. It matters
-    because the sells of a turn free shed room *before* that turn's buys, and
-    `BUY_PRODUCT`/`BUY_ANIMAL` are refused while the shed is full (`:667, 682`).
-    A buy whose latest hour passes unplaced is returned, never dropped quietly.
+    The engine settles a turn in a fixed order - land, sells, hires, purchases - and it
+    matters: a turn's sells free shed room *before* that turn's buys, and a product or animal
+    buy is refused while the shed is full. A buy whose latest hour passes unplaced is
+    returned, never dropped quietly.
     """
     queue: list[list[tuple]] = [[] for _ in range(hours)]
     for hour in range(hours):
         row = sells[hour] if hour < len(sells) else []
         queue[hour].extend(tuple(order) for order in (row or []))
-    # The day's own harvest, sold the same day: a unit's DROP resolves before
-    # that turn's market, so the goods are in the shed in time for a SELL in the
-    # same row. Without this the day's produce waits for tomorrow's queue (the
-    # season measured 2,069 coins against the greedy stub's 2,840 with every
-    # harvest unsold) and the whole milestone earns nothing.
+    # The day's own harvest, sold the same day: a unit's DROP resolves before that turn's
+    # market, so the goods are in the shed in time for a SELL in the same row. Without this
+    # the day's produce waits for tomorrow's queue.
     for hour, item, units in sorted(harvest_sells):
         for target in range(max(0, int(hour)), hours):
             if len(queue[target]) < MAX_ORDERS_PER_TURN:
@@ -360,8 +352,8 @@ def merge_market(sells: Sequence[Sequence[Sequence]], needs: Sequence[Need], *,
                 room -= 1.0
         if len(queue[hour]) > MAX_ORDERS_PER_TURN:
             raise ValueError(
-                f"hour {hour} queues {len(queue[hour])} market orders; the engine "
-                f"executes {MAX_ORDERS_PER_TURN} and drops the rest in silence (F031)")
+                f"hour {hour} queues {len(queue[hour])} market orders; the engine executes "
+                f"{MAX_ORDERS_PER_TURN} and drops the rest in silence")
     unplaced.extend(pending)
     return queue, unplaced
 
@@ -421,17 +413,15 @@ def plan_day(tiles: Sequence[tuple[tuple[int, int], Sequence[str], str | None]],
     routes = [compile_one(i, int(assigned[i]), 0) for i in existing
               if assigned[i] is not None]
 
-    # The engine settles a HIRE inside turn 0's market, i.e. AFTER that turn's unit
-    # actions (`_process_market`), so the tile the farmer just walked off is free
-    # for the hand. Predicting the spawn from the day-start positions puts every
-    # new hand one tile out and every one of its ops on the wrong tile - measured:
-    # a hand planned for (5,4) spawned on (4,4) and its PLANT was refused in
-    # silence (F047). Simulate turn 0, then spawn.
+    # The engine settles a HIRE inside turn 0's market, i.e. AFTER that turn's unit actions,
+    # so the tile the farmer has just walked off is free for the hand. Spawning from the
+    # day-start positions instead puts a new hand one tile out and every one of its ops on the
+    # wrong tile, refused in silence. So: simulate turn 0, then spawn.
     settled = [positions[i] for i in existing]
     for route in routes:
         first = route.ops[0] if route.ops else ("PASS",)
-        if first and first[0] in MOVE_OPS:
-            dx, dy = MOVE_OPS[first[0]]
+        if first and first[0] in MOVE_DELTA:
+            dx, dy = MOVE_DELTA[first[0]]
             settled[route.unit] = (settled[route.unit][0] + dx, settled[route.unit][1] + dy)
     occupied = list(settled)
     for _ in range(int(new_hands)):
@@ -455,22 +445,19 @@ def plan_day(tiles: Sequence[tuple[tuple[int, int], Sequence[str], str | None]],
     routes = compile_all()
 
     def day_bill(chosen: list[UnitRoute]) -> tuple[float, float]:
-        """(the market bill, what tomorrow's seeds for the same work would cost).
+        """(the market bill, and what tomorrow's seeds for the same work would cost).
 
-        The reserve is the plan's own seed bill, not a tuned fraction: a farm that
-        spends its last coin on animals cannot re-plant tomorrow. Measured leak
-        without it: six COWs bought in one day cost 2,472 of 2,988 coins, and the
-        season ended at 0-734 coins against the greedy stub's 2,840.
+        The reserve is the plan's own seed bill, not a tuned fraction: a farm that spends its
+        last coin on animals cannot re-plant tomorrow.
         """
         wants = [need for route in chosen for need in route.needs]
         bill = needs_cost(wants, prices) + hire_cost(hires_today, new_hands)
         seed_reserve = needs_cost([n for n in wants if n.order[0] == "BUY_SEED"], prices)
         return bill, seed_reserve
 
-    # A refused buy is a silent no-op (F031), so the day is trimmed until the
-    # purse covers it — least valuable plan first, where "value" is the tile DP's
-    # own V_0 (`PricedBoard.tile_values`), so the trim is a number the contractor
-    # already computed rather than a distance heuristic.
+    # A refused buy is a silent no-op, so the day is trimmed until the purse covers it -
+    # least valuable plan first, where "value" is the tile DP's own V_0, a number the
+    # contractor already computed rather than a distance heuristic.
     for _ in range(len(positions) + 1):
         bill, reserve = day_bill(routes)
         if bill + reserve <= float(money):
