@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from agent.world.board import manhattan
-from agent.world.rules import spawn_assignments
+from agent.world.rules import SHED_ACCESS, SHED_ACCESS_NAMES, spawn_assignments
 from agent.wsr.models import (
     CONSUME_ACTIONS,
     PRODUCE_ACTIONS,
