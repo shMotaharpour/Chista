@@ -25,7 +25,7 @@ from agent.wsr.solvers.cpsat_solver import (
     solve_cpsat,
     cpsat_binarySearch,
 )
-from agent.wsr.verify import verify_solution
+from offline_lab.verify import verify_solution
 from tests.day_layer.fixtures.hand_solved_instances import HAND_SOLVED_CASES
 
 NW = WAREHOUSE_ENTRY_CELLS["NW"]

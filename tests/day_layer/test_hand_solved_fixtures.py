@@ -5,7 +5,7 @@ hold *before* any solver exists — it's what makes these fixtures a
 """
 import pytest
 
-from agent.wsr.verify import verify_solution
+from offline_lab.verify import verify_solution
 from tests.day_layer.fixtures.hand_solved_instances import HAND_SOLVED_CASES
 
 

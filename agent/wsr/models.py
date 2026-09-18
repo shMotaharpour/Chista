@@ -21,7 +21,6 @@ from agent.world.model import UnitAction, ANIMALS, CROPS, MOVES, PRODUCTS, TileK
 from agent.world.action import _op_name
 from agent.world.rules import ANIMAL_STRUCTURE, CROP_RULES, SHED_ACCESS, TURNS_PER_DAY
 
-from agent.wsr.fibonacci import fibonacci_cost
 
 # Derived views of the one vocabulary (ARCHITECTURE §5 step 4). PASS counts as a
 # movement here because it is what a unit does instead of moving.
@@ -65,8 +64,13 @@ class Worker:
 
     @property
     def cost(self) -> int:
-        """What this worker costs to hire (the engine's Fibonacci ladder)."""
-        return fibonacci_cost(self.index)
+        """What adding this worker costs the SCHEDULE, not the purse.
+
+        The WSR does not handle money: what it minimises is the number of workers, so the cost
+        rises with the index and the first two hands are free. What the day actually pays - the
+        engine's hire ladder, and how many hands were hired - is the market's business.
+        """
+        return max(self.index - 1, 0)
 
 
 @dataclass

@@ -8,7 +8,7 @@ import pytest
 
 from agent.wsr.models import Instance, Item, MajorTask, WAREHOUSE_ENTRY_CELLS, Action, MinorTask, Worker
 from agent.wsr.solvers.cpsat_solver import CpSatConfig, solve_cpsat
-from agent.wsr.verify import verify_solution
+from offline_lab.verify import verify_solution
 from tests.day_layer.brute_force import brute_force_optimal_cost
 
 NW = WAREHOUSE_ENTRY_CELLS["NW"]

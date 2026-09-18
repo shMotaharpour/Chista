@@ -15,7 +15,6 @@ from typing import Optional
 from agent.world.model import UnitAction
 
 from .distances import assign_entry_cells, manhattan
-from .fibonacci import fibonacci_cost
 from .models import (
     CONSUME_ACTIONS,
     Action,
@@ -28,7 +27,6 @@ from .models import (
     Solution,
     WorkerRoute,
 )
-from .verify import verify_solution
 
 
 class InfeasibleInputError(ValueError):
@@ -39,17 +37,10 @@ class InfeasibleInputError(ValueError):
 
 @dataclass
 class OxaConfig:
-    """What the caller may tune.
-
-    `validate` runs the independent verifier on the solver's own answer and reports
-    INVALID_SOLUTION rather than returning an unverified schedule; it is the expensive half of
-    the call and is meant to be switched off on the agent's path, where the answer is checked
-    elsewhere.
-    """
+    """What the caller may tune: the smallest pool to offer, and a hard cap on it."""
 
     min_workers: int = 1
     worker_pool_cap: Optional[int] = None
-    validate: bool = True
 
 
 @dataclass
@@ -591,21 +582,9 @@ def solve_oxa(instance: Instance, config: OxaConfig = OxaConfig()) -> OxaResult:
     max_active = max((route.worker_index for route in routes), default=-1)
     solution = Solution(
         routes=routes, 
-        reported_cost=sum(fibonacci_cost(i) for i in range(max_active + 1))
+        reported_cost=sum(max(i - 1, 0) for i in range(max_active + 1))
     )
     
-    if config.validate:
-        try:
-            verification = verify_solution(instance, solution)
-            if not verification.is_valid:
-                return OxaResult(status="INVALID_SOLUTION", solution=solution,
-                                 wall_time_seconds=wall_time,
-                                 matched_lower_bound=False)
-        except Exception:
-            return OxaResult(status="INVALID_SOLUTION", solution=solution,
-                             wall_time_seconds=wall_time,
-                             matched_lower_bound=False)
-        
     is_optimal = active_workers <= config.min_workers
     return OxaResult(
         status="OPTIMAL" if is_optimal else "FEASIBLE",

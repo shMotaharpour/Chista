@@ -23,7 +23,7 @@ from agent.wsr.models import (
     Worker,
     WorkerRoute,
 )
-from agent.wsr.verify import verify_solution
+from offline_lab.verify import verify_solution
 
 NW = (4, 4)  # a shed-adjacent cell, so travel distance from a worker's own entry point is 0
 NE = (5, 4)  # the next shed-adjacent cell the placement rule assigns

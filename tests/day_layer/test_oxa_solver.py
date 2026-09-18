@@ -17,7 +17,7 @@ from agent.wsr.models import (
     Worker,
 )
 from agent.wsr.oxa_solver import InfeasibleInputError, OxaConfig, compute_lower_bound, solve_oxa
-from agent.wsr.verify import verify_solution
+from offline_lab.verify import verify_solution
 from tests.day_layer.brute_force import brute_force_optimal_cost
 
 NW = WAREHOUSE_ENTRY_CELLS["NW"]
