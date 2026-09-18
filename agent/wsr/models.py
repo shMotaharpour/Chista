@@ -102,34 +102,29 @@ class Solution:
 DayOnCell = NamedTuple("DayOnCell", [("ops", Sequence[str]), ("cell", Cell),
                                      ("entity", Optional[Item]), ("item", Optional[Item])])
 
-#: Op pairs whose order the engine enforces whatever the entity, because the first op brings
-#: the thing the second one acts on into existence. The order of the daily acts - fertilise,
-#: water, harvest - is NOT here: those commute for an ongoing crop and for an animal.
-STRUCTURAL_ORDER: tuple[tuple[str, str], ...] = (
+#: Op pairs whose order decides the OUTCOME, so the WSR must keep it whatever the entity.
+#: The tile must be bare before anything is planted or built on it, a structure must exist
+#: before an animal goes in, an animal before it is fed, and a tile is free again only after
+#: its crop is harvested.
+ORDER_MATTERS: tuple[tuple[str, str], ...] = (
+    ("DIG", "PLANT"),
+    ("DIG", "BUILD_COOP"),
+    ("DIG", "BUILD_PASTURE"),
     ("BUILD_COOP", "PLACE"),
     ("BUILD_PASTURE", "PLACE"),
     ("PLACE", "FEED"),
-    ("PLANT", "WATER"),
+    ("HARVEST", "PLANT"),
+    ("HARVEST", "DIG"),
 )
 
-def structural_edges(op_ids: Sequence[tuple[str, str]]) -> list[tuple[str, str]]:
-    """The order the engine enforces whatever the entity, as edges between task ids.
-
-    For each pair the engine cares about, an op is linked to the FIRST later op of the wanted
-    kind - which is what "the planting's own water" means in `WATER, HARVEST, PLANT, WATER`:
-    the first water belongs to the crop being harvested, the second to the one just planted.
-    """
-    edges: list[tuple[str, str]] = []
-    for before, after in STRUCTURAL_ORDER:
-        for index, (name, task_id) in enumerate(op_ids):
-            if name != before:
-                continue
-            for later_name, later_id in op_ids[index + 1:]:
-                if later_name == after:
-                    edges.append((task_id, later_id))
-                    break
-    return edges
-
+#: The same, but only where a crop yields once: its dose only counts inside a window and its
+#: harvest is only worth what the watering before it made. For an ongoing crop and for an
+#: animal these pairs commute, and imposing them would forbid legal days.
+ORDER_MATTERS_ONE_SHOT: tuple[tuple[str, str], ...] = (
+    ("FERTILIZE", "WATER"),
+    ("WATER", "HARVEST"),
+    ("PLANT", "WATER"),
+)
 
 class Expansion(NamedTuple):
     """One chain, expanded into the tasks a scheduler reads.
@@ -146,31 +141,29 @@ class Expansion(NamedTuple):
 def expand_chain(ops: Sequence[str], entity: Item | None = None, cell: Cell | None = None,
                  item: Item | None = None, harvested_n: int = 1,
                  prefix: str = "") -> Expansion:
-    """One day's chain -> its tasks, the precedence between them, and the pairs that
-    the SAME worker must do (a PICKUP and the op that consumes what it carried).
+    """One day's chain -> the tasks a scheduler reads, the order between them, and the worker.
 
-    Every op that eats a carried good is preceded by its own PICKUP. The chain's order is
-    imposed as precedence only for a ONE-SHOT crop: there it decides the outcome (a crop must
-    be watered before it is harvested), while an ongoing crop and an animal are indifferent to
-    the order of their ops, and a total order would forbid legal days.
+    Every op that eats a carried good gets its own PICKUP, and the pickup must come before the
+    op that uses it - that pair is always a constraint.
+
+    The chain's own order is NOT: it was fixed in the builder for one tile, half to keep a chain
+    from being generated twice and half because the acts are logical in that order. Across cells
+    only the pairs whose OUTCOME depends on the order survive, and those are the two tables
+    above - the structural ones always, and a one-shot crop's dose-water-harvest only there.
     """
-    ordered = entity in CROP_RULES and not CROP_RULES[entity]["ongoing"]
+    one_shot = entity in CROP_RULES and not CROP_RULES[entity]["ongoing"]
+    pairs = ORDER_MATTERS + (ORDER_MATTERS_ONE_SHOT if one_shot else ())
+
     tasks: list[MinorTask] = []
     precedence: list[tuple[str, str]] = []
     same_worker: list[str] = []
     seen: dict[str, int] = {}
     op_ids: list[tuple[str, str]] = []
-    previous: Optional[str] = None
 
     def unique(name: str) -> str:
         seen[name] = seen.get(name, 0) + 1
         suffix = "" if seen[name] == 1 else str(seen[name])
         return f"{prefix}{name}{suffix}"
-
-    def link(before: Optional[str], after: str) -> None:
-        """Record the order, when the order is a constraint at all."""
-        if before is not None and ordered:
-            precedence.append((before, after))
 
     for op in ops:
         name = f"BUILD_{ANIMAL_STRUCTURE[item]}" if op == "BUILD" else op
@@ -180,13 +173,13 @@ def expand_chain(ops: Sequence[str], entity: Item | None = None, cell: Cell | No
         elif name == "PLACE":
             carried = item
 
+        pickup: Optional[str] = None
         if carried is not None:
             acquire = MinorTask(id=unique("acquire"), cell=None,
                                 action=UnitAction.PICKUP, item=carried, n=1)
             tasks.append(acquire)
-            link(previous, acquire.id)
-            previous = acquire.id
-            same_worker.append(acquire.id)      # the worker that carries it is the one to use it
+            same_worker.append(acquire.id)
+            pickup = acquire.id
 
         task = MinorTask(
             id=unique(name.lower()),
@@ -196,16 +189,21 @@ def expand_chain(ops: Sequence[str], entity: Item | None = None, cell: Cell | No
             n=harvested_n if name == "HARVEST" else 1,
             crop=entity if name == "PLANT" else None)
         tasks.append(task)
-        link(previous, task.id)
-        previous = task.id
-        if carried is not None:
+        if pickup is not None:
+            precedence.append((pickup, task.id))    # carry it before you use it
             same_worker.append(task.id)
         op_ids.append((name, task.id))
 
-    # a pair can be required both by the chain's own order and by the structural table
-    for edge in structural_edges(op_ids):
-        if edge not in precedence:
-            precedence.append(edge)
+    for before, after in pairs:
+        for index, (name, task_id) in enumerate(op_ids):
+            if name != before:
+                continue
+            for later_name, later_id in op_ids[index + 1:]:
+                if later_name == after:
+                    if (task_id, later_id) not in precedence:
+                        precedence.append((task_id, later_id))
+                    break
+
     return Expansion(tasks=tasks, order=precedence, same_worker=same_worker)
 
 
