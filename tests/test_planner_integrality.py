@@ -30,16 +30,16 @@ from kaggle_environments.envs.kaggriculture import kaggriculture as K
 
 from agent.dispatch import dispatch_plan, MAX_MARKET_ORDERS
 from agent.replan import dual_stand_in, load_contractor
-from world.model import compile_chain
+from agent.world.model import compile_chain
 from agent.obs import decode_world
-from tile_dp.chains import chain_ops, entity_of_code
+from agent.tile_dp.chains import chain_ops, entity_of_code
 from planner.columns import (DAYS, Choice, ClassMix, Plan, assign_tiles,
                              counts, demote_to_feasible, plan_from_board,
                              rounded_value, row_use, violations)
 from planner.land import LandPlanner, best_land, candidates, prefix_cost
 from planner.repair import order_cost, repair_day
-from world.actions import validate_action
-from world.fast_sim import FastSim
+from agent.world.action_rules import validate_action
+from offline_lab.fast_sim import FastSim
 
 LOCKED = -1
 _CLASS = 7

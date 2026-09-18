@@ -18,7 +18,7 @@ if str(REPO) not in sys.path:
 
 from kaggle_environments.envs.kaggriculture import kaggriculture as K
 
-from day.routing import (MOVE_OPS, shed_access, nearest_shed, op_turns,
+from agent.day.routing import (MOVE_OPS, shed_access, nearest_shed, op_turns,
                                route_unit, walk)
 
 # Every op the compiler may emit, with the engine line that accepts it
@@ -59,7 +59,7 @@ def test_op_turns_matches_the_engine_vocabulary() -> None:
     assert op_turns(("BUILD", "PLACE"), "COW") == [("BUILD_PASTURE",),
                                                    ("PLACE", "COW")]
     assert op_turns(("BUILD",), "GOOSE") == [("BUILD_COOP",)]
-    assert op_turns(("NO_ACT",), None) == [("PASS",)]
+    assert op_turns(("NO_ACTION",), None) == [("PASS",)]
     for ops, entity in ((("PLANT",), "WHEAT"), (("PLACE",), "COW"),
                         (("BUILD",), "SHEEP")):
         for step in op_turns(ops, entity):
@@ -136,7 +136,7 @@ def test_the_route_never_exceeds_the_day() -> None:
         for ops, entity in ((("PLANT", "WATER", "HARVEST"), "WHEAT"),
                             (("FERTILIZE", "WATER", "HARVEST"), "CARROT"),
                             (("BUILD", "PLACE", "FEED"), "COW"),
-                            (("NO_ACT",), None)):
+                            (("NO_ACTION",), None)):
             route = route_unit(ops, entity, pos, unit=1)
             assert len(route.ops) == 24, (ops, pos, len(route.ops))
             assert route.hours_used <= 24
@@ -150,7 +150,7 @@ def test_the_compiler_refuses_a_pickup_off_the_shed() -> None:
     this module exists to close. Pinning that the check fires keeps it from
     becoming decoration.
     """
-    import day.routing as routing
+    import agent.day.routing as routing
     original = routing.nearest_shed
     routing.nearest_shed = lambda pos, board=10: (1, 0)     # near, not shed-access
     try:

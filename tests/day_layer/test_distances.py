@@ -1,4 +1,4 @@
-from day.distances import distance_to_nearest_entry, manhattan
+from agent.day.distances import distance_to_nearest_entry, manhattan
 
 
 def test_manhattan_basic():

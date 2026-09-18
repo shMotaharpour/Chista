@@ -19,7 +19,7 @@ from pathlib import Path
 from kaggle_environments import make
 from kaggle_environments.envs.kaggriculture import kaggriculture as K
 
-from world import fast_sim, kaggle_env
+from offline_lab import fast_sim, kaggle_env
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -81,7 +81,7 @@ def test_tile_dp_tables_come_from_the_engine() -> None:
     module, and the artifact identity is the live engine's."""
     from hashlib import sha1
 
-    from tile_dp import chains, tile_state
+    from agent.tile_dp import chains, tile_state
 
     for module in (chains, tile_state):
         copied = [n for n in RULE_TABLES if n in vars(module)]

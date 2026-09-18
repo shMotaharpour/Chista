@@ -17,9 +17,9 @@ import inspect
 
 from kaggle_environments.envs.kaggriculture import kaggriculture as K
 
-import tile_dp.chains as chains
-from day import models as wsr
-from world import model as M
+import agent.tile_dp.chains as chains
+from agent.day import models as wsr
+from agent.world import model as M
 
 #: Hand-spelled good names per module (R002 debt), measured 2026-09-17. A module
 #: may only shrink. See ARCHITECTURE §5.
@@ -124,7 +124,7 @@ def test_the_market_and_the_worker_do_not_share_ops() -> None:
         assert set(M.compile_op("BUILD", species)) <= set(M.ACTIONS)
     assert {"SELL", "BUY_LAND", "HIRE"} <= set(M.MARKET_ACTIONS)
     assert {"BUY_SEED", "BUY_PRODUCT", "BUY_ANIMAL"} <= set(M.MARKET_ACTIONS)
-    for op in sorted(set(M.CHAIN_OPS) - {"NO_ACT"}):
+    for op in sorted(set(M.CHAIN_OPS) - {"NO_ACTION"}):
         if op.startswith("BUY_"):
             assert op in M.MARKET_ACTIONS, f"{op} is a market op"
         else:
@@ -175,7 +175,7 @@ def test_every_registry_chain_compiles() -> None:
 
 def test_the_duplicate_vocabularies_are_gone() -> None:
     """The WSR's own enums are deleted; its sets are views of the one model."""
-    for gone in ("MinorActionType", "CellType", "MajorTaskType", "ANIMAL_STRUCTURE"):
+    for gone in ("Action", "TileKind", "MajorTaskType", "ANIMAL_STRUCTURE"):
         assert not isinstance(getattr(wsr, gone, None), type), (
             f"day/models.py still defines {gone}")
     assert wsr.Item is M.Item, "the scheduling layer has its own Item again"

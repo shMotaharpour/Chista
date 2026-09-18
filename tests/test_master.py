@@ -23,11 +23,8 @@ from __future__ import annotations
 import numpy as np
 
 from agent.replan import load_contractor
-from planner.master import (ALPHA, COUPLING_IDS, ITER_CAP_DEFAULT,
-                            N_COUPLING, RESOURCE_ID, ROUND_BUDGET_MS, TOL_DUAL,
-                            CouplingSupply, equilibrate, published_duals,
-                            supply_from_obs)
-
+from planner.master import (ALPHA, COUPLING_IDS, ITER_CAP_DEFAULT, N_COUPLING, ROUND_BUDGET_MS, TOL_DUAL, CouplingSupply, equilibrate, published_duals, supply_from_obs)
+from agent.world.model import RESOURCE_ID
 # #15's own budget for the price-path forecast the master now calls; the
 # round's hard ceiling is ROUND_BUDGET_MS (sweep + LP) PLUS this, so the two
 # never get folded into each other and neither can hide a regression.
@@ -65,8 +62,8 @@ def _obs(state_ids: list[int], graph) -> dict:
     `_plant_tile` covers the states the tests price; animals ride the
     supply model, not the board).
     """
-    from world.fast_sim import FastSim
-    from tile_dp.tile_state import TileState as _TS
+    from offline_lab.fast_sim import FastSim
+    from agent.tile_dp.tile_state import TileState as _TS
     sim = FastSim({"episodeSteps": 24 * 3, "seed": 1})
     obs = dict(sim.observations()[0])
     obs["day"], obs["hour"] = 0, 0
@@ -106,19 +103,19 @@ def _engine_tile(state) -> dict | str | None:
 
 def _bare_ids(n_tiles: int) -> list[int]:
     """n_tiles distinct REAL state ids the fixture can lay down: wheat
-    plants past planting day (age >= 0) that also admit a NO_ACT chain,
+    plants past planting day (age >= 0) that also admit a NO_ACTION chain,
     so the free chain exists and the paid chains need labour/seeds —
     exactly the trade the master's tests vary through the supply."""
     g = _contractor().graph
-    from tile_dp.tile_state import TileState
-    from tile_dp.chains import NO_ACT, chain_ops
+    from agent.tile_dp.tile_state import TileState
+    from agent.tile_dp.chains import NO_ACTION, chain_ops
     ids: list[int] = []
     for s in range(g.n_states):
         st = TileState.unpack(int(g.state_keys[s]))
         if st.kind != "PLANT" or st.crop != "WHEAT" or st.age < 0:
             continue
         lo, hi = int(g.edge_offsets[s]), int(g.edge_offsets[s + 1])
-        if any(chain_ops(int(g.edge_chain[e])) == (NO_ACT,)
+        if any(chain_ops(int(g.edge_chain[e])) == (NO_ACTION,)
                for e in range(lo, hi)):
             ids.append(s)
     return ids[:n_tiles]
@@ -127,7 +124,7 @@ def _bare_ids(n_tiles: int) -> list[int]:
 def _supply(days: int = 30, hours: float | None = None,
             seeds: int = 4, animals: int = 0, fert: int = 2,
             wheat_feed: int = 6) -> CouplingSupply:
-    from tile_dp.chains import RESOURCE_ID
+    from agent.tile_dp.chains import RESOURCE_ID
     sids = [RESOURCE_ID[f"SEED_{c}"] for c in
             ("WHEAT", "CARROT", "TOMATO", "STRAWBERRY", "MELON")]
     stock = np.zeros(5, dtype=np.int64)
@@ -159,7 +156,7 @@ def test_zero_supply_zero_activity() -> None:
 
 def test_zero_supply_free_chain_only() -> None:
     """With nothing affordable, the LP mix sits on the zero-cost column
-    (NO_ACT is in every state's registry), i.e. labour's λ-share is the
+    (NO_ACTION is in every state's registry), i.e. labour's λ-share is the
     whole board only if its cost is zero."""
     rt, c = _RT(), _contractor()
     obs = _obs(_bare_ids(2), c.graph)
@@ -385,7 +382,7 @@ def test_budget() -> None:
     together, so a regression cannot hide inside the subtraction.
     """
     import time
-    from belief.market import forecast
+    from agent.belief.market import forecast
     rt, c = _RT(), _contractor()
     obs = _obs(_bare_ids(4), c.graph)
     forecast(obs, days=c.days)                    # warm the import + tables
@@ -455,7 +452,7 @@ def test_the_market_forecast_reaches_the_masters_product_rows() -> None:
 def test_published_form_zeros_on_market_columns() -> None:
     """Products are market-priced, never input-priced: the published w
     carries duals only on the coupling columns."""
-    from tile_dp.chains import RESOURCE_ID
+    from agent.tile_dp.chains import RESOURCE_ID
     rt, c = _RT(), _contractor()
     obs = _obs(_bare_ids(2), c.graph)
     res = equilibrate(rt, obs, c, _supply())

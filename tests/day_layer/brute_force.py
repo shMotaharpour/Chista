@@ -18,9 +18,9 @@ from __future__ import annotations
 import itertools
 from typing import Optional
 
-from day.distances import assign_entry_cells, manhattan
-from day.fibonacci import fibonacci_cost
-from day.models import WAREHOUSE_ENTRY_CELLS, Instance, Item, Action, MinorTask
+from agent.day.distances import assign_entry_cells, manhattan
+from agent.day.fibonacci import fibonacci_cost
+from agent.day.models import WAREHOUSE_ENTRY_CELLS, Instance, Item, Action, MinorTask
 
 _PRODUCE_ACTIONS = frozenset({Action.PICKUP, Action.HARVEST, Action.COLLECT_FERTILIZER})
 _CONSUME_ACTIONS = frozenset({Action.PLACE, Action.FEED, Action.FERTILIZE})

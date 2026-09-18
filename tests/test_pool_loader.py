@@ -15,7 +15,7 @@ Contracts under test (issue #20 brief §2.2, §8):
 
 from __future__ import annotations
 
-from offline.pool.loader import call, load, load_all, slugs
+from offline_lab.pool.loader import call, load, load_all, slugs
 
 OBS = {"day": 0, "hour": 0, "step": 0, "player": 0,
        "farms": [{"money": 3000, "tiles": [[None] * 10 for _ in range(10)],
@@ -77,7 +77,7 @@ def test_arity_counts_match_the_brief_table() -> None:
 
 def test_guard_labels_fire() -> None:
     """A deliberately broken fake agent proves each label fires."""
-    from offline.pool.guard import guarded_call, GuardStats
+    from offline_lab.pool.guard import guarded_call, GuardStats
 
     stats = GuardStats()
     def raiser(obs, config=None):
@@ -94,7 +94,7 @@ def test_guard_labels_fire() -> None:
 def test_guard_hands_out_copies_not_live_views() -> None:
     """The wrapper hands a COPY of the observation to third-party code:
     a mutating agent cannot corrupt the evaluation (issue 20 safety)."""
-    from offline.pool.guard import guarded_call, GuardStats
+    from offline_lab.pool.guard import guarded_call, GuardStats
 
     seen = {}
     stats = GuardStats()

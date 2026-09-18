@@ -12,7 +12,7 @@ Changes from the archived version:
 """
 import pytest
 
-from day.models import (
+from agent.day.models import (
     Instance,
     Item,
     MajorTask,
@@ -23,7 +23,7 @@ from day.models import (
     Worker,
     WorkerRoute,
 )
-from day.verify import verify_solution
+from agent.day.verify import verify_solution
 
 NW = (4, 4)  # a shed-adjacent cell, so travel distance from a worker's own entry point is 0
 NE = (5, 4)  # the next shed-adjacent cell the placement rule assigns

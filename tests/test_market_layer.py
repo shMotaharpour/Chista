@@ -23,13 +23,13 @@ from kaggle_environments.envs.kaggriculture import kaggriculture as K
 
 from agent.dispatch import dispatch_plan, market_at
 from agent.market_layer import MarketLayer, from_env, _market_row
-from belief.shed import (MAX_ORDERS_PER_TURN, SHED_CAPACITY, Sale,
+from agent.belief.shed import (MAX_ORDERS_PER_TURN, SHED_CAPACITY, Sale,
                                  ShedState, _assert_within_cap, _guard_margin,
                                  market_queue, orders_by_hour, plan_sales,
                                  shed_state)
-from belief.market import (PRODUCTS, MarketForecast, forecast, shop_demand,
+from agent.belief.market import (PRODUCTS, MarketForecast, forecast, shop_demand,
                               town_deltas)
-from world.fast_sim import FastSim
+from offline_lab.fast_sim import FastSim
 
 PASS = {"farmer": ["PASS"], "hands": [], "market": []}
 I0 = {item: float(K.MARKET_PARAMS[item]["I0"]) for item in PRODUCTS}
@@ -131,7 +131,7 @@ def test_the_forecast_is_a_view_of_the_one_snapshot():
     inventory, and the forecast's first row must be that same inventory - if the
     seed is dropped, the forecast silently prices yesterday's market.
     """
-    from belief.schemas import MarketState
+    from agent.belief.schemas import MarketState
     sim = _sim()
     obs = sim.observations()[0]
     state = MarketState.from_obs(obs)
@@ -167,7 +167,7 @@ def test_our_own_sells_are_modelled():
     base = forecast(obs, days=4)
     selling = forecast(obs, days=4, our_sells={48: {"WHEAT": 200}})
     assert selling.inventory_of("WHEAT", 3) > base.inventory_of("WHEAT", 3)
-    assert selling.price_of("WHEAT", 3) <= base.price_of("WHEAT", 3)
+    assert selling.price("WHEAT", 3) <= base.price("WHEAT", 3)
 
 
 def test_town_deltas_counts_a_single_product_shop_twice():
@@ -252,7 +252,7 @@ def _forecast_stub(prices: dict, days: int = 30, rising: bool = False,
     class _F:
         first_day = _first
 
-        def price_of(self, item, day):
+        def price(self, item, day):
             base = prices.get(item, 25)
             return base + (int(day) - _first if rising else 0)
 
@@ -387,11 +387,11 @@ def test_a_mid_day_plan_is_indexed_by_the_day_it_is_in():
     day = int(obs["day"])
     assert (int(obs["hour"]), fc.first_day) == (5, day)
     for item in PRODUCTS:
-        assert fc.price_of(item, day) == K.market_price(
+        assert fc.price(item, day) == K.market_price(
             item, obs["market"]["inventory"][item]), item
-    from belief.market import price_paths
-    assert price_paths(fc, 2)["WHEAT"][0] == fc.price_of("WHEAT", day)
-    assert price_paths(fc, 2)["WHEAT"][1] == fc.price_of("WHEAT", day + 1)
+    from agent.belief.market import price_paths
+    assert price_paths(fc, 2)["WHEAT"][0] == fc.price("WHEAT", day)
+    assert price_paths(fc, 2)["WHEAT"][1] == fc.price("WHEAT", day + 1)
 
 
 def test_the_last_day_liquidation_is_spread_not_dumped():

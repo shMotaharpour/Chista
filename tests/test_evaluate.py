@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import math
 
-from offline.evaluate import _paired_jobs, _seeds_needed, _stats
+from offline_lab.evaluate import _paired_jobs, _seeds_needed, _stats
 
 
 def test_paired_jobs_covers_every_pair_once() -> None:
@@ -98,7 +98,7 @@ def test_tier_counts_agree_with_the_note() -> None:
     R007: verified in its failing direction - with slugs() restored over
     include_aliases, this test fails with 'full tier: code returns 16
     opponents, its note and TIER_OPPONENTS say 19'."""
-    from offline.evaluate import (_pick_opponents, TIER_AGENT_EPISODES,
+    from offline_lab.evaluate import (_pick_opponents, TIER_AGENT_EPISODES,
                                   TIER_OPPONENTS, TIER_SEEDS)
     import re
     for tier in ("smoke", "ladder", "full"):
@@ -190,7 +190,7 @@ def test_bank_seconds_is_the_policy_draw() -> None:
     under the policy's own name (the bench prints that weaker reading,
     but labels it "from the max turn"). This test pins both numbers.
     """
-    from offline.runner import bank_seconds
+    from offline_lab.runner import bank_seconds
 
     drawn, worst = bank_seconds([1400.0, 1400.0, 200.0])
     assert abs(drawn - 0.8) < 1e-9, drawn
@@ -209,7 +209,7 @@ def test_scoreboard_writer_quotes_and_labels() -> None:
     import tempfile
     from pathlib import Path
 
-    from offline import evaluate as E
+    from offline_lab import evaluate as E
 
     real = E.SCOREBOARD
     with tempfile.TemporaryDirectory() as d:
@@ -244,7 +244,7 @@ def test_direction_verdict_tolerates_timer_noise() -> None:
     (0.1012, 0.0987) to a violation, so the pair below fails against it
     (measured: old rule -> violated, new rule -> unresolved).
     """
-    from offline.evaluate import _direction_verdict
+    from offline_lab.evaluate import _direction_verdict
 
     assert _direction_verdict(0.1, 0.1)[0] == "unresolved"
     assert _direction_verdict(0.1012, 0.0987)[0] == "unresolved"
@@ -260,7 +260,7 @@ def test_seed_count_line_never_prints_nan() -> None:
     paired seeds". nan is not a promise a report can make — the line now
     states the reason it is undefined.
     """
-    from offline.evaluate import _seed_count_line
+    from offline_lab.evaluate import _seed_count_line
 
     one_seed = _seed_count_line(float("nan"), -46717.0)
     assert "nan" not in one_seed, one_seed
@@ -294,7 +294,7 @@ def test_zero_spread_row_writes_empty_not_nan() -> None:
     import tempfile
     from pathlib import Path
 
-    from offline import evaluate as E
+    from offline_lab import evaluate as E
 
     # exactly the shape that produced the defect: 20 pairs, no spread
     s = {"n": 20, "mean": 160.0, "sd": 0.0, "ci_lo": 160.0, "ci_hi": 160.0}

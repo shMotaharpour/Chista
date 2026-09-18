@@ -23,18 +23,18 @@ from __future__ import annotations
 import numpy as np
 
 from kaggle_environments.envs.kaggriculture import kaggriculture as K
-from world.prices import price_of, price_vec
-from world.vocabulary import DUAL, G_IX, GOODS, SHOP_BASKET, SHOP_TYPES, SHED_CAP
+from agent.world.prices import price, prices
+from agent.world.vocabulary import DUAL, G_IX, GOODS, SHOP_BASKET, SHOP_TYPES, SHED_CAP
 
 from bench.bench_market_analyzer import (center_drain_probe, run_episode,
                                          slot_inference_experiment)
-from belief.opponent import drain_forecast, infer_rival_slot
-from belief.schemas import DaySchedule, OrderBook, SellIntent
-from belief.solvers import (default_schedules, maximin_mixed_lp,
+from agent.belief.opponent import drain_forecast, infer_rival_slot
+from agent.belief.schemas import DaySchedule, OrderBook, SellIntent
+from agent.belief.solvers import (default_schedules, maximin_mixed_lp,
                             maximin_mixed_slsqp, season_plan_maximin,
                             slot_game_matrix)
-from belief.stubs import naive_day_plan, naive_order_book, rival_supply_stub
-from belief.tracker import MarketTracker
+from agent.belief.stubs import naive_day_plan, naive_order_book, rival_supply_stub
+from agent.belief.tracker import MarketTracker
 
 GRID = np.concatenate([np.arange(0, 60, 1.0), np.arange(100, 12000, 17.0)])
 
@@ -46,7 +46,7 @@ GRID = np.concatenate([np.arange(0, 60, 1.0), np.arange(100, 12000, 17.0)])
 def test_price_parity() -> None:
     """The vectorised curve IS the engine's curve, at every inventory."""
     for g in GOODS:
-        mine = price_vec(g, GRID)
+        mine = prices(g, GRID)
         theirs = np.array([K.market_price(g, float(i)) for i in GRID])
         assert np.array_equal(mine, theirs), f"{g}: vectorised price differs from the engine"
 
@@ -178,7 +178,7 @@ def test_the_two_solvers_agree_on_the_discrete_game() -> None:
 def test_season_lp_absorption_row_binds() -> None:
     """Sales of a good cannot exceed what the town eats at the worst-case share."""
     goods = ["WHEAT", "MILK"]
-    prices0 = np.array([price_of(g, float(K.MARKET_I0)) for g in goods], dtype=float)
+    prices0 = np.array([price(g, float(K.MARKET_I0)) for g in goods], dtype=float)
     drain = np.array([17.5, 10.9])
     scenarios = np.array([[1.0, 1.0], [0.5, 0.5]])
     plan = season_plan_maximin(goods, 30, np.array([1.4, 0.4]), 100.0, prices0,

@@ -23,15 +23,17 @@ import time
 
 import numpy as np
 
-from world.fast_sim import FastSim
-from world.actions import validate_action
+from offline_lab.fast_sim import FastSim
+from agent.world.action_rules import validate_action
 
 from agent.dispatch import dispatch_plan
 from agent.replan import (dual_stand_in, load_contractor, replan_day,
                           unit_state_ids)
 from agent.runtime import Deadline, Runtime
-from tile_dp.chains import CHAIN_NAMES, ENTITY_NAMES, N_RESOURCE, RESOURCE_ID
-from tile_dp.contractor import HORIZON_DAYS
+from agent.tile_dp.chains import (CHAIN_NAMES, ENTITY_NAMES)
+from agent.world.model import RESOURCE_ID
+from agent.world.model import N_RESOURCE
+from agent.tile_dp.contractor import HORIZON_DAYS
 
 _RESOURCES = None
 

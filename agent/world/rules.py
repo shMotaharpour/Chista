@@ -179,3 +179,8 @@ END_OF_DAY_ORDER: tuple[str, ...] = (
     "farmer_respawned", "hands_removed", "hires_reset", "inventories_cleared",
     "shop_may_unlock",
 )
+
+
+#: Which structure each species lives in. A definition, so it lives beside the rules it is
+#: read from: the builder and the domain filter both need it.
+ANIMAL_STRUCTURE: dict[str, str] = {a: spec["structure"] for a, spec in ANIMAL_RULES.items()}

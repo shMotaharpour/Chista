@@ -29,10 +29,12 @@ from pathlib import Path
 
 import numpy as np
 
-from tile_dp.chains import N_RESOURCE, RESOURCE_ID, chain_ops
-from tile_dp.contractor import HORIZON_DAYS, TileContractor, price_board
-from tile_dp.graph import build_graph
-from tile_dp.tile_state import KIND_NONE, KIND_PLANT, TileState
+from agent.tile_dp.chains import chain_ops
+from agent.world.model import RESOURCE_ID
+from agent.world.model import N_RESOURCE
+from agent.tile_dp.contractor import HORIZON_DAYS, TileContractor, price_board
+from agent.tile_dp.graph import build_graph
+from agent.tile_dp.tile_state import KIND_NONE, KIND_PLANT, TileState
 
 from kaggle_environments.envs.kaggriculture import kaggriculture as K
 
@@ -51,7 +53,7 @@ def _graph():
     """The shipped merged graph, loaded once per run."""
     global _GRAPH
     if _GRAPH is None:
-        from tile_dp.graph import TileGraph
+        from agent.tile_dp.graph import TileGraph
         _GRAPH = TileGraph.load(GRAPH_PATH)
     return _GRAPH
 

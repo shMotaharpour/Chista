@@ -25,7 +25,7 @@ from typing import Any
 
 from kaggle_environments import make
 
-from world.fast_sim import FastSim
+from offline_lab.fast_sim import FastSim
 
 STEPS = 96
 SEED = 4242
@@ -207,7 +207,7 @@ def test_rewards_are_numeric_mid_episode() -> None:
 
 
 def test_run_parallel_returns_one_record_per_episode() -> None:
-    from world.fast_sim import run_parallel
+    from offline_lab.fast_sim import run_parallel
 
     cfg = {"episodeSteps": 48, "weedSpawnChance": 0.05}
     first = run_parallel(4, configuration=cfg, processes=2, master_seed=1)

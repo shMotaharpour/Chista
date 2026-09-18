@@ -15,7 +15,7 @@ Contracts under test:
   with a componentwise->= produce prunes. Nothing is netted.
 - CARE is never offered without FEED (a no-op on its own).
 - Rescue watering on consec=1 states exists (F002 second-night rule).
-- vocabulary/cost contracts: 18 resource names with no duplicate, NO_ACT
+- vocabulary/cost contracts: 18 resource names with no duplicate, NO_ACTION
   only ever a whole chain, no chain longer than 24 labour hours, and cost /
   produce as two separate 18-int vectors per edge.
 """
@@ -24,15 +24,15 @@ from __future__ import annotations
 
 import numpy as np
 
-from tile_dp.chains import (ALL_OPS, CHAIN_NAMES, N_RESOURCE,
-                            NO_ACT, RES_CARROT,
-                            RES_FERTILIZER, RES_LABOR, RES_MELON,
-                            RES_SEED_CARROT, RES_SEED_WHEAT, RES_WHEAT,
-                            RESOURCE_ID, RESOURCE_NAMES,
-                            chain_labor, chains_for, domain_ok)
-from tile_dp.graph import (Edge, TileGraph, _dominates, _exec_chain, _new_sim,
+from agent.tile_dp.chains import (TILE_OPS, CHAIN_NAMES, NO_ACTION, RES_CARROT, RES_MELON, RES_SEED_CARROT, RES_SEED_WHEAT, RESOURCE_NAMES, chain_labor, chains_for, domain_ok)
+from agent.world.model import RES_WHEAT
+from agent.world.model import RES_FERTILIZER
+from agent.world.model import RES_LABOR
+from agent.world.model import RESOURCE_ID
+from agent.world.model import N_RESOURCE
+from agent.tile_dp.graph import (Edge, TileGraph, _dominates, _exec_chain, _new_sim,
                            build_graph)
-from tile_dp.tile_state import KIND_NONE, TileState, decode_tile
+from agent.tile_dp.tile_state import KIND_NONE, TileState, decode_tile
 
 _CARROT: TileGraph | None = None
 
@@ -70,11 +70,11 @@ def test_chain_order_canonical() -> None:
     (HARVEST, DIG, PLANT, WATER) waters the NEXT plant (owner's item 4).
     """
     for ops in CHAIN_NAMES:
-        if ops == (NO_ACT,):
+        if ops == (NO_ACTION,):
             continue
         # Every op is a known worker or market op.
         for op in ops:
-            assert op in ALL_OPS, (ops, op)
+            assert op in TILE_OPS, (ops, op)
         # Split the chain into DIG-free segments: a DIG starts a new tile
         # (the old plant is gone, a new one may be planted and watered), so
         # every canonical-order rule holds WITHIN one segment.
@@ -118,7 +118,7 @@ def test_registry_contracts() -> None:
     """The registry's own invariants (brief part 2, item 1)."""
     assert len(RESOURCE_NAMES) == 18
     assert len(set(RESOURCE_NAMES)) == 18
-    assert [c for c in CHAIN_NAMES if NO_ACT in c] == [(NO_ACT,)]
+    assert [c for c in CHAIN_NAMES if NO_ACTION in c] == [(NO_ACTION,)]
     assert max(chain_labor(c) for c in CHAIN_NAMES) <= 24
     # CARE without FEED is a no-op: it must not even be a registry entry
     assert not [c for c in CHAIN_NAMES if "CARE" in c and "FEED" not in c]
@@ -193,7 +193,7 @@ def test_dry_consec1_pass_dies() -> None:
         s = g.state_of(i)
         if s.kind == "PLANT" and s.consec == 1:
             for edge in g.edges_from(i):
-                if edge.ops == (NO_ACT,):
+                if edge.ops == (NO_ACTION,):
                     nxt = g.state_of(edge.to_id)
                     assert nxt.kind != "PLANT", (s.describe(), nxt.describe())
 
@@ -241,13 +241,13 @@ def test_no_zero_cost_self_loops() -> None:
 
 
 def test_chain_one_day_contract() -> None:
-    """NO_ACT costs 0 hours; every daily chain fits exactly one day.
+    """NO_ACTION costs 0 hours; every daily chain fits exactly one day.
 
     The chain is executed from the bare-tile state (a fresh sim), so the ops
     that need a plant/an animal are engine no-ops here - what is under test is
     the day boundary, and the successor assertion that has to accept them.
     """
-    assert chain_labor((NO_ACT,)) == 0
+    assert chain_labor((NO_ACTION,)) == 0
     assert chain_labor(("PLANT", "WATER")) == 2
     assert chain_labor(("BUILD", "PLACE", "FEED")) == 3
     bare = TileState(KIND_NONE, None, None, None, 0, 0, 0, 0, 0, 0)
@@ -352,7 +352,7 @@ _ARRAY_NAMES = ("state_keys", "edge_offsets", "edge_next", "edge_chain",
 
 def _sim_factory(seed: int, weed_spawn: float):
     """A drop-in `graph._new_sim` with another seed (and optionally weeds)."""
-    from world.fast_sim import FastSim
+    from offline_lab.fast_sim import FastSim
 
     def make() -> FastSim:
         return FastSim({"episodeSteps": 30 * 24, "seed": seed,
@@ -368,7 +368,7 @@ def _build_with(factory, entity: str) -> TileGraph:
     same executor, the same assertions - under a different RNG seed,
     instead of re-implementing the build beside it.
     """
-    from tile_dp import graph as G
+    from agent.tile_dp import graph as G
 
     real = G._new_sim
     G._new_sim = factory
@@ -441,8 +441,8 @@ def test_weed_rng_reaches_tile_transitions() -> None:
     "the graph does not depend on the RNG" is a claim nobody has seen fail.
     """
     def idle(seed: int, spawn: float, days: int = 12):
-        from world.fast_sim import FastSim
-        from tile_dp.graph import _act, _tile_and_day
+        from offline_lab.fast_sim import FastSim
+        from agent.tile_dp.graph import _act, _tile_and_day
 
         sim = FastSim({"episodeSteps": 30 * 24, "seed": seed,
                        "weedSpawnChance": spawn})
