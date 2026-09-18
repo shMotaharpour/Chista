@@ -4,7 +4,7 @@ Run from the repo root:
 
     .venv/bin/python -m offline_lab.build.graph
 
-Writes `tile_dp/models/graph_tile_lifecycle.npz` (the merged graph) and
+Writes `agent/artifact/tile_graph.npz` (the graph) and
 `agent/tile_dp/models/build_report.json`, then reloads the written file to prove the
 round-trip works. The artifact is a tracked model file: it is committed, and this
 builder is the only thing that writes it.

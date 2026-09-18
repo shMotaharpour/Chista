@@ -106,10 +106,11 @@ def bench_sweep(runs: int = 5) -> int:
     """
     from agent.tile_dp.chains import N_RESOURCE, RESOURCE_ID
     from agent.tile_dp.contractor import TileContractor
-    from agent.tile_dp.graph import TileGraph
+    from agent.artifact import artifact_path
+from agent.tile_dp.graph import TileGraph
     from pathlib import Path
 
-    graph = TileGraph.load(Path("agent/tile_dp/models/graph_tile_lifecycle.npz"))
+    graph = TileGraph.load(artifact_path("tile_graph", ".npz"))
     contractor = TileContractor(graph)
     p = np.zeros(N_RESOURCE)
     w = np.zeros(N_RESOURCE)
