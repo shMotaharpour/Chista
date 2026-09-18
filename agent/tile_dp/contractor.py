@@ -1,7 +1,7 @@
 """TileContractor — the pricing oracle: a vectorised backward DP over the tile
 graph, plus forward plan recovery (issue #11, M2/D2-4).
 
-The graph (`tile_dp/models/graph_tile_lifecycle.npz`) is **day-invariant and
+The graph (`agent/artifact/tile_graph.npz`) is **day-invariant and
 position-invariant**: every tile on the board, on every day, faces the same
 state-action graph. So one backward sweep prices the whole board at once —
 there is no per-tile solve and no per-day graph rebuild. A loop over tiles in
