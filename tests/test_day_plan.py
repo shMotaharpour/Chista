@@ -14,7 +14,7 @@ if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
 from agent.dispatch import PASS_ACTION, dispatch_plan
-from agent.day.routing import (MAX_ORDERS_PER_TURN, MOVE_OPS, hire_cost,
+from agent.wsr.routing import (MAX_ORDERS_PER_TURN, MOVE_OPS, hire_cost,
                                merge_market, plan_day, spawn_position)
 from agent.tile_dp.chains import chains_for
 from agent.tile_dp.tile_state import decode_tile
@@ -316,7 +316,7 @@ def test_assignment_is_nearest_first_and_idle_units_are_counted() -> None:
 
 def test_the_market_queue_follows_f032_and_the_cap() -> None:
     """F032 order inside a turn, and the 11th order raises."""
-    from agent.day.routing import Need
+    from agent.wsr.routing import Need
     sells = [[["SELL", "WHEAT", 5]], []]
     needs = [Need(hour=3, order=("BUY_SEED", "WHEAT", 1), reason="PLANT")]
     queue, unplaced = merge_market(sells, needs, shed_total=0.0, capacity=100,

@@ -5,7 +5,7 @@ cross-check lives separately in test_brute_force_cross_check.py.
 """
 import pytest
 
-from agent.day.models import (
+from agent.wsr.models import (
     Instance,
     MajorTask,
     WAREHOUSE_ENTRY_CELLS,
@@ -17,7 +17,7 @@ from agent.day.models import (
     Worker,
     WorkerRoute,
 )
-from agent.day.solvers.cpsat_solver import (
+from agent.wsr.solvers.cpsat_solver import (
     CpSatConfig,
     InfeasibleInputError,
     _find_aggregatable_pickups,
@@ -25,7 +25,7 @@ from agent.day.solvers.cpsat_solver import (
     solve_cpsat,
     cpsat_binarySearch,
 )
-from agent.day.verify import verify_solution
+from agent.wsr.verify import verify_solution
 from tests.day_layer.fixtures.hand_solved_instances import HAND_SOLVED_CASES
 
 NW = WAREHOUSE_ENTRY_CELLS["NW"]
@@ -277,7 +277,7 @@ def test_worker_count_lower_bound_never_exceeds_the_true_optimum():
     assert result.status == "OPTIMAL", result.status
     # cost == sum fib(0..max_active): 20 feeds across a 10x10 grid within
     # horizon 24 genuinely needs 11 workers; fib sum 0..10 == 143.
-    from agent.day.fibonacci import fibonacci_cost
+    from agent.wsr.fibonacci import fibonacci_cost
     max_active = max(r.worker_index for r in result.solution.routes if r.tasks)
     assert result.solution.reported_cost == sum(
         fibonacci_cost(i) for i in range(max_active + 1)

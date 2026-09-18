@@ -15,8 +15,10 @@ from typing import Iterable, Mapping, Sequence
 
 from kaggle_environments.envs.kaggriculture import kaggriculture as K
 
-from agent.world.model import (CARRIES, COLLECT_ITEM, MOVE_DELTA, SHED_ACCESS,
-                         compile_chain)
+from agent.world.action_rules import CARRIES, YIELDS
+from agent.world.board import MOVE_DELTA
+from agent.world.rules import SHED_ACCESS
+from agent.tile_dp.chains import actions_of
 
 TURNS_PER_DAY = 24          # turnsPerDay (F058)
 DEFAULT_BOARD = 10          # boardSize
@@ -65,7 +67,7 @@ def nearest_shed(pos: tuple[int, int], board: int = DEFAULT_BOARD) -> tuple[int,
 
 def op_turns(ops: Sequence[str], entity: str | None) -> list[tuple[str, ...]]:
     """A chain -> the worker's op per turn. One expansion: `world/model.py`."""
-    return compile_chain(tuple(ops), entity)
+    return actions_of(tuple(ops), entity)
 
 
 @dataclass(frozen=True)
@@ -197,7 +199,7 @@ def route_unit(ops: Sequence[str], entity: str | None, pos: tuple[int, int], *,
             bagged[item] = bagged.get(item, 0) + int(yields.get(item, 0))
         elif op[0] == "COLLECT_FERTILIZER":
             bagged_ops += 1
-            bagged[COLLECT_ITEM] = bagged.get(COLLECT_ITEM, 0) + 1
+            bagged[YIELDS["COLLECT_FERTILIZER"]] = bagged.get(YIELDS["COLLECT_FERTILIZER"], 0) + 1
 
     arrivals: list[tuple[int, str, int]] = []
     if drop and bagged_ops > 0:

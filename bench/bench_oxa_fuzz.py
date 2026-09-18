@@ -48,9 +48,9 @@ import argparse
 import random
 from collections import Counter
 
-from agent.day.models import (Cell, Instance, Item, Action, MinorTask, Worker)
-from agent.day.solvers.oxa_solver import OxaConfig, solve_oxa
-from agent.day.verify import verify_solution
+from agent.wsr.models import (Cell, Instance, Item, Action, MinorTask, Worker)
+from agent.wsr.solvers.oxa_solver import OxaConfig, solve_oxa
+from agent.wsr.verify import verify_solution
 
 CELLS = [Cell(x, y) for x in (0, 2, 4, 9) for y in (0, 3, 4, 9)]
 

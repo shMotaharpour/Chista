@@ -8,17 +8,19 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import NamedTuple, Optional
 
-from agent.world.model import (ANIMALS, ANIMAL_STRUCTURE, CARRIES, CROPS, ENTITY_OPS,
-                         MOVEMENT, PRODUCTS, Action, Item, SHED_ACCESS_ORDERED,
-                         TileKind, compile_chain)
+from agent.world.action import Item, item_of
+from agent.world.action_rules import CARRIES
+from agent.world.action import Action
+from agent.world.model import UnitAction, ANIMALS, CROPS, MOVES, PRODUCTS, TileKind
+from agent.world.rules import ANIMAL_STRUCTURE, SHED_ACCESS
 
 # Derived views of the one vocabulary (ARCHITECTURE §5 step 4). PASS counts as a
 # movement here because it is what a unit does instead of moving.
-MOVEMENT_ACTIONS: frozenset[str] = frozenset(MOVEMENT) | {Action.PASS}
+MOVEMENT_ACTIONS: frozenset[str] = frozenset(MOVES) | {UnitAction.PASS}
 PRODUCE_ACTIONS: frozenset[str] = frozenset(
-    (Action.PICKUP, Action.HARVEST, Action.COLLECT_FERTILIZER))
+    (UnitAction.PICKUP, UnitAction.HARVEST, UnitAction.COLLECT_FERTILIZER))
 CONSUME_ACTIONS: frozenset[str] = frozenset(
-    (Action.PLACE, Action.FEED, Action.FERTILIZE))
+    (UnitAction.PLACE, UnitAction.FEED, UnitAction.FERTILIZE))
 ANIMAL_ITEMS: frozenset[str] = frozenset(ANIMALS)
 CROP_ITEMS: frozenset[str] = frozenset(CROPS)
 PRODUCT_ITEMS: frozenset[str] = frozenset(PRODUCTS)
@@ -34,7 +36,7 @@ class Cell(NamedTuple):
 # The shed's four access tiles, in the engine's NWSE order (world/model.py).
 WAREHOUSE_ENTRY_ORDER: tuple[str, ...] = ("NW", "NE", "SW", "SE")
 WAREHOUSE_ENTRY_CELLS: dict[str, Cell] = {
-    name: Cell(*tile) for name, tile in zip(WAREHOUSE_ENTRY_ORDER, SHED_ACCESS_ORDERED)}
+    name: Cell(*tile) for name, tile in zip(WAREHOUSE_ENTRY_ORDER, SHED_ACCESS)}
 
 
 @dataclass
@@ -161,11 +163,11 @@ def expand_major_task(major: MajorTask) -> ExpansionResult:
             name = op
         carried = CARRIES.get(name)
         if carried is not None:
-            carried = Item(carried)          # the model's name -> the enum member
+            carried = item_of(carried)       # the engine's name -> the model's item
         elif name == "PLACE":
             carried = major.item
         if carried is not None:
-            acquire = MinorTask(id=fresh("acquire"), cell=None, action=Action.PICKUP,
+            acquire = MinorTask(id=fresh("acquire"), cell=None, action=UnitAction.PICKUP,
                                 item=carried, qty=1)
             minors.append(acquire)
             if previous is not None:
@@ -254,7 +256,7 @@ class Instance:
         for group in self.single_worker_groups:
             if len(group) == 2:
                 t1, t2 = self.tasks_by_id[group[0]], self.tasks_by_id[group[1]]
-                pickup = t1 if t1.action == Action.PICKUP else (t2 if t2.action == Action.PICKUP else None)
+                pickup = t1 if t1.action == UnitAction.PICKUP else (t2 if t2.action == UnitAction.PICKUP else None)
                 consume = t2 if pickup == t1 else (t1 if pickup == t2 else None)
                 
                 if (pickup and consume and pickup.item and pickup.cell is None and 

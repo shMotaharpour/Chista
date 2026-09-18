@@ -26,8 +26,8 @@ from __future__ import annotations
 
 import time
 
-from agent.day.models import Cell, Instance, Item, MajorTask, Worker
-from agent.day.solvers.oxa_solver import OxaConfig, solve_oxa
+from agent.wsr.models import Cell, Instance, Item, MajorTask, Worker
+from agent.wsr.solvers.oxa_solver import OxaConfig, solve_oxa
 
 STOCK = {Item.WHEAT: 200, Item.FERTILIZER: 200, Item.COW: 50, Item.SHEEP: 50, Item.GOOSE: 50}
 TILES = (8, 12, 20, 25)

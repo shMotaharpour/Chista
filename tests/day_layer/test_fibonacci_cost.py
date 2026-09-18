@@ -1,6 +1,6 @@
 import pytest
 
-from agent.day.fibonacci import fibonacci_cost
+from agent.wsr.fibonacci import fibonacci_cost
 
 
 def test_known_values():

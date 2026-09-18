@@ -39,12 +39,12 @@ not the sum over the routes that carry tasks (which reddens
 """
 import pytest
 
-from agent.day.fibonacci import fibonacci_cost
-from agent.day.models import (Cell, Instance, Item, MajorTask, Action,
+from agent.wsr.fibonacci import fibonacci_cost
+from agent.wsr.models import (Cell, Instance, Item, MajorTask, Action,
                               MinorTask, ScheduledTask, Solution, Worker, WorkerRoute)
-from agent.day.solvers.cpsat_solver import CpSatConfig, cpsat_binarySearch
-from agent.day.solvers.oxa_solver import OxaConfig, solve_oxa
-from agent.day.verify import verify_solution
+from agent.wsr.solvers.cpsat_solver import CpSatConfig, cpsat_binarySearch
+from agent.wsr.solvers.oxa_solver import OxaConfig, solve_oxa
+from agent.wsr.verify import verify_solution
 
 STOCK = {Item.WHEAT: 200, Item.FERTILIZER: 200, Item.COW: 50, Item.SHEEP: 50, Item.GOOSE: 50}
 

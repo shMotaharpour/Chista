@@ -14,8 +14,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
-from agent.day.models import MajorTask
-from agent.day.models import (
+from agent.wsr.models import MajorTask
+from agent.wsr.models import (
     WAREHOUSE_ENTRY_CELLS,
     Instance,
     Item,

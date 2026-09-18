@@ -18,7 +18,7 @@ import inspect
 from kaggle_environments.envs.kaggriculture import kaggriculture as K
 
 import agent.tile_dp.chains as chains
-from agent.day import models as wsr
+from agent.wsr import models as wsr
 from agent.world import model as M
 
 #: Hand-spelled good names per module (R002 debt), measured 2026-09-17. A module

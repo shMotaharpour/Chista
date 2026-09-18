@@ -29,6 +29,15 @@ from agent.world.model import Animal, Crop, MarketOrder, Product, UnitAction
 #: Anything an action can name: a seed's crop, a species, or a product.
 Item = Crop | Animal | Product
 
+
+def item_of(name: str) -> Item:
+    """The model's item for a name the engine uses: a crop, an animal or a product."""
+    for kind in (Crop, Animal, Product):
+        if name in kind.__members__:
+            return kind(name)
+    raise ValueError(f"unknown item {name!r}")
+
+
 #: The worker ops, and the market's, as the two vocabularies they are.
 WORKER_OPS: tuple[str, ...] = tuple(op.value for op in UnitAction)
 MARKET_OPS: tuple[str, ...] = tuple(op.value for op in MarketOrder)
