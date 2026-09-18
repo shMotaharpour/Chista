@@ -1,7 +1,13 @@
-"""
-Core data model and Rich Domain Instance for ChistaWRS.
-Combines data structures, major task expansion, and instance compilation into a 
-single, validated, and fully pre-processed domain model.
+"""The WSR's data model: a day's work, and the instance a solver schedules.
+
+A chain of ops (from the DP's registry) becomes the minor tasks that make it up, plus the
+precedence between them and the pairs that one worker must do together. The `Instance`
+validates all of that once and pre-computes the lookups the solvers share, so no solver
+rediscovers the structure.
+
+The chain's own order is a constraint only where it changes the outcome: a ONE-SHOT crop is
+watered before it is harvested, and the engine does not care in what order an ongoing crop is
+fed, watered and harvested. Imposing the order everywhere would forbid days that are fine.
 """
 
 from __future__ import annotations
@@ -12,7 +18,10 @@ from agent.world.action import Item, item_of
 from agent.world.action_rules import CARRIES
 from agent.world.action import Action
 from agent.world.model import UnitAction, ANIMALS, CROPS, MOVES, PRODUCTS, TileKind
-from agent.world.rules import ANIMAL_STRUCTURE, SHED_ACCESS
+from agent.world.action import _op_name
+from agent.world.rules import ANIMAL_STRUCTURE, CROP_RULES, SHED_ACCESS, TURNS_PER_DAY
+
+from agent.wsr.fibonacci import fibonacci_cost
 
 # Derived views of the one vocabulary (ARCHITECTURE §5 step 4). PASS counts as a
 # movement here because it is what a unit does instead of moving.
@@ -40,20 +49,6 @@ WAREHOUSE_ENTRY_CELLS: dict[str, Cell] = {
 
 
 @dataclass
-class CellState:
-    type: Optional[TileKind] = None
-    is_wheat: bool = False
-    watered: Optional[bool] = None
-    fertilized: Optional[bool] = None
-    fed: Optional[bool] = None
-    produced_fer: Optional[bool] = None
-    occupied: Optional[bool] = None
-    cared: Optional[bool] = None
-    n_yield: int = 0
-    harvest_to_none: Optional[bool] = None
-
-
-@dataclass
 class MinorTask:
     id: str
     cell: Optional[Cell]
@@ -70,7 +65,7 @@ class Worker:
 
     @property
     def cost(self) -> int:
-        from .fibonacci import fibonacci_cost
+        """What this worker costs to hire (the engine's Fibonacci ladder)."""
         return fibonacci_cost(self.index)
 
 
@@ -100,11 +95,8 @@ class Solution:
 # 2. Major Task Definitions & Expansion Logic
 # ============================================================================
 
-#: The scheduling types the WSR's solvers are built on. Each is a chain from the
-#: DP registry, so there is no second definition of a day's work.
-#: `wet_harvst_plnt` is the exception: the registry's rotation is
-#: WATER-HARVEST-DIG-PLANT-WATER, and the solver's measured tables (F057) were
-#: taken on the four-op form, so re-basing it is a re-measure, not a rename.
+#: The day types the WSR's solvers schedule. Each is a chain of the DP's vocabulary, and the
+#: registry is what will replace this list: a day the WSR runs must be a day the DP priced.
 MAJOR_CHAINS: dict[str, tuple[str, ...]] = {
     "feed": ("FEED",),
     "frtz": ("FERTILIZE",),
@@ -130,62 +122,65 @@ ExpansionResult = tuple[list[MinorTask], list[tuple[str, str]], list[str]]
 
 
 def expand_major_task(major: MajorTask) -> ExpansionResult:
-    """A major task -> its minor tasks, precedences and material-critical ids.
+    """One day's chain -> its minor tasks, the precedence between them, and the pairs that
+    the SAME worker must do (a PICKUP and the op that consumes what it carried).
 
-    Derived from the type's chain (`MAJOR_CHAINS`) through `world/model.py`: the
-    chain's ops in order, each op that eats a carried good preceded by its
-    PICKUP. The chain's order IS the precedence.
+    Every op that eats a carried good is preceded by its own PICKUP. The chain's order is
+    imposed as precedence only for a ONE-SHOT crop: there it decides the outcome (a crop must
+    be watered before it is harvested), while an ongoing crop and an animal are indifferent to
+    the order of their ops, and a total order would forbid legal days.
     """
     chain = MAJOR_CHAINS.get(major.type)
     if chain is None:
         raise ValueError(f"unknown major_task type: {major.type!r}")
-    tid = major.id
-    minors: list[MinorTask] = []
-    prec: list[tuple[str, str]] = []
-    critical: list[str] = []
+
+    ordered = major.crop is not None and not CROP_RULES[major.crop]["ongoing"]
+    tasks: list[MinorTask] = []
+    precedence: list[tuple[str, str]] = []
+    same_worker: list[str] = []
     seen: dict[str, int] = {}
     previous: Optional[str] = None
 
-    def fresh(name: str) -> str:
+    def unique(name: str) -> str:
         seen[name] = seen.get(name, 0) + 1
-        return f"{tid}_{name}" if seen[name] == 1 else f"{tid}_{name}{seen[name]}"
+        suffix = "" if seen[name] == 1 else str(seen[name])
+        return f"{major.id}_{name}{suffix}"
+
+    def link(before: Optional[str], after: str) -> None:
+        """Record the order, when the order is a constraint at all."""
+        if before is not None and ordered:
+            precedence.append((before, after))
 
     for op in chain:
-        # The minor task's action is the chain op itself: the WSR schedules an
-        # abstract day, and `compile_op`'s validation belongs to the engine-facing
-        # compiler (a `PLANT` minor task carries its crop in `crop`, and the
-        # solver's instances legitimately leave it out).
-        if op == "BUILD":
-            name = f"BUILD_{ANIMAL_STRUCTURE[major.item]}"
-        elif op == "NO_ACT":
-            name = "PASS"
-        else:
-            name = op
+        name = f"BUILD_{ANIMAL_STRUCTURE[major.item]}" if op == "BUILD" else op
         carried = CARRIES.get(name)
         if carried is not None:
-            carried = item_of(carried)       # the engine's name -> the model's item
+            carried = item_of(carried)
         elif name == "PLACE":
             carried = major.item
+
         if carried is not None:
-            acquire = MinorTask(id=fresh("acquire"), cell=None, action=UnitAction.PICKUP,
-                                item=carried, qty=1)
-            minors.append(acquire)
-            if previous is not None:
-                prec.append((previous, acquire.id))
+            acquire = MinorTask(id=unique("acquire"), cell=None,
+                                action=UnitAction.PICKUP, item=carried, qty=1)
+            tasks.append(acquire)
+            link(previous, acquire.id)
             previous = acquire.id
-            critical.append(acquire.id)
-        minor = MinorTask(
-            id=fresh(name.lower()), cell=major.cell, action=Action(name),
+            same_worker.append(acquire.id)      # the worker that carries it is the one to use it
+
+        task = MinorTask(
+            id=unique(name.lower()),
+            cell=major.cell,
+            action=UnitAction(name),
             item=major.harvested_item if name == "HARVEST" else carried,
             qty=major.harvested_qty if name == "HARVEST" else 1,
             crop=major.crop if name == "PLANT" else None)
-        minors.append(minor)
-        if previous is not None:
-            prec.append((previous, minor.id))
-        previous = minor.id
+        tasks.append(task)
+        link(previous, task.id)
+        previous = task.id
         if carried is not None:
-            critical.append(minor.id)
-    return minors, prec, critical
+            same_worker.append(task.id)
+
+    return tasks, precedence, same_worker
 
 
 # ============================================================================
@@ -204,7 +199,7 @@ class Instance:
     single_worker_groups: list[list[str]] = field(default_factory=list)
     warehouse_stock: dict[Item, int] = field(default_factory=dict)
     workers: list[Worker] = field(default_factory=list)
-    horizon: int = 24
+    horizon: int = TURNS_PER_DAY
     clct_deadline: Optional[int] = None
     worker_pool_size: Optional[int] = None
 
@@ -256,11 +251,16 @@ class Instance:
         for group in self.single_worker_groups:
             if len(group) == 2:
                 t1, t2 = self.tasks_by_id[group[0]], self.tasks_by_id[group[1]]
-                pickup = t1 if t1.action == UnitAction.PICKUP else (t2 if t2.action == UnitAction.PICKUP else None)
+                # `action` is an `Action` for the chain's own ops and a `UnitAction` for the
+                # PICKUPs inserted above, so compare the op's name: `Action(...) ==
+                # UnitAction.PICKUP` is never true and the aggregation never fired.
+                is_pickup = lambda t: _op_name(t.action) == UnitAction.PICKUP.value
+                pickup = t1 if is_pickup(t1) else (t2 if is_pickup(t2) else None)
                 consume = t2 if pickup == t1 else (t1 if pickup == t2 else None)
                 
                 if (pickup and consume and pickup.item and pickup.cell is None and 
-                    consume.action in CONSUME_ACTIONS and consume.item == pickup.item):
+                    _op_name(consume.action) in {op.value for op in CONSUME_ACTIONS}
+                    and consume.item == pickup.item):
                     
                     if (pickup.id, consume.id) in precedence_set:
                         agg_pickups.add(pickup.id)
@@ -316,7 +316,7 @@ class Instance:
         explicit_precedence: Optional[list[tuple[str, str]]] = None,
         explicit_single_worker_groups: Optional[list[list[str]]] = None,
         warehouse_stock: Optional[dict[Item, int]] = None,
-        horizon: int = 24,
+        horizon: int = TURNS_PER_DAY,
         clct_deadline: Optional[int] = None,
         worker_pool_size: Optional[int] = None,
     ) -> "Instance":
