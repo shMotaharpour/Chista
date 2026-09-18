@@ -265,6 +265,16 @@ def _fingerprint(chains: tuple[TileChain, ...]) -> str:
     return sha256("\n".join(chain_name(c) for c in chains).encode()).hexdigest()[:16]
 
 
+def fingerprint_chains(chains) -> str:
+    """The ONE fingerprint of a chain table, used by the builder and by the loader.
+
+    Ids are positions, so an artifact that stores ids is only readable together with the
+    exact table that produced it. Two different hashes for the same table would make the
+    agent refuse its own build.
+    """
+    return _fingerprint(tuple(chains))
+
+
 def registry_fingerprint() -> str:
     """Fingerprint of the loaded registry: ids are positions, so an artifact that stores
     ids is only readable together with the exact registry that produced it."""

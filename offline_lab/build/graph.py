@@ -54,10 +54,11 @@ from offline_lab.fast_sim import FastSim
 from agent.artifact import artifact_path, write_info
 from agent.world.model import UnitAction
 from agent.world.rules import ANIMAL_RULES, CROP_RULES
-from offline_lab.build.chains import chains_for, domain_ok
+from offline_lab.build.chains import (chain_id_of, chain_ops, chains_for,
+                                      domain_ok)
 from agent.tile_dp.chains import (CONSTRUCTIVE_OPS, ENTITY_CODE, ENTITY_NAMES,
-                                  MARKET_OPS, N_RESOURCE, OP_STEPS,
-                                  RESOURCE_ID, chain_id_of, chain_name, chain_ops,
+                                  N_RESOURCE, OP_STEPS,
+                                  RESOURCE_ID, chain_name,
                                   chain_steps, contract_id, cost_vector,
                                   entity_code_of, entity_of_code,
                                   engine_fingerprint, is_animal, produce_vector,
@@ -279,8 +280,16 @@ def _expected_next(state: TileState, ops: tuple[str, ...],
     if "PLANT" in ops:
         spec = CROP_RULES[entity]
         base = 0 if spec.get("ongoing") else 1
-        return TileState(KIND_PLANT, entity, None, None,
-                         1 - crop_age_origin(entity), 0, 0, 0, 0, base)
+        # A plant made TODAY may also be fertilised today (PLANT then FERTILIZE), and
+        # the dose is what the engine counts: `_successor` must say so or the successor
+        # check rejects a chain the engine accepted.
+        planted = ops.index("PLANT")
+        return TileState(kind=KIND_PLANT, crop=entity,
+                         age=1 - crop_age_origin(entity),
+                         # Only a dose given AFTER this plant counts: fertilise the old
+                         # crop, harvest it and replant, and the new plant is clean.
+                         fert_left=2 if "FERTILIZE" in ops[planted:] else 0,
+                         yield_units=base)
     if "PLACE" in ops:
         spec = K.ANIMALS[entity]
         # Placement day, then the nightly refresh: FEED keeps the animal fed,
@@ -335,8 +344,12 @@ def _growth_day_violation(state: TileState, child: TileState,
                 f"make the age {_next_age(state)}, the engine gave "
                 f"{child.describe()}")
     if state.kind == KIND_PLANT:
-        want = (0 if "WATER" in ops else state.consec + 1,
-                2 if "FERTILIZE" in ops else max(0, state.fert_left - 1))
+        planted = ops.index("PLANT") if "PLANT" in ops else -1
+        if planted >= 0:        # the tile holds a NEW plant, so the old dose is gone
+            want_fert = 2 if "FERTILIZE" in ops[planted:] else 0
+        else:
+            want_fert = 2 if "FERTILIZE" in ops else max(0, state.fert_left - 1)
+        want = (0 if "WATER" in ops else state.consec + 1, want_fert)
         if (child.consec, child.fert_left) != want:
             return (f"edge {chain_name(ops)} on {state.describe()}: expected "
                     f"consec={want[0]} fert_left={want[1]}, the engine gave "
@@ -413,7 +426,7 @@ def _exec_chain(sim: FastSim, state: TileState, ops: tuple[str, ...],
     harvest = 0
     fert_collect = 0
     for op in ops:
-        if op in MARKET_OPS:
+        if op in frozenset():
             continue        # the market buys inside the op that needs it
         if op == UnitAction.PASS.value:
             # Nothing on this tile: the worker idles, the day still passes.
@@ -421,8 +434,10 @@ def _exec_chain(sim: FastSim, state: TileState, ops: tuple[str, ...],
         elif op in ("BUILD_COOP", "BUILD_PASTURE"):
             # BUILD = one worker action: a NONE tile becomes a structure. The
             # animal itself is bought later (by PLACE, day stand-in).
-            sim.step([_act([f"BUILD_{_STRUCTURE_OF[entity]}"]),
-                      _act(["PASS"])])
+            # The OP names the structure, not the entity: a cow's chains may build a
+            # COOP (that is what DIG+BUILD_COOP on a coop is), and taking the structure
+            # from the entity silently built the other one.
+            sim.step([_act([op]), _act(["PASS"])])
         elif op == "PLACE":
             sim.step([_act(["PASS"], [["BUY_ANIMAL", entity, 1]]),
                       _act(["PASS"])])
@@ -554,7 +569,7 @@ def _plan(state: TileState, restrict: str | None
     for ent in _candidates(state, restrict):
         for ops in chains_for(state.kind, age=age,
                               yield_units=state.yield_units, entity=own):
-            if not domain_ok(ops, ent):
+            if not domain_ok(ops, ent, state.structure):
                 continue         # domain filter (decision 9)
             if any(op in CONSTRUCTIVE_OPS for op in ops):
                 run_entity, code = ent, ENTITY_CODE[ent]
@@ -694,7 +709,7 @@ def build_graph(entity: str | None = None, progress: bool = False) -> TileGraph:
             edge_entity.append(edge.entity_code)
             cost_rows.append(list(edge.cost))
             produce_rows.append(list(edge.produce))
-            step_rows.append(chain_steps(edge.ops))
+            step_rows.append(chain_steps(chain_ops(edge.chain_id)))
     offsets[n_states] = len(edge_next)
 
     kinds: dict[str, int] = {}
@@ -741,6 +756,12 @@ def main() -> int:
                              "kinds": g.report.kinds,
                              "edges_per_entity": by_entity},
                       source="offline_lab.build.graph:build_graph")
+    # The chains are the graph's own action index, so they are written BY this run, under
+    # the same contract: the agent loads the graph and the chains together and the two can
+    # never drift apart. Nothing builds a chain artifact on its own.
+    from offline_lab.build import chains as C
+    table = C.write_table(g.engine_tag)
+    print("chains:", table.name, "->", C.TABLE_PATH.name)
     print("info:", info.name)
     back = TileGraph.load(GRAPH_PATH)
     print("RELOAD", back.n_states, back.n_edges, back.entity, back.engine_tag)
