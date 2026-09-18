@@ -8,11 +8,8 @@ per-turn position variables).
 """
 from __future__ import annotations
 
+from agent.world.board import manhattan
 from .models import WAREHOUSE_ENTRY_CELLS, WAREHOUSE_ENTRY_ORDER, Cell
-
-
-def manhattan(a: Cell, b: Cell) -> int:
-    return abs(a[0] - b[0]) + abs(a[1] - b[1])
 
 
 def distance_to_nearest_entry(cell: Cell) -> int:

@@ -20,6 +20,7 @@ from kaggle_environments.envs.kaggriculture import kaggriculture as K
 from agent.tile_dp.chains import actions_of
 from agent.world.action_rules import CARRIES, YIELDS
 from agent.world.board import MOVE_DELTA
+from agent.world.board import manhattan
 from agent.world.rules import (DEFAULT_BOARD, MAX_ORDERS_PER_TURN, SHED_ACCESS,
                                TURNS_PER_DAY)
 
@@ -260,10 +261,6 @@ def _assert_shed_ops_are_reachable(route: UnitRoute, start: tuple[int, int],
 
 
 # --------------------------------------------------------------- the whole day
-
-def manhattan(a: tuple[int, int], b: tuple[int, int]) -> int:
-    return abs(int(a[0]) - int(b[0])) + abs(int(a[1]) - int(b[1]))
-
 
 def spawn_position(occupied: Sequence[tuple[int, int]],
                    board: int = DEFAULT_BOARD) -> tuple[int, int]:

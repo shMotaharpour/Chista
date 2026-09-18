@@ -52,3 +52,11 @@ SHED_DOORS: tuple[Cell, ...] = SHED_ACCESS
 #: Where the main farmer stands at the start of every day: the first shed door in NW
 #: order, `(4, 4)` at board 10 (:161-166, :879).
 SPAWN: Cell = SHED_ACCESS[0]
+
+
+def manhattan(a: Cell, b: Cell) -> int:
+    """Turns between two cells: the board has no obstacles and a unit moves one tile a turn.
+
+    Coordinates are cast because the engine's observations carry them as strings.
+    """
+    return abs(int(a[0]) - int(b[0])) + abs(int(a[1]) - int(b[1]))
