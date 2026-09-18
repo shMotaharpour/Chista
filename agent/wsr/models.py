@@ -54,7 +54,7 @@ class MinorTask:
     cell: Optional[Cell]
     action: Action
     item: Optional[Item] = None
-    qty: int = 1
+    n: int = 1
     crop: Optional[Item] = None
 
 
@@ -74,7 +74,7 @@ class ScheduledTask:
     task_id: str
     exec_time: int
     resolved_cell: Optional[Cell] = None
-    resolved_qty: Optional[int] = None
+    resolved_n: Optional[int] = None
 
 
 @dataclass
@@ -114,7 +114,7 @@ class MajorTask:
     cell: Cell
     crop: Optional[Item] = None
     harvested_item: Optional[Item] = None
-    harvested_qty: int = 1
+    harvested_n: int = 1
     item: Optional[Item] = None
 
 
@@ -161,7 +161,7 @@ def expand_major_task(major: MajorTask) -> ExpansionResult:
 
         if carried is not None:
             acquire = MinorTask(id=unique("acquire"), cell=None,
-                                action=UnitAction.PICKUP, item=carried, qty=1)
+                                action=UnitAction.PICKUP, item=carried, n=1)
             tasks.append(acquire)
             link(previous, acquire.id)
             previous = acquire.id
@@ -172,7 +172,7 @@ def expand_major_task(major: MajorTask) -> ExpansionResult:
             cell=major.cell,
             action=UnitAction(name),
             item=major.harvested_item if name == "HARVEST" else carried,
-            qty=major.harvested_qty if name == "HARVEST" else 1,
+            n=major.harvested_n if name == "HARVEST" else 1,
             crop=major.crop if name == "PLANT" else None)
         tasks.append(task)
         link(previous, task.id)

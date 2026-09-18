@@ -189,7 +189,7 @@ def _build_worker_route(
     for tid in route_task_ids:
         task = tasks_by_id[tid]
         if task.action in CONSUME_ACTIONS and task.item is not None:
-            route_demand[task.item] = route_demand.get(task.item, 0) + task.qty
+            route_demand[task.item] = route_demand.get(task.item, 0) + task.n
             if task.item not in first_consume_time:
                 first_consume_time[task.item] = local_exec_times[tid]
 
@@ -209,7 +209,7 @@ def _build_worker_route(
             task_id=acq_id,
             exec_time=t,
             resolved_cell=entry_cell,
-            resolved_qty=route_demand[item],
+            resolved_n=route_demand[item],
         ))
         emitted_acquires.add(acq_id)
         t += 1
@@ -222,7 +222,7 @@ def _build_worker_route(
             task_id=tid,
             exec_time=local_exec_times[tid],
             resolved_cell=task.cell or entry_cell,
-            resolved_qty=task.qty,
+            resolved_n=task.n,
         ))
         exec_times[tid] = local_exec_times[tid]
         done_targets.add(tid)
@@ -508,7 +508,7 @@ def solve_oxa(instance: Instance, config: OxaConfig = OxaConfig()) -> OxaResult:
         picked: dict[Item, int] = {}
         for _t in instance.minor_tasks:
             if _t.action == UnitAction.PICKUP and _t.item is not None:
-                picked[_t.item] = picked.get(_t.item, 0) + _t.qty
+                picked[_t.item] = picked.get(_t.item, 0) + _t.n
         for _item, _amount in picked.items():
             _stock = instance.warehouse_stock.get(_item, 0)
             if _amount > _stock:

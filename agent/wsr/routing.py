@@ -108,11 +108,17 @@ def carried_item(action, entity: str | None) -> str | None:
     return CARRIES.get(name)
 
 
-def _buy_order(item: str) -> tuple:
+def buy_order(item: str, *, for_seed: bool = False) -> tuple:
+    """The engine's order for something a day needs.
+
+    A crop is BOTH a seed and a product - wheat is both - so the order cannot be read off the
+    item: it follows from the op that wants it. PLANT spends a seed, FEED and FERTILIZE spend
+    a product, PLACE an animal.
+    """
+    if for_seed:
+        return ("BUY_SEED", item, 1)
     if item in K.ANIMALS:
         return ("BUY_ANIMAL", item, 1)
-    if item in K.CROPS:
-        return ("BUY_SEED", item, 1)
     return ("BUY_PRODUCT", item, 1)
 
 
@@ -173,7 +179,7 @@ def route_unit(ops: Sequence[str], entity: str | None, pos: tuple[int, int], *,
             # the pickup resolves before that turn's market, so the buy must land on an
             # earlier turn than the pickup
             pickup_turn = hour + len(seq) - len(back) - 1
-            needs.append(Need(hour=pickup_turn - 1, order=_buy_order(item), reason=name))
+            needs.append(Need(hour=pickup_turn - 1, order=buy_order(item), reason=name))
             bag[item] = 1
             at = target
         elif at != target:
@@ -191,7 +197,8 @@ def route_unit(ops: Sequence[str], entity: str | None, pos: tuple[int, int], *,
             # order and a worker on the tile, with nothing to carry. The buy still lands after
             # that turn's units, so it must be on an earlier turn than the plant.
             needs.append(Need(hour=hour + len(seq) - 1,
-                              order=("BUY_SEED", action.item.value, 1), reason="PLANT"))
+                              order=buy_order(action.item.value, for_seed=True),
+                              reason="PLANT"))
         push([tuple(action.as_list())])
         if name == "HARVEST":
             bagged_ops += 1
