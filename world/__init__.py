@@ -6,8 +6,8 @@ Four files, in the order a reader wants them:
   columns a plan is priced over, the unit actions and the market orders.
 - `rules` — the numbers: the season, the crop and animal tables, land, labour, the
   shed, the town, and the engine's turn order.
-- `action_rules` — what each action needs and what it does, from the engine's handlers.
-  (`actions.py` is something else: the action-shape validator the pool guard uses.)
+- `action_rules` — what each action needs and what it does, from the engine's
+  handlers.
 - `prices` — the price function and the town's drain.
 
 Nothing in this package imports our other code. The authority is

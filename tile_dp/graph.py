@@ -15,7 +15,7 @@ units of the entity's product + collected fertilizer. The two are SEPARATE
 crop's product.
 
 Simulation inheritance (decision 6): a node is expanded with the SAME sim that
-produced it (`dict[state_id, FastSim]`), so its edges are computed from the true
+produced it (`dict[state_id, FastSim]`, `offline/fast_sim.py`), so its edges are computed from the true
 state of the tile that reached it; only the root (NONE, day 0) gets a fresh sim.
 The earlier builder replayed a hand-written canonical history per node instead,
 which regularly landed on another day-start state - measured 184/394 nodes on
@@ -60,7 +60,7 @@ import numpy as np
 
 from kaggle_environments.envs.kaggriculture import kaggriculture as K
 
-from world.fast_sim import FastSim
+from offline.fast_sim import FastSim
 
 from tile_dp.chains import (CONSTRUCTIVE_OPS, ENTITY_CODE, ENTITY_NAMES,
                             MARKET_OPS, N_RESOURCE, NO_ACT, OP_STEPS,

@@ -33,7 +33,7 @@ import inspect
 import re
 
 
-from world.fast_sim import FastSim
+from offline.fast_sim import FastSim
 
 from tile_dp import graph as G
 from tile_dp.tile_state import decode_tile

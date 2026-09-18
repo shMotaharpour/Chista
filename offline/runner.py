@@ -190,7 +190,7 @@ def _episode_worker(slug0: str, slug1: str, seed: int,
     agents = {0: _load_agent(slug0), 1: _load_agent(slug1)}
     stats = {0: GuardStats(), 1: GuardStats()}
 
-    from world.fast_sim import FastSim
+    from offline.fast_sim import FastSim
     sim = FastSim({"episodeSteps": episode_steps, "seed": seed,
                    "weedSpawnChance": 0.005}, validate="fast")
 
@@ -264,7 +264,7 @@ def _timed_episode_worker(slug: str, opp: str, seed: int,
     stats_me = GuardStats()
     stats_other = GuardStats()
 
-    from world.fast_sim import FastSim
+    from offline.fast_sim import FastSim
     sim = FastSim({"episodeSteps": episode_steps, "seed": seed,
                    "weedSpawnChance": 0.005}, validate="fast")
 

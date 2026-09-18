@@ -52,18 +52,19 @@ Python 3.11 venv at `.venv/`, CPU-only PyTorch, built from `requirements.txt`:
 `requirements.txt` lists the core stack (kaggle-environments, ortools, scipy,
 torch CPU) plus analysis/plotting extras.
 
-## Game environment access — `world/`
+## Game environment access — `offline/`
 
-All interaction with the game goes through the wrappers in `world/` (see
-`world/README.md`). Do not call `kaggle_environments` or the interpreter
-ad hoc elsewhere; import one of the two paths:
+All interaction with the game goes through the wrappers in `offline/` (see
+`offline/README.md`). `world/` is the reference of definitions and holds no tools.
+Do not call `kaggle_environments` or the interpreter ad hoc elsewhere; import one of
+the two paths:
 
-- **`world.kaggle_env`** — the full, official path. Real harness
+- **`offline.kaggle_env`** — the full, official path. Real harness
   (`make()`), any configuration, agents passed at call time, HTML replay
   via the environment's own `render()`. Outputs go to `artifacts/replays/`
   (gitignored, in-repo) unless another `output_path` is passed. Use for
   submission-style evaluation and replays.
-- **`world.fast_sim`** — the fast path. `FastSim` drives
+- **`offline.fast_sim`** — the fast path. `FastSim` drives
   `kaggriculture.interpreter()` directly on structify-cloned state:
   `step()` for single turns, `run()` for episodes, `clone()`/`what_if()`
   for hypothetical branches (DP/MDP), and `run_parallel()` for multi-core

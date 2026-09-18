@@ -7,7 +7,7 @@ an episode. The wrapper contains all four and turns them into LABELS:
 - `raises`: count + first traceback (an agent that raised on turn 300
   still produced 300 turns of data; how OFTEN it raises is itself a
   characterisation number);
-- `malformed`: the returned action fails world.actions.validate_action;
+- `malformed`: the returned action fails offline.actions.validate_action;
 - `slow`: per-call wall time p95 above the 1 s free turn (F046) - it
   would time out on Kaggle, so its score carries the label;
 - `abandoned`: the episode's process timeout tripped (offline.runner) -
@@ -23,7 +23,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from world.actions import validate_action
+from offline.actions import validate_action
 
 # Hard per-turn ceiling for a pool agent: named TODO (R005) - the
 # number below has NO measurement behind it; the M1 bench distribution

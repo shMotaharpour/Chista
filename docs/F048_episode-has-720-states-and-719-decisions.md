@@ -73,5 +73,6 @@ link was one twenty-line script away from being checked.
   state; `EPISODE_STATES - 2` is the last decision. Both appear in the tests as
   named constants so neither is retyped.
 
-*Source: measured on the official harness path (`world.kaggle_env.run_episode`),
+*Source: measured on the official harness path (then `world.kaggle_env.run_episode`,
+now `offline.kaggle_env.run_episode`),
 kaggle-environments 1.32.7, 2026-09-15. Corrects the reading of F029.*

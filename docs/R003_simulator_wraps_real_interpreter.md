@@ -46,7 +46,7 @@ policies, 8-core box, kaggle-environments 1.32.7, median of 3 runs):
 |---|---:|---:|
 | `env.run()` with agents | 1.785 | 1.0× |
 | the same harness with the agent processes removed | 1.138 | 1.6× |
-| `world.fast_sim` (`FastSim.run`) | 0.035 | **50.6×** |
+| `fast_sim` (`FastSim.run`; now `offline/fast_sim.py`) | 0.035 | **50.6×** |
 
 The gap between the first two rows is the harness's per-turn agent
 indirection (process pool + pickling a full observation every turn); the rest

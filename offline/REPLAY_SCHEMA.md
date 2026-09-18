@@ -2,8 +2,8 @@
 
 A replay file records the turn-by-turn actions of **ONE agent** (not a full
 two-player match). The `ReplayAgent` in `world/replay_agent.py` plays such a
-file against any opponent, on either engine path (`world.fast_sim` or
-`world.kaggle_env`), in either seat.
+file against any opponent, on either engine path (`offline.fast_sim` or
+`offline.kaggle_env`), in either seat.
 
 ## File format
 
@@ -91,9 +91,9 @@ during play (R004 — on-demand analysis only):
 ## Playing
 
 ```python
-from world.replay_agent import EpisodeRecord, ReplayAgent
+from offline.replay_agent import EpisodeRecord, ReplayAgent
 from world import kaggle_env
-from world.fast_sim import FastSim
+from offline.fast_sim import FastSim
 
 rec = EpisodeRecord.load("my_episode.json")
 agent = ReplayAgent(rec)
