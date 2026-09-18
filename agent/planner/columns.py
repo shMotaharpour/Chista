@@ -44,11 +44,11 @@ from typing import Iterable, Sequence
 
 import numpy as np
 
-from agent.tile_dp.chains import N_RESOURCE, RESOURCE_ID
+from agent.tile_dp.chains import RES_LABOR, N_RESOURCE, RESOURCE_ID
 
 # F029: 720 turns of 24 = 30 days, and the season ends with no liquidation.
 DAYS = 30
-LABOR_ID = RESOURCE_ID["LABOR_HOURS"]
+LABOR_ID = RESOURCE_ID[RES_LABOR]
 
 # The coupling rows of #12's brief, in the order they publish them.
 ROW_NAMES: tuple[str, ...] = ("labour", "cash_out", "wheat_net", "fert_net",

@@ -37,7 +37,7 @@ from typing import Sequence
 
 import numpy as np
 
-from agent.tile_dp.chains import N_RESOURCE, RESOURCE_ID
+from agent.tile_dp.chains import RES_LABOR, N_RESOURCE, RESOURCE_ID
 from agent.tile_dp.graph import TileGraph
 
 # F029: 720 turns of 24 = 30 days, and shed goods at the end are worth
@@ -46,7 +46,7 @@ HORIZON_DAYS = 30
 # The sweep's arithmetic dtype (issue #11 §2): float32 keeps the two 18217×18
 # matrices at ~1.1 MB each and stops numpy upcasting per call.
 DTYPE = np.float32
-LABOR_ID = RESOURCE_ID["LABOR_HOURS"]
+LABOR_ID = RESOURCE_ID[RES_LABOR]
 
 
 def _check_non_negative(name: str, values: np.ndarray) -> None:

@@ -128,10 +128,10 @@ except ImportError:                     # scipy is optional at import time
     HAS_SCIPY = False
 
 from agent.replan import dual_stand_in
-from agent.tile_dp.chains import N_RESOURCE, RESOURCE_ID
+from agent.tile_dp.chains import RES_LABOR, N_RESOURCE, RESOURCE_ID
 from agent.tile_dp.contractor import PricedBoard
 
-LABOR_ID = RESOURCE_ID["LABOR_HOURS"]
+LABOR_ID = RESOURCE_ID[RES_LABOR]
 FERT_ID = RESOURCE_ID["FERTILIZER"]
 WHEAT_ID = RESOURCE_ID["WHEAT"]
 

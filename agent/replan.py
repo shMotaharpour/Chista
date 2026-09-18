@@ -128,7 +128,7 @@ def dual_stand_in(obs: Any) -> tuple[np.ndarray, np.ndarray]:
     # fertilizer dose cost is the price they are bought back at.
     w[:, RESOURCE_ID["WHEAT"]] = float(prices.get("WHEAT", 0.0))
     w[:, RESOURCE_ID["FERTILIZER"]] = float(prices.get("FERTILIZER", 0.0))
-    w[:, RESOURCE_ID["LABOR_HOURS"]] = (
+    w[:, RESOURCE_ID[Column.LABOR.value]] = (
         float(K._hire_cost(int(farm.get("hires_today", 0)))) / HOURS_PER_HAND)
     return p, w
 

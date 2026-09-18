@@ -33,7 +33,7 @@ Assertions (decision 8): a wrong edge must fail the build, never be stored.
     fert_left). The growth dims themselves (yield_units, care_bank) and the engine's
     destroy paths are the engine's own answer, read from `decode_tile`, because this
     repo never re-implements the game (R003);
-  * NO_ACT is a whole-chain op: NO_ACT inside a multi-op chain is rejected.
+  * PASS is a whole-chain op: PASS inside a multi-op chain is rejected.
 """
 
 from __future__ import annotations
@@ -52,14 +52,15 @@ from kaggle_environments.envs.kaggriculture import kaggriculture as K
 from offline_lab.fast_sim import FastSim
 
 import agent.tile_dp as _tile_dp
+from agent.world.rules import ANIMAL_RULES, CROP_RULES
 from agent.tile_dp.chains import (CONSTRUCTIVE_OPS, ENTITY_CODE, ENTITY_NAMES,
-                                  MARKET_OPS, N_RESOURCE, NO_ACT, OP_STEPS,
+                                  MARKET_OPS, N_RESOURCE, OP_STEPS, PASS,
                                   RESOURCE_ID, chain_id_of, chain_name, chain_ops,
                                   chain_steps, chains_for, contract_id, cost_vector,
                                   domain_ok, entity_code_of, entity_of_code,
                                   is_animal, produce_vector, registry_fingerprint)
-from agent.tile_dp.graph import (BuildReport, BuildSpec, ChainOutcome, Edge,
-                                 TileGraph)
+from agent.tile_dp.graph import (ENGINE_TAG, BuildReport, BuildSpec, ChainOutcome,
+                                 Edge, TileGraph)
 from agent.tile_dp.tile_state import (EMPTY_KIND_OF_STRUCTURE, EMPTY_KINDS,
                                       KIND_ANIMAL, KIND_EMPTY_COOP,
                                       KIND_EMPTY_PASTURE, KIND_NONE, KIND_PLANT,
@@ -77,41 +78,6 @@ GRAPH_PATH = MODEL_DIR / "graph_tile_lifecycle.npz"
 REPORT_PATH = MODEL_DIR / "build_report.json"
 
 
-def main() -> int:
-    MODEL_DIR.mkdir(parents=True, exist_ok=True)
-    t0 = time.time()
-    g = build_graph()
-    g.save(GRAPH_PATH)
-    print("MERGED", g.report.describe(), flush=True)
-    print("MERGED kinds", g.report.kinds, flush=True)
-    print("MERGED bytes", os.path.getsize(GRAPH_PATH),
-          "build_s", round(time.time() - t0, 1), "peak_rss_mb",
-          round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024, 1),
-          flush=True)
-
-    by_entity: dict[str, int] = {}
-    for code in g.edge_entity:
-        name = entity_of_code(int(code)) or "TILE"
-        by_entity[name] = by_entity.get(name, 0) + 1
-    report = {"contract": g.engine_tag,
-              "registry": registry_fingerprint(),
-              "entities": {"TILE": {"nodes": g.n_states, "edges": g.n_edges,
-                                    "kinds": g.report.kinds,
-                                    "merged_edges_for_entity": by_entity}}}
-
-    REPORT_PATH.write_text(json.dumps(report, indent=2) + "\n")
-    back = TileGraph.load(GRAPH_PATH)
-    print("RELOAD", back.n_states, back.n_edges, back.entity, back.engine_tag)
-    try:
-        shown = GRAPH_PATH.relative_to(Path.cwd()).as_posix()
-    except ValueError:      # run from another cwd: print the absolute path
-        shown = GRAPH_PATH.as_posix()
-    print("model:", shown)
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
 
 
 # ------------------------------------------------------- sim + state helpers
@@ -309,10 +275,10 @@ def _expected_next(state: TileState, ops: tuple[str, ...],
     not re-modelled (the graph is engine truth; R003).
     """
     if "PLANT" in ops:
-        spec = K.CROPS[entity]
+        spec = CROP_RULES[entity]
         base = 0 if spec.get("ongoing") else 1
         return TileState(KIND_PLANT, entity, None, None,
-                         1 - crop_age_origin(spec), 0, 0, 0, 0, base)
+                         1 - crop_age_origin(entity), 0, 0, 0, 0, base)
     if "PLACE" in ops:
         spec = K.ANIMALS[entity]
         # Placement day, then the nightly refresh: FEED keeps the animal fed,
@@ -323,10 +289,11 @@ def _expected_next(state: TileState, ops: tuple[str, ...],
         return TileState(KIND_ANIMAL, None, entity, _STRUCTURE_OF[entity],
                          1 - spec["first_yield_day"], 0, unfed, 0,
                          min(bank, int(spec["max_held"])), 0)
-    if "BUILD" in ops:
-        structure = _STRUCTURE_OF[entity]
-        return TileState(EMPTY_KIND_OF_STRUCTURE[structure], None, None,
-                         structure, 0, 0, 0, 0, 0, 0)
+    for op in ops:
+        if op in ("BUILD_COOP", "BUILD_PASTURE"):
+            structure = "COOP" if op == "BUILD_COOP" else "PASTURE"
+            return TileState(EMPTY_KIND_OF_STRUCTURE[structure], None, None,
+                             structure, 0, 0, 0, 0, 0, 0)
     if "DIG" in ops:
         return TileState(KIND_NONE, None, None, None, 0, 0, 0, 0, 0, 0)
     return None
@@ -438,18 +405,18 @@ def _exec_chain(sim: FastSim, state: TileState, ops: tuple[str, ...],
     op on a state that owns no entity (a bare / weed tile) - such a chain builds
     nothing, so it never needs one.
     """
-    if NO_ACT in ops and len(ops) > 1:
-        raise ValueError(f"NO_ACT is a whole-chain op, got {ops}")
+    if PASS in ops and len(ops) > 1:
+        raise ValueError(f"PASS is a whole-chain op, got {ops}")
     day0 = int(sim.observations()[0]["day"])
     harvest = 0
     fert_collect = 0
     for op in ops:
         if op in MARKET_OPS:
             continue        # the market buys inside the op that needs it
-        if op == NO_ACT:
+        if op == PASS:
             # Nothing on this tile: the worker idles, the day still passes.
             sim.step([_act(["PASS"]), _act(["PASS"])])
-        elif op == "BUILD":
+        elif op in ("BUILD_COOP", "BUILD_PASTURE"):
             # BUILD = one worker action: a NONE tile becomes a structure. The
             # animal itself is bought later (by PLACE, day stand-in).
             sim.step([_act([f"BUILD_{_STRUCTURE_OF[entity]}"]),
@@ -606,7 +573,7 @@ def _is_noop_edge(state_id: int, edge: Edge) -> bool:
 
     Owner's rule (2026-09-14): an edge with an empty produce vector STAYS when it
     changes the tile - the state change is its product. A self-loop changes
-    nothing and produces nothing, and NO_ACT reaches the same node for free, so
+    nothing and produces nothing, and PASS reaches the same node for free, so
     it is a no-op whether or not it spends an hour (the old rule caught only the
     zero-cost ones and let a 2-hour DIG+BUILD self-loop through).
     """
@@ -746,3 +713,40 @@ def build_graph(entity: str | None = None, progress: bool = False) -> TileGraph:
             -1, N_RESOURCE),
         edge_steps=np.array(step_rows, dtype=np.int8),
         engine_tag=ENGINE_TAG)
+
+
+def main() -> int:
+    MODEL_DIR.mkdir(parents=True, exist_ok=True)
+    t0 = time.time()
+    g = build_graph()
+    g.save(GRAPH_PATH)
+    print("MERGED", g.report.describe(), flush=True)
+    print("MERGED kinds", g.report.kinds, flush=True)
+    print("MERGED bytes", os.path.getsize(GRAPH_PATH),
+          "build_s", round(time.time() - t0, 1), "peak_rss_mb",
+          round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024, 1),
+          flush=True)
+
+    by_entity: dict[str, int] = {}
+    for code in g.edge_entity:
+        name = entity_of_code(int(code)) or "TILE"
+        by_entity[name] = by_entity.get(name, 0) + 1
+    report = {"contract": g.engine_tag,
+              "registry": registry_fingerprint(),
+              "entities": {"TILE": {"nodes": g.n_states, "edges": g.n_edges,
+                                    "kinds": g.report.kinds,
+                                    "merged_edges_for_entity": by_entity}}}
+
+    REPORT_PATH.write_text(json.dumps(report, indent=2) + "\n")
+    back = TileGraph.load(GRAPH_PATH)
+    print("RELOAD", back.n_states, back.n_edges, back.entity, back.engine_tag)
+    try:
+        shown = GRAPH_PATH.relative_to(Path.cwd()).as_posix()
+    except ValueError:      # run from another cwd: print the absolute path
+        shown = GRAPH_PATH.as_posix()
+    print("model:", shown)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

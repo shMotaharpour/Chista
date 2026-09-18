@@ -22,6 +22,23 @@ it is never a planned PLANT day. Animals: the positive age is the production pha
 care_bank is capped at max_held (contract).
 """
 
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Iterator
+
+import numpy as np
+
+from agent.tile_dp.chains import (chain_name, chain_ops, contract_id,
+                                  registry_fingerprint)
+from agent.tile_dp.tile_state import KEY_BITS, TileState
+
+#: Identity of the artifact contract, COMPUTED from its inputs (chains.contract_id).
+CONTRACT_ID = contract_id()
+ENGINE_TAG = CONTRACT_ID
+
+
 
 @dataclass(frozen=True)
 class BuildSpec:
