@@ -19,6 +19,14 @@ sides of the result pair (a harvest makes wheat, FEED eats it; COLLECT_FERTILIZE
 makes fertiliser, FERTILIZE eats it). What *is* two numbers is their market price:
 the engine quotes a buy at `price(I-1)` and pays a sale at `price(I)` (F033), and
 that spread belongs to the market layer, not to this column space.
+
+The division of labour that answers "how does the layer above know": the **vector
+is the ledger** (what a day costs and makes, which is what the DP prices), the
+**chain's op list is the schedule** (which op must have what in the bag, and in
+what order — `CARRIES`/`PRODUCES`), and the **chain id is the bridge** between
+them. A same-day produce-then-consume of one good (harvest wheat, then FEED it) is
+where the ledger alone cannot decide whether a shed trip is needed: the op ORDER
+decides, and the compiler is the reader that knows it.
 """
 
 from __future__ import annotations
@@ -94,8 +102,16 @@ WORKER_OPS: tuple[str, ...] = ("PLANT", "WATER", "FERTILIZE", "HARVEST", "DIG",
 CHAIN_OPS: tuple[str, ...] = WORKER_OPS + ("BUY_SEED", "BUY_PRODUCT",
                                            "BUY_ANIMAL", "NO_ACT")
 
-#: What an op must carry (engine handlers), and what COLLECT_FERTILIZER yields.
+#: The two directions an upper layer reads a good in.
+#:
+#: `CARRIES` is what an op eats: a chain naming `FEED` consumes WHEAT, so the
+#: compiler must have it in the shed, buy it, and schedule the PICKUP trip.
+#: `PRODUCES` is what an op yields: a chain naming `HARVEST` takes the tile's own
+#: crop off it (`{crop}` is the chain's entity), so the compiler schedules the DROP
+#: that makes it sellable. A good can be in both maps — that is the point of the
+#: shared column: the SIDE says whether this tile-day consumes it or makes it.
 CARRIES: Mapping[str, str] = {"FERTILIZE": "FERTILIZER", "FEED": "WHEAT"}
+PRODUCES: Mapping[str, str] = {"HARVEST": "{crop}", "COLLECT_FERTILIZER": "FERTILIZER"}
 COLLECT_ITEM = "FERTILIZER"
 
 #: Ops that carry the entity itself, need a seed, or name what they construct.
