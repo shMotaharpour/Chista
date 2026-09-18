@@ -1,19 +1,9 @@
-"""The world, as the engine defines it.
+"""The definitions: what the game is, as the engine has it.
 
-Four files, in the order a reader wants them:
+Names (`model`), numbers (`rules`), what each action needs and does (`action_rules`),
+actions as values (`action`), a tile at a day start and inside a day (`tile`), the board
+(`board`), a worker's day (`worker`), the market's prices (`prices`).
 
-- `model` — the names: products, crops, animals, structures, tile states, the 18
-  columns a plan is priced over, the unit actions and the market orders.
-- `rules` — the numbers: the season, the crop and animal tables, land, labour, the
-  shed, the town, and the engine's turn order.
-- `action_rules` — what each action needs and what it does, from the engine's
-  handlers.
-- `prices` — the price function and the town's drain.
-
-Nothing in this package imports our other code, and nothing
-outside `agent/` may be imported from inside it. The authority is
-`kaggle_environments.envs.kaggriculture` (its `kaggriculture.py`, its
-`kaggriculture.json` and the `README.md` it ships); each fact cites the lines it
-came from, and the environment's own docs are quoted where they are clearer than the
-code.
+Nothing here imports our code or reimplements the game; the authority is
+`kaggle_environments.envs.kaggriculture` and every fact cites its lines. See README.md.
 """
