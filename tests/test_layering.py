@@ -171,6 +171,29 @@ def test_submission_closure_excludes_offline_only_packages() -> None:
     )
 
 
+def test_the_submission_is_the_agent_folder() -> None:
+    """Everything the entry point loads lives inside `agent/`.
+
+    The submission is the `agent/` folder: on Kaggle there is no `offline/`, no
+    `tests/`, no `opponents/`, and no builder. So the entry point's import closure
+    may not leave the folder — not for a definition, not for an artifact's code, not
+    for a helper.
+
+    Written BEFORE the move (AGENTS.md, "The submission is `agent/`"), so it is red
+    until the layers are inside `agent/` and green from then on. A guard added after
+    the first violation is a cleanup; added before, it is a contract.
+    """
+    closure, _ = submission_closure()
+    outside = sorted(
+        str(p.relative_to(REPO)) for p in closure
+        if not str(p.relative_to(REPO)).startswith("agent/")
+    )
+    assert not outside, (
+        "the submission's import closure leaves `agent/`, so a submission built from "
+        "this folder would not load on Kaggle:\n  " + "\n  ".join(outside)
+    )
+
+
 def test_the_closure_is_real_and_covers_the_agent() -> None:
     """A closure that silently matches nothing passes forever.
 

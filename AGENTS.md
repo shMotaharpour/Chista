@@ -6,6 +6,11 @@
 - Never commit directly to `main` — feature branch → PR → squash-merge.
 - Every commit by the agent MUST use `agent-commit-trailer`. Never plain `git commit`.
 - Use world definitios for uniform naming.
+- The submission is `agent/`, self-contained: everything the entry point loads
+  lives inside it (`agent/world/` for the definitions, `agent/tile_dp/models/` for
+  the model artifacts, and one folder per layer). Nothing inside `agent/` may import
+  from outside it. `offline/` and `tests/` import `agent/` as they need, and the
+  builders write their artifacts into `agent/`.
 
 ## Findings & rules files (hard rules — always follow)
 
