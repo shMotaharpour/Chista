@@ -10,7 +10,8 @@ Four files, in the order a reader wants them:
   handlers.
 - `prices` — the price function and the town's drain.
 
-Nothing in this package imports our other code. The authority is
+Nothing in this package imports our other code, and nothing
+outside `agent/` may be imported from inside it. The authority is
 `kaggle_environments.envs.kaggriculture` (its `kaggriculture.py`, its
 `kaggriculture.json` and the `README.md` it ships); each fact cites the lines it
 came from, and the environment's own docs are quoted where they are clearer than the

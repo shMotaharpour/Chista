@@ -30,8 +30,8 @@ import numpy as np
 
 from kaggle_environments.envs.kaggriculture import kaggriculture as K
 from offline.fast_sim import FastSim
-from world.prices import price_of, price_vec
-from world.vocabulary import G_IX, GOODS, MAX_ORDERS, SHED_ACCESS, SHED_CAP
+from agent.world.prices import price_of, price_vec
+from agent.world.vocabulary import G_IX, GOODS, MAX_ORDERS, SHED_ACCESS, SHED_CAP
 
 from belief.opponent import OpponentModel, drain_forecast, infer_rival_slot
 from belief.solvers import (default_schedules, maximin_mixed_lp,

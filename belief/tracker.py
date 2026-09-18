@@ -27,8 +27,8 @@ from typing import Any
 
 import numpy as np
 
-from world.prices import price_of, price_table
-from world.vocabulary import (
+from agent.world.prices import price_of, price_table
+from agent.world.vocabulary import (
     CENTER_INTERVAL, CENTER_PRODUCTS, DUAL, G_IX, GOODS, MAX_ORDERS,  # noqa: F401
     SELL_ONLY, SHED_ACCESS, SHED_CAP, SHOP_BASKET, SHOP_INTERVAL,
 )

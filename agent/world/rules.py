@@ -11,7 +11,7 @@ too.
 
 from __future__ import annotations
 
-from world.model import PRODUCTS
+from agent.world.model import PRODUCTS
 
 # --- the season -------------------------------------------------------------- #
 

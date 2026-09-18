@@ -15,7 +15,7 @@ from typing import Iterable, Mapping, Sequence
 
 from kaggle_environments.envs.kaggriculture import kaggriculture as K
 
-from world.model import (CARRIES, COLLECT_ITEM, MOVE_DELTA, SHED_ACCESS,
+from agent.world.model import (CARRIES, COLLECT_ITEM, MOVE_DELTA, SHED_ACCESS,
                          compile_chain)
 
 TURNS_PER_DAY = 24          # turnsPerDay (F058)

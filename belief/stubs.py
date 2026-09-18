@@ -22,7 +22,7 @@ from typing import Any
 
 import numpy as np
 
-from world.vocabulary import DUAL, G_IX, GOODS, MAX_ORDERS, SHED_CAP
+from agent.world.vocabulary import DUAL, G_IX, GOODS, MAX_ORDERS, SHED_CAP
 
 from belief.schemas import DaySchedule, MarketState, OrderBook, SellIntent, field_of
 

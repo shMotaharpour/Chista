@@ -19,7 +19,7 @@ from typing import Any
 
 import numpy as np
 
-from world.vocabulary import G_IX, GOODS, MAX_ORDERS, SHED_CAP   # noqa: F401  (re-export)
+from agent.world.vocabulary import G_IX, GOODS, MAX_ORDERS, SHED_CAP   # noqa: F401  (re-export)
 
 Turn = int                     # global turn index, 0..718 (F048)
 Window = tuple[int, int]       # [earliest_turn, latest_turn]
@@ -58,8 +58,8 @@ class MarketState:
         tracker's residual history, and a caller that has it passes its own state.
         """
         from belief.opponent import drain_forecast
-        from world.prices import price_table
-        from world.vocabulary import GOODS
+        from agent.world.prices import price_table
+        from agent.world.vocabulary import GOODS
 
         market = obs.get("market", {}) if isinstance(obs, dict) else {}
         raw = market.get("inventory", {}) or {}

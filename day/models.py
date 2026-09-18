@@ -8,7 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import NamedTuple, Optional
 
-from world.model import (ANIMALS, ANIMAL_STRUCTURE, CARRIES, CROPS, ENTITY_OPS,
+from agent.world.model import (ANIMALS, ANIMAL_STRUCTURE, CARRIES, CROPS, ENTITY_OPS,
                          MOVEMENT, PRODUCTS, Action, Item, SHED_ACCESS_ORDERED,
                          TileKind, compile_chain)
 

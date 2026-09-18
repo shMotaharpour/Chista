@@ -128,9 +128,9 @@ N_RESOURCE = len(RESOURCE_NAMES)
 
 # The op vocabulary is `world/model.py`'s; these are views of it (ARCHITECTURE §5
 # step 6), so a chain cannot name an op the model does not have.
-from world.model import CHAIN_OPS as _CHAIN_OPS
-from world.model import MARKET_ACTIONS as _MARKET_ACTIONS
-from world.model import TILE_OPS as _TILE_OPS
+from agent.world.model import CHAIN_OPS as _CHAIN_OPS
+from agent.world.model import MARKET_ACTIONS as _MARKET_ACTIONS
+from agent.world.model import TILE_OPS as _TILE_OPS
 
 NO_ACT = "NO_ACT"
 # Market ops a chain may name: the buys it needs. The market's other actions

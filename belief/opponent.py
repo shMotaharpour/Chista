@@ -34,8 +34,8 @@ from typing import Any
 
 import numpy as np
 
-from world.prices import price_of, price_vec
-from world.vocabulary import (
+from agent.world.prices import price_of, price_vec
+from agent.world.vocabulary import (
     CENTER_INTERVAL, CENTER_PRODUCTS, DUAL, G_IX, GOODS, SHOP_BASKET,
     SHOP_INTERVAL, SHOP_TYPES, UNLOCK_INTERVAL,
 )

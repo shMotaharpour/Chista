@@ -11,8 +11,8 @@ from __future__ import annotations
 
 import math
 
-from world.model import PRODUCTS
-from world.rules import SHOPS, TOWN_CENTER_PRODUCTS
+from agent.world.model import PRODUCTS
+from agent.world.rules import SHOPS, TOWN_CENTER_PRODUCTS
 
 #: kaggriculture.py:38-39
 MARKET_I0: int = 10_000
