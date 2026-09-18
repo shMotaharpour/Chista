@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from agent.world.model import UnitAction
-from agent.world.rules import SHED_ACCESS
+from agent.world.rules import SHED_ACCESS, SHED_ACCESS_NAMES
 
 from agent.world.board import manhattan
 from agent.world.rules import spawn_assignments
