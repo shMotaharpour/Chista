@@ -22,7 +22,7 @@ from agent.world.action_rules import CARRIES, YIELDS
 from agent.world.board import MOVE_DELTA
 from agent.world.board import manhattan
 from agent.world.rules import (DEFAULT_BOARD, MAX_ORDERS_PER_TURN, SHED_ACCESS,
-                               TURNS_PER_DAY)
+                               TURNS_PER_DAY, spawn_cell)
 
 
 
@@ -262,23 +262,6 @@ def _assert_shed_ops_are_reachable(route: UnitRoute, start: tuple[int, int],
 
 # --------------------------------------------------------------- the whole day
 
-def spawn_position(occupied: Sequence[tuple[int, int]],
-                   board: int = DEFAULT_BOARD) -> tuple[int, int]:
-    """Where the engine puts the next hired hand (`_spawn_hand:533`).
-
-    Least-occupied shed-access tile, ties broken by the engine's NWSE order — so
-    a new hand always starts within reach of the shed, which is what makes its
-    first pickup free and its walk to a tile the only travel it pays.
-    """
-    tiles = shed_access(board)
-    counts = {tile: 0 for tile in tiles}
-    for pos in occupied:
-        pos = (int(pos[0]), int(pos[1]))
-        if pos in counts:
-            counts[pos] += 1
-    return min(tiles, key=lambda t: (counts[t], tiles.index(t)))
-
-
 @dataclass(frozen=True)
 class DayPlan:
     """A whole farm-day: what each unit does, and what the market does."""
@@ -438,7 +421,7 @@ def plan_day(tiles: Sequence[tuple[tuple[int, int], Sequence[str], str | None]],
             settled[route.unit] = (settled[route.unit][0] + dx, settled[route.unit][1] + dy)
     occupied = list(settled)
     for _ in range(int(new_hands)):
-        positions.append(spawn_position(occupied, board))
+        positions.append(spawn_cell(occupied, board))
         occupied.append(positions[-1])
 
     hired = list(range(len(existing), len(positions)))

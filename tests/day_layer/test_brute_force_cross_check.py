@@ -6,13 +6,13 @@ CP-SAT formulation itself, not just its implementation.
 """
 import pytest
 
-from agent.wsr.models import Instance, Item, MajorTask, WAREHOUSE_ENTRY_CELLS, Action, MinorTask, Worker
+from agent.wsr.models import Instance, Item, Action, MinorTask, Worker
 from agent.wsr.solvers.cpsat_solver import CpSatConfig, solve_cpsat
 from offline_lab.verify import verify_solution
 from tests.day_layer.brute_force import brute_force_optimal_cost
 
-NW = WAREHOUSE_ENTRY_CELLS["NW"]
-NE = WAREHOUSE_ENTRY_CELLS["NE"]
+NW = SHED_ACCESS[SHED_ACCESS_NAMES.index("NW")]
+NE = SHED_ACCESS[SHED_ACCESS_NAMES.index("NE")]
 
 # Optimizing mode: CP-SAT must prove the true optimum (Minimize on) for
 # the comparison with brute force to be meaningful.

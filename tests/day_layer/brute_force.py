@@ -18,9 +18,10 @@ from __future__ import annotations
 import itertools
 from typing import Optional
 
-from agent.wsr.distances import assign_entry_cells, manhattan
+from agent.world.board import manhattan
+from agent.world.rules import SHED_ACCESS, SHED_ACCESS_NAMES, spawn_assignments
 from agent.world.rules import hire_cost
-from agent.wsr.models import WAREHOUSE_ENTRY_CELLS, Instance, Item, Action, MinorTask
+from agent.wsr.models import Instance, Item, Action, MinorTask
 
 _PRODUCE_ACTIONS = frozenset({Action.PICKUP, Action.HARVEST, Action.COLLECT_FERTILIZER})
 _CONSUME_ACTIONS = frozenset({Action.PLACE, Action.FEED, Action.FERTILIZE})
@@ -102,7 +103,7 @@ def _feasible_for_fixed_plan(
 
     # clct: every HARVEST must be followed (same worker) by a shed-adjacent
     # DROP within the deadline.
-    entry_cells = set(WAREHOUSE_ENTRY_CELLS.values())
+    entry_cells = set(SHED_ACCESS)
     for w, order in per_worker_order.items():
         harvest_positions = [pos for pos, i in enumerate(order) if tasks[i].action == Action.HARVEST]
         if not harvest_positions:
@@ -162,9 +163,9 @@ def brute_force_optimal_cost(instance: Instance) -> Optional[int]:
         if not active:
             continue
         cost = sum(hire_cost(workers[w].index) for w in active)
-        entry_cell_of_worker = assign_entry_cells([(workers[w].index, workers[w].earliest_start) for w in active])
+        entry_cell_of_worker = spawn_assignments([(workers[w].index, workers[w].earliest_start) for w in active])
         entry_cell_of_worker = {
-            w: WAREHOUSE_ENTRY_CELLS[entry_cell_of_worker[workers[w].index]] for w in active
+            w: SHED_ACCESS[SHED_ACCESS_NAMES.index(entry_cell_of_worker[workers[w].index])] for w in active
         }
 
         for unit_assignment in itertools.product(active, repeat=n_units):

@@ -13,12 +13,14 @@ from dataclasses import dataclass
 from typing import Optional
 
 from agent.world.model import UnitAction
+from agent.world.rules import SHED_ACCESS
 
-from .distances import assign_entry_cells, manhattan
+from agent.world.board import manhattan
+from agent.world.rules import spawn_assignments
 from .models import (
     CONSUME_ACTIONS,
     Action,
-    WAREHOUSE_ENTRY_CELLS,
+    
     Worker,
     Cell,
     Instance,
@@ -102,7 +104,7 @@ def _build_worker_route(
             needed_item = target_needs_item.get(tid)
             
             setup = 1 if (needed_item and needed_item not in worker_items) else 0
-            task_cell = task.cell if task.cell else WAREHOUSE_ENTRY_CELLS['NW']
+            task_cell = task.cell if task.cell else SHED_ACCESS[0]
             dist = manhattan(current_pos, task_cell)
             
             proposed_t = current_t + setup + 1 + dist
@@ -168,7 +170,7 @@ def _build_worker_route(
         route_task_ids.append(best_task_id)
         local_exec_times[best_task_id] = best_actual_exec
         current_t = best_actual_exec
-        current_pos = tasks_by_id[best_task_id].cell or WAREHOUSE_ENTRY_CELLS['NW']
+        current_pos = tasks_by_id[best_task_id].cell or SHED_ACCESS[0]
         
         remaining_targets.remove(best_task_id)
 
@@ -259,7 +261,7 @@ def _min_dist(a_options: list[Cell], b_options: list[Cell]) -> int:
     return min(manhattan(a, b) for a in a_options for b in b_options)
 
 
-_ENTRY_CELLS = frozenset(WAREHOUSE_ENTRY_CELLS.values())
+_ENTRY_CELLS = frozenset(SHED_ACCESS)
 
 
 def _cell_options(task: MinorTask) -> list[Cell]:
@@ -438,7 +440,7 @@ def _dispatch(
         if not remaining_targets:
             break
 
-        entry_cell = WAREHOUSE_ENTRY_CELLS[entry_assignments[worker.index]]
+        entry_cell = SHED_ACCESS[entry_assignments[worker.index]]
         sched_tasks = _build_worker_route(
             worker_index=worker.index,
             earliest_start=worker.earliest_start,
@@ -459,7 +461,7 @@ def _dispatch(
                 worker_index=worker.index,
                 start_time=worker.earliest_start,
                 tasks=sched_tasks,
-                start_cell=WAREHOUSE_ENTRY_CELLS[entry_assignments[worker.index]],
+                start_cell=SHED_ACCESS[entry_assignments[worker.index]],
             ))
 
     return routes
@@ -551,14 +553,14 @@ def solve_oxa(instance: Instance, config: OxaConfig = OxaConfig()) -> OxaResult:
     # of those runs is itself the repeated pass of F057's fourth class
     # (`_dispatch_rounds`), so a successor stranded on an idle hand is picked up
     # before the placement is judged.
-    entry_assignments = assign_entry_cells([(w.index, w.earliest_start) for w in candidates])
+    entry_assignments = spawn_assignments([(w.index, w.earliest_start) for w in candidates])
     routes: list[WorkerRoute] = []
     for _attempt in range(_PLACEMENT_ATTEMPTS):
         routes, remaining_targets = _dispatch_rounds(instance, candidates, entry_assignments)
         if remaining_targets:
             break
         routed = {route.worker_index for route in routes}
-        corrected = assign_entry_cells(
+        corrected = spawn_assignments(
             [(w.index, w.earliest_start) for w in candidates if w.index in routed]
         )
         if all(entry_assignments.get(index) == corrected.get(index) for index in routed):

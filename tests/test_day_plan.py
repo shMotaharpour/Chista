@@ -15,7 +15,7 @@ if str(REPO) not in sys.path:
 
 from agent.dispatch import PASS_ACTION, dispatch_plan
 from agent.wsr.routing import (MAX_ORDERS_PER_TURN, MOVE_OPS, hire_cost,
-                               merge_market, plan_day, spawn_position)
+                               merge_market, plan_day, spawn_cell)
 from agent.tile_dp.chains import chains_for
 from agent.tile_dp.tile_state import decode_tile
 from offline_lab.fast_sim import FastSim
@@ -276,10 +276,10 @@ def test_the_hand_spawns_after_the_turns_unit_actions() -> None:
     sim.step([{"farmer": ["WEST"], "hands": [], "market": [["HIRE"]]}, PASS_ACTION])
     real = tuple(sim.observations()[0]["farms"][0]["hands"][0])
     after_move = (start[0] - 1, start[1])
-    assert real == spawn_position([after_move]), (
+    assert real == spawn_cell([after_move]), (
         f"engine spawned at {real}, the post-move rule says "
-        f"{spawn_position([after_move])}")
-    assert real != spawn_position([start]), (
+        f"{spawn_cell([after_move])}")
+    assert real != spawn_cell([start]), (
         "the hand took the tile the farmer was standing on: the engine settles "
         "HIRE after that turn's unit actions, so the spawn must be predicted "
         "from the post-move positions")

@@ -40,7 +40,7 @@ not the sum over the routes that carry tasks (which reddens
 import pytest
 
 from agent.world.rules import hire_cost
-from agent.wsr.models import (Cell, Instance, Item, MajorTask, Action,
+from agent.wsr.models import (Cell, Instance, Item, Action,
                               MinorTask, ScheduledTask, Solution, Worker, WorkerRoute)
 from agent.wsr.solvers.cpsat_solver import CpSatConfig, cpsat_binarySearch
 from agent.wsr.solvers.oxa_solver import OxaConfig, solve_oxa

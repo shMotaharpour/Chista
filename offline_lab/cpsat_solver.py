@@ -14,7 +14,7 @@ from typing import Optional
 
 from ortools.sat.python import cp_model
 
-from agent.wsr.distances import manhattan
+from agent.world.board import manhattan
 from agent.world.rules import hire_cost
 from agent.wsr.models import (
     CONSUME_ACTIONS,
@@ -23,8 +23,6 @@ from agent.wsr.models import (
     Item,
     Action,
     MinorTask,
-    WAREHOUSE_ENTRY_CELLS,
-    WAREHOUSE_ENTRY_ORDER,
     Cell,
     Instance,
     ScheduledTask,
@@ -324,8 +322,8 @@ def solve_cpsat(instance: Instance, config: CpSatConfig = CpSatConfig()) -> CpSa
         model.AddImplication(has_any_pickup_var[w], has_any_pickup_var[0])
 
     # ---- Flexible (shed-adjacent) cell resolution
-    entry_names = WAREHOUSE_ENTRY_ORDER
-    entry_cells = [WAREHOUSE_ENTRY_CELLS[name] for name in entry_names]
+    entry_names = SHED_ACCESS_NAMES
+    entry_cells = [SHED_ACCESS[SHED_ACCESS_NAMES.index(name)] for name in entry_names]
 
     flex: dict[int, list[cp_model.IntVar]] = {}
     for i, task in enumerate(tasks):

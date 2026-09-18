@@ -190,3 +190,38 @@ ANIMAL_STRUCTURE: dict[str, str] = {a: spec["structure"] for a, spec in ANIMAL_R
 #: turn and drops the rest in silence.
 DEFAULT_BOARD: int = 10
 MAX_ORDERS_PER_TURN: int = 10
+
+
+#: The engine's names for the four shed-access tiles, in the same order as `SHED_ACCESS`.
+SHED_ACCESS_NAMES: tuple[str, ...] = ("NW", "NE", "SW", "SE")
+
+
+def spawn_assignments(placements: Sequence[tuple[int, int]]) -> dict[int, str]:
+    """Which tile each new unit enters through, given `(index, earliest_start)` per unit.
+
+    The engine settles a turn's hires in `(start_time, index)` order and each one takes the
+    least-occupied shed-access tile at that moment, so the order matters and the counts
+    accumulate. Returns `{index: name}`.
+    """
+    placed: list[Cell] = []
+    out: dict[int, str] = {}
+    for index, _start in sorted(placements, key=lambda pair: (pair[1], pair[0])):
+        cell = spawn_cell(placed)
+        out[index] = SHED_ACCESS_NAMES[SHED_ACCESS.index(cell)]
+        placed.append(cell)
+    return out
+
+
+def spawn_cell(occupied: Sequence[Cell]) -> Cell:
+    """The engine's placement rule for a new unit: of the four shed-access tiles, the one with
+    the fewest units on it, ties broken by the order of `SHED_ACCESS`.
+
+    Units standing elsewhere do not count. The caller decides who is placed first - the engine
+    settles a turn's hires in index order.
+    """
+    counts = {tile: 0 for tile in SHED_ACCESS}
+    for pos in occupied:
+        cell = (int(pos[0]), int(pos[1]))
+        if cell in counts:
+            counts[cell] += 1
+    return min(SHED_ACCESS, key=lambda tile: (counts[tile], SHED_ACCESS.index(tile)))

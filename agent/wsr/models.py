@@ -41,10 +41,6 @@ class Cell(NamedTuple):
     x: int
     y: int
 
-# The shed's four access tiles, in the engine's NWSE order (world/model.py).
-WAREHOUSE_ENTRY_ORDER: tuple[str, ...] = ("NW", "NE", "SW", "SE")
-WAREHOUSE_ENTRY_CELLS: dict[str, Cell] = {
-    name: Cell(*tile) for name, tile in zip(WAREHOUSE_ENTRY_ORDER, SHED_ACCESS)}
 
 
 @dataclass

@@ -23,13 +23,14 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Optional
 
-from agent.wsr.distances import assign_entry_cells, manhattan
+from agent.world.board import manhattan
+from agent.world.rules import spawn_assignments
 from agent.wsr.models import (
     CONSUME_ACTIONS,
     PRODUCE_ACTIONS,
     Item,
     Action,
-    WAREHOUSE_ENTRY_CELLS,
+    
     Cell,
     Instance,
     MinorTask,
@@ -37,7 +38,7 @@ from agent.wsr.models import (
     Solution,
 )
 
-_ENTRY_CELLS = frozenset(WAREHOUSE_ENTRY_CELLS.values())
+_ENTRY_CELLS = frozenset(SHED_ACCESS)
 
 @dataclass
 class VerificationResult:
@@ -234,14 +235,14 @@ def _check_placement(instance: Instance, solution: Solution, tasks_by_id: dict[s
     if entry_assign_override is not None:
         entry_assignment = dict(entry_assign_override)
     else:
-        entry_assignment = assign_entry_cells(worker_starts)
+        entry_assignment = spawn_assignments(worker_starts)
     
     for route in solution.routes:
         if not route.tasks or route.worker_index not in workers_by_index:
             continue
         entry_name = entry_assignment.get(route.worker_index)
         if entry_name is None: continue
-        entry_cell = WAREHOUSE_ENTRY_CELLS[entry_name]
+        entry_cell = SHED_ACCESS[entry_name]
         first = route.tasks[0]
         task = tasks_by_id.get(first.task_id)
         if task is None: continue

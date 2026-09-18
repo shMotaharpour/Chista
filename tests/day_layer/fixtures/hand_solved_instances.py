@@ -14,9 +14,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
+from agent.world.rules import SHED_ACCESS, SHED_ACCESS_NAMES
 from agent.wsr.models import MajorTask
 from agent.wsr.models import (
-    WAREHOUSE_ENTRY_CELLS,
     Instance,
     Item,
     Action,
@@ -27,7 +27,7 @@ from agent.wsr.models import (
     WorkerRoute,
 )
 
-NW = WAREHOUSE_ENTRY_CELLS["NW"]
+NW = SHED_ACCESS[SHED_ACCESS_NAMES.index("NW")]
 
 
 @dataclass
@@ -152,7 +152,7 @@ def _one_step_horizon_forces_two_workers_case() -> HandSolvedCase:
     # at horizon=1 instead; the "one action isn't enough for two tasks"
     # property this fixture exists to test is unchanged.
     task1 = MinorTask(id="t1", cell=NW, action=Action.PASS)
-    task2 = MinorTask(id="t2", cell=WAREHOUSE_ENTRY_CELLS["NE"], action=Action.PASS)
+    task2 = MinorTask(id="t2", cell=SHED_ACCESS[SHED_ACCESS_NAMES.index("NE")], action=Action.PASS)
     instance = Instance.compile(workers=_workers(0, 1, 2, 3), standalone_minor_tasks=[task1, task2], horizon=1)
     solution = Solution(
         routes=[

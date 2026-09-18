@@ -8,7 +8,6 @@ import pytest
 from agent.wsr.models import (
     Instance,
     MajorTask,
-    WAREHOUSE_ENTRY_CELLS,
     Item,
     Action,
     MinorTask,
@@ -28,7 +27,7 @@ from agent.wsr.solvers.cpsat_solver import (
 from offline_lab.verify import verify_solution
 from tests.day_layer.fixtures.hand_solved_instances import HAND_SOLVED_CASES
 
-NW = WAREHOUSE_ENTRY_CELLS["NW"]
+NW = SHED_ACCESS[SHED_ACCESS_NAMES.index("NW")]
 FAST = CpSatConfig(time_limit_seconds=10, feasibility_only=False)
 
 
@@ -197,7 +196,7 @@ def test_cost_floor_forces_more_workers_than_the_unconstrained_optimum():
     # real 2-worker split exists for the floor to force.
     tasks = [
         MinorTask(id="t1", cell=NW, action=Action.PASS),
-        MinorTask(id="t2", cell=WAREHOUSE_ENTRY_CELLS["NE"], action=Action.PASS),
+        MinorTask(id="t2", cell=SHED_ACCESS[SHED_ACCESS_NAMES.index("NE")], action=Action.PASS),
     ]
     workers = [Worker(index=i, earliest_start=0) for i in range(4)]
     instance = Instance.compile(workers=workers, standalone_minor_tasks=tasks)
@@ -361,8 +360,8 @@ def test_worker_pool_cap_truncates_the_pool_and_says_so():
     # those cells needs exactly 6 workers -- comfortably available from the
     # pool of 8, impossible under a cap of 3.
     cells = [
-        WAREHOUSE_ENTRY_CELLS["NW"], WAREHOUSE_ENTRY_CELLS["NE"], WAREHOUSE_ENTRY_CELLS["SW"],
-        WAREHOUSE_ENTRY_CELLS["SE"], WAREHOUSE_ENTRY_CELLS["NW"], WAREHOUSE_ENTRY_CELLS["NE"],
+        SHED_ACCESS[SHED_ACCESS_NAMES.index("NW")], SHED_ACCESS[SHED_ACCESS_NAMES.index("NE")], SHED_ACCESS[SHED_ACCESS_NAMES.index("SW")],
+        SHED_ACCESS[SHED_ACCESS_NAMES.index("SE")], SHED_ACCESS[SHED_ACCESS_NAMES.index("NW")], SHED_ACCESS[SHED_ACCESS_NAMES.index("NE")],
     ]
     tasks = [MinorTask(id=f"t{i}", cell=c, action=Action.PASS) for i, c in enumerate(cells)]
     workers = [Worker(index=i, earliest_start=0) for i in range(8)]
@@ -501,7 +500,7 @@ def test_regression_first_task_needs_its_own_turn_not_just_travel_time():
     # "t=0", t2 at "t=1" both <= horizon=1), reporting a wrong OPTIMAL
     # cost of 0 -- exactly what this regression test would catch.
     task1 = MinorTask(id="t1", cell=NW, action=Action.PASS)
-    task2 = MinorTask(id="t2", cell=WAREHOUSE_ENTRY_CELLS["NE"], action=Action.PASS)
+    task2 = MinorTask(id="t2", cell=SHED_ACCESS[SHED_ACCESS_NAMES.index("NE")], action=Action.PASS)
     workers = [Worker(index=i, earliest_start=0) for i in range(2)]
     instance = Instance.compile(workers=workers, standalone_minor_tasks=[task1, task2], horizon=1)
 

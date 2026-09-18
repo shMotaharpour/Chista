@@ -7,11 +7,11 @@ r-search algorithm are gone with that algorithm.
 """
 import pytest
 
+from agent.world.rules import SHED_ACCESS, SHED_ACCESS_NAMES
 from agent.wsr.models import (
     Instance,
     Item,
     MajorTask,
-    WAREHOUSE_ENTRY_CELLS,
     Action,
     MinorTask,
     Worker,
@@ -20,8 +20,8 @@ from agent.wsr.oxa_solver import InfeasibleInputError, OxaConfig, compute_lower_
 from offline_lab.verify import verify_solution
 from tests.day_layer.brute_force import brute_force_optimal_cost
 
-NW = WAREHOUSE_ENTRY_CELLS["NW"]
-NE = WAREHOUSE_ENTRY_CELLS["NE"]
+NW = SHED_ACCESS[SHED_ACCESS_NAMES.index("NW")]
+NE = SHED_ACCESS[SHED_ACCESS_NAMES.index("NE")]
 
 
 def _worker(index: int, earliest_start: int = 0) -> Worker:
@@ -103,7 +103,7 @@ def test_one_step_horizon_forces_exactly_two_workers():
 def test_entry_cell_placement_tie_break_all_four_cells():
     # One task colocated with each of the 4 shed-adjacent cells, horizon=1:
     # four workers needed, entries must be NW,NE,SW,SE in that order.
-    cells = [WAREHOUSE_ENTRY_CELLS[n] for n in ("NW", "NE", "SW", "SE")]
+    cells = [SHED_ACCESS[n] for n in ("NW", "NE", "SW", "SE")]
     tasks = [MinorTask(id=f"t{i}", cell=c, action=Action.PASS) for i, c in enumerate(cells)]
     instance = Instance.compile(
         workers=_workers(0, 1, 2, 3), standalone_minor_tasks=tasks, horizon=1
@@ -112,10 +112,10 @@ def test_entry_cell_placement_tie_break_all_four_cells():
     v = verify_solution(instance, result.solution)
     assert v.is_valid, v.violations
     starts = {rt.worker_index: rt.start_cell for rt in result.solution.routes}
-    assert starts[0] == WAREHOUSE_ENTRY_CELLS["NW"]
-    assert starts[1] == WAREHOUSE_ENTRY_CELLS["NE"]
-    assert starts[2] == WAREHOUSE_ENTRY_CELLS["SW"]
-    assert starts[3] == WAREHOUSE_ENTRY_CELLS["SE"]
+    assert starts[0] == SHED_ACCESS[SHED_ACCESS_NAMES.index("NW")]
+    assert starts[1] == SHED_ACCESS[SHED_ACCESS_NAMES.index("NE")]
+    assert starts[2] == SHED_ACCESS[SHED_ACCESS_NAMES.index("SW")]
+    assert starts[3] == SHED_ACCESS[SHED_ACCESS_NAMES.index("SE")]
 
 
 def test_regression_first_task_needs_its_own_turn_not_just_travel_time():
@@ -214,7 +214,7 @@ def test_the_worker_pool_is_the_lowest_indices_not_the_given_order():
     instance = Instance.compile(
         workers=[_worker(3), _worker(0), _worker(1)],
         standalone_minor_tasks=[
-            MinorTask(id="t", cell=WAREHOUSE_ENTRY_CELLS["SE"], action=Action.PASS)
+            MinorTask(id="t", cell=SHED_ACCESS[SHED_ACCESS_NAMES.index("SE")], action=Action.PASS)
         ],
         worker_pool_size=1,
         horizon=24,
