@@ -70,19 +70,23 @@ class Structure(str, Enum):
 
 
 class TileKind(str, Enum):
-    """What a tile can be.
+    """What a tile can be, in our vocabulary.
 
-    Empty and locked are the engine's `None` and `"LOCKED"`; a plant, a weed, and a
-    structure — whose kind is the structure's own name, with an optional animal on it
-    (kaggriculture.py:157-158, 215-241, 493-503).
+    The engine stores a tile as `None`, `"LOCKED"`, a plant dict, a weed dict, or a
+    structure dict that may hold an animal (kaggriculture.py:157-158, 215-241,
+    493-503). Ours names what that means: an empty tile, a locked one, a plant, a
+    weed, an animal ON its structure, and the two empty structures apart — only a coop
+    takes a goose and only a pasture takes a cow or a sheep, so they are different
+    tiles (Hossein, 2026-09-14).
     """
 
-    EMPTY = "EMPTY"
+    NONE = "NONE"
     LOCKED = "LOCKED"
-    PLANT = "PLANT"
     WEED = "WEED"
-    COOP = "COOP"
-    PASTURE = "PASTURE"
+    PLANT = "PLANT"
+    ANIMAL = "ANIMAL"
+    EMPTY_COOP = "EMPTY_COOP"
+    EMPTY_PASTURE = "EMPTY_PASTURE"
 
 
 class UnitAction(str, Enum):

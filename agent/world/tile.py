@@ -1,155 +1,220 @@
-"""A tile: the engine's own fields, decoded, for any layer to read.
+"""A tile, in our own terms: the modelled day-start state, for any layer to read.
 
-This is the world's view of a tile, and it is general on purpose — the DP, the WSR
-and the rival analysis all read the same object, and none of them needs the others'
-conventions to exist. It holds what the engine holds (kaggriculture.py:215-241,
-:446-530) and derives only what is arithmetic on those fields (age, product, cap,
-whether a dose is still active). It deliberately does NOT decide legality: the
-engine's handlers are the arbiter of what an op does on a tile (R003), and a table of
-"which ops work here" would be a second implementation of the game.
+This is the world's view of a tile, and it is general on purpose — the DP, the WSR and
+the rival analysis all read the same object. The fields are the ones we argued for the
+DP's `TileState`, because they are how we see a tile, not how the engine stores it:
 
-Every name in it comes from `agent.world.model` — `TileKind`, `Crop`, `Animal`,
-`Structure`, `Product` — so a reader never sees a bare string where the world has a
-member.
+    crops:    (crop, age, consec, fert_left, yield_units)
+    animals:  (animal, age, unfed, care_bank, yield_units)
+    kinds:    NONE | WEED | PLANT | ANIMAL | EMPTY_COOP | EMPTY_PASTURE
 
-Day-anchored, not normalized. `born_day`, `max_lifespan_step` and
-`fertilized_until_day` are absolute engine days, exactly as the engine stores them. A
-layer that wants a day-invariant key (the DP's node) does its own normalizing on top
-of this; `at_day_start()` gives the one normalization every layer needs — the flags
-the end-of-day refresh clears (:875-891).
+Two engine fields are deliberately NOT here. `planted_day` / `placed_day` are replaced
+by `age`, the day-invariant lifecycle day (the conventions are below, and they are
+ours). `max_lifespan_step` is dropped: the engine stamps it to say when a plant starts
+dying, and that day is derivable from the crop's own table (`crop_weed_age`), so
+keeping the stamp would only add a second way to say the same thing. `TURNS_PER_DAY`
+is not needed either, which is why nothing here depends on the run's configuration.
+
+`LOCKED` is the one kind the engine stores that our model does not argue about: it is
+a farm-level fact (which quadrant is bought), not a state a unit works on. It is kept
+so a reader can say what it sees — the rival's farm, the WSR's map.
+
+Day-start, not mid-day. The engine's `watered_today`, `fed_today`, `cared_today` and
+`fertilizer_available` are intra-day flags; what a day-start reader needs from them is
+`consec`, `unfed` and `fert_left`, and a layer that needs the live flags reads the
+engine's own tile dict.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import Any
 
-from agent.world.model import (Animal, Crop, Product, Structure, TileKind)
+from agent.world.model import Animal, Crop, Product, Structure, TileKind
 from agent.world.rules import ANIMAL_RULES, CROP_RULES
 
 #: The kinds that hold nothing a unit can work on.
 HOLDS_NOTHING: frozenset[TileKind] = frozenset(
-    {TileKind.EMPTY, TileKind.LOCKED, TileKind.WEED})
+    {TileKind.NONE, TileKind.LOCKED, TileKind.WEED})
 
-#: The two kinds that are a structure, and so can hold an animal.
-STRUCTURE_KINDS: frozenset[TileKind] = frozenset({TileKind.COOP, TileKind.PASTURE})
+#: The two kinds that are an empty structure: what can be placed in each is what makes
+#: them different kinds at all (a COOP takes a GOOSE, a PASTURE a COW or a SHEEP).
+EMPTY_STRUCTURE: dict[Structure, TileKind] = {Structure.COOP: TileKind.EMPTY_COOP,
+                                              Structure.PASTURE: TileKind.EMPTY_PASTURE}
+STRUCTURE_OF_KIND: dict[TileKind, Structure] = {v: k for k, v in EMPTY_STRUCTURE.items()}
 
 #: `ANIMALS[species]["product"]`, read from the engine's table (kaggriculture.py:19).
 ANIMAL_PRODUCT: dict[Animal, Product] = {
     Animal(name): Product(spec["product"]) for name, spec in ANIMAL_RULES.items()}
 
+#: The engine's limit on consecutive missed days, for a plant and for an animal: the
+#: second one turns the plant into a WEED or lets the animal escape
+#: (kaggriculture.py:783, :817). A fresh plant is born at 1 (the planting day counts,
+#: :222) and a fresh animal at 0 (:236).
+DRY_LIMIT = 2
+
+#: A FERTILIZE dose covers its own day plus two more (:481), so `fert_left` runs 0..2.
+FERT_DAYS = 3
+
+
+# --- our age conventions ----------------------------------------------------- #
+
+def crop_age_origin(crop: Crop | str) -> int:
+    """The crop day whose age is 0 (Hossein's convention, 2026-09-14).
+
+    one-shot: the START OF THE GOLDEN WINDOW, `(max_yield_day + 1) // 2` — the first
+    day watering is worth anything (:439-443).
+    ongoing:  `max_yield_day`, the day of its first scheduled production (:789-802).
+    """
+    spec = CROP_RULES[crop]
+    if spec["ongoing"]:
+        return int(spec["max_yield_day"])
+    return (int(spec["max_yield_day"]) + 1) // 2
+
+
+def crop_last_day(crop: Crop | str) -> int:
+    """The last day on which the crop is still a PLANT, counted from its planting.
+
+    one-shot: the harvest deadline itself; the night after it the tile is a WEED
+    (:224). ongoing: its last production day, `max_yield_day + (max_yield - 1) *
+    interval` (:789-802).
+    """
+    spec = CROP_RULES[crop]
+    if spec["ongoing"]:
+        return (int(spec["max_yield_day"])
+                + (int(spec["max_yield"]) - 1) * max(1, int(spec["interval"])))
+    return int(spec["max_yield_day"])
+
+
+def crop_weed_age(crop: Crop | str) -> int:
+    """The age at which the tile decodes as WEED, `crop_last_day + 1` in age terms."""
+    return crop_last_day(crop) - crop_age_origin(crop) + 1
+
+
+def animal_cycle_age(animal: Animal | str, day: int, placed_day: int) -> int:
+    """An animal's age: growing up (negative), or the production phase (0..interval-1).
+
+    The placement day is intra-day, so the negative range is `1 - first_yield_day ..
+    -1`; from `first_yield_day` on, the age is the day's position in the production
+    cycle, which wraps (:822-823).
+    """
+    spec = ANIMAL_RULES[animal]
+    age = int(day) - int(placed_day) - int(spec["first_yield_day"])
+    if age >= 0:
+        age %= max(1, int(spec["interval"]))
+    return age
+
 
 @dataclass(frozen=True)
 class Tile:
-    """One tile, decoded. `kind` is a `TileKind`."""
+    """One tile at a day start, in our terms. `kind` is a `TileKind`."""
 
     kind: TileKind
     #: PLANT only: the crop growing here.
     crop: Crop | None = None
-    #: A structure holding an animal: the species.
+    #: ANIMAL only: the species on the structure.
     animal: Animal | None = None
-    #: PLANT: `planted_day`; an animal: `placed_day`. Absolute engine day.
-    born_day: int | None = None
-    watered_today: bool = False
-    fed_today: bool = False
-    cared_today: bool = False
-    #: Consecutive missed days: 2 turns a plant into a WEED, or lets an animal
-    #: escape (kaggriculture.py:783, :817). A fresh plant starts at 1 — the
-    #: planting day counts as missed (:222) — and a fresh animal at 0 (:236).
-    consecutive_unwatered: int = 0
-    consecutive_unfed: int = 0
+    #: The structure on the tile: COOP or PASTURE for an animal or an empty one.
+    structure: Structure | None = None
+    #: The lifecycle day, our convention: `crop_age_origin` / the production cycle.
+    age: int = 0
+    #: Plants: 0 | 1 — was it watered on the day before this one.
+    consec: int = 0
+    #: Animals: 0 | 1 — was it fed on the day before this one.
+    unfed: int = 0
+    #: Plants: 0..2 — days a FERTILIZE dose still covers, this one included.
+    fert_left: int = 0
+    #: Animals: care banked on fed-and-cared days, paid on the next production.
+    care_bank: int = 0
     #: Harvestable units on the tile, capped by the crop's `max_yield` or the
     #: animal's `max_held`.
     yield_units: int = 0
-    #: FERTILIZE sets this to `day + 2`: active on `day`, `day+1`, `day+2` (:481).
-    fertilized_until_day: int = -1
-    #: Animals only: an animal makes one available every night it survives (:831).
-    fertilizer_available: bool = False
-    #: Animals only: care banked on fed-and-cared days, paid on the next
-    #: production day (:826-830).
-    pending_care_bonus: int = 0
-    #: Plants only: the step decay starts at, `-1` for ongoing crops until their
-    #: production cap is reached (:224, :801-802).
-    max_lifespan_step: int = -1
 
     # --- construction ------------------------------------------------------- #
 
     @classmethod
-    def decode(cls, tile: Any) -> "Tile":
-        """The engine's `tiles[y][x]` as a `Tile`: `None`, `"LOCKED"`, or a dict."""
+    def decode(cls, tile: Any, day: int) -> "Tile":
+        """The engine's `tiles[y][x]` at a day start, as our `Tile`.
+
+        `day` is the day the tile is being read at; it is what turns the engine's
+        absolute `planted_day` / `placed_day` into `age`.
+        """
         if tile is None:
-            return cls(TileKind.EMPTY)
-        if tile == TileKind.LOCKED:
+            return cls(TileKind.NONE)
+        if tile == "LOCKED":
             return cls(TileKind.LOCKED)
         if not isinstance(tile, dict):
-            raise TypeError(f"not an engine tile: {tile!r}")
-        raw_kind = tile.get("kind")
-        if raw_kind is None:
-            raise ValueError(f"an engine tile dict always carries 'kind': {tile!r}")
-        kind = TileKind(raw_kind)
-        animal = Animal(tile["animal"]) if tile.get("animal") else None
-        crop = Crop(tile["crop"]) if tile.get("crop") else None
-        return cls(
-            kind=kind,
-            crop=crop,
-            animal=animal,
-            born_day=tile.get("placed_day" if animal else "planted_day",
-                              tile.get("born_day")),
-            watered_today=bool(tile.get("watered_today", False)),
-            fed_today=bool(tile.get("fed_today", False)),
-            cared_today=bool(tile.get("cared_today", False)),
-            consecutive_unwatered=int(tile.get("consecutive_unwatered", 0)),
-            consecutive_unfed=int(tile.get("consecutive_unfed", 0)),
-            yield_units=int(tile.get("yield_units", 0)),
-            fertilized_until_day=int(tile.get("fertilized_until_day", -1)),
-            fertilizer_available=bool(tile.get("fertilizer_available", False)),
-            pending_care_bonus=int(tile.get("pending_care_bonus", 0)),
-            max_lifespan_step=int(tile.get("max_lifespan_step", -1)),
-        )
+            raise ValueError(f"unsupported tile {tile!r}")
+        kind = tile.get("kind")
+        if kind == "WEED":
+            return cls(TileKind.WEED)
 
-    def at_day_start(self) -> "Tile":
-        """The same tile after an end-of-day refresh: the daily flags are cleared.
+        if kind == "PLANT":
+            crop = Crop(tile["crop"])
+            spec = CROP_RULES[crop]
+            consec = int(tile.get("consecutive_unwatered", 0))
+            age = int(day) - (int(tile.get("planted_day", day)) + crop_age_origin(crop))
+            # The engine's own destroy paths are the answer here, not a re-derivation:
+            # two consecutive dry nights, or a plant past its last day, is a WEED
+            # (:783-784, :224, :801-802).
+            if consec >= DRY_LIMIT or age >= crop_weed_age(crop):
+                return cls(TileKind.WEED)
+            return cls(kind=TileKind.PLANT, crop=crop, age=age, consec=consec,
+                       fert_left=max(0, int(tile.get("fertilized_until_day", -1))
+                                     - int(day) + 1),
+                       yield_units=int(tile.get("yield_units", 0)))
 
-        The engine clears `watered_today` (:782), and `fed_today` / `cared_today`
-        (:832-833), at the night between two days. Everything else is carried.
-        """
-        return replace(self, watered_today=False, fed_today=False, cared_today=False)
+        if kind in ("COOP", "PASTURE"):
+            structure = Structure(kind)
+            animal = tile.get("animal")
+            if animal is None:
+                return cls(EMPTY_STRUCTURE[structure], structure=structure)
+            species = Animal(animal)
+            spec = ANIMAL_RULES[species]
+            unfed = int(tile.get("consecutive_unfed", 0))
+            if unfed >= DRY_LIMIT:      # the animal escaped; the structure stays (:817)
+                return cls(EMPTY_STRUCTURE[structure], structure=structure)
+            # `care_bank` is capped at `max_held` on purpose (Hossein, probed
+            # 2026-09-14): the engine can bank more, but the first production consumes
+            # min(max_held, yield + 1 + bank), so any larger bank has the same future.
+            bank = min(int(tile.get("pending_care_bonus", 0)), int(spec["max_held"]))
+            return cls(kind=TileKind.ANIMAL, animal=species, structure=structure,
+                       age=animal_cycle_age(species, day, int(tile.get("placed_day", day))),
+                       unfed=unfed, care_bank=bank,
+                       yield_units=int(tile.get("yield_units", 0)))
+
+        raise ValueError(f"unsupported tile kind {kind!r}")
 
     # --- what it is --------------------------------------------------------- #
 
     @property
-    def is_empty(self) -> bool:
-        return self.kind is TileKind.EMPTY
+    def is_none(self) -> bool:
+        return self.kind is TileKind.NONE
 
     @property
     def is_locked(self) -> bool:
         return self.kind is TileKind.LOCKED
 
     @property
-    def is_plant(self) -> bool:
-        return self.kind is TileKind.PLANT
-
-    @property
     def is_weed(self) -> bool:
         return self.kind is TileKind.WEED
 
     @property
-    def holds_nothing(self) -> bool:
-        return self.kind in HOLDS_NOTHING
+    def is_plant(self) -> bool:
+        return self.kind is TileKind.PLANT
 
     @property
-    def structure(self) -> Structure | None:
-        """The structure on the tile: its own kind, or where its animal lives."""
-        return Structure(self.kind) if self.kind in STRUCTURE_KINDS else None
-
-    @property
-    def holds_animal(self) -> bool:
-        return self.animal is not None
+    def is_animal(self) -> bool:
+        return self.kind is TileKind.ANIMAL
 
     @property
     def is_empty_structure(self) -> bool:
-        """A coop or pasture with no animal on it — PLACE can still fill it."""
-        return self.structure is not None and self.animal is None
+        """A coop or pasture with no animal: PLACE can still fill it (:384-392)."""
+        return self.kind in EMPTY_STRUCTURE.values()
+
+    @property
+    def holds_nothing(self) -> bool:
+        return self.kind in HOLDS_NOTHING
 
     # --- what it produces --------------------------------------------------- #
 
@@ -171,31 +236,23 @@ class Tile:
             return int(ANIMAL_RULES[self.animal]["max_held"])
         return 0
 
-    def age(self, day: int) -> int | None:
-        """Days since the plant was planted or the animal placed; None if neither."""
-        return None if self.born_day is None else int(day) - self.born_day
-
-    def fertilised(self, day: int) -> bool:
-        """Whether a FERTILIZE dose is still active today (:481)."""
-        return self.fertilized_until_day >= int(day)
+    @property
+    def fertilised(self) -> bool:
+        """Whether a FERTILIZE dose still covers today (:481)."""
+        return self.fert_left > 0
 
     def describe(self) -> str:
         """One line, for a message or a report."""
-        bits = [str(self.kind)]
-        if self.crop:
-            bits.append(str(self.crop))
-        if self.animal:
-            bits.append(str(self.animal))
-        if self.born_day is not None:
-            bits.append(f"born={self.born_day}")
-        if self.yield_units:
-            bits.append(f"yield={self.yield_units}")
-        if self.fertilized_until_day >= 0:
-            bits.append(f"fert_until={self.fertilized_until_day}")
-        if self.consecutive_unwatered:
-            bits.append(f"dry={self.consecutive_unwatered}")
-        if self.consecutive_unfed:
-            bits.append(f"unfed={self.consecutive_unfed}")
-        if self.pending_care_bonus:
-            bits.append(f"care={self.pending_care_bonus}")
-        return " ".join(bits)
+        if self.kind is TileKind.NONE:
+            return "NONE"
+        if self.kind is TileKind.LOCKED:
+            return "LOCKED"
+        if self.kind is TileKind.WEED:
+            return "WEED"
+        if self.is_empty_structure:
+            return f"EMPTY {self.structure}"
+        if self.is_animal:
+            return (f"{self.animal} age={self.age} unfed={self.unfed} "
+                    f"bank={self.care_bank} y={self.yield_units}")
+        return (f"{self.crop} age={self.age} consec={self.consec} "
+                f"fert_left={self.fert_left} y={self.yield_units}")
