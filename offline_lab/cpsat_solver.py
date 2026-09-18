@@ -32,7 +32,6 @@ from agent.wsr.models import (
     WorkerRoute,
 )
 from offline_lab.verify import verify_solution
-from agent.wsr.base_config import BaseSolverConfig
 
 @dataclass
 class CpSatConfig(BaseSolverConfig):
