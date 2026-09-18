@@ -53,6 +53,7 @@ from offline_lab.fast_sim import FastSim
 
 from agent.artifact import artifact_path, write_info
 from agent.world.rules import ANIMAL_RULES, CROP_RULES
+from offline_lab.build.chains import chains_for, domain_ok
 from agent.tile_dp.chains import (CONSTRUCTIVE_OPS, ENTITY_CODE, ENTITY_NAMES,
                                   MARKET_OPS, N_RESOURCE, OP_STEPS,
                                   RESOURCE_ID, chain_id_of, chain_name, chain_ops,

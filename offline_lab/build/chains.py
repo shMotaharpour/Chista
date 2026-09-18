@@ -20,13 +20,30 @@ from agent.artifact import artifact_path, write_info
 from agent.tile_dp import chains as base
 from agent.tile_dp.chains import (ALL_OPS, ANIMAL_RES, BUILD_OF_STRUCTURE, MARKET_OPS,
                                   NO_ACTION, PRODUCT_RES, SEED_RES, TILE_OPS,
-                                  chain_name, entity_code_of, registry_fingerprint)
+                                  chain_name, entity_code_of, engine_fingerprint)
 from agent.world.model import (ANIMALS, CROPS, Column, Structure, TileKind, UnitAction)
 from agent.world.rules import ANIMAL_RULES, CROP_RULES, TURNS_PER_DAY
 from agent.world.tile import crop_age_origin
 
 NAME = "tile_chains"
-PATH = artifact_path(NAME, ".json")
+PATH = artifact_path(NAME, ".data.json")
+
+
+def registry_fingerprint(chains: tuple[tuple[str, ...], ...]) -> str:
+    """Fingerprint of the chains THIS build produced (the agent's own one hashes the
+    registry it loaded, which does not exist yet while this runs)."""
+    from hashlib import sha256
+    return sha256("\n".join(chain_name(c) for c in chains).encode()).hexdigest()[:16]
+
+
+def contract_of(chains: tuple[tuple[str, ...], ...]) -> str:
+    """The contract this build stamps: the registry it made, the engine, and its own
+    source."""
+    from hashlib import sha1
+    from agent.tile_dp.tile_state import KEY_BITS
+    return (f"tile-dp/reg={registry_fingerprint(chains)}"
+            f"+eng={engine_fingerprint()}+tpd={TURNS_PER_DAY}+pb={KEY_BITS}"
+            f"+chn={sha1(Path(__file__).read_bytes()).hexdigest()[:8]}")
 
 # --- the pools a chain is drawn from -------------------------------------------- #
 
@@ -213,9 +230,9 @@ def main() -> int:
     PATH.parent.mkdir(parents=True, exist_ok=True)
     PATH.write_text(json.dumps({"chains": [list(c) for c in chains]}, indent=1) + "\n")
     info = write_info(NAME, kind="tile_chains", file=PATH.name,
-                      contract=base.contract_id(),
+                      contract=contract_of(chains),
                       engine=base.engine_fingerprint(),
-                      registry=registry_fingerprint(),
+                      registry=registry_fingerprint(chains),
                       stats={"chains": len(chains),
                              "no_action": chain_name(NO_ACTION),
                              "ops": sorted(ALL_OPS),

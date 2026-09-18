@@ -1,314 +1,80 @@
-"""The tile's daily chains: what one worker-day on one tile can be, and what it costs.
+"""The tile chains: what a chain IS, how the built ones are loaded, and what they cost.
 
-A chain is the ordered tuple of ops applied on one tile in one day. The vocabulary is
-`agent.world`'s — there is no op here that the engine does not have — plus the three
-market buys a chain may name as its input acquisition, which the market layer executes
-and a worker never does.
+A chain is one worker-day on one tile: an ordered tuple of ops. It is not `PASS` — PASS is
+a turn spent waiting, which the builder uses when it has to let a market purchase land —
+and an idle day is its own case, `NO_ACTION`: the empty chain, no worker on the tile, the
+tile simply goes on to the next day.
 
-    labour    every op in TILE_OPS costs one worker hour; a market buy is the market's
-              action and a shed trip is the day layer's, so both cost none. PASS is the
-              idle chain: no worker visits the tile, so it costs no hour and no turn —
-              the tile simply ages a day.
-    inputs    PLANT -> 1 seed of the entity's crop, FERTILIZE -> 1 fertilizer,
-              FEED -> 1 wheat, PLACE -> 1 animal of the entity's species.
-              `chain_requirements` is the single source of truth for both; nothing
-              outside counts ops again.
+Which chains exist is NOT decided here. That is a build, and it lives in
+`offline_lab/build/chains.py`, which writes its result as the artifact `tile_chains`. This
+file holds the base definition, the loader, and the ledger — the things the agent needs at
+runtime, and nothing that chooses.
 
-Cost and produce are SEPARATE vectors over the 18 `world.model.Column` names, and they
-are never netted: wheat is the FEED input and the WHEAT crop's product, so one column
-carries both readings and the side says which.
-
-The chains are generated, per node kind, and closed over the tile's state space: a chain
-may DIG first or DIG right after HARVEST and then run one full bare-tile chain, so a
-single day can convert a tile from one kind to another. `chains_for` selects from those
-lists and then filters by the node's own age, yield and entity — the engine's windows,
-not constants (HARVEST only from the crop's first yield day, FERTILIZE only while the
-three-day dose can still reach an effective day, CARE only with FEED, and never a
-structure the entity does not live in).
+The entity (a crop or a species) travels BESIDE a chain, not inside it: the same tuple
+`("PLACE",)` is a goose on a coop or a cow on a pasture, and the edge that carries the
+chain also carries `entity_code`. `actions_of` is where the two meet and an argument is
+attached.
 """
 
 from __future__ import annotations
 
-from itertools import combinations
+import json
+from pathlib import Path
 
-from agent.world.model import (ANIMALS, COLUMNS, CROPS, Animal, Crop, Column,
-                               Structure, TileKind, UnitAction)
-from agent.world.rules import ANIMAL_RULES, CROP_RULES, TURNS_PER_DAY
-from agent.world.tile import crop_age_origin
+from agent.artifact import artifact_path, info_path
+from agent.world.action import MarketAction, WorkerAction
+from agent.world.model import (ANIMALS, COLUMNS, CROPS, Animal, Column, Crop,
+                               MarketOrder, Structure, UnitAction)
+from agent.world.rules import ANIMAL_RULES, TURNS_PER_DAY
 
-# --- the columns a plan is priced over ---------------------------------------- #
+# --- the base definition -------------------------------------------------------- #
+
+#: The ops a chain may name, as the artifact stores them.
+TileChain = tuple[str, ...]
+
+#: One action of a chain: a unit op with its item, or a market buy. The type is world's,
+#: so a chain action can never name something the engine does not have.
+TileChainAction = WorkerAction | MarketAction
+
+#: The case with no action at all.
+NO_ACTION: TileChain = ()
+
+#: The ops that cost a worker hour: every unit op except PASS.
+TILE_OPS: frozenset[str] = frozenset(
+    op.value for op in UnitAction if op is not UnitAction.PASS)
+
+#: The market ops a chain may name: the buys it needs. SELL, HIRE and BUY_LAND are the
+#: market layer's decisions, never a chain's.
+MARKET_OPS: tuple[str, ...] = ("BUY_SEED", "BUY_PRODUCT", "BUY_ANIMAL")
+
+#: Every op a chain may name.
+ALL_OPS: frozenset[str] = TILE_OPS | set(MARKET_OPS)
+
+#: The op that builds each structure: a chain names the structure its species lives in.
+BUILD_OF_STRUCTURE: dict[Structure, str] = {Structure.COOP: UnitAction.BUILD_COOP.value,
+                                            Structure.PASTURE: UnitAction.BUILD_PASTURE.value}
+
+#: The ops that create the entity a chain is about, so they are what its code is read
+#: from.
+CONSTRUCTIVE_OPS: tuple[str, ...] = (UnitAction.PLANT.value,
+                                     UnitAction.BUILD_COOP.value,
+                                     UnitAction.BUILD_PASTURE.value,
+                                     UnitAction.PLACE.value)
+
+# --- the columns a plan is priced over ------------------------------------------ #
 
 RESOURCE_NAMES: tuple[str, ...] = COLUMNS
 RESOURCE_ID: dict[str, int] = {name: i for i, name in enumerate(RESOURCE_NAMES)}
 N_RESOURCE = len(RESOURCE_NAMES)
+RES_LABOR = Column.LABOR.value
+RES_FERTILIZER = Column.FERTILIZER.value
+RES_WHEAT = Column.WHEAT.value
 
 #: Which column a PLANT / PLACE spends, and which one a harvest fills.
 SEED_RES: dict[str, str] = {crop: f"SEED_{crop}" for crop in CROPS}
 ANIMAL_RES: dict[str, str] = {animal: f"ANIMAL_{animal}" for animal in ANIMALS}
 PRODUCT_RES: dict[str, str] = {crop: crop for crop in CROPS}
 PRODUCT_RES.update({a: ANIMAL_RULES[a]["product"] for a in ANIMALS})
-RES_LABOR = Column.LABOR.value
-RES_FERTILIZER = Column.FERTILIZER.value
-RES_WHEAT = Column.WHEAT.value
-
-# --- the vocabulary ------------------------------------------------------------ #
-
-#: The ops a chain may name that the market executes. A chain names the input it needs;
-#: the market layer decides the order and the price.
-MARKET_OPS: tuple[str, ...] = ("BUY_SEED", "BUY_PRODUCT", "BUY_ANIMAL")
-
-#: The ops that cost a worker hour: every unit op except PASS. A shed trip is not here
-#: — the day layer schedules it, the contractor does not price it.
-TILE_OPS: frozenset[str] = frozenset(
-    op.value for op in UnitAction if op is not UnitAction.PASS)
-
-#: The case with no action at all: no worker touches the tile that day and the tile
-#: simply goes on to the next one. It is not `PASS` — PASS is a turn spent waiting, which
-#: is the builder's business when it has to let a market purchase land, and a chain never
-#: names it.
-NO_ACTION: tuple[str, ...] = ()
-
-#: Every op a chain may name.
-ALL_OPS: frozenset[str] = TILE_OPS | set(MARKET_OPS)
-BUILD_OF_STRUCTURE: dict[Structure, str] = {Structure.COOP: UnitAction.BUILD_COOP.value,
-                                            Structure.PASTURE: UnitAction.BUILD_PASTURE.value}
-
-#: The ops that create the entity a chain is about, so they are what its entity code is
-#: read from.
-CONSTRUCTIVE_OPS: tuple[str, ...] = (UnitAction.PLANT.value,
-                                     UnitAction.BUILD_COOP.value,
-                                     UnitAction.BUILD_PASTURE.value,
-                                     UnitAction.PLACE.value)
-
-#: The domain filter: a crop entity never runs an animal op and an animal entity never
-#: plants; HARVEST is the one op both have.
-ANIMAL_ONLY_OPS: frozenset[str] = frozenset((
-    UnitAction.BUILD_COOP.value, UnitAction.BUILD_PASTURE.value, UnitAction.PLACE.value,
-    UnitAction.FEED.value, UnitAction.CARE.value, UnitAction.COLLECT_FERTILIZER.value))
-CROP_ONLY_OPS: frozenset[str] = frozenset((UnitAction.PLANT.value,))
-
-#: The two chains' op pools, per node kind.
-CROP_OPS: tuple[str, ...] = (UnitAction.FERTILIZE.value, UnitAction.WATER.value,
-                             UnitAction.HARVEST.value)
-ANIMAL_OPS: tuple[str, ...] = (UnitAction.FEED.value, UnitAction.CARE.value,
-                               UnitAction.HARVEST.value,
-                               UnitAction.COLLECT_FERTILIZER.value)
-
-#: DIG turns exactly these kinds back into a bare tile: the engine removes a plant, a
-#: weed or an EMPTY structure, refuses a tile that holds an animal, and does nothing on
-#: a bare tile (kaggriculture.py:484-491).
-DIGGABLE_KINDS: frozenset[TileKind] = frozenset(
-    (TileKind.PLANT, TileKind.WEED, TileKind.EMPTY_COOP, TileKind.EMPTY_PASTURE))
-
-# --- the chains, generated ------------------------------------------------------ #
-
-def _subsets(ops: tuple[str, ...]) -> list[tuple[str, ...]]:
-    """Every subset of `ops`; the empty one is the no-action case."""
-    return [tuple(op for op in ops if op in combo) or NO_ACTION
-            for r in range(len(ops) + 1)
-            for combo in combinations(ops, r)]
-
-
-_CROP_SUBSETS: list[tuple[str, ...]] = _subsets(CROP_OPS)
-# CARE is a no-op without FEED on the same day: the engine spends `cared_today` only
-# together with `fed_today` (kaggriculture.py:826-829), so CARE alone is never offered.
-_ANIMAL_SUBSETS: list[tuple[str, ...]] = [
-    c for c in _subsets(ANIMAL_OPS) if not ("CARE" in c and "FEED" not in c)]
-
-#: What may start on a bare tile: a crop plants, an animal builds its own structure and
-#: moves in. The two selections below are what the graph picks from — NONE is one state.
-#: ONE list, with no crop/animal split: what a worker can do on a bare tile. The split
-#: belongs to the process that builds the graph, never to the chains themselves — the
-#: graph and the registry must not know that a tile was "meant" for a crop or an animal.
-NONE_CHAINS: tuple[tuple[str, ...], ...] = (
-    NO_ACTION,
-    (UnitAction.PLANT.value, UnitAction.WATER.value),
-) + tuple(
-    chain for structure in (Structure.COOP, Structure.PASTURE)
-    for chain in ((BUILD_OF_STRUCTURE[structure],),
-                  (BUILD_OF_STRUCTURE[structure], UnitAction.PLACE.value),
-                  (BUILD_OF_STRUCTURE[structure], UnitAction.PLACE.value,
-                   UnitAction.FEED.value),
-                  (BUILD_OF_STRUCTURE[structure], UnitAction.PLACE.value,
-                   UnitAction.FEED.value, UnitAction.CARE.value)))
-
-
-def _kind_after(kind: TileKind, ops: tuple[str, ...]) -> TileKind:
-    """The tile kind after `ops` run on `kind` (the transitions the engine allows)."""
-    for op in ops:
-        if op == UnitAction.PLANT.value:
-            kind = TileKind.PLANT
-        elif op == UnitAction.BUILD_COOP.value:
-            kind = TileKind.EMPTY_COOP
-        elif op == UnitAction.BUILD_PASTURE.value:
-            kind = TileKind.EMPTY_PASTURE
-        elif op == UnitAction.PLACE.value:
-            kind = TileKind.ANIMAL
-        elif op == UnitAction.DIG.value:
-            kind = TileKind.NONE
-    return kind
-
-
-def _dig_tail(kind: TileKind, head: tuple[str, ...]) -> list[tuple[str, ...]]:
-    """Variants that put DIG after `head` (an empty head = DIG is the first op).
-
-    Each variant ends with DIG (tile back to bare) or with one full bare-tile chain, so
-    one day can change what a tile is. Nothing is dropped for "the kind would not
-    change": digging a crop and planting it again restarts its lifecycle, which is a
-    real option past its golden window. The variants that truly add nothing are removed
-    by the graph's own Pareto rule, where the decision belongs.
-    """
-    if kind not in DIGGABLE_KINDS:
-        return []
-    if _kind_after(kind, head) not in DIGGABLE_KINDS:
-        return []
-    out = [head + (UnitAction.DIG.value,)]
-    out += [head + (UnitAction.DIG.value,) + follow for follow in NONE_CHAINS
-            if follow != NO_ACTION]
-    return out
-
-
-def _layer(kind: TileKind, base: tuple[tuple[str, ...], ...]
-           ) -> tuple[tuple[str, ...], ...]:
-    """Base chains plus every legal DIG layering of them (dedup, order kept)."""
-    out: list[tuple[str, ...]] = list(base)
-    out += _dig_tail(kind, ())                       # DIG as the first op
-    for chain in base:
-        if chain and chain[-1] == UnitAction.HARVEST.value:
-            out += _dig_tail(kind, chain)            # DIG right after HARVEST
-    return tuple(dict.fromkeys(out))
-
-
-WEED_CHAINS: tuple[tuple[str, ...], ...] = _layer(
-    TileKind.WEED, (NO_ACTION, (UnitAction.DIG.value,)))
-#: An empty structure takes an animal of its own structure and can be dug back; BUILD is
-#: absent here on purpose — the engine builds on a bare tile only.
-EMPTY_STRUCTURE_BASE: tuple[tuple[str, ...], ...] = (
-    NO_ACTION, (UnitAction.PLACE.value,))
-EMPTY_COOP_CHAINS: tuple[tuple[str, ...], ...] = _layer(TileKind.EMPTY_COOP,
-                                                        EMPTY_STRUCTURE_BASE)
-EMPTY_PASTURE_CHAINS: tuple[tuple[str, ...], ...] = _layer(TileKind.EMPTY_PASTURE,
-                                                           EMPTY_STRUCTURE_BASE)
-CROP_CHAINS: tuple[tuple[str, ...], ...] = _layer(TileKind.PLANT, tuple(_CROP_SUBSETS))
-CROP_CHAINS_YOUNG: tuple[tuple[str, ...], ...] = _layer(
-    TileKind.PLANT, tuple(c for c in _CROP_SUBSETS
-                          if UnitAction.HARVEST.value not in c))
-ANIMAL_CHAINS: tuple[tuple[str, ...], ...] = _layer(TileKind.ANIMAL,
-                                                    tuple(_ANIMAL_SUBSETS))
-
-#: Per kind: the contract `chains_for` selects from.
-CHAINS_BY_KIND: dict[TileKind, tuple[tuple[str, ...], ...]] = {
-    TileKind.NONE: NONE_CHAINS,
-    TileKind.WEED: WEED_CHAINS,
-    TileKind.PLANT: CROP_CHAINS,
-    TileKind.ANIMAL: ANIMAL_CHAINS,
-    TileKind.EMPTY_COOP: EMPTY_COOP_CHAINS,
-    TileKind.EMPTY_PASTURE: EMPTY_PASTURE_CHAINS,
-}
-
-_REGISTRY: list[tuple[str, ...]] = []
-for _chain in (NONE_CHAINS + WEED_CHAINS + EMPTY_COOP_CHAINS + EMPTY_PASTURE_CHAINS
-               + CROP_CHAINS + ANIMAL_CHAINS):
-    if _chain not in _REGISTRY:
-        _REGISTRY.append(_chain)
-
-CHAIN_NAMES: tuple[tuple[str, ...], ...] = tuple(_REGISTRY)
-CHAIN_ID_OF: dict[tuple[str, ...], int] = {c: i for i, c in enumerate(_REGISTRY)}
-
-
-def chain_ops(chain_id: int) -> tuple[str, ...]:
-    """A chain id -> its ops. An id outside the registry raises: ids are positions, so
-    an artifact built with another registry would otherwise decode into a wrong chain."""
-    if not 0 <= chain_id < len(CHAIN_NAMES):
-        raise ValueError(f"chain id {chain_id} outside the registry "
-                         f"(0..{len(CHAIN_NAMES) - 1}): artifact and registry disagree, "
-                         "rebuild it")
-    return CHAIN_NAMES[chain_id]
-
-
-def chain_id_of(ops: tuple[str, ...]) -> int:
-    """The registry id of a chain."""
-    return CHAIN_ID_OF[ops]
-
-
-def chain_name(ops: tuple[str, ...]) -> str:
-    """Stable name of a chain ('FERTILIZE+WATER+HARVEST', 'NO_ACTION')."""
-    return "+".join(ops) if ops else "NO_ACTION"
-
-
-def ops_of_name(name: str) -> tuple[str, ...]:
-    """Inverse of `chain_name` (use names for anything that outlives a run)."""
-    return tuple(name.split("+"))
-
-
-# --- what a chain costs and yields ---------------------------------------------- #
-
-def chain_labor(ops: tuple[str, ...]) -> int:
-    """The worker hours a chain costs: one per op in `TILE_OPS`."""
-    return sum(1 for op in ops if op in TILE_OPS)
-
-
-#: Engine steps one op fills: a market buy rides along with a PASS, so neither costs a
-#: turn here; the ops absent from this table cost one.
-OP_STEPS: dict[str, int] = {UnitAction.PLANT.value: 2, UnitAction.FERTILIZE.value: 3,
-                            UnitAction.FEED.value: 3, UnitAction.PLACE.value: 3}
-
-
-def chain_steps(ops: tuple[str, ...]) -> int:
-    """The turns a chain fills within one day: the engine gives a unit `turns_per_day`
-    turns, so a chain needing more can never run."""
-    return sum(OP_STEPS.get(op, 1) for op in ops if op not in MARKET_OPS)
-
-
-def chain_requirements(entity: str | None, ops: tuple[str, ...]) -> dict[str, int]:
-    """The cost of a chain: labour hours plus the inputs it spends.
-
-    `entity` may be None for a chain that names none (a bare tile's PASS or DIG); the
-    PLANT and PLACE branches require it and raise without it, because a silent fallback
-    would price a seed nobody bought.
-    """
-    req: dict[str, int] = {RES_LABOR: chain_labor(ops)}
-    for op in ops:
-        if op == UnitAction.PLANT.value:
-            key = SEED_RES.get(entity)
-            if key is None:
-                raise ValueError(f"chain {ops} plants, but entity {entity!r} is not a "
-                                 "crop")
-            req[key] = req.get(key, 0) + 1
-        elif op == UnitAction.FERTILIZE.value:
-            req[RES_FERTILIZER] = req.get(RES_FERTILIZER, 0) + 1
-        elif op == UnitAction.FEED.value:
-            req[RES_WHEAT] = req.get(RES_WHEAT, 0) + 1
-        elif op == UnitAction.PLACE.value:
-            key = ANIMAL_RES.get(entity)
-            if key is None:
-                raise ValueError(f"chain {ops} places an animal, but entity {entity!r} "
-                                 f"is not one of {sorted(ANIMAL_RES)}")
-            req[key] = req.get(key, 0) + 1
-    return req
-
-
-def cost_vector(entity: str | None, ops: tuple[str, ...]) -> list[int]:
-    """The cost side of an edge: LABOR plus every input the chain spends."""
-    vec = [0] * N_RESOURCE
-    for res, units in chain_requirements(entity, ops).items():
-        vec[RESOURCE_ID[res]] = units
-    return vec
-
-
-def produce_vector(entity: str | None, harvest: int, fert_collect: int) -> list[int]:
-    """The produce side of an edge: harvest units of the entity's product, plus the
-    fertilizer a COLLECT_FERTILIZER picked up. Never netted with the cost side."""
-    vec = [0] * N_RESOURCE
-    if harvest:
-        if entity not in PRODUCT_RES:
-            raise ValueError(f"chain yields a harvest, but entity {entity!r} has no "
-                             "product")
-        vec[RESOURCE_ID[PRODUCT_RES[entity]]] = harvest
-    if fert_collect:
-        vec[RESOURCE_ID[RES_FERTILIZER]] = fert_collect
-    return vec
-
 
 # --- entities -------------------------------------------------------------------- #
 
@@ -341,108 +107,205 @@ def entity_of_code(code: int) -> str | None:
     return ENTITY_OF_CODE[code]
 
 
-def domain_ok(ops: tuple[str, ...], entity: str) -> bool:
-    """False when `entity` must not run `ops`: a crop never runs an animal op, an animal
-    never plants, and a structure must be the one the species lives in."""
-    ops_set = set(ops)
-    if is_animal(entity):
-        if ops_set & CROP_ONLY_OPS:
-            return False
-        structure = ANIMAL_RULES[entity]["structure"]
-        return not (ops_set & (set(BUILD_OF_STRUCTURE.values())
-                               - {BUILD_OF_STRUCTURE[structure]}))
-    return not (ops_set & ANIMAL_ONLY_OPS)
+# --- the chains, loaded ---------------------------------------------------------- #
+
+_ARTIFACT = "tile_chains"
 
 
-# --- what can run on a node ------------------------------------------------------ #
+def load_chains(name: str = _ARTIFACT) -> tuple[TileChain, ...]:
+    """The built chains, from `agent/artifact/<name>.json`.
 
-def _fert_window(crop: str) -> tuple[int, int]:
-    """The ages at which a dose can still reach an effective day.
-
-    The dose covers its own day plus two (kaggriculture.py:481). A one-shot crop earns
-    it only through WATER inside its golden window, so the useful ages start at -2 and
-    run to the window's end. An ongoing crop earns it on the production nights, which
-    sit at ages `k * interval - 1`; the first is the night of age -1, so -3 is still
-    useful and the last is the last such night.
+    The info beside the artifact carries the contract it was built under; a mismatch
+    raises here rather than letting chain ids mean something else than they did at build
+    time.
     """
-    spec = CROP_RULES[crop]
-    if spec["ongoing"]:
-        return -3, (int(spec["max_yield"]) - 1) * int(spec["interval"]) - 1
-    return -2, int(spec["max_yield_day"]) - crop_age_origin(crop)
+    info = json.loads(info_path(name).read_text())
+    # The data file's name comes from the info, so a data format that is itself JSON
+    # cannot collide with the info file.
+    data = json.loads((info_path(name).parent / info["file"]).read_text())
+    chains = tuple(tuple(op for op in chain) for chain in data["chains"])
+    unknown = {op for chain in chains for op in chain} - ALL_OPS
+    if unknown:
+        raise ValueError(f"{name}: chains name ops that are not chain ops: {unknown}")
+    # The artifact's own fingerprint must be the one its chains hash to, and the engine
+    # must be the one we run. (The full contract, which also covers the builders' source,
+    # is checked where the graph that stores chain ids is loaded.)
+    if info.get("registry") != _fingerprint(chains):
+        raise ValueError(f"{name}: the info's registry fingerprint is not the one its "
+                         "chains hash to; rebuild it")
+    if info.get("engine") != engine_fingerprint():
+        raise ValueError(f"{name}: built against engine {info.get('engine')!r}, this code "
+                         f"runs {engine_fingerprint()!r}; rebuild it")
+    return chains
 
 
-def _harvest_min_age(crop: str) -> int:
-    """The first age at which the engine lets HARVEST succeed (:453).
+#: The registry, loaded on first use: the chains builder imports this module to write
+#: the artifact, so the load cannot happen at import time.
+_LOADED: tuple[tuple[TileChain, ...], dict[TileChain, int]] | None = None
 
-    The engine refuses HARVEST while `day - planted_day < first_yield_day`, and our age
-    counts from `crop_age_origin` — the start of the golden window for a one-shot crop.
-    MELON's window opens on day 6 while its first yield day is 10, so without this the
-    model would call ages 0..3 harvestable and the engine would refuse them.
+
+def _registry() -> tuple[tuple[TileChain, ...], dict[TileChain, int]]:
+    global _LOADED
+    if _LOADED is None:
+        chains = load_chains()
+        _LOADED = (chains, {c: i for i, c in enumerate(chains)})
+    return _LOADED
+
+
+def chain_ops(chain_id: int) -> TileChain:
+    """A chain id -> its ops. An id outside the registry raises: ids are positions, so an
+    artifact built with another registry would decode into a wrong chain."""
+    chains = _registry()[0]
+    if not 0 <= chain_id < len(chains):
+        raise ValueError(f"chain id {chain_id} outside the registry "
+                         f"(0..{len(chains) - 1}): artifact and registry disagree, "
+                         "rebuild it")
+    return chains[chain_id]
+
+
+def chain_id_of(ops: TileChain) -> int:
+    """The registry id of a chain."""
+    return CHAIN_ID_OF[ops]
+
+
+def chain_name(ops: TileChain) -> str:
+    """Stable name of a chain ('FERTILIZE+WATER+HARVEST', 'NO_ACTION')."""
+    return "+".join(ops) if ops else "NO_ACTION"
+
+
+def ops_of_name(name: str) -> TileChain:
+    """Inverse of `chain_name` (use names for anything that outlives a run)."""
+    return tuple(name.split("+")) if name != "NO_ACTION" else NO_ACTION
+
+
+def actions_of(ops: TileChain, entity: str | None = None) -> tuple[TileChainAction, ...]:
+    """A chain's actions, each carrying its argument.
+
+    The entity is what fills the argument of the ops that take one: PLANT names its crop,
+    PLACE its species, PICKUP/SELL/the buys their item. The structure is already in the op
+    (BUILD_COOP / BUILD_PASTURE), which is why an animal chain needs no more than its
+    species here.
     """
-    return int(CROP_RULES[crop]["first_yield_day"]) - crop_age_origin(crop)
+    out: list[TileChainAction] = []
+    for op in ops:
+        if op == UnitAction.PLANT.value:
+            out.append(WorkerAction(UnitAction.PLANT, Crop(entity) if entity else None))
+        elif op == UnitAction.PLACE.value:
+            out.append(WorkerAction(UnitAction.PLACE, Animal(entity) if entity else None))
+        elif op in MARKET_OPS:
+            out.append(MarketAction(MarketOrder(op), _market_item(op, entity)))
+        else:
+            out.append(WorkerAction(UnitAction(op)))
+    return tuple(out)
 
 
-def _applicable(ops: tuple[str, ...], age: int | None, yield_units: int | None,
-                entity: str | None) -> bool:
-    """False when the chain is a guaranteed no-op on this node."""
-    if "CARE" in ops and "FEED" not in ops:
-        return False
-    if entity is not None and not domain_ok(ops, entity):
-        return False
-    crop = entity if entity in CROPS else None
-    if "FERTILIZE" in ops and age is not None and crop is not None:
-        low, high = _fert_window(crop)
-        if not low <= age <= high:
-            return False
-    if "HARVEST" in ops:
-        if yield_units is not None and yield_units <= 0:
-            return False                    # harvesting zero units burns the hour
-        if age is not None and crop is not None and age < _harvest_min_age(crop):
-            return False                    # nothing is produced before the first day
-        if age is not None and crop is None and age < 0:
-            return False                    # an animal produces from cycle age 0 on
-    return True
+def _market_item(op: str, entity: str | None) -> object:
+    """What a chain's buy buys: the crop, the species, or fertiliser."""
+    if op == "BUY_SEED":
+        return Crop(entity) if entity in CROPS else None
+    if op == "BUY_ANIMAL":
+        return Animal(entity) if entity in ANIMALS else None
+    return "FERTILIZER"
 
 
-def chains_for(kind: TileKind, age: int | None = None,
-               yield_units: int | None = None, entity: str | None = None
-               ) -> list[tuple[str, ...]]:
-    """The applicable chains of a node, before pruning.
+# --- what a chain costs and yields ------------------------------------------------ #
 
-    The selection is by the tile's KIND only; `age`, `yield_units` and `entity` are the
-    node's own, so the windows come from the engine's tables and a chain the entity
-    cannot run is filtered out rather than never offered.
+def chain_labor(ops: TileChain) -> int:
+    """The worker hours a chain costs: one per op in `TILE_OPS`."""
+    return sum(1 for op in ops if op in TILE_OPS)
+
+
+#: Engine steps one op fills: the ops absent from this table cost one, and a market buy
+#: rides along with a turn it does not spend.
+OP_STEPS: dict[str, int] = {UnitAction.PLANT.value: 2, UnitAction.FERTILIZE.value: 3,
+                            UnitAction.FEED.value: 3, UnitAction.PLACE.value: 3}
+
+
+def chain_steps(ops: TileChain) -> int:
+    """The turns a chain fills within one day: the engine gives a unit `turns_per_day`
+    turns, so a chain needing more can never run."""
+    return sum(OP_STEPS.get(op, 1) for op in ops if op not in MARKET_OPS)
+
+
+def chain_requirements(entity: str | None, ops: TileChain) -> dict[str, int]:
+    """The cost of a chain: labour hours plus the inputs it spends.
+
+    `entity` may be None for a chain that names none (a bare tile's NO_ACTION or DIG); the
+    PLANT and PLACE branches require it and raise without it, because a silent fallback
+    would price a seed nobody bought.
     """
-    if kind is TileKind.NONE:
-        base = NONE_CHAINS
-    elif kind is TileKind.PLANT:
-        base = CROP_CHAINS_YOUNG if (age is not None and age < 0) else CROP_CHAINS
-    elif kind in CHAINS_BY_KIND:
-        base = CHAINS_BY_KIND[kind]
-    else:
-        return []
-    return [c for c in base if _applicable(c, age, yield_units, entity)]
+    req: dict[str, int] = {RES_LABOR: chain_labor(ops)}
+    for op in ops:
+        if op == UnitAction.PLANT.value:
+            key = SEED_RES.get(entity)
+            if key is None:
+                raise ValueError(f"chain {ops} plants, but entity {entity!r} is not a crop")
+            req[key] = req.get(key, 0) + 1
+        elif op == UnitAction.FERTILIZE.value:
+            req[RES_FERTILIZER] = req.get(RES_FERTILIZER, 0) + 1
+        elif op == UnitAction.FEED.value:
+            req[RES_WHEAT] = req.get(RES_WHEAT, 0) + 1
+        elif op == UnitAction.PLACE.value:
+            key = ANIMAL_RES.get(entity)
+            if key is None:
+                raise ValueError(f"chain {ops} places an animal, but entity {entity!r} is "
+                                 f"not one of {sorted(ANIMAL_RES)}")
+            req[key] = req.get(key, 0) + 1
+    return req
 
 
-# --- the artifact's identity ----------------------------------------------------- #
+def cost_vector(entity: str | None, ops: TileChain) -> list[int]:
+    """The cost side of an edge: LABOR plus every input the chain spends."""
+    vec = [0] * N_RESOURCE
+    for res, units in chain_requirements(entity, ops).items():
+        vec[RESOURCE_ID[res]] = units
+    return vec
+
+
+def produce_vector(entity: str | None, harvest: int, fert_collect: int) -> list[int]:
+    """The produce side of an edge: harvest units of the entity's product, plus the
+    fertilizer a COLLECT_FERTILIZER picked up. Never netted with the cost side."""
+    vec = [0] * N_RESOURCE
+    if harvest:
+        if entity not in PRODUCT_RES:
+            raise ValueError(f"chain yields a harvest, but entity {entity!r} has no product")
+        vec[RESOURCE_ID[PRODUCT_RES[entity]]] = harvest
+    if fert_collect:
+        vec[RESOURCE_ID[RES_FERTILIZER]] = fert_collect
+    return vec
+
+
+# --- the artifact's identity ------------------------------------------------------ #
+
+def __getattr__(name: str):
+    """`CHAIN_NAMES` / `CHAIN_ID_OF`, loaded when they are first asked for.
+
+    Defined last, and it refuses every private name: a module's own lookups during import
+    must never come back through here.
+    """
+    if name.startswith("_"):
+        raise AttributeError(name)
+    if name in ("CHAIN_NAMES", "CHAIN_ID_OF"):
+        return _registry()[0 if name == "CHAIN_NAMES" else 1]
+    raise AttributeError(name)
+
+
+def _fingerprint(chains: tuple[TileChain, ...]) -> str:
+    """The registry fingerprint of a chain list (the loader's own check)."""
+    from hashlib import sha256
+    return sha256("\n".join(chain_name(c) for c in chains).encode()).hexdigest()[:16]
+
 
 def registry_fingerprint() -> str:
-    """Fingerprint of the chain registry.
-
-    Chain ids are positions in `CHAIN_NAMES`, so they shift whenever a list changes, and
-    an artifact stores ids. The graph writes this fingerprint and refuses to load an
-    artifact built from another registry instead of decoding ids into the wrong chains.
-    """
+    """Fingerprint of the loaded registry: ids are positions, so an artifact that stores
+    ids is only readable together with the exact registry that produced it."""
     from hashlib import sha256
-    return sha256("\n".join(chain_name(c) for c in CHAIN_NAMES).encode()).hexdigest()[:16]
+    return _fingerprint(_registry()[0])
 
 
 def engine_fingerprint() -> str:
-    """Fingerprint of the engine source the graph decodes against: the rules the graph
-    encodes (windows, dose, day length) live there, so a changed engine must invalidate
-    an artifact built from the old ones."""
+    """Fingerprint of the engine source the graph decodes against."""
     from hashlib import sha1
-    from pathlib import Path
 
     from kaggle_environments.envs.kaggriculture import kaggriculture as K
     return sha1(Path(K.__file__).read_bytes()).hexdigest()[:8]
@@ -450,21 +313,13 @@ def engine_fingerprint() -> str:
 
 def contract_id() -> str:
     """What an artifact IS, computed from everything it depends on: the registry, the
-    engine, the day length, the key layout, and the builder's own source (a pruning or
-    filter change must invalidate an old artifact exactly as an engine change does)."""
+    engine, the day length, the key layout, and the builder's own source."""
     from hashlib import sha1
-    from pathlib import Path
-
     from agent.tile_dp.tile_state import KEY_BITS
     builder = Path(__file__).resolve().parents[2] / "offline_lab" / "build" / "graph.py"
+    chains_builder = (Path(__file__).resolve().parents[2] / "offline_lab" / "build"
+                      / "chains.py")
     return (f"tile-dp/reg={registry_fingerprint()}"
             f"+eng={engine_fingerprint()}+tpd={TURNS_PER_DAY}+pb={KEY_BITS}"
-            f"+bld={sha1(builder.read_bytes()).hexdigest()[:8]}")
-
-
-# Contract: every chain fits one engine day (the engine gives a unit `turns_per_day`
-# turns, so this is the limit that can actually fire — a worker-hour count could not).
-_OVERLONG = tuple(c for c in CHAIN_NAMES if chain_steps(c) > TURNS_PER_DAY)
-if _OVERLONG:
-    raise AssertionError(f"chains needing more than {TURNS_PER_DAY} steps (one day): "
-                         f"{_OVERLONG}")
+            f"+bld={sha1(builder.read_bytes()).hexdigest()[:8]}"
+            f"+chn={sha1(chains_builder.read_bytes()).hexdigest()[:8]}")
