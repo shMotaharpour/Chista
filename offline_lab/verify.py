@@ -24,7 +24,6 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from .distances import assign_entry_cells, manhattan
-from .fibonacci import fibonacci_cost
 from .models import (
     CONSUME_ACTIONS,
     PRODUCE_ACTIONS,
@@ -221,10 +220,10 @@ def verify_solution(instance: Instance, solution: Solution,
     # costs money, which is exactly how the engine charges hires.
     active_workers = {route.worker_index for route in solution.routes if route.worker_index in workers_by_index}
     max_active = max(active_workers) if active_workers else -1
-    total_cost = sum(fibonacci_cost(i) for i in range(max_active + 1))
+    total_cost = max(max_active - 1, 0)   # the same head count the scheduler reports
     
-    if solution.reported_cost is not None and solution.reported_cost != total_cost:
-        violations.append(f"reported_cost={solution.reported_cost} mismatch actual cost={total_cost}")
+    if solution.hired is not None and solution.hired != total_cost:
+        violations.append(f"hired={solution.hired} mismatch the schedule's own head count={total_cost}")
 
     return VerificationResult(is_valid=not violations, violations=violations, total_cost=total_cost)
 

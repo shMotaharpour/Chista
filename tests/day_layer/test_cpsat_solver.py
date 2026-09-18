@@ -36,7 +36,7 @@ FAST = CpSatConfig(time_limit_seconds=10, feasibility_only=False)
 def test_cpsat_reaches_the_known_optimum(case):
     result = solve_cpsat(case.instance, FAST)
     assert result.status == "OPTIMAL", result.status
-    assert result.solution.reported_cost == case.optimal_cost
+    assert result.solution.hired == case.optimal_cost
 
     verification = verify_solution(case.instance, result.solution)
     assert verification.is_valid, verification.violations
@@ -52,7 +52,7 @@ def test_linearization_level_is_honored_and_still_reaches_the_optimum(level):
     (case,) = [c for c in HAND_SOLVED_CASES if c.name == "feed_single_worker_chain_needs_only_worker_0"]
     result = solve_cpsat(case.instance, CpSatConfig(time_limit_seconds=10, linearization_level=level))
     assert result.status == "OPTIMAL", result.status
-    assert result.solution.reported_cost == case.optimal_cost
+    assert result.solution.hired == case.optimal_cost
 
     verification = verify_solution(case.instance, result.solution)
     assert verification.is_valid, verification.violations
@@ -73,7 +73,7 @@ def test_feasibility_only_stops_at_the_first_schedule_meeting_the_ceiling():
 
     result = solve_cpsat(instance, CpSatConfig(time_limit_seconds=10, cost_ceiling=ceiling, feasibility_only=True))
     assert result.status == "OPTIMAL", result.status  # CP-SAT calls a feasibility-only model's first hit OPTIMAL
-    assert result.solution.reported_cost <= ceiling
+    assert result.solution.hired <= ceiling
 
     verification = verify_solution(instance, result.solution)
     assert verification.is_valid, verification.violations
@@ -107,7 +107,7 @@ def test_feasibility_only_works_without_a_cost_ceiling():
     # cheapest one -- the optimizing solve is free to do strictly better.
     optimal = solve_cpsat(instance, CpSatConfig(time_limit_seconds=30))
     assert optimal.status == "OPTIMAL"
-    assert result.solution.reported_cost >= optimal.solution.reported_cost
+    assert result.solution.hired >= optimal.solution.hired
 
 
 def test_cost_ceiling_without_feasibility_only_still_bounds_the_result():
@@ -121,7 +121,7 @@ def test_cost_ceiling_without_feasibility_only_still_bounds_the_result():
 
     result = solve_cpsat(instance, CpSatConfig(time_limit_seconds=10, cost_ceiling=ceiling))
     assert result.status in ("OPTIMAL", "FEASIBLE"), result.status
-    assert result.solution.reported_cost <= ceiling
+    assert result.solution.hired <= ceiling
 
     verification = verify_solution(instance, result.solution)
     assert verification.is_valid, verification.violations
@@ -176,10 +176,10 @@ def test_regression_feasibility_only_does_not_inflate_cost_with_empty_workers():
     assert result.solution is not None, result.status
     assert all(route.tasks for route in result.solution.routes), "an active worker carries no tasks"
 
-    # reported_cost must equal the cost of the workers that actually work
+    # hired must equal the cost of the workers that actually work
     real_cost = sum(Worker(index=r.worker_index, earliest_start=0).cost
                     for r in result.solution.routes if r.tasks)
-    assert result.solution.reported_cost == real_cost
+    assert result.solution.hired == real_cost
 
 
 def test_cost_floor_forces_more_workers_than_the_unconstrained_optimum():
@@ -205,7 +205,7 @@ def test_cost_floor_forces_more_workers_than_the_unconstrained_optimum():
 
     result = solve_cpsat(instance, CpSatConfig(time_limit_seconds=10, cost_floor=floor))
     assert result.status == "OPTIMAL", result.status
-    assert result.solution.reported_cost >= floor
+    assert result.solution.hired >= floor
     # every reported route must be a worker that actually carries tasks
     assert all(route.tasks for route in result.solution.routes)
     assert len({r.worker_index for r in result.solution.routes}) >= 2
@@ -223,7 +223,7 @@ def test_warm_start_from_an_arbitrary_solution_object_still_reaches_the_optimum(
     (case,) = [c for c in HAND_SOLVED_CASES if c.name == "feed_single_worker_chain_needs_only_worker_0"]
     result = solve_cpsat(case.instance, CpSatConfig(time_limit_seconds=10, warm_start=case.example_optimal_solution))
     assert result.status == "OPTIMAL", result.status
-    assert result.solution.reported_cost == case.optimal_cost
+    assert result.solution.hired == case.optimal_cost
 
     verification = verify_solution(case.instance, result.solution)
     assert verification.is_valid, verification.violations
@@ -247,11 +247,11 @@ def test_warm_start_tolerates_stale_or_mismatched_task_and_worker_ids():
                 ],
             )
         ],
-        reported_cost=99,
+        hired=99,
     )
     result = solve_cpsat(instance, CpSatConfig(time_limit_seconds=10, warm_start=stale))
     assert result.status == "OPTIMAL", result.status
-    assert result.solution.reported_cost == 0
+    assert result.solution.hired == 0
 
     verification = verify_solution(instance, result.solution)
     assert verification.is_valid, verification.violations
@@ -279,7 +279,7 @@ def test_worker_count_lower_bound_never_exceeds_the_true_optimum():
     # horizon 24 genuinely needs 11 workers; fib sum 0..10 == 143.
     from agent.wsr.fibonacci import fibonacci_cost
     max_active = max(r.worker_index for r in result.solution.routes if r.tasks)
-    assert result.solution.reported_cost == sum(
+    assert result.solution.hired == sum(
         fibonacci_cost(i) for i in range(max_active + 1)
     ), "cost must equal the engine's hire accounting"
 
@@ -296,7 +296,7 @@ def test_prefix_search_reaches_the_same_proven_optimum_as_the_monolithic_solve()
     for case in HAND_SOLVED_CASES:
         result = cpsat_binarySearch(case.instance, FAST)
         assert result.status == "OPTIMAL", f"{case.name}: {result.status}"
-        assert result.solution.reported_cost == case.optimal_cost, case.name
+        assert result.solution.hired == case.optimal_cost, case.name
 
         verification = verify_solution(case.instance, result.solution)
         assert verification.is_valid, (case.name, verification.violations)
@@ -339,8 +339,8 @@ def test_binary_search_pool_is_the_minimum_feasible_pool():
     assert active >= 1
     verification = verify_solution(instance, prefix.solution)
     assert verification.is_valid, verification.violations
-    assert prefix.solution.reported_cost is None or isinstance(
-        prefix.solution.reported_cost, int)
+    assert prefix.solution.hired is None or isinstance(
+        prefix.solution.hired, int)
 
     # one worker fewer must be infeasible: that is what makes `active` minimal
     smaller = solve_cpsat(instance, CpSatConfig(
@@ -507,7 +507,7 @@ def test_regression_first_task_needs_its_own_turn_not_just_travel_time():
 
     result = solve_cpsat(instance, FAST)
     assert result.status == "OPTIMAL", result.status
-    assert result.solution.reported_cost == 1
+    assert result.solution.hired == 1
 
 
 def test_pickup_aggregation_lets_two_feeds_share_one_pickup_when_needed():
@@ -530,7 +530,7 @@ def test_pickup_aggregation_lets_two_feeds_share_one_pickup_when_needed():
     )
     result = solve_cpsat(instance, FAST)
     assert result.status == "OPTIMAL", result.status
-    assert result.solution.reported_cost == 0
+    assert result.solution.hired == 0
 
     (route,) = result.solution.routes
     scheduled_ids = {t.task_id for t in route.tasks}
@@ -564,7 +564,7 @@ def test_pickup_aggregation_is_optional_when_the_schedule_has_room_anyway():
     )
     result = solve_cpsat(instance, FAST)
     assert result.status == "OPTIMAL", result.status
-    assert result.solution.reported_cost == 0
+    assert result.solution.hired == 0
 
     verification = verify_solution(
         instance, result.solution, entry_assign=None)

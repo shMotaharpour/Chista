@@ -46,7 +46,7 @@ def test_valid_single_task_solution_passes():
         # task still needs its own +1 turn on top of the (here, zero)
         # travel distance.
         routes=[WorkerRoute(worker_index=0, start_time=0, tasks=[ScheduledTask(task_id="t1", exec_time=1)])],
-        reported_cost=0,
+        hired=0,
     )
     result = verify_solution(instance, solution)
     assert result.is_valid, result.violations
@@ -291,15 +291,15 @@ def test_earliest_start_violation_is_caught():
     assert any("start_time < earliest_start" in v for v in result.violations)
 
 
-def test_reported_cost_mismatch_is_caught():
+def test_hired_mismatch_is_caught():
     instance = _single_task_instance()
     solution = Solution(
         routes=[WorkerRoute(worker_index=0, start_time=0, tasks=[ScheduledTask(task_id="t1", exec_time=0)])],
-        reported_cost=999,
+        hired=999,
     )
     result = verify_solution(instance, solution)
     assert not result.is_valid
-    assert any("reported_cost=999" in v for v in result.violations)
+    assert any("hired=999" in v for v in result.violations)
 
 
 def test_gap_in_worker_activation_is_legal_but_paid():

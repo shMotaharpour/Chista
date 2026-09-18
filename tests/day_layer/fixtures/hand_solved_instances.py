@@ -49,7 +49,7 @@ def _single_task_case() -> HandSolvedCase:
     instance = Instance.compile(workers=_workers(0, 1, 2), standalone_minor_tasks=[task])
     solution = Solution(
         routes=[WorkerRoute(worker_index=0, start_time=0, tasks=[ScheduledTask(task_id="t1", exec_time=1)])],
-        reported_cost=0,
+        hired=0,
     )
     return HandSolvedCase("single_task_needs_only_worker_0", instance, optimal_cost=0, example_optimal_solution=solution)
 
@@ -69,7 +69,7 @@ def _two_independent_tasks_case() -> HandSolvedCase:
                 tasks=[ScheduledTask(task_id="t1", exec_time=1), ScheduledTask(task_id="t2", exec_time=2)],
             )
         ],
-        reported_cost=0,
+        hired=0,
     )
     return HandSolvedCase(
         "two_independent_tasks_still_need_only_one_worker", instance, optimal_cost=0, example_optimal_solution=solution
@@ -100,7 +100,7 @@ def _wet_harvst_single_worker_case() -> HandSolvedCase:
                 ],
             )
         ],
-        reported_cost=0,
+        hired=0,
     )
     return HandSolvedCase(
         "wet_harvst_chain_needs_only_one_worker", instance, optimal_cost=0, example_optimal_solution=solution
@@ -125,7 +125,7 @@ def _feed_single_worker_chain_case() -> HandSolvedCase:
                 ],
             )
         ],
-        reported_cost=0,
+        hired=0,
     )
     return HandSolvedCase(
         "feed_single_worker_chain_needs_only_worker_0", instance, optimal_cost=0, example_optimal_solution=solution
@@ -159,7 +159,7 @@ def _one_step_horizon_forces_two_workers_case() -> HandSolvedCase:
             WorkerRoute(worker_index=0, start_time=0, tasks=[ScheduledTask(task_id="t1", exec_time=1)]),
             WorkerRoute(worker_index=1, start_time=0, tasks=[ScheduledTask(task_id="t2", exec_time=1)]),
         ],
-        reported_cost=1,
+        hired=1,
     )
     return HandSolvedCase(
         "one_step_horizon_forces_exactly_two_cheapest_workers", instance, optimal_cost=1, example_optimal_solution=solution

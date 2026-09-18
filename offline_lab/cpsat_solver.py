@@ -15,7 +15,7 @@ from typing import Optional
 from ortools.sat.python import cp_model
 
 from ..distances import manhattan
-from ..fibonacci import fibonacci_cost
+from agent.world.rules import hire_cost
 from ..models import (
     CONSUME_ACTIONS,
     PRODUCE_ACTIONS,
@@ -495,7 +495,7 @@ def solve_cpsat(instance: Instance, config: CpSatConfig = CpSatConfig()) -> CpSa
     # (0f1af97 added this unconditionally, which broke both modes; caught
     # in the commit-by-commit review.)
     if not config.feasibility_only:
-        model.Minimize(sum(fibonacci_cost(workers[w].index) * u[w] for w in range(k)))
+        model.Minimize(sum(hire_cost(workers[w].index) * u[w] for w in range(k)))
 
     solver = cp_model.CpSolver()
     if config.time_limit_seconds is not None:
@@ -554,8 +554,8 @@ def solve_cpsat(instance: Instance, config: CpSatConfig = CpSatConfig()) -> CpSa
         routes.append(WorkerRoute(worker_index=workers[w].index, start_time=sigma[w], tasks=scheduled,
                                   start_cell=chosen_entry))
 
-    total_cost = sum(fibonacci_cost(workers[w].index) for w in range(k) if solver.Value(u[w]) == 1)
-    solution = Solution(routes=routes, reported_cost=total_cost)
+    total_cost = sum(hire_cost(workers[w].index) for w in range(k) if solver.Value(u[w]) == 1)
+    solution = Solution(routes=routes, hired=total_cost)
 
     if config.validate:
         try:

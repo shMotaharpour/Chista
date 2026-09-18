@@ -33,7 +33,7 @@ the tail gap must charge travel only for pairs that ONE worker has to serve
 (`single_worker_group`), because a plain precedence pair can be split across
 two workers -- charging travel there reddens
 `test_a_cross_cell_chain_can_be_served_by_two_workers`; and the day's
-`reported_cost` is the engine's append-only payroll `fib(0..max_active)`,
+`hired` is the engine's append-only payroll `fib(0..max_active)`,
 not the sum over the routes that carry tasks (which reddens
 `test_a_day_that_skips_lower_index_hands_pays_for_them`).
 """
@@ -168,7 +168,7 @@ def test_a_day_that_skips_lower_index_hands_pays_for_them():
 
     Four hands are offered and the greedy may well give the day to hand 3 with
     hand 2 idle (or to hand 2 and skip nothing -- the route set depends on
-    iteration order, both are valid). Whatever it picks, `reported_cost` must
+    iteration order, both are valid). Whatever it picks, `hired` must
     be the engine's payroll `fib(0..max_active)`: reporting the sum over the
     routes that carry tasks under-reported a day with a gap and made the
     verifier answer INVALID_SOLUTION for an otherwise legal schedule
@@ -199,7 +199,7 @@ def test_a_day_that_skips_lower_index_hands_pays_for_them():
     assert verification.is_valid, verification.violations
     max_active = max(route.worker_index for route in result.solution.routes)
     payroll = sum(fibonacci_cost(i) for i in range(max_active + 1))
-    assert result.solution.reported_cost == payroll
+    assert result.solution.hired == payroll
     assert verification.total_cost == payroll
 
 
@@ -219,11 +219,11 @@ def test_the_engine_charges_the_idle_hands_below_the_top_of_the_day():
     routes = [WorkerRoute(worker_index=3, start_time=0, start_cell=Cell(4, 4),
                           tasks=[ScheduledTask(task_id="t", exec_time=1,
                                                resolved_cell=Cell(4, 4))])]
-    paid = verify_solution(instance, Solution(routes=routes, reported_cost=4))
+    paid = verify_solution(instance, Solution(routes=routes, hired=4))
     assert paid.is_valid, paid.violations
     assert paid.total_cost == 4
-    under = verify_solution(instance, Solution(routes=routes, reported_cost=2))
-    assert not under.is_valid and "reported_cost" in under.violations[0]
+    under = verify_solution(instance, Solution(routes=routes, hired=2))
+    assert not under.is_valid and "hired" in under.violations[0]
 
 
 def test_the_oracle_confirmation_agrees_on_a_genuinely_infeasible_day():

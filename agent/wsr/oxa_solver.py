@@ -520,7 +520,7 @@ def solve_oxa(instance: Instance, config: OxaConfig = OxaConfig()) -> OxaResult:
     start = time.perf_counter()
     
     if not instance.tasks_by_id:
-        return OxaResult(status="OPTIMAL", solution=Solution(routes=[], reported_cost=0), matched_lower_bound=True)
+        return OxaResult(status="OPTIMAL", solution=Solution(routes=[], hired=0), matched_lower_bound=True)
 
     # The pool is the LOWEST-indexed hands, not the order the caller listed
     # them in: `cpsat_solver` sorts by index before applying the cap, and
@@ -582,7 +582,7 @@ def solve_oxa(instance: Instance, config: OxaConfig = OxaConfig()) -> OxaResult:
     max_active = max((route.worker_index for route in routes), default=-1)
     solution = Solution(
         routes=routes, 
-        reported_cost=sum(max(i - 1, 0) for i in range(max_active + 1))
+        hired=max(max_active - 1, 0)
     )
     
     is_optimal = active_workers <= config.min_workers

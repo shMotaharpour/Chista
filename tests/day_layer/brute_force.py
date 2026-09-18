@@ -19,7 +19,7 @@ import itertools
 from typing import Optional
 
 from agent.wsr.distances import assign_entry_cells, manhattan
-from agent.wsr.fibonacci import fibonacci_cost
+from agent.world.rules import hire_cost
 from agent.wsr.models import WAREHOUSE_ENTRY_CELLS, Instance, Item, Action, MinorTask
 
 _PRODUCE_ACTIONS = frozenset({Action.PICKUP, Action.HARVEST, Action.COLLECT_FERTILIZER})
@@ -153,7 +153,7 @@ def brute_force_optimal_cost(instance: Instance) -> Optional[int]:
         return mask == (1 << (highest + 1)) - 1
 
     subsets = [m for m in range(1, 1 << k) if _is_prefix(m)] if n > 0 else [0]
-    subsets.sort(key=lambda mask: sum(fibonacci_cost(workers[w].index) for w in range(k) if mask & (1 << w)))
+    subsets.sort(key=lambda mask: sum(hire_cost(workers[w].index) for w in range(k) if mask & (1 << w)))
 
     for mask in subsets:
         active = [w for w in range(k) if mask & (1 << w)]
@@ -161,7 +161,7 @@ def brute_force_optimal_cost(instance: Instance) -> Optional[int]:
             return 0
         if not active:
             continue
-        cost = sum(fibonacci_cost(workers[w].index) for w in active)
+        cost = sum(hire_cost(workers[w].index) for w in active)
         entry_cell_of_worker = assign_entry_cells([(workers[w].index, workers[w].earliest_start) for w in active])
         entry_cell_of_worker = {
             w: WAREHOUSE_ENTRY_CELLS[entry_cell_of_worker[workers[w].index]] for w in active

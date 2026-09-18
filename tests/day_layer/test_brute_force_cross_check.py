@@ -30,7 +30,7 @@ def _assert_matches_brute_force(instance):
         assert result.status == "INFEASIBLE", (result.status, expected)
         return
     assert result.status == "OPTIMAL", result.status
-    assert result.solution.reported_cost == expected
+    assert result.solution.hired == expected
     verification = verify_solution(instance, result.solution)
     assert verification.is_valid, verification.violations
     assert verification.total_cost == expected
