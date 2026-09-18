@@ -95,11 +95,17 @@ class UnitRoute:
         return sum(1 for op in self.ops if op and op[0] == "PICKUP")
 
 
-def carried_item(op: tuple[str, ...], entity: str | None) -> str | None:
+def op_name(action) -> str:
+    """The engine's spelling of an op, for an op that arrived from the chain registry."""
+    return str(getattr(action.op, "value", action.op))
+
+
+def carried_item(action, entity: str | None) -> str | None:
     """What this op needs in the unit's bag, or None if it needs nothing."""
-    if op[0] == "PLACE":
+    name = op_name(action)
+    if name == "PLACE":
         return entity
-    return CARRIES.get(op[0])
+    return CARRIES.get(name)
 
 
 def _buy_order(item: str) -> tuple:
@@ -117,6 +123,9 @@ def route_unit(ops: Sequence[str], entity: str | None, pos: tuple[int, int], *,
                harvest_yields: Mapping[str, int] | None = None,
                drop: bool = True, board: int = DEFAULT_BOARD) -> UnitRoute:
     """Compile one chain into one unit's day.
+
+    `ops` is a chain from the registry, so its ops arrive as `WorkerAction` objects; the day
+    this returns is the engine's own shape - one tuple of strings per turn.
 
     `pos` is where the unit stands at `hour`; `target` is the tile the chain
     works (defaults to `pos` — the tile it is standing on). `carried` is what
@@ -150,48 +159,48 @@ def route_unit(ops: Sequence[str], entity: str | None, pos: tuple[int, int], *,
                 walked += 1
             seq.append(step)
 
-    for op in turns:
-        item = carried_item(op, entity)
+    for action in turns:
+        name = op_name(action)
+        item = carried_item(action, entity)
         if item is not None and bag.get(item, 0) <= 0:
             shed = nearest_shed(at, board)
             back = walk(shed, target, board)
             trip = walk(at, shed, board) + [("PICKUP", item, 1)] + back
             if free() < len(trip) + 1:
-                dropped.append(" ".join(op))
+                dropped.append(name)
                 continue
             push(trip)
             # the pickup resolves before that turn's market, so the buy must land on an
             # earlier turn than the pickup
             pickup_turn = hour + len(seq) - len(back) - 1
-            needs.append(Need(hour=pickup_turn - 1, order=_buy_order(item),
-                              reason=" ".join(op)))
+            needs.append(Need(hour=pickup_turn - 1, order=_buy_order(item), reason=name))
             bag[item] = 1
             at = target
         elif at != target:
             trip = walk(at, target, board)
             if free() < len(trip) + 1:
-                dropped.append(" ".join(op))
+                dropped.append(name)
                 continue
             push(trip)
             at = target
         if free() < 1:
-            dropped.append(" ".join(op))
+            dropped.append(name)
             continue
-        if op[0] == "PLANT":
+        if name == "PLANT":
             # Seeds ride in `private["seeds"]` and PLANT consumes them directly: one market
             # order and a worker on the tile, with nothing to carry. The buy still lands after
             # that turn's units, so it must be on an earlier turn than the plant.
             needs.append(Need(hour=hour + len(seq) - 1,
-                              order=("BUY_SEED", op[1], 1), reason="PLANT"))
-        push([op])
-        if op[0] == "HARVEST":
+                              order=("BUY_SEED", action.item.value, 1), reason="PLANT"))
+        push([tuple(action.as_list())])
+        if name == "HARVEST":
             bagged_ops += 1
             # the tile's own yield_units is what the engine hands over (the
             # caller reads it off the observation, so this is a measurement);
             # without it the drop still happens and the sell waits for tomorrow
-            item = str(op[1]) if len(op) > 1 else (entity or "")
+            item = action.item.value if action.item is not None else (entity or "")
             bagged[item] = bagged.get(item, 0) + int(yields.get(item, 0))
-        elif op[0] == "COLLECT_FERTILIZER":
+        elif name == "COLLECT_FERTILIZER":
             bagged_ops += 1
             bagged[YIELDS["COLLECT_FERTILIZER"]] = bagged.get(YIELDS["COLLECT_FERTILIZER"], 0) + 1
 
