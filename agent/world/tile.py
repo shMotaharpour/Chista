@@ -1,37 +1,48 @@
-"""A tile, in our own terms: the modelled day-start state, for any layer to read.
+"""A tile, in our own terms: the modelled state at a day start, and inside a day.
 
 This is the world's view of a tile, and it is general on purpose — the DP, the WSR and
-the rival analysis all read the same object. The fields are the ones we argued for the
-DP's `TileState`, because they are how we see a tile, not how the engine stores it:
+the rival analysis all read the same object.
+
+`TileHourZero` is the tile as a day begins (hour 0). Its fields are the ones we argued
+for the DP's `TileState`, because they are how we see a tile, not how the engine stores
+it:
 
     crops:    (crop, age, consec, fert_left, yield_units)
     animals:  (animal, age, unfed, care_bank, yield_units)
-    kinds:    NONE | WEED | PLANT | ANIMAL | EMPTY_COOP | EMPTY_PASTURE
+    kinds:    NONE | LOCKED | WEED | PLANT | ANIMAL | EMPTY_COOP | EMPTY_PASTURE
 
-Two engine fields are deliberately NOT here. `planted_day` / `placed_day` are replaced
+Two engine fields are deliberately NOT there. `planted_day` / `placed_day` are replaced
 by `age`, the day-invariant lifecycle day (the conventions are below, and they are
 ours). `max_lifespan_step` is dropped: the engine stamps it to say when a plant starts
 dying, and that day is derivable from the crop's own table (`crop_weed_age`), so
-keeping the stamp would only add a second way to say the same thing. `TURNS_PER_DAY`
-is not needed either, which is why nothing here depends on the run's configuration.
+keeping the stamp would only add a second way to say the same thing. `TURNS_PER_DAY` is
+not needed either, which is why nothing here depends on the run's configuration.
 
-`LOCKED` is the one kind the engine stores that our model does not argue about: it is
-a farm-level fact (which quadrant is bought), not a state a unit works on. It is kept
-so a reader can say what it sees — the rival's farm, the WSR's map.
+`TileInDay` is the same tile part-way through a day: the hour, plus the facts that only
+an hour can change — was it watered today, was a dose given today, has the animal's
+fertiliser been taken today, was it fed and cared for today. It inherits the day-start
+state, because inside a day nothing about the tile's life changes (age, `consec`,
+`unfed`, `care_bank`, the kind itself): those move at the night.
 
-Day-start, not mid-day. The engine's `watered_today`, `fed_today`, `cared_today` and
-`fertilizer_available` are intra-day flags; what a day-start reader needs from them is
-`consec`, `unfed` and `fert_left`, and a layer that needs the live flags reads the
-engine's own tile dict.
+`delta(later, earlier)` reads one hour of a worker's work off a tile: it takes two
+`TileInDay` one hour apart and returns the actions consistent with the change. That is
+how the rival's public tiles can be read without knowing what the rival sent.
+
+`LOCKED` is the one kind the engine stores that our model does not argue about: it is a
+farm-level fact (which quadrant is bought), not a state a unit works on. It is kept so
+a reader can say what it sees — the rival's farm, the WSR's map.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
-from agent.world.model import Animal, Crop, Product, Structure, TileKind
+from agent.world.model import Animal, Crop, Product, Structure, TileKind, UnitAction
 from agent.world.rules import ANIMAL_RULES, CROP_RULES
+
+#: An engine-shaped action: `["WATER"]`, `["PLANT", "MELON"]`, `["PICKUP", "WHEAT", 2]`.
+Action = tuple[Any, ...]
 
 #: The kinds that hold nothing a unit can work on.
 HOLDS_NOTHING: frozenset[TileKind] = frozenset(
@@ -105,9 +116,11 @@ def animal_cycle_age(animal: Animal | str, day: int, placed_day: int) -> int:
     return age
 
 
+# --- the tile at a day start ------------------------------------------------- #
+
 @dataclass(frozen=True)
-class Tile:
-    """One tile at a day start, in our terms. `kind` is a `TileKind`."""
+class TileHourZero:
+    """One tile as a day begins, in our terms. `kind` is a `TileKind`."""
 
     kind: TileKind
     #: PLANT only: the crop growing here.
@@ -130,11 +143,9 @@ class Tile:
     #: animal's `max_held`.
     yield_units: int = 0
 
-    # --- construction ------------------------------------------------------- #
-
     @classmethod
-    def decode(cls, tile: Any, day: int) -> "Tile":
-        """The engine's `tiles[y][x]` at a day start, as our `Tile`.
+    def decode(cls, tile: Any, day: int) -> "TileHourZero":
+        """The engine's `tiles[y][x]` at a day start, as our tile.
 
         `day` is the day the tile is being read at; it is what turns the engine's
         absolute `planted_day` / `placed_day` into `age`.
@@ -151,7 +162,6 @@ class Tile:
 
         if kind == "PLANT":
             crop = Crop(tile["crop"])
-            spec = CROP_RULES[crop]
             consec = int(tile.get("consecutive_unwatered", 0))
             age = int(day) - (int(tile.get("planted_day", day)) + crop_age_origin(crop))
             # The engine's own destroy paths are the answer here, not a re-derivation:
@@ -256,3 +266,143 @@ class Tile:
                     f"bank={self.care_bank} y={self.yield_units}")
         return (f"{self.crop} age={self.age} consec={self.consec} "
                 f"fert_left={self.fert_left} y={self.yield_units}")
+
+
+# --- the tile inside a day ---------------------------------------------------- #
+
+@dataclass(frozen=True)
+class TileInDay(TileHourZero):
+    """The same tile part-way through a day: the hour, and today's facts.
+
+    Everything that changes at the night (the kind, `age`, `consec`, `unfed`,
+    `care_bank`) comes from `TileHourZero` and is read at the day start; what a day can
+    change is here.
+    """
+
+    #: The hour of the day, 0..`TURNS_PER_DAY - 1` (kaggriculture.py:911).
+    hour: int = 0
+    #: WATER, once a day (:434-436).
+    watered_today: bool = False
+    #: FEED, once a day (:508-509).
+    fed_today: bool = False
+    #: CARE, once a day (:527-528).
+    cared_today: bool = False
+    #: FERTILIZE given today. The engine stores only `fertilized_until_day` (:481), so
+    #: "today" is read off `fert_left`: a dose given today covers today and two more
+    #: days, which is the only way `fert_left` reaches `FERT_DAYS`.
+    fertilized_today: bool = False
+    #: COLLECT_FERTILIZER taken today. An animal makes one available every night it
+    #: survives (:831), so a day start with none available means it was taken.
+    fertilizer_collected_today: bool = False
+
+    @classmethod
+    def decode_at(cls, tile: Any, day: int, hour: int) -> "TileInDay":
+        """The engine's `tiles[y][x]` at any hour, as our tile.
+
+        Named differently from `TileHourZero.decode` on purpose: an hour is not a
+        day-start state, and a caller should have to say which one it wants.
+        """
+        start = TileHourZero.decode(tile, day)
+        raw = tile if isinstance(tile, dict) else {}
+        return cls(
+            **{f: getattr(start, f) for f in TileHourZero.__dataclass_fields__},
+            hour=int(hour),
+            watered_today=bool(raw.get("watered_today", False)),
+            fed_today=bool(raw.get("fed_today", False)),
+            cared_today=bool(raw.get("cared_today", False)),
+            fertilized_today=start.fert_left == FERT_DAYS,
+            fertilizer_collected_today=(start.is_animal
+                                        and not raw.get("fertilizer_available", True)),
+        )
+
+    def describe(self) -> str:
+        """One line: the day-start state, plus what has happened today."""
+        today = [name for name, on in (("watered", self.watered_today),
+                                       ("fertilized", self.fertilized_today),
+                                       ("fed", self.fed_today),
+                                       ("cared", self.cared_today),
+                                       ("fert_taken", self.fertilizer_collected_today))
+                 if on]
+        tail = f" h{self.hour}" + (" " + ",".join(today) if today else "")
+        return super().describe() + tail
+
+
+# --- reading one hour of work off a tile -------------------------------------- #
+
+#: The actions a tile can show, and what each change means.
+def delta(later: TileInDay, earlier: TileInDay) -> tuple[Action, ...]:
+    """The actions consistent with one hour of change on one tile.
+
+    `later` and `earlier` are the same tile one hour apart, `later.hour ==
+    earlier.hour + 1`. While the tile keeps its kind, nothing that moves at the night
+    may have moved (the age, `consec`, `unfed`, `care_bank`), and `yield_units` may
+    only have grown on a watering: inside the golden window the engine pays the bonus
+    at once (:439-443), while an ongoing crop's and an animal's production lands at the
+    night. When the kind DID change, an action must explain it, or this raises rather
+    than quietly reporting nothing.
+
+    A change can be consistent with more than one action, and that is a fact about what
+    a tile shows, not a gap: a one-shot crop that had yield and is now empty was either
+    HARVESTed or DUG, and only the unit's inventory or its trace tells them apart. The
+    return value is every action the change allows, in a fixed order.
+    """
+    if later.hour != earlier.hour + 1:
+        raise ValueError(f"not one hour apart: {earlier.hour} -> {later.hour}")
+    same_kind = later.kind is earlier.kind
+    if same_kind:
+        for field in ("age", "consec", "unfed", "care_bank"):
+            if getattr(later, field) != getattr(earlier, field):
+                raise ValueError(f"{field} moved between hour {earlier.hour} and "
+                                 f"{later.hour} while the tile kept its kind: the two "
+                                 "are not one hour apart")
+        if (later.yield_units > earlier.yield_units
+                and not (later.watered_today and not earlier.watered_today)):
+            raise ValueError("yield_units grew inside a day with no watering: an "
+                             "ongoing crop and an animal produce at the night, so the "
+                             "two are not one hour apart")
+
+    acts: list[Action] = []
+    if later.watered_today and not earlier.watered_today:
+        acts.append((UnitAction.WATER,))
+    if later.fertilized_today and not earlier.fertilized_today:
+        acts.append((UnitAction.FERTILIZE,))
+    if later.fertilizer_collected_today and not earlier.fertilizer_collected_today:
+        acts.append((UnitAction.COLLECT_FERTILIZER,))
+    if later.fed_today and not earlier.fed_today:
+        acts.append((UnitAction.FEED,))
+    if later.cared_today and not earlier.cared_today:
+        acts.append((UnitAction.CARE,))
+
+    if not same_kind:
+        explained = _kind_change_actions(later, earlier)
+        if not explained:
+            raise ValueError(f"the tile changed from {earlier.kind} to {later.kind} "
+                             f"between hour {earlier.hour} and {later.hour}, and no "
+                             "action explains it")
+        acts.extend(explained)
+    elif later.yield_units < earlier.yield_units:
+        acts.append((UnitAction.HARVEST,))
+    return tuple(acts)
+
+
+def _kind_change_actions(later: TileInDay, earlier: TileInDay) -> tuple[Action, ...]:
+    """What the kind change alone allows: the constructive and destructive ops.
+
+    DIG empties a plant, a weed or an empty structure (:484-491); HARVEST does it to a
+    one-shot crop that has something on it (:464-468); PLANT, BUILD_* and PLACE each
+    make one kind out of another (:417-429, :493-503, :384-392).
+    """
+    if earlier.is_none and later.is_plant:
+        return ((UnitAction.PLANT, later.crop),)
+    if earlier.is_none and later.is_empty_structure:
+        return ((UnitAction.BUILD_COOP if later.structure is Structure.COOP
+                 else UnitAction.BUILD_PASTURE,),)
+    if earlier.is_empty_structure and later.is_animal:
+        return ((UnitAction.PLACE, later.animal),)
+    if later.is_none and not earlier.is_none and not earlier.is_weed:
+        if earlier.is_plant and earlier.yield_units > 0:
+            return ((UnitAction.HARVEST,), (UnitAction.DIG,))
+        return ((UnitAction.DIG,),)
+    if later.is_none and earlier.is_weed:
+        return ((UnitAction.DIG,),)
+    return ()
