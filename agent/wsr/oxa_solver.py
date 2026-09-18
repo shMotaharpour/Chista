@@ -12,9 +12,11 @@ import time
 from dataclasses import dataclass
 from typing import Optional
 
-from ..distances import assign_entry_cells, manhattan
-from ..fibonacci import fibonacci_cost
-from ..models import (
+from agent.world.model import UnitAction
+
+from .distances import assign_entry_cells, manhattan
+from .fibonacci import fibonacci_cost
+from .models import (
     CONSUME_ACTIONS,
     Action,
     WAREHOUSE_ENTRY_CELLS,
@@ -26,8 +28,7 @@ from ..models import (
     Solution,
     WorkerRoute,
 )
-from ..verify import verify_solution
-from .base_config import BaseSolverConfig
+from .verify import verify_solution
 
 
 class InfeasibleInputError(ValueError):
@@ -37,9 +38,18 @@ class InfeasibleInputError(ValueError):
     pass
 
 @dataclass
-class OxaConfig(BaseSolverConfig):
+class OxaConfig:
+    """What the caller may tune.
+
+    `validate` runs the independent verifier on the solver's own answer and reports
+    INVALID_SOLUTION rather than returning an unverified schedule; it is the expensive half of
+    the call and is meant to be switched off on the agent's path, where the answer is checked
+    elsewhere.
+    """
+
     min_workers: int = 1
     worker_pool_cap: Optional[int] = None
+    validate: bool = True
 
 
 @dataclass

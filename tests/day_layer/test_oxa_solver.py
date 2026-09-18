@@ -16,7 +16,7 @@ from agent.wsr.models import (
     MinorTask,
     Worker,
 )
-from agent.wsr.solvers.oxa_solver import InfeasibleInputError, OxaConfig, compute_lower_bound, solve_oxa
+from agent.wsr.oxa_solver import InfeasibleInputError, OxaConfig, compute_lower_bound, solve_oxa
 from agent.wsr.verify import verify_solution
 from tests.day_layer.brute_force import brute_force_optimal_cost
 
