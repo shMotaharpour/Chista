@@ -75,7 +75,8 @@ import numpy as np
 from kaggle_environments.envs.kaggriculture import kaggriculture as K
 
 from agent.obs import LOCKED_KEY, WorldView, _nearest_modelled, decode_world
-from agent.tile_dp.chains import N_RESOURCE, RESOURCE_ID, chain_ops, entity_of_code
+from agent.tile_dp.chains import chain_ops, entity_of_code
+from agent.tile_dp.ledger import N_RESOURCE, RESOURCE_ID
 from agent.day.routing import plan_day
 from agent.tile_dp.contractor import HORIZON_DAYS, TileContractor
 from agent.artifact import artifact_path

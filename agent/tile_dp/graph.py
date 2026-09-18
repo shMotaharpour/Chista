@@ -30,8 +30,9 @@ from typing import Iterator
 
 import numpy as np
 
-from agent.tile_dp.chains import (chain_name, chain_ops, contract_id,
-                                  fingerprint_chains, registry_fingerprint)
+from agent.world.rules import TURNS_PER_DAY
+from agent.tile_dp.chains import (chain_name, chain_ops)
+from agent.tile_dp.contract import (contract_id, fingerprint_chains, registry_fingerprint)
 from agent.tile_dp.tile_state import KEY_BITS, TileState, TileZeroCode
 
 #: Identity of the artifact contract, COMPUTED from its inputs (chains.contract_id).

@@ -1,4 +1,4 @@
-"""The tile chains: what a chain IS, how the built ones are loaded, and what they cost.
+"""The tile chains: what a chain IS, and how the built ones are loaded.
 
 A chain is one worker-day on one tile: an ordered tuple of ops. It is not `PASS` — PASS is
 a turn spent waiting, which the builder uses when it has to let a market purchase land —
@@ -23,9 +23,9 @@ from pathlib import Path
 
 from agent.artifact import artifact_path, info_path
 from agent.world.action import WorkerAction
-from agent.world.model import (ANIMALS, COLUMNS, CROPS, Animal, Column, Crop,
-                               Structure, UnitAction)
-from agent.world.rules import ANIMAL_RULES, TURNS_PER_DAY
+from agent.world.model import (ANIMALS, CROPS, Animal, Crop, Structure,
+                               UnitAction)
+from agent.world.rules import ANIMAL_RULES
 
 # --- the base definition -------------------------------------------------------- #
 
@@ -55,21 +55,6 @@ CONSTRUCTIVE_OPS: tuple[str, ...] = (UnitAction.PLANT.value,
                                      UnitAction.BUILD_COOP.value,
                                      UnitAction.BUILD_PASTURE.value,
                                      UnitAction.PLACE.value)
-
-# --- the columns a plan is priced over ------------------------------------------ #
-
-RESOURCE_NAMES: tuple[str, ...] = COLUMNS
-RESOURCE_ID: dict[str, int] = {name: i for i, name in enumerate(RESOURCE_NAMES)}
-N_RESOURCE = len(RESOURCE_NAMES)
-RES_LABOR = Column.LABOR.value
-RES_FERTILIZER = Column.FERTILIZER.value
-RES_WHEAT = Column.WHEAT.value
-
-#: Which column a PLANT / PLACE spends, and which one a harvest fills.
-SEED_RES: dict[str, str] = {crop: f"SEED_{crop}" for crop in CROPS}
-ANIMAL_RES: dict[str, str] = {animal: f"ANIMAL_{animal}" for animal in ANIMALS}
-PRODUCT_RES: dict[str, str] = {crop: crop for crop in CROPS}
-PRODUCT_RES.update({a: ANIMAL_RULES[a]["product"] for a in ANIMALS})
 
 # --- entities -------------------------------------------------------------------- #
 
@@ -218,74 +203,10 @@ def actions_of(ops: TileChain, entity: str | None = None) -> tuple[TileChainActi
     return tuple(out)
 
 
-# --- what a chain costs and yields ------------------------------------------------ #
+def loaded_chains() -> tuple[TileChain, ...]:
+    """The chains the artifact holds (loaded once)."""
+    return _registry()[0]
 
-def chain_labor(ops: TileChain) -> int:
-    """The worker hours a chain costs: one per op in `TILE_OPS`."""
-    return sum(1 for op in ops if op in TILE_OPS)
-
-
-#: Engine steps one op fills: the ops absent from this table cost one, and a market buy
-#: rides along with a turn it does not spend.
-OP_STEPS: dict[str, int] = {UnitAction.PLANT.value: 2, UnitAction.FERTILIZE.value: 3,
-                            UnitAction.FEED.value: 3, UnitAction.PLACE.value: 3}
-
-
-def chain_steps(ops: TileChain) -> int:
-    """The turns a chain fills within one day: the engine gives a unit `turns_per_day`
-    turns, so a chain needing more can never run."""
-    return sum(OP_STEPS.get(op, 1) for op in ops)
-
-
-def chain_requirements(entity: str | None, ops: TileChain) -> dict[str, int]:
-    """The cost of a chain: labour hours plus the inputs it spends.
-
-    `entity` may be None for a chain that names none (a bare tile's NO_ACTION or DIG); the
-    PLANT and PLACE branches require it and raise without it, because a silent fallback
-    would price a seed nobody bought.
-    """
-    req: dict[str, int] = {RES_LABOR: chain_labor(ops)}
-    for op in ops:
-        if op == UnitAction.PLANT.value:
-            key = SEED_RES.get(entity)
-            if key is None:
-                raise ValueError(f"chain {ops} plants, but entity {entity!r} is not a crop")
-            req[key] = req.get(key, 0) + 1
-        elif op == UnitAction.FERTILIZE.value:
-            req[RES_FERTILIZER] = req.get(RES_FERTILIZER, 0) + 1
-        elif op == UnitAction.FEED.value:
-            req[RES_WHEAT] = req.get(RES_WHEAT, 0) + 1
-        elif op == UnitAction.PLACE.value:
-            key = ANIMAL_RES.get(entity)
-            if key is None:
-                raise ValueError(f"chain {ops} places an animal, but entity {entity!r} is "
-                                 f"not one of {sorted(ANIMAL_RES)}")
-            req[key] = req.get(key, 0) + 1
-    return req
-
-
-def cost_vector(entity: str | None, ops: TileChain) -> list[int]:
-    """The cost side of an edge: LABOR plus every input the chain spends."""
-    vec = [0] * N_RESOURCE
-    for res, units in chain_requirements(entity, ops).items():
-        vec[RESOURCE_ID[res]] = units
-    return vec
-
-
-def produce_vector(entity: str | None, harvest: int, fert_collect: int) -> list[int]:
-    """The produce side of an edge: harvest units of the entity's product, plus the
-    fertilizer a COLLECT_FERTILIZER picked up. Never netted with the cost side."""
-    vec = [0] * N_RESOURCE
-    if harvest:
-        if entity not in PRODUCT_RES:
-            raise ValueError(f"chain yields a harvest, but entity {entity!r} has no product")
-        vec[RESOURCE_ID[PRODUCT_RES[entity]]] = harvest
-    if fert_collect:
-        vec[RESOURCE_ID[RES_FERTILIZER]] = fert_collect
-    return vec
-
-
-# --- the artifact's identity ------------------------------------------------------ #
 
 def __getattr__(name: str):
     """`CHAIN_NAMES` / `CHAIN_ID_OF`, loaded when they are first asked for.
@@ -298,49 +219,3 @@ def __getattr__(name: str):
     if name in ("CHAIN_NAMES", "CHAIN_ID_OF"):
         return _registry()[0 if name == "CHAIN_NAMES" else 1]
     raise AttributeError(name)
-
-
-def _fingerprint(chains: tuple[TileChain, ...]) -> str:
-    """The registry fingerprint of a chain list: ids are positions, so this is what an
-    artifact's info carries and what a build compares."""
-    from hashlib import sha256
-    return sha256("\n".join(chain_name(c) for c in chains).encode()).hexdigest()[:16]
-
-
-def fingerprint_chains(chains) -> str:
-    """The ONE fingerprint of a chain table, used by the builder and by the loader.
-
-    Ids are positions, so an artifact that stores ids is only readable together with the
-    exact table that produced it. Two different hashes for the same table would make the
-    agent refuse its own build.
-    """
-    return _fingerprint(tuple(chains))
-
-
-def registry_fingerprint() -> str:
-    """Fingerprint of the loaded registry: ids are positions, so an artifact that stores
-    ids is only readable together with the exact registry that produced it."""
-    from hashlib import sha256
-    return _fingerprint(_registry()[0])
-
-
-def engine_fingerprint() -> str:
-    """Fingerprint of the engine source the graph decodes against."""
-    from hashlib import sha1
-
-    from kaggle_environments.envs.kaggriculture import kaggriculture as K
-    return sha1(Path(K.__file__).read_bytes()).hexdigest()[:8]
-
-
-def contract_id() -> str:
-    """What an artifact IS, computed from everything it depends on: the registry, the
-    engine, the day length, the key layout, and the builder's own source."""
-    from hashlib import sha1
-    from agent.tile_dp.tile_state import KEY_BITS
-    builder = Path(__file__).resolve().parents[2] / "offline_lab" / "build" / "graph.py"
-    chains_builder = (Path(__file__).resolve().parents[2] / "offline_lab" / "build"
-                      / "chains.py")
-    return (f"tile-dp/reg={registry_fingerprint()}"
-            f"+eng={engine_fingerprint()}+tpd={TURNS_PER_DAY}+pb={KEY_BITS}"
-            f"+bld={sha1(builder.read_bytes()).hexdigest()[:8]}"
-            f"+chn={sha1(chains_builder.read_bytes()).hexdigest()[:8]}")

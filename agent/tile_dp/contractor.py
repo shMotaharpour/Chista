@@ -37,7 +37,8 @@ from typing import Sequence
 
 import numpy as np
 
-from agent.tile_dp.chains import RES_LABOR, N_RESOURCE, RESOURCE_ID
+from agent.world.rules import TURNS_PER_DAY
+from agent.tile_dp.ledger import RES_LABOR, N_RESOURCE, RESOURCE_ID
 from agent.tile_dp.graph import TileGraph
 
 # F029: 720 turns of 24 = 30 days, and shed goods at the end are worth
