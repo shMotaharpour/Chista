@@ -201,3 +201,13 @@ INVENTORY_ITEMS: tuple[str, ...] = SHED_ITEMS
 #: The four moves and their (dx, dy); y grows downward (kaggriculture.py:88-93).
 MOVES: dict[str, tuple[int, int]] = {
     "NORTH": (0, -1), "SOUTH": (0, 1), "EAST": (1, 0), "WEST": (-1, 0)}
+
+
+#: The column ids a plan is priced over: LABOR + seeds + animals + products. Built from
+#: `COLUMNS`, so a column can never be named that the world does not have.
+RESOURCE_NAMES: tuple[str, ...] = COLUMNS
+RESOURCE_ID: dict[str, int] = {name: i for i, name in enumerate(RESOURCE_NAMES)}
+N_RESOURCE: int = len(RESOURCE_NAMES)
+RES_LABOR: str = Column.LABOR.value
+RES_FERTILIZER: str = Column.FERTILIZER.value
+RES_WHEAT: str = Column.WHEAT.value

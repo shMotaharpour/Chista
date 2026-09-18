@@ -48,14 +48,12 @@ def engine_fingerprint() -> str:
 
 
 def contract_id() -> str:
-    """What an artifact IS, computed from everything it depends on: the registry, the
-    engine, the day length, the key layout, and the builder's own source."""
-    from hashlib import sha1
+    """What an artifact IS, from what the agent can check at runtime: the registry it indexes
+    into, the engine, the day length and the key layout.
+
+    Nothing here reads the build's own source: the submission ships `agent/` alone, so a
+    fingerprint that needs `offline_lab/` on disk cannot be computed where it matters.
+    """
     from agent.tile_dp.tile_state import KEY_BITS
-    builder = Path(__file__).resolve().parents[2] / "offline_lab" / "build" / "graph.py"
-    chains_builder = (Path(__file__).resolve().parents[2] / "offline_lab" / "build"
-                      / "chains.py")
     return (f"tile-dp/reg={registry_fingerprint()}"
-            f"+eng={engine_fingerprint()}+tpd={TURNS_PER_DAY}+pb={KEY_BITS}"
-            f"+bld={sha1(builder.read_bytes()).hexdigest()[:8]}"
-            f"+chn={sha1(chains_builder.read_bytes()).hexdigest()[:8]}")
+            f"+eng={engine_fingerprint()}+tpd={TURNS_PER_DAY}+pb={KEY_BITS}")

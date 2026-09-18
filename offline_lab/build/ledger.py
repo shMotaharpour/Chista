@@ -1,32 +1,25 @@
-"""What a chain costs and yields: the columns a plan is priced over.
+"""What a chain costs and yields: the ledger the BUILDER prices edges with.
 
-The cost side is labour hours plus the inputs the chain spends (a seed, an animal, fertiliser,
-feed) and the produce side is the harvest plus the fertiliser a collection picked up. The two
-are never netted: the DP prices them against the market, which is what makes wheat and
-fertiliser appear on both sides - FEED spends wheat, WATER+HARVEST makes it.
+Cost is labour hours plus the inputs a chain spends (a seed, an animal, fertiliser, feed);
+produce is the harvest plus the fertiliser a collection picked up. The two are never netted,
+and both are written into the graph as the per-edge `cost` and `produce` columns - which is
+why the runtime needs none of this: it reads the matrices.
 """
 
 from __future__ import annotations
 
-from agent.world.model import ANIMALS, COLUMNS, CROPS, Column, UnitAction
+from agent.world.model import ANIMALS, CROPS, N_RESOURCE, RESOURCE_ID, UnitAction
+from agent.world.model import RES_LABOR, RES_FERTILIZER, RES_WHEAT
 from agent.world.rules import ANIMAL_RULES
 
 from agent.tile_dp.chains import TILE_OPS
-
-# --- the columns a plan is priced over ------------------------------------------ #
-
-RESOURCE_NAMES: tuple[str, ...] = COLUMNS
-RESOURCE_ID: dict[str, int] = {name: i for i, name in enumerate(RESOURCE_NAMES)}
-N_RESOURCE = len(RESOURCE_NAMES)
-RES_LABOR = Column.LABOR.value
-RES_FERTILIZER = Column.FERTILIZER.value
-RES_WHEAT = Column.WHEAT.value
 
 #: Which column a PLANT / PLACE spends, and which one a harvest fills.
 SEED_RES: dict[str, str] = {crop: f"SEED_{crop}" for crop in CROPS}
 ANIMAL_RES: dict[str, str] = {animal: f"ANIMAL_{animal}" for animal in ANIMALS}
 PRODUCT_RES: dict[str, str] = {crop: crop for crop in CROPS}
 PRODUCT_RES.update({a: ANIMAL_RULES[a]["product"] for a in ANIMALS})
+
 
 # --- what a chain costs and yields ------------------------------------------------ #
 

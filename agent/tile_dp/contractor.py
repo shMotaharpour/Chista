@@ -33,7 +33,7 @@ from typing import Sequence
 import numpy as np
 
 from agent.world.rules import TURNS_PER_DAY
-from agent.tile_dp.ledger import RES_LABOR, N_RESOURCE, RESOURCE_ID
+from agent.world.model import N_RESOURCE, RESOURCE_ID, RES_LABOR
 from agent.tile_dp.graph import TileGraph
 
 # The season's days. Shed goods at the end are worth nothing: there is no liquidation, so

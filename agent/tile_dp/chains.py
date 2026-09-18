@@ -146,14 +146,11 @@ def load_chains(name: str = _ARTIFACT) -> tuple[TileChain, ...]:
 #: The registry, loaded on first use: the chains builder imports this module to write
 #: the artifact, so the load cannot happen at import time.
 _LOADED: tuple[tuple[TileChain, ...], dict[TileChain, int]] | None = None
-_LOADED_MTIME: float = -1.0
 
 
 def _registry() -> tuple[tuple[TileChain, ...], dict[TileChain, int]]:
-    global _LOADED, _LOADED_MTIME
-    stamp = info_path(_ARTIFACT).stat().st_mtime
-    if _LOADED is None or stamp != _LOADED_MTIME:
-        _LOADED_MTIME = stamp
+    global _LOADED
+    if _LOADED is None:
         chains = load_chains()
         _LOADED = (chains, {c: i for i, c in enumerate(chains)})
     return _LOADED
@@ -201,6 +198,17 @@ def actions_of(ops: TileChain, entity: str | None = None) -> tuple[TileChainActi
         else:
             out.append(WorkerAction(UnitAction(op)))
     return tuple(out)
+
+
+def reload_chains() -> tuple[TileChain, ...]:
+    """Drop the cached registry and read the artifact again.
+
+    The agent loads once and the artifact never changes while it runs, so the cache is
+    unconditional; a BUILD that rewrites the table inside its own process calls this.
+    """
+    global _LOADED
+    _LOADED = None
+    return loaded_chains()
 
 
 def loaded_chains() -> tuple[TileChain, ...]:

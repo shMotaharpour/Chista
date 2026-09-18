@@ -38,9 +38,10 @@ from pathlib import Path
 from agent.artifact import artifact_path, write_info
 from agent.tile_dp import chains as base
 from agent.tile_dp.chains import (BUILD_OF_STRUCTURE, NO_ACTION, TILE_OPS, chain_name, entity_code_of)
-from agent.tile_dp.ledger import (ANIMAL_RES, PRODUCT_RES, SEED_RES)
+from offline_lab.build.ledger import (ANIMAL_RES, PRODUCT_RES, SEED_RES)
 from agent.tile_dp.contract import (engine_fingerprint)
-from agent.world.model import ANIMALS, CROPS, Structure, TileKind, UnitAction
+from agent.world.model import (ANIMALS, CROPS, RESOURCE_NAMES, Structure, TileKind,
+                               UnitAction)
 from agent.world.rules import ANIMAL_RULES, CROP_RULES, TURNS_PER_DAY
 from agent.world.tile import crop_age_origin
 
@@ -375,7 +376,7 @@ def write_table(contract: str, chains=None) -> Path:
                              "no_action": chain_name(NO_ACTION),
                              "ops": list(names),
                              "op_bits": base.OP_BITS,
-                             "columns": base.RESOURCE_NAMES,
+                             "columns": RESOURCE_NAMES,
                              "per_kind": {**{kind.value: len(chains_of_kind(kind))
                                              for kind in CHAINS_BY_KIND},
                                           "PLANT": len(CROP_CHAINS[True]) + len(CROP_CHAINS[False]),

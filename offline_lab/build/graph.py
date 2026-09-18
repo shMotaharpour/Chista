@@ -57,7 +57,8 @@ from agent.world.rules import ANIMAL_RULES, CROP_RULES, TURNS_PER_DAY
 from offline_lab.build.chains import (chain_id_of, chain_ops, chains_for,
                                       domain_ok, registry)
 from agent.tile_dp.chains import (CONSTRUCTIVE_OPS, ENTITY_CODE, ENTITY_NAMES, chain_name, entity_code_of, entity_of_code, is_animal)
-from agent.tile_dp.ledger import (N_RESOURCE, OP_STEPS, RESOURCE_ID, chain_steps, cost_vector, produce_vector)
+from offline_lab.build.ledger import (OP_STEPS, chain_steps, cost_vector, produce_vector)
+from agent.world.model import N_RESOURCE, RESOURCE_ID
 from agent.tile_dp.contract import (fingerprint_chains, contract_id, engine_fingerprint, registry_fingerprint)
 from agent.tile_dp.graph import (ENGINE_TAG, BuildReport, BuildSpec, ChainOutcome,
                                  Edge, TileGraph)
@@ -775,6 +776,9 @@ def main() -> int:
     # never drift apart. Nothing builds a chain artifact on its own.
     from offline_lab.build import chains as C
     table = C.write_table(g.engine_tag, g.chains)
+    # the table on disk just changed, so the loader's cache must go
+    from agent.tile_dp.chains import reload_chains
+    reload_chains()
     print("chains:", table.name, "->", C.TABLE_PATH.name)
     print("info:", info.name)
     back = TileGraph.load(GRAPH_PATH)
