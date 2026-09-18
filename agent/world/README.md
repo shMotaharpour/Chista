@@ -7,6 +7,7 @@ The reference of definitions: what the game is, as the engine has it.
 | `model.py` | the names: products, crops, animals, structures, tile states, the 18 columns, the 18 unit actions, the 6 market orders |
 | `rules.py` | the numbers: the season, the crop and animal tables, land, labour, the shed, the town, the turn order |
 | `action_rules.py` | what each action needs and what it does |
+| `tile.py` | a tile: the engine's fields decoded, for any layer to read |
 | `prices.py` | the price function and the town's drain |
 
 Authority: `kaggle_environments.envs.kaggriculture` — its `kaggriculture.py`, its
