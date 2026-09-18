@@ -95,34 +95,13 @@ class Solution:
 # 2. Major Task Definitions & Expansion Logic
 # ============================================================================
 
-#: The day types the WSR's solvers schedule. Each is a chain of the DP's vocabulary, and the
-#: registry is what will replace this list: a day the WSR runs must be a day the DP priced.
-MAJOR_CHAINS: dict[str, tuple[str, ...]] = {
-    "feed": ("FEED",),
-    "frtz": ("FERTILIZE",),
-    "frtz_water": ("FERTILIZE", "WATER"),
-    "plnt": ("PLANT", "WATER"),
-    "wet_harvst": ("WATER", "HARVEST"),
-    "wet_harvst_plnt": ("WATER", "HARVEST", "PLANT", "WATER"),
-    "place_animal": ("PLACE",),
-}
-
-@dataclass
-class MajorTask:
-    id: str
-    type: str              # a key of MAJOR_CHAINS
-    cell: Cell
-    crop: Optional[Item] = None
-    harvested_item: Optional[Item] = None
-    harvested_n: int = 1
-    item: Optional[Item] = None
-
-
 ExpansionResult = tuple[list[MinorTask], list[tuple[str, str]], list[str]]
 
 
-def expand_major_task(major: MajorTask) -> ExpansionResult:
-    """One day's chain -> its minor tasks, the precedence between them, and the pairs that
+def expand_chain(ops: Sequence[str], entity: Item | None = None, cell: Cell | None = None,
+                 item: Item | None = None, harvested_n: int = 1,
+                 prefix: str = "") -> ExpansionResult:
+    """One day's chain -> its tasks, the precedence between them, and the pairs that
     the SAME worker must do (a PICKUP and the op that consumes what it carried).
 
     Every op that eats a carried good is preceded by its own PICKUP. The chain's order is
@@ -130,11 +109,7 @@ def expand_major_task(major: MajorTask) -> ExpansionResult:
     be watered before it is harvested), while an ongoing crop and an animal are indifferent to
     the order of their ops, and a total order would forbid legal days.
     """
-    chain = MAJOR_CHAINS.get(major.type)
-    if chain is None:
-        raise ValueError(f"unknown major_task type: {major.type!r}")
-
-    ordered = major.crop is not None and not CROP_RULES[major.crop]["ongoing"]
+    ordered = entity in CROP_RULES and not CROP_RULES[entity]["ongoing"]
     tasks: list[MinorTask] = []
     precedence: list[tuple[str, str]] = []
     same_worker: list[str] = []
@@ -144,20 +119,20 @@ def expand_major_task(major: MajorTask) -> ExpansionResult:
     def unique(name: str) -> str:
         seen[name] = seen.get(name, 0) + 1
         suffix = "" if seen[name] == 1 else str(seen[name])
-        return f"{major.id}_{name}{suffix}"
+        return f"{prefix}{name}{suffix}"
 
     def link(before: Optional[str], after: str) -> None:
         """Record the order, when the order is a constraint at all."""
         if before is not None and ordered:
             precedence.append((before, after))
 
-    for op in chain:
-        name = f"BUILD_{ANIMAL_STRUCTURE[major.item]}" if op == "BUILD" else op
+    for op in ops:
+        name = f"BUILD_{ANIMAL_STRUCTURE[item]}" if op == "BUILD" else op
         carried = CARRIES.get(name)
         if carried is not None:
             carried = item_of(carried)
         elif name == "PLACE":
-            carried = major.item
+            carried = item
 
         if carried is not None:
             acquire = MinorTask(id=unique("acquire"), cell=None,
@@ -169,11 +144,11 @@ def expand_major_task(major: MajorTask) -> ExpansionResult:
 
         task = MinorTask(
             id=unique(name.lower()),
-            cell=major.cell,
+            cell=cell,
             action=UnitAction(name),
-            item=major.harvested_item if name == "HARVEST" else carried,
-            n=major.harvested_n if name == "HARVEST" else 1,
-            crop=major.crop if name == "PLANT" else None)
+            item=entity if name == "HARVEST" else carried,
+            n=harvested_n if name == "HARVEST" else 1,
+            crop=entity if name == "PLANT" else None)
         tasks.append(task)
         link(previous, task.id)
         previous = task.id
@@ -331,7 +306,7 @@ class Instance:
         seen_ids = {task.id for task in minor_tasks}
         
         for major in major_tasks or []:
-            minors, edges, group = expand_major_task(major)
+            tasks, edges, group = expand_chain(ops, entity, cell)
             for minor in minors:
                 if minor.id in seen_ids:
                     raise ValueError(f"Duplicate minor_task id: {minor.id!r} (from major_task {major.id!r})")
