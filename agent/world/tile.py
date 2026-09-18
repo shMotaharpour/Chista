@@ -336,15 +336,17 @@ def delta(later: TileInDay, earlier: TileInDay) -> tuple[Action, ...]:
     `later` and `earlier` are the same tile one hour apart, `later.hour ==
     earlier.hour + 1`. While the tile keeps its kind, nothing that moves at the night
     may have moved (the age, `consec`, `unfed`, `care_bank`), and `yield_units` may
-    only have grown on a watering: inside the golden window the engine pays the bonus
-    at once (:439-443), while an ongoing crop's and an animal's production lands at the
-    night. When the kind DID change, an action must explain it, or this raises rather
+    only have grown on a watering. The two crops differ here: a ONE-SHOT crop watered
+    inside its golden window is paid at once (:439-443), while an ONGOING crop's
+    production - and an animal's - lands at the night, one day after the watering that
+    earned it (:789-802, :822-831). When the kind DID change, an action must explain it, or this raises rather
     than quietly reporting nothing.
 
-    A change can be consistent with more than one action, and that is a fact about what
-    a tile shows, not a gap: a one-shot crop that had yield and is now empty was either
-    HARVESTed or DUG, and only the unit's inventory or its trace tells them apart. The
-    return value is every action the change allows, in a fixed order.
+    A one-shot crop that is now empty was HARVESTed if it had yield on it and DUG if it
+    had none (the owner's rule; a plan does not dig a crop it could harvest). The
+    remaining cases each name exactly one action, so the return value is a tuple only
+    because a single hour can hold two units' work on one tile - one watered it while
+    the other fertilised it.
     """
     if later.hour != earlier.hour + 1:
         raise ValueError(f"not one hour apart: {earlier.hour} -> {later.hour}")
@@ -399,10 +401,15 @@ def _kind_change_actions(later: TileInDay, earlier: TileInDay) -> tuple[Action, 
                  else UnitAction.BUILD_PASTURE,),)
     if earlier.is_empty_structure and later.is_animal:
         return ((UnitAction.PLACE, later.animal),)
-    if later.is_none and not earlier.is_none and not earlier.is_weed:
-        if earlier.is_plant and earlier.yield_units > 0:
-            return ((UnitAction.HARVEST,), (UnitAction.DIG,))
-        return ((UnitAction.DIG,),)
     if later.is_none and earlier.is_weed:
+        return ((UnitAction.DIG,),)
+    if later.is_none and earlier.is_plant:
+        # A one-shot crop: it had something on it, so it was HARVESTed; it had nothing,
+        # so it was DUG. (The engine would let a DIG remove a plant that has yield too
+        # (:484-491), but a plan does not dig a crop it could harvest - the owner's
+        # rule, and the only reading a tile can support.)
+        return (((UnitAction.HARVEST,),) if earlier.yield_units > 0
+                else ((UnitAction.DIG,),))
+    if later.is_none and earlier.is_empty_structure:
         return ((UnitAction.DIG,),)
     return ()
