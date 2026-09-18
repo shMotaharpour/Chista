@@ -1,9 +1,29 @@
 """Build the tile chains and write them as an artifact. Offline only.
 
-The rules that decide what a chain may be - the op pools, the subsets, the DIG layering,
-the applicability windows - are the process. The RESULT is `agent/artifact/tile_chains`,
-which is all the agent loads: the agent defines what a chain IS (`agent.tile_dp.chains`),
-and never how one was chosen.
+A chain is one worker-day on one tile, and what a day can be is a state machine over the
+tile's KIND, because every action can change it:
+
+    NONE           -> BUILD_COOP, BUILD_PASTURE, PLANT <crop>
+    EMPTY_COOP     -> PLACE <goose>, DIG
+    EMPTY_PASTURE  -> PLACE <cow|sheep>, DIG
+    WEED           -> DIG
+    PLANT          -> FERTILIZE, WATER, HARVEST          (DIG first, or after HARVEST)
+    ANIMAL         -> FEED, CARE, COLLECT_FERTILIZER, HARVEST
+
+So PLANT makes the tile a PLANT and the rest of the day may water and harvest it; BUILD_*
+makes it a structure and PLACE may fill it; DIG makes it bare and a bare-tile action may
+follow. Two rules keep the set canonical instead of combinatorial noise:
+
+  * the ORDER inside a day is fixed where it matters and used everywhere so a chain is
+    never listed twice: PLANT > FERTILIZE > WATER > HARVEST, and for animals
+    FEED > CARE > COLLECT_FERTILIZER > HARVEST (the engine does not care, but the
+    canonical order is what stops duplicate chains);
+  * DIG is either the first op or comes right after HARVEST - the engine refuses DIG on a
+    tile that holds an animal, and building a structure needs a bare tile
+    (kaggriculture.py:484-503).
+
+The RESULT is `agent/artifact/tile_chains`, which is all the agent loads: the agent
+defines what a chain IS, and never how one was chosen.
 
 Run from the repo root:
 
@@ -13,7 +33,6 @@ Run from the repo root:
 from __future__ import annotations
 
 import json
-from itertools import combinations
 from pathlib import Path
 
 from agent.artifact import artifact_path, write_info
@@ -21,7 +40,7 @@ from agent.tile_dp import chains as base
 from agent.tile_dp.chains import (ANIMAL_RES, BUILD_OF_STRUCTURE, NO_ACTION, PRODUCT_RES,
                                   SEED_RES, TILE_OPS, chain_name, entity_code_of,
                                   engine_fingerprint)
-from agent.world.model import (ANIMALS, CROPS, Column, Structure, TileKind, UnitAction)
+from agent.world.model import ANIMALS, CROPS, Structure, TileKind, UnitAction
 from agent.world.rules import ANIMAL_RULES, CROP_RULES, TURNS_PER_DAY
 from agent.world.tile import crop_age_origin
 
@@ -45,105 +64,96 @@ def contract_of(chains: tuple[tuple[str, ...], ...]) -> str:
             f"+eng={engine_fingerprint()}+tpd={TURNS_PER_DAY}+pb={KEY_BITS}"
             f"+chn={sha1(Path(__file__).read_bytes()).hexdigest()[:8]}")
 
-# --- the pools a chain is drawn from -------------------------------------------- #
 
-CROP_OPS: tuple[str, ...] = (UnitAction.FERTILIZE.value, UnitAction.WATER.value,
-                             UnitAction.HARVEST.value)
-ANIMAL_OPS: tuple[str, ...] = (UnitAction.FEED.value, UnitAction.CARE.value,
-                               UnitAction.HARVEST.value,
-                               UnitAction.COLLECT_FERTILIZER.value)
+# --- what a day can be ------------------------------------------------------------ #
 
-#: DIG turns exactly these kinds back into a bare tile: the engine removes a plant, a
-#: weed or an EMPTY structure, refuses a tile that holds an animal, and does nothing on
-#: a bare tile (kaggriculture.py:484-491).
-DIGGABLE_KINDS: frozenset[TileKind] = frozenset(
-    (TileKind.PLANT, TileKind.WEED, TileKind.EMPTY_COOP, TileKind.EMPTY_PASTURE))
+#: The single actions each KIND allows, in the canonical order.
+ACTIONS_BY_KIND: dict[TileKind, tuple[str, ...]] = {
+    TileKind.NONE: (UnitAction.BUILD_COOP.value, UnitAction.BUILD_PASTURE.value,
+                    UnitAction.PLANT.value),
+    TileKind.EMPTY_COOP: (UnitAction.PLACE.value, UnitAction.DIG.value),
+    TileKind.EMPTY_PASTURE: (UnitAction.PLACE.value, UnitAction.DIG.value),
+    TileKind.WEED: (UnitAction.DIG.value,),
+    TileKind.PLANT: (UnitAction.FERTILIZE.value, UnitAction.WATER.value,
+                     UnitAction.HARVEST.value),
+    TileKind.ANIMAL: (UnitAction.FEED.value, UnitAction.CARE.value,
+                      UnitAction.COLLECT_FERTILIZER.value, UnitAction.HARVEST.value),
+}
 
-ANIMAL_ONLY_OPS: frozenset[str] = frozenset((
-    UnitAction.BUILD_COOP.value, UnitAction.BUILD_PASTURE.value, UnitAction.PLACE.value,
-    UnitAction.FEED.value, UnitAction.CARE.value, UnitAction.COLLECT_FERTILIZER.value))
-CROP_ONLY_OPS: frozenset[str] = frozenset((UnitAction.PLANT.value,))
+#: The order a chain must keep: an op may only follow one of a lower or equal rank. The
+#: engine does not need it; it is what keeps a chain from being listed twice.
+RANK: dict[str, int] = {
+    UnitAction.PLANT.value: 0, UnitAction.BUILD_COOP.value: 0,
+    UnitAction.BUILD_PASTURE.value: 0,
+    UnitAction.PLACE.value: 1, UnitAction.FERTILIZE.value: 1, UnitAction.FEED.value: 1,
+    UnitAction.CARE.value: 2, UnitAction.WATER.value: 2,
+    UnitAction.COLLECT_FERTILIZER.value: 3,
+    UnitAction.HARVEST.value: 4,
+    UnitAction.DIG.value: 5,
+}
 
-
-def _subsets(ops: tuple[str, ...]) -> list[tuple[str, ...]]:
-    """Every subset of `ops`; the empty one is the no-action case."""
-    return [tuple(op for op in ops if op in combo) or NO_ACTION
-            for r in range(len(ops) + 1)
-            for combo in combinations(ops, r)]
-
-
-_CROP_SUBSETS = _subsets(CROP_OPS)
-# CARE is a no-op without FEED on the same day: the engine spends `cared_today` only
-# together with `fed_today` (kaggriculture.py:826-829).
-_ANIMAL_SUBSETS = [c for c in _subsets(ANIMAL_OPS)
-                   if not ("CARE" in c and "FEED" not in c)]
-
-#: ONE bare-tile list, with no crop/animal split: the split belongs to the filters, not
-#: to the chains.
-NONE_CHAINS: tuple[tuple[str, ...], ...] = (
-    NO_ACTION, (UnitAction.PLANT.value, UnitAction.WATER.value),
-) + tuple(
-    chain for structure in (Structure.COOP, Structure.PASTURE)
-    for chain in ((BUILD_OF_STRUCTURE[structure],),
-                  (BUILD_OF_STRUCTURE[structure], UnitAction.PLACE.value),
-                  (BUILD_OF_STRUCTURE[structure], UnitAction.PLACE.value,
-                   UnitAction.FEED.value),
-                  (BUILD_OF_STRUCTURE[structure], UnitAction.PLACE.value,
-                   UnitAction.FEED.value, UnitAction.CARE.value)))
+#: The kinds a structure or an animal belongs to, per structure.
+_KIND_OF_STRUCTURE = {Structure.COOP: TileKind.EMPTY_COOP,
+                      Structure.PASTURE: TileKind.EMPTY_PASTURE}
 
 
-def _kind_after(kind: TileKind, ops: tuple[str, ...]) -> TileKind:
-    """The tile kind after `ops` run on `kind` (the transitions the engine allows)."""
-    for op in ops:
-        if op == UnitAction.PLANT.value:
-            kind = TileKind.PLANT
-        elif op == UnitAction.BUILD_COOP.value:
-            kind = TileKind.EMPTY_COOP
-        elif op == UnitAction.BUILD_PASTURE.value:
-            kind = TileKind.EMPTY_PASTURE
-        elif op == UnitAction.PLACE.value:
-            kind = TileKind.ANIMAL
-        elif op == UnitAction.DIG.value:
-            kind = TileKind.NONE
+def _kind_after(kind: TileKind, op: str) -> TileKind:
+    """The tile's kind once `op` has run on `kind`."""
+    if op == UnitAction.PLANT.value:
+        return TileKind.PLANT
+    if op == UnitAction.BUILD_COOP.value:
+        return TileKind.EMPTY_COOP
+    if op == UnitAction.BUILD_PASTURE.value:
+        return TileKind.EMPTY_PASTURE
+    if op == UnitAction.PLACE.value:
+        return TileKind.ANIMAL
+    if op == UnitAction.DIG.value:
+        return TileKind.NONE
     return kind
 
 
-def _dig_tail(kind: TileKind, head: tuple[str, ...]) -> list[tuple[str, ...]]:
-    """Variants that put DIG after `head` (an empty head = DIG is the first op)."""
-    if kind not in DIGGABLE_KINDS:
-        return []
-    if _kind_after(kind, head) not in DIGGABLE_KINDS:
-        return []
-    out = [head + (UnitAction.DIG.value,)]
-    out += [head + (UnitAction.DIG.value,) + follow for follow in NONE_CHAINS
-            if follow != NO_ACTION]
+def _day_chains(kind: TileKind, ops: tuple[str, ...] = (), rank: int = -1,
+                steps: int = 0) -> list[tuple[str, ...]]:
+    """Every day this kind can have, as the sequences the rules allow.
+
+    Recursive over the day: at each step the tile is in some kind, one of that kind's
+    actions may run (in canonical order, and DIG only first or right after HARVEST), and
+    the kind moves on. A chain is any prefix of such a walk, which is what makes an
+    incomplete day - the worker stops early - a chain of its own.
+    """
+    out: list[tuple[str, ...]] = [ops]
+    if steps >= TURNS_PER_DAY:
+        return out
+    for op in ACTIONS_BY_KIND.get(kind, ()):
+        if RANK[op] < rank:
+            continue
+        if op in ops:
+            continue          # an op is done once in a day (water once, feed once, ...)
+        if op == UnitAction.DIG.value:
+            # first op of the chain, or right after a HARVEST
+            if ops and ops[-1] != UnitAction.HARVEST.value:
+                continue
+        nxt = _kind_after(kind, op)
+        out += _day_chains(nxt, ops + (op,), RANK[op], steps + _steps(op))
     return out
 
 
-def _layer(kind: TileKind, base_chains: tuple[tuple[str, ...], ...]
-           ) -> tuple[tuple[str, ...], ...]:
-    """Base chains plus every legal DIG layering of them (dedup, order kept)."""
-    out: list[tuple[str, ...]] = list(base_chains)
-    out += _dig_tail(kind, ())
-    for chain in base_chains:
-        if chain and chain[-1] == UnitAction.HARVEST.value:
-            out += _dig_tail(kind, chain)
-    return tuple(dict.fromkeys(out))
+#: Engine steps one op fills (a chain may not need more than a day has turns).
+_STEPS_PER_OP: dict[str, int] = {UnitAction.PLANT.value: 2, UnitAction.FERTILIZE.value: 3,
+                                 UnitAction.FEED.value: 3, UnitAction.PLACE.value: 3}
 
 
-CHAINS_BY_KIND: dict[TileKind, tuple[tuple[str, ...], ...]] = {
-    TileKind.NONE: NONE_CHAINS,
-    TileKind.WEED: _layer(TileKind.WEED, (NO_ACTION, (UnitAction.DIG.value,))),
-    TileKind.PLANT: _layer(TileKind.PLANT, tuple(_CROP_SUBSETS)),
-    TileKind.ANIMAL: _layer(TileKind.ANIMAL, tuple(_ANIMAL_SUBSETS)),
-    TileKind.EMPTY_COOP: _layer(TileKind.EMPTY_COOP,
-                                (NO_ACTION, (UnitAction.PLACE.value,))),
-    TileKind.EMPTY_PASTURE: _layer(TileKind.EMPTY_PASTURE,
-                                   (NO_ACTION, (UnitAction.PLACE.value,))),
-}
-CROP_CHAINS_YOUNG: tuple[tuple[str, ...], ...] = _layer(
-    TileKind.PLANT, tuple(c for c in _CROP_SUBSETS
-                          if UnitAction.HARVEST.value not in c))
+def _steps(op: str) -> int:
+    return _STEPS_PER_OP.get(op, 1)
+
+
+def chains_of_kind(kind: TileKind) -> tuple[tuple[str, ...], ...]:
+    """The chains a tile of this kind can have, `NO_ACTION` first (dedup, order kept)."""
+    out = [NO_ACTION]
+    for chain in _day_chains(kind):
+        if chain and chain not in out:
+            out.append(chain)
+    return tuple(out)
 
 
 def registry() -> tuple[tuple[str, ...], ...]:
@@ -151,13 +161,29 @@ def registry() -> tuple[tuple[str, ...], ...]:
     out: list[tuple[str, ...]] = []
     for kind in (TileKind.NONE, TileKind.WEED, TileKind.EMPTY_COOP,
                  TileKind.EMPTY_PASTURE, TileKind.PLANT, TileKind.ANIMAL):
-        for chain in CHAINS_BY_KIND[kind]:
+        for chain in chains_of_kind(kind):
             if chain not in out:
                 out.append(chain)
     return tuple(out)
 
 
+CHAINS_BY_KIND: dict[TileKind, tuple[tuple[str, ...], ...]] = {
+    kind: chains_of_kind(kind) for kind in
+    (TileKind.NONE, TileKind.WEED, TileKind.EMPTY_COOP, TileKind.EMPTY_PASTURE,
+     TileKind.PLANT, TileKind.ANIMAL)}
+
+#: A young plant cannot be harvested yet: the same list, without HARVEST.
+CROP_CHAINS_YOUNG: tuple[tuple[str, ...], ...] = tuple(
+    c for c in CHAINS_BY_KIND[TileKind.PLANT] if UnitAction.HARVEST.value not in c)
+
+
 # --- the filters ------------------------------------------------------------------ #
+
+ANIMAL_ONLY_OPS: frozenset[str] = frozenset((
+    UnitAction.BUILD_COOP.value, UnitAction.BUILD_PASTURE.value, UnitAction.PLACE.value,
+    UnitAction.FEED.value, UnitAction.CARE.value, UnitAction.COLLECT_FERTILIZER.value))
+CROP_ONLY_OPS: frozenset[str] = frozenset((UnitAction.PLANT.value,))
+
 
 def _fert_window(crop: str) -> tuple[int, int]:
     """The ages at which a dose can still reach an effective day (kaggriculture.py:481)."""
@@ -176,10 +202,8 @@ def domain_ok(ops: tuple[str, ...], entity: str) -> bool:
     """False when `entity` must not run `ops`.
 
     A crop never runs an animal op and an animal never plants. A structure must be the one
-    the species lives in - with one exception, the engine's own rule: BUILD_COOP needs an
-    EMPTY tile, so changing a barn into a coop is only possible by DIGGING it first
-    (kaggriculture.py:493-503). A chain that digs and then builds the other structure is
-    therefore legal, and a chain that builds it out of a standing one is not.
+    the species lives in - with the engine's own exception: BUILD_COOP needs a bare tile,
+    so changing a barn into a coop is only possible by DIGGING it first (:493-503).
     """
     ops_set = set(ops)
     if entity in ANIMALS:
@@ -189,12 +213,9 @@ def domain_ok(ops: tuple[str, ...], entity: str) -> bool:
         other = set(BUILD_OF_STRUCTURE.values()) - {BUILD_OF_STRUCTURE[structure]}
         if not ops_set & other:
             return True
-        # a structure change needs the DIG that empties the tile first, and the build must
-        # come after it
-        if UnitAction.DIG.value not in ops:
-            return False
-        return ops.index(BUILD_OF_STRUCTURE[structure]) > ops.index(UnitAction.DIG.value) \
-            if BUILD_OF_STRUCTURE[structure] in ops else True
+        return (UnitAction.DIG.value in ops
+                and ops.index(UnitAction.DIG.value)
+                < min(ops.index(op) for op in ops_set & other))
     return not (ops_set & ANIMAL_ONLY_OPS)
 
 
@@ -250,6 +271,8 @@ def main() -> int:
                              "no_action": chain_name(NO_ACTION),
                              "ops": sorted(TILE_OPS),
                              "columns": base.RESOURCE_NAMES,
+                             "per_kind": {kind.value: len(chains_of_kind(kind))
+                                          for kind in CHAINS_BY_KIND},
                              "steps_per_chain": {chain_name(c): base.chain_steps(c)
                                                  for c in chains}},
                       source="offline_lab.build.chains:registry")

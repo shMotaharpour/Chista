@@ -2,10 +2,6 @@
  "chains": [
   [],
   [
-   "PLANT",
-   "WATER"
-  ],
-  [
    "BUILD_COOP"
   ],
   [
@@ -24,6 +20,87 @@
    "CARE"
   ],
   [
+   "BUILD_COOP",
+   "PLACE",
+   "FEED",
+   "CARE",
+   "COLLECT_FERTILIZER"
+  ],
+  [
+   "BUILD_COOP",
+   "PLACE",
+   "FEED",
+   "CARE",
+   "COLLECT_FERTILIZER",
+   "HARVEST"
+  ],
+  [
+   "BUILD_COOP",
+   "PLACE",
+   "FEED",
+   "CARE",
+   "HARVEST"
+  ],
+  [
+   "BUILD_COOP",
+   "PLACE",
+   "FEED",
+   "COLLECT_FERTILIZER"
+  ],
+  [
+   "BUILD_COOP",
+   "PLACE",
+   "FEED",
+   "COLLECT_FERTILIZER",
+   "HARVEST"
+  ],
+  [
+   "BUILD_COOP",
+   "PLACE",
+   "FEED",
+   "HARVEST"
+  ],
+  [
+   "BUILD_COOP",
+   "PLACE",
+   "CARE"
+  ],
+  [
+   "BUILD_COOP",
+   "PLACE",
+   "CARE",
+   "COLLECT_FERTILIZER"
+  ],
+  [
+   "BUILD_COOP",
+   "PLACE",
+   "CARE",
+   "COLLECT_FERTILIZER",
+   "HARVEST"
+  ],
+  [
+   "BUILD_COOP",
+   "PLACE",
+   "CARE",
+   "HARVEST"
+  ],
+  [
+   "BUILD_COOP",
+   "PLACE",
+   "COLLECT_FERTILIZER"
+  ],
+  [
+   "BUILD_COOP",
+   "PLACE",
+   "COLLECT_FERTILIZER",
+   "HARVEST"
+  ],
+  [
+   "BUILD_COOP",
+   "PLACE",
+   "HARVEST"
+  ],
+  [
    "BUILD_PASTURE"
   ],
   [
@@ -40,82 +117,213 @@
    "PLACE",
    "FEED",
    "CARE"
+  ],
+  [
+   "BUILD_PASTURE",
+   "PLACE",
+   "FEED",
+   "CARE",
+   "COLLECT_FERTILIZER"
+  ],
+  [
+   "BUILD_PASTURE",
+   "PLACE",
+   "FEED",
+   "CARE",
+   "COLLECT_FERTILIZER",
+   "HARVEST"
+  ],
+  [
+   "BUILD_PASTURE",
+   "PLACE",
+   "FEED",
+   "CARE",
+   "HARVEST"
+  ],
+  [
+   "BUILD_PASTURE",
+   "PLACE",
+   "FEED",
+   "COLLECT_FERTILIZER"
+  ],
+  [
+   "BUILD_PASTURE",
+   "PLACE",
+   "FEED",
+   "COLLECT_FERTILIZER",
+   "HARVEST"
+  ],
+  [
+   "BUILD_PASTURE",
+   "PLACE",
+   "FEED",
+   "HARVEST"
+  ],
+  [
+   "BUILD_PASTURE",
+   "PLACE",
+   "CARE"
+  ],
+  [
+   "BUILD_PASTURE",
+   "PLACE",
+   "CARE",
+   "COLLECT_FERTILIZER"
+  ],
+  [
+   "BUILD_PASTURE",
+   "PLACE",
+   "CARE",
+   "COLLECT_FERTILIZER",
+   "HARVEST"
+  ],
+  [
+   "BUILD_PASTURE",
+   "PLACE",
+   "CARE",
+   "HARVEST"
+  ],
+  [
+   "BUILD_PASTURE",
+   "PLACE",
+   "COLLECT_FERTILIZER"
+  ],
+  [
+   "BUILD_PASTURE",
+   "PLACE",
+   "COLLECT_FERTILIZER",
+   "HARVEST"
+  ],
+  [
+   "BUILD_PASTURE",
+   "PLACE",
+   "HARVEST"
+  ],
+  [
+   "PLANT"
+  ],
+  [
+   "PLANT",
+   "FERTILIZE"
+  ],
+  [
+   "PLANT",
+   "FERTILIZE",
+   "WATER"
+  ],
+  [
+   "PLANT",
+   "FERTILIZE",
+   "WATER",
+   "HARVEST"
+  ],
+  [
+   "PLANT",
+   "FERTILIZE",
+   "HARVEST"
+  ],
+  [
+   "PLANT",
+   "WATER"
+  ],
+  [
+   "PLANT",
+   "WATER",
+   "HARVEST"
+  ],
+  [
+   "PLANT",
+   "HARVEST"
   ],
   [
    "DIG"
   ],
   [
-   "DIG",
-   "PLANT",
-   "WATER"
-  ],
-  [
-   "DIG",
-   "BUILD_COOP"
-  ],
-  [
-   "DIG",
-   "BUILD_COOP",
    "PLACE"
   ],
   [
-   "DIG",
-   "BUILD_COOP",
    "PLACE",
    "FEED"
   ],
   [
-   "DIG",
-   "BUILD_COOP",
    "PLACE",
    "FEED",
    "CARE"
   ],
   [
-   "DIG",
-   "BUILD_PASTURE"
-  ],
-  [
-   "DIG",
-   "BUILD_PASTURE",
-   "PLACE"
-  ],
-  [
-   "DIG",
-   "BUILD_PASTURE",
-   "PLACE",
-   "FEED"
-  ],
-  [
-   "DIG",
-   "BUILD_PASTURE",
    "PLACE",
    "FEED",
+   "CARE",
+   "COLLECT_FERTILIZER"
+  ],
+  [
+   "PLACE",
+   "FEED",
+   "CARE",
+   "COLLECT_FERTILIZER",
+   "HARVEST"
+  ],
+  [
+   "PLACE",
+   "FEED",
+   "CARE",
+   "HARVEST"
+  ],
+  [
+   "PLACE",
+   "FEED",
+   "COLLECT_FERTILIZER"
+  ],
+  [
+   "PLACE",
+   "FEED",
+   "COLLECT_FERTILIZER",
+   "HARVEST"
+  ],
+  [
+   "PLACE",
+   "FEED",
+   "HARVEST"
+  ],
+  [
+   "PLACE",
    "CARE"
   ],
   [
-   "PLACE"
+   "PLACE",
+   "CARE",
+   "COLLECT_FERTILIZER"
+  ],
+  [
+   "PLACE",
+   "CARE",
+   "COLLECT_FERTILIZER",
+   "HARVEST"
+  ],
+  [
+   "PLACE",
+   "CARE",
+   "HARVEST"
+  ],
+  [
+   "PLACE",
+   "COLLECT_FERTILIZER"
+  ],
+  [
+   "PLACE",
+   "COLLECT_FERTILIZER",
+   "HARVEST"
+  ],
+  [
+   "PLACE",
+   "HARVEST"
   ],
   [
    "FERTILIZE"
   ],
   [
-   "WATER"
-  ],
-  [
-   "HARVEST"
-  ],
-  [
    "FERTILIZE",
    "WATER"
-  ],
-  [
-   "FERTILIZE",
-   "HARVEST"
-  ],
-  [
-   "WATER",
-   "HARVEST"
   ],
   [
    "FERTILIZE",
@@ -123,319 +331,25 @@
    "HARVEST"
   ],
   [
-   "HARVEST",
-   "DIG"
-  ],
-  [
-   "HARVEST",
-   "DIG",
-   "PLANT",
-   "WATER"
-  ],
-  [
-   "HARVEST",
-   "DIG",
-   "BUILD_COOP"
-  ],
-  [
-   "HARVEST",
-   "DIG",
-   "BUILD_COOP",
-   "PLACE"
-  ],
-  [
-   "HARVEST",
-   "DIG",
-   "BUILD_COOP",
-   "PLACE",
-   "FEED"
-  ],
-  [
-   "HARVEST",
-   "DIG",
-   "BUILD_COOP",
-   "PLACE",
-   "FEED",
-   "CARE"
-  ],
-  [
-   "HARVEST",
-   "DIG",
-   "BUILD_PASTURE"
-  ],
-  [
-   "HARVEST",
-   "DIG",
-   "BUILD_PASTURE",
-   "PLACE"
-  ],
-  [
-   "HARVEST",
-   "DIG",
-   "BUILD_PASTURE",
-   "PLACE",
-   "FEED"
-  ],
-  [
-   "HARVEST",
-   "DIG",
-   "BUILD_PASTURE",
-   "PLACE",
-   "FEED",
-   "CARE"
-  ],
-  [
    "FERTILIZE",
-   "HARVEST",
-   "DIG"
-  ],
-  [
-   "FERTILIZE",
-   "HARVEST",
-   "DIG",
-   "PLANT",
-   "WATER"
-  ],
-  [
-   "FERTILIZE",
-   "HARVEST",
-   "DIG",
-   "BUILD_COOP"
-  ],
-  [
-   "FERTILIZE",
-   "HARVEST",
-   "DIG",
-   "BUILD_COOP",
-   "PLACE"
-  ],
-  [
-   "FERTILIZE",
-   "HARVEST",
-   "DIG",
-   "BUILD_COOP",
-   "PLACE",
-   "FEED"
-  ],
-  [
-   "FERTILIZE",
-   "HARVEST",
-   "DIG",
-   "BUILD_COOP",
-   "PLACE",
-   "FEED",
-   "CARE"
-  ],
-  [
-   "FERTILIZE",
-   "HARVEST",
-   "DIG",
-   "BUILD_PASTURE"
-  ],
-  [
-   "FERTILIZE",
-   "HARVEST",
-   "DIG",
-   "BUILD_PASTURE",
-   "PLACE"
-  ],
-  [
-   "FERTILIZE",
-   "HARVEST",
-   "DIG",
-   "BUILD_PASTURE",
-   "PLACE",
-   "FEED"
-  ],
-  [
-   "FERTILIZE",
-   "HARVEST",
-   "DIG",
-   "BUILD_PASTURE",
-   "PLACE",
-   "FEED",
-   "CARE"
-  ],
-  [
-   "WATER",
-   "HARVEST",
-   "DIG"
-  ],
-  [
-   "WATER",
-   "HARVEST",
-   "DIG",
-   "PLANT",
-   "WATER"
-  ],
-  [
-   "WATER",
-   "HARVEST",
-   "DIG",
-   "BUILD_COOP"
-  ],
-  [
-   "WATER",
-   "HARVEST",
-   "DIG",
-   "BUILD_COOP",
-   "PLACE"
-  ],
-  [
-   "WATER",
-   "HARVEST",
-   "DIG",
-   "BUILD_COOP",
-   "PLACE",
-   "FEED"
-  ],
-  [
-   "WATER",
-   "HARVEST",
-   "DIG",
-   "BUILD_COOP",
-   "PLACE",
-   "FEED",
-   "CARE"
-  ],
-  [
-   "WATER",
-   "HARVEST",
-   "DIG",
-   "BUILD_PASTURE"
-  ],
-  [
-   "WATER",
-   "HARVEST",
-   "DIG",
-   "BUILD_PASTURE",
-   "PLACE"
-  ],
-  [
-   "WATER",
-   "HARVEST",
-   "DIG",
-   "BUILD_PASTURE",
-   "PLACE",
-   "FEED"
-  ],
-  [
-   "WATER",
-   "HARVEST",
-   "DIG",
-   "BUILD_PASTURE",
-   "PLACE",
-   "FEED",
-   "CARE"
-  ],
-  [
-   "FERTILIZE",
-   "WATER",
-   "HARVEST",
-   "DIG"
-  ],
-  [
-   "FERTILIZE",
-   "WATER",
-   "HARVEST",
-   "DIG",
-   "PLANT",
-   "WATER"
-  ],
-  [
-   "FERTILIZE",
-   "WATER",
-   "HARVEST",
-   "DIG",
-   "BUILD_COOP"
-  ],
-  [
-   "FERTILIZE",
-   "WATER",
-   "HARVEST",
-   "DIG",
-   "BUILD_COOP",
-   "PLACE"
-  ],
-  [
-   "FERTILIZE",
-   "WATER",
-   "HARVEST",
-   "DIG",
-   "BUILD_COOP",
-   "PLACE",
-   "FEED"
-  ],
-  [
-   "FERTILIZE",
-   "WATER",
-   "HARVEST",
-   "DIG",
-   "BUILD_COOP",
-   "PLACE",
-   "FEED",
-   "CARE"
-  ],
-  [
-   "FERTILIZE",
-   "WATER",
-   "HARVEST",
-   "DIG",
-   "BUILD_PASTURE"
-  ],
-  [
-   "FERTILIZE",
-   "WATER",
-   "HARVEST",
-   "DIG",
-   "BUILD_PASTURE",
-   "PLACE"
-  ],
-  [
-   "FERTILIZE",
-   "WATER",
-   "HARVEST",
-   "DIG",
-   "BUILD_PASTURE",
-   "PLACE",
-   "FEED"
-  ],
-  [
-   "FERTILIZE",
-   "WATER",
-   "HARVEST",
-   "DIG",
-   "BUILD_PASTURE",
-   "PLACE",
-   "FEED",
-   "CARE"
-  ],
-  [
-   "FEED"
-  ],
-  [
-   "COLLECT_FERTILIZER"
-  ],
-  [
-   "FEED",
-   "CARE"
-  ],
-  [
-   "FEED",
    "HARVEST"
   ],
   [
-   "FEED",
-   "COLLECT_FERTILIZER"
+   "WATER"
   ],
   [
-   "HARVEST",
-   "COLLECT_FERTILIZER"
-  ],
-  [
-   "FEED",
-   "CARE",
+   "WATER",
    "HARVEST"
+  ],
+  [
+   "HARVEST"
+  ],
+  [
+   "FEED"
+  ],
+  [
+   "FEED",
+   "CARE"
   ],
   [
    "FEED",
@@ -444,14 +358,50 @@
   ],
   [
    "FEED",
-   "HARVEST",
-   "COLLECT_FERTILIZER"
+   "CARE",
+   "COLLECT_FERTILIZER",
+   "HARVEST"
   ],
   [
    "FEED",
    "CARE",
-   "HARVEST",
+   "HARVEST"
+  ],
+  [
+   "FEED",
    "COLLECT_FERTILIZER"
+  ],
+  [
+   "FEED",
+   "COLLECT_FERTILIZER",
+   "HARVEST"
+  ],
+  [
+   "FEED",
+   "HARVEST"
+  ],
+  [
+   "CARE"
+  ],
+  [
+   "CARE",
+   "COLLECT_FERTILIZER"
+  ],
+  [
+   "CARE",
+   "COLLECT_FERTILIZER",
+   "HARVEST"
+  ],
+  [
+   "CARE",
+   "HARVEST"
+  ],
+  [
+   "COLLECT_FERTILIZER"
+  ],
+  [
+   "COLLECT_FERTILIZER",
+   "HARVEST"
   ]
  ]
 }
