@@ -34,7 +34,11 @@ from agent.wsr.models import (
 from offline_lab.verify import verify_solution
 
 @dataclass
-class CpSatConfig(BaseSolverConfig):
+@dataclass
+class CpSatConfig:
+    """The oracle's own config: it validates its answer offline, where the verifier lives."""
+
+    validate: bool = True
     time_limit_seconds: Optional[float] = 10.0
     num_search_workers: int = 8
     linearization_level: int = 1
