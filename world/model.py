@@ -23,7 +23,9 @@ that spread belongs to the market layer, not to this column space.
 Three vocabularies, in the order a plan is built: a **tile chain** names `TILE_OPS`
 and is all the contractor prices; the **day compiler** inserts the shed trips
 (`SHED_OPS`) around it and spends the moves; a **worker** executes `WORKER_OPS` —
-the tile ops plus those trips, the moves and the pass.
+the tile ops plus those trips, the moves and the pass. Market ops are in none of
+them: the market has its own engine, and `MARKET_BUYS` is the only overlap, named so
+a chain can ask for an input it must buy.
 
 The division of labour that answers "how does the layer above know": the **vector
 is the ledger** (what a day costs and makes, which is what the DP prices), the
@@ -100,9 +102,20 @@ MARKET_ACTIONS: tuple[str, ...] = ("SELL", "BUY_SEED", "BUY_PRODUCT",
 #: TILE ops: what a tile chain names, and all the contractor prices. One tile, so
 #: it never leaves it: no shed trip, no move. No market op either — the contractor
 #: and the WSR never touch the market.
+#:
+#: `BUILD` is the one ABSTRACT name here: the engine has no `BUILD` action, only
+#: `BUILD_COOP` and `BUILD_PASTURE`. A chain says `BUILD` with the species as its
+#: entity, and `compile_op` turns that into the structure's own action.
 TILE_OPS: tuple[str, ...] = ("PLANT", "WATER", "FERTILIZE", "HARVEST", "DIG",
                              "BUILD", "PLACE", "FEED", "CARE",
                              "COLLECT_FERTILIZER")
+
+#: The market buys a chain may name as its input acquisition. The market layer
+#: executes them; a worker never does, and the WSR never sees them.
+MARKET_BUYS: tuple[str, ...] = ("BUY_SEED", "BUY_PRODUCT", "BUY_ANIMAL")
+
+#: Names a chain may use that are not engine actions at all.
+ABSTRACT_OPS: tuple[str, ...] = ("BUILD", "NO_ACT")
 
 #: The shed trips. NOT tile ops: a tile chain never names one (the compiler refuses
 #: it), and the WSR's worker chain gets them from `day/routing.py`, which inserts a
@@ -111,13 +124,17 @@ TILE_OPS: tuple[str, ...] = ("PLANT", "WATER", "FERTILIZE", "HARVEST", "DIG",
 #: contractor's vocabulary and a worker's.
 SHED_OPS: tuple[str, ...] = ("PICKUP", "DROP")
 
-#: A worker's complete vocabulary in a turn: the tile ops, the shed trips the
-#: compiler adds, the four moves and the pass. What a unit can actually execute.
-WORKER_OPS: tuple[str, ...] = TILE_OPS + SHED_OPS + MOVEMENT + ("PASS",)
+#: A worker's complete vocabulary in a turn: what a unit can actually execute. Every
+#: member is an engine action — no `BUILD` (the engine spells it `BUILD_COOP` /
+#: `BUILD_PASTURE`), and no market op: the market has its own engine and a worker
+#: never runs it.
+WORKER_OPS: tuple[str, ...] = (("PASS",) + MOVEMENT + SHED_OPS
+                               + ("PLANT", "WATER", "FERTILIZE", "HARVEST", "DIG",
+                                  "BUILD_COOP", "BUILD_PASTURE", "PLACE", "FEED",
+                                  "CARE", "COLLECT_FERTILIZER"))
 
 #: What a *tile chain* may name: tile ops + the market buys it needs + the day pass.
-CHAIN_OPS: tuple[str, ...] = TILE_OPS + ("BUY_SEED", "BUY_PRODUCT",
-                                         "BUY_ANIMAL", "NO_ACT")
+CHAIN_OPS: tuple[str, ...] = TILE_OPS + MARKET_BUYS + ("NO_ACT",)
 
 #: The two directions an upper layer reads a good in.
 #:
@@ -173,7 +190,8 @@ Move = _names("Move", MOVEMENT)
 # --- the compile table ------------------------------------------------------ #
 
 #: A chain op -> the engine action it means. `{entity}` is filled from the chain's
-#: own entity; an op absent from this table means "the op is the action".
+#: own entity; an op absent from this table means "the op is the action" (the
+#: abstract names above are the only ones that need an entry).
 COMPILE: Mapping[str, tuple[str, ...]] = {
     "PLANT": ("PLANT", "{entity}"),
     "PLACE": ("PLACE", "{entity}"),

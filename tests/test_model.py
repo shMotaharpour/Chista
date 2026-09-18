@@ -108,9 +108,20 @@ def test_the_market_and_the_worker_do_not_share_ops() -> None:
     # The contractor's vocabulary and a worker's differ by exactly the shed trips,
     # the moves and the pass: a tile chain can never name a PICKUP or a DROP.
     assert not (set(M.SHED_OPS) & set(M.CHAIN_OPS)), "a tile chain cannot name a shed trip"
-    assert set(M.WORKER_OPS) == (set(M.TILE_OPS) | set(M.SHED_OPS)
-                                | set(M.MOVEMENT) | {"PASS"})
-    assert set(M.TILE_OPS) == set(M.WORKER_OPS) - set(M.SHED_OPS) - set(M.MOVEMENT) - {"PASS"}
+    # Every worker op is an engine action: no invented name, no abstract BUILD.
+    assert set(M.WORKER_OPS) <= set(M.ACTIONS), sorted(set(M.WORKER_OPS) - set(M.ACTIONS))
+    assert not (set(M.WORKER_OPS) & set(M.ABSTRACT_OPS))
+    # A chain may name the buys it needs and nothing else of the market's.
+    assert set(M.CHAIN_OPS) & set(M.MARKET_ACTIONS) == set(M.MARKET_BUYS), (
+        f"a chain names a market op that is not an input buy: "
+        f"{sorted(set(M.CHAIN_OPS) & set(M.MARKET_ACTIONS) - set(M.MARKET_BUYS))}")
+    assert set(M.MARKET_BUYS) <= set(M.MARKET_ACTIONS), "a buy is not a market action"
+    # The tile vocabulary is engine names too, except the abstract ones.
+    assert set(M.TILE_OPS) - set(M.ABSTRACT_OPS) <= set(M.ACTIONS)
+    assert set(M.TILE_OPS) & set(M.ABSTRACT_OPS) == {"BUILD"}
+    # And the abstract BUILD compiles into real engine actions, one per structure.
+    for species in M.ANIMALS:
+        assert set(M.compile_op("BUILD", species)) <= set(M.ACTIONS)
     assert {"SELL", "BUY_LAND", "HIRE"} <= set(M.MARKET_ACTIONS)
     assert {"BUY_SEED", "BUY_PRODUCT", "BUY_ANIMAL"} <= set(M.MARKET_ACTIONS)
     for op in sorted(set(M.CHAIN_OPS) - {"NO_ACT"}):
