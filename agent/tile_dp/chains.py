@@ -107,6 +107,38 @@ def entity_of_code(code: int) -> str | None:
 _ARTIFACT = "tile_chains"
 
 
+#: A chain is stored as ONE integer, 4 bits per op, and a zero nibble ends it. The ops are
+#: named once in the artifact's op table, so hundreds of chains cost a few KB instead of a
+#: list of op-name strings each.
+OP_BITS = 4
+OP_MASK = (1 << OP_BITS) - 1
+
+
+def pack_chain(ops: tuple[str, ...], codes: dict[str, int]) -> int:
+    """A chain as one integer. Codes start at 1, so a zero nibble can only be the end."""
+    if len(ops) * OP_BITS >= 64:
+        raise ValueError(f"chain too long to pack: {ops}")
+    for op in ops:
+        if not 0 < codes[op] <= OP_MASK:
+            raise ValueError(f"op {op!r} has code {codes[op]} outside one nibble")
+    value = 0
+    for i, op in enumerate(ops):
+        value |= codes[op] << (OP_BITS * i)
+    return value
+
+
+def unpack_chain(value: int, names: tuple[str, ...]) -> TileChain:
+    """The ops of a packed chain."""
+    ops = []
+    while value:
+        code = value & OP_MASK
+        if code == 0:
+            break
+        ops.append(names[code - 1])
+        value >>= OP_BITS
+    return tuple(ops)
+
+
 def load_chains(name: str = _ARTIFACT) -> tuple[TileChain, ...]:
     """The built chains, from `agent/artifact/<name>.json`.
 
@@ -116,17 +148,23 @@ def load_chains(name: str = _ARTIFACT) -> tuple[TileChain, ...]:
     """
     info = json.loads(info_path(name).read_text())
     data = json.loads((info_path(name).parent / info["file"]).read_text())
-    return tuple(tuple(chain) for chain in data["chains"])
+    if "ops" not in data:       # a table written before packing: plain op lists
+        return tuple(tuple(chain) for chain in data["chains"])
+    names = tuple(data["ops"])
+    return tuple(unpack_chain(int(v), names) for v in data["chains"])
 
 
 #: The registry, loaded on first use: the chains builder imports this module to write
 #: the artifact, so the load cannot happen at import time.
 _LOADED: tuple[tuple[TileChain, ...], dict[TileChain, int]] | None = None
+_LOADED_MTIME: float = -1.0
 
 
 def _registry() -> tuple[tuple[TileChain, ...], dict[TileChain, int]]:
-    global _LOADED
-    if _LOADED is None:
+    global _LOADED, _LOADED_MTIME
+    stamp = info_path(_ARTIFACT).stat().st_mtime
+    if _LOADED is None or stamp != _LOADED_MTIME:
+        _LOADED_MTIME = stamp
         chains = load_chains()
         _LOADED = (chains, {c: i for i, c in enumerate(chains)})
     return _LOADED

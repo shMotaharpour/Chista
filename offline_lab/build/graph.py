@@ -55,10 +55,10 @@ from agent.artifact import artifact_path, write_info
 from agent.world.model import UnitAction
 from agent.world.rules import ANIMAL_RULES, CROP_RULES
 from offline_lab.build.chains import (chain_id_of, chain_ops, chains_for,
-                                      domain_ok)
+                                      domain_ok, registry)
 from agent.tile_dp.chains import (CONSTRUCTIVE_OPS, ENTITY_CODE, ENTITY_NAMES,
                                   N_RESOURCE, OP_STEPS,
-                                  RESOURCE_ID, chain_name,
+                                  RESOURCE_ID, chain_name, fingerprint_chains,
                                   chain_steps, contract_id, cost_vector,
                                   entity_code_of, entity_of_code,
                                   engine_fingerprint, is_animal, produce_vector,
@@ -716,6 +716,15 @@ def build_graph(entity: str | None = None, progress: bool = False) -> TileGraph:
             step_rows.append(chain_steps(chain_ops(edge.chain_id)))
     offsets[n_states] = len(edge_next)
 
+    # Only the chains that survived pruning: renumbered, so the artifact's table is exactly
+    # the useful set with no gaps (the owner's rule: the artifact carries the USEFUL actions,
+    # not every legal one).
+    used = sorted({int(c) for c in edge_chain})
+    remap = {old: new for new, old in enumerate(used)}
+    edge_chain = [remap[int(c)] for c in edge_chain]
+    used_chains = tuple(chain_ops(i) for i in used)
+    print(f"chains used {len(used_chains)} of {len(registry())}", flush=True)
+
     kinds: dict[str, int] = {}
     for state in state_list:
         kinds[state.kind] = kinds.get(state.kind, 0) + 1
@@ -725,6 +734,8 @@ def build_graph(entity: str | None = None, progress: bool = False) -> TileGraph:
                          kinds=kinds)
     return TileGraph(
         spec=spec, report=report, n_states=n_states,
+        chains=used_chains,
+        registry_tag=fingerprint_chains(used_chains),
         state_keys=np.array([s.pack() for s in state_list], dtype=np.int64),
         key_index=key_to_id, edge_offsets=offsets,
         edge_next=np.array(edge_next, dtype=np.int32),
@@ -758,7 +769,7 @@ def main() -> int:
     info = write_info(NAME, kind="tile_graph", file=GRAPH_PATH.name,
                       contract=g.engine_tag,
                       engine=engine_fingerprint(),
-                      registry=registry_fingerprint(),
+                      registry=g._registry_tag(),
                       stats={"states": g.n_states, "edges": g.n_edges,
                              "kinds": g.report.kinds,
                              "edges_per_entity": by_entity},
@@ -767,7 +778,7 @@ def main() -> int:
     # the same contract: the agent loads the graph and the chains together and the two can
     # never drift apart. Nothing builds a chain artifact on its own.
     from offline_lab.build import chains as C
-    table = C.write_table(g.engine_tag)
+    table = C.write_table(g.engine_tag, g.chains)
     print("chains:", table.name, "->", C.TABLE_PATH.name)
     print("info:", info.name)
     back = TileGraph.load(GRAPH_PATH)

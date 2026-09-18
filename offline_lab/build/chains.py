@@ -96,7 +96,7 @@ _KIND_OF_STRUCTURE = {Structure.COOP: TileKind.EMPTY_COOP,
                       Structure.PASTURE: TileKind.EMPTY_PASTURE}
 
 
-def _kinds_after(kind: TileKind, op: str) -> tuple[TileKind, ...]:
+def _kinds_after(kind: TileKind, op: str, ongoing: bool) -> tuple[TileKind, ...]:
     """The kind(s) the tile can be in once `op` has run on `kind`.
 
     HARVEST has two: a ONE-SHOT crop is cleared by it, so the tile becomes bare and the
@@ -116,13 +116,16 @@ def _kinds_after(kind: TileKind, op: str) -> tuple[TileKind, ...]:
     if op == UnitAction.DIG.value:
         return (TileKind.NONE,)
     if op == UnitAction.HARVEST.value and kind is TileKind.PLANT:
-        return (kind, TileKind.NONE)
+        # A ONE-SHOT crop is cleared by its harvest, so the tile is bare and the same day may
+        # plant again (kaggriculture.py:464-468). An ONGOING crop keeps its tile: it is not
+        # bare, so planting after it is refused and the tile turns to WEED.
+        return (kind,) if ongoing else (TileKind.NONE,)
     return (kind,)
 
 
 def _day_chains(kind: TileKind, ops: tuple[str, ...] = (), rank: int = -1,
                 steps: int = 0, used: frozenset[str] = frozenset(),
-                restarted: bool = False) -> list[tuple[str, ...]]:
+                restarted: bool = False, ongoing: bool = False) -> list[tuple[str, ...]]:
     """Every day this kind can have, as the sequences the rules allow.
 
     Recursive over the day: at each step the tile is in some kind, one of that kind's
@@ -146,7 +149,7 @@ def _day_chains(kind: TileKind, ops: tuple[str, ...] = (), rank: int = -1,
         if op == UnitAction.DIG.value:
             if ops and ops[-1] != UnitAction.HARVEST.value:
                 continue      # DIG first, or right after a HARVEST
-        for nxt in _kinds_after(kind, op):
+        for nxt in _kinds_after(kind, op, ongoing):
             # A change of kind replaces the tile, so its daily flags start clean: the order
             # and the once-per-life set begin again. Only ONE such restart is allowed in a
             # day - a tile may be dug and replanted, but a chain that replants and harvests
@@ -158,7 +161,7 @@ def _day_chains(kind: TileKind, ops: tuple[str, ...] = (), rank: int = -1,
             new_rank = RANK[op] if nxt is kind else -1
             new_used = (used | {op}) if nxt is kind else frozenset({op})
             out += _day_chains(nxt, ops + (op,), new_rank, steps + _steps(op), new_used,
-                               restarted or restart)
+                               restarted or restart, ongoing)
     return out
 
 
@@ -171,14 +174,14 @@ def _steps(op: str) -> int:
     return _STEPS_PER_OP.get(op, 1)
 
 
-def chains_of_kind(kind: TileKind) -> tuple[tuple[str, ...], ...]:
+def chains_of_kind(kind: TileKind, ongoing: bool = False) -> tuple[tuple[str, ...], ...]:
     """The chains a tile of this kind can have, `NO_ACTION` first (dedup, order kept).
 
     A day that PLANTS is a day that WATERS - after the planting, not before it: a crop left
     dry on its planting day turns to WEED by the next day.
     """
     out = [NO_ACTION]
-    for chain in _day_chains(kind):
+    for chain in _day_chains(kind, ongoing=ongoing):
         if not chain or chain in out:
             continue
         # A day that plants WATERS the new plant: the watering must come AFTER the PLANT,
@@ -197,21 +200,33 @@ def registry() -> tuple[tuple[str, ...], ...]:
     """The chains, in registry order (ids are positions in this list)."""
     out: list[tuple[str, ...]] = []
     for kind in (TileKind.NONE, TileKind.WEED, TileKind.EMPTY_COOP,
-                 TileKind.EMPTY_PASTURE, TileKind.PLANT, TileKind.ANIMAL):
+                 TileKind.EMPTY_PASTURE, TileKind.ANIMAL):
         for chain in chains_of_kind(kind):
+            if chain not in out:
+                out.append(chain)
+    for chains in CROP_CHAINS.values():
+        for chain in chains:
             if chain not in out:
                 out.append(chain)
     return tuple(out)
 
 
+#: The kinds whose days do not depend on which crop is standing there.
 CHAINS_BY_KIND: dict[TileKind, tuple[tuple[str, ...], ...]] = {
     kind: chains_of_kind(kind) for kind in
     (TileKind.NONE, TileKind.WEED, TileKind.EMPTY_COOP, TileKind.EMPTY_PASTURE,
-     TileKind.PLANT, TileKind.ANIMAL)}
+     TileKind.ANIMAL)}
 
-#: A young plant cannot be harvested yet: the same list, without HARVEST.
-CROP_CHAINS_YOUNG: tuple[tuple[str, ...], ...] = tuple(
-    c for c in CHAINS_BY_KIND[TileKind.PLANT] if UnitAction.HARVEST.value not in c)
+#: A PLANT tile's days, per crop nature: what may follow a harvest differs, so these are two
+#: lists and never one (owner's finding).
+CROP_CHAINS: dict[bool, tuple[tuple[str, ...], ...]] = {
+    True: chains_of_kind(TileKind.PLANT, ongoing=True),
+    False: chains_of_kind(TileKind.PLANT, ongoing=False)}
+
+#: A young plant cannot be harvested yet: the same lists, without HARVEST.
+CROP_CHAINS_YOUNG: dict[bool, tuple[tuple[str, ...], ...]] = {
+    key: tuple(c for c in chains if UnitAction.HARVEST.value not in c)
+    for key, chains in CROP_CHAINS.items()}
 
 
 # --- the filters ------------------------------------------------------------------ #
@@ -306,8 +321,11 @@ def chains_for(kind: TileKind, age: int | None = None, yield_units: int | None =
                entity: str | None = None) -> list[tuple[str, ...]]:
     """The applicable chains of a node: selected by KIND, then filtered by the node."""
     if kind is TileKind.PLANT:
-        base_chains = CROP_CHAINS_YOUNG if (age is not None and age < 0) \
-            else CHAINS_BY_KIND[kind]
+        # Which crop is standing there decides both lists: its nature picks the harvest
+        # branch, its age whether a harvest is possible at all.
+        ongoing = True if entity is None else bool(CROP_RULES[entity]["ongoing"])
+        young = age is not None and age < 0
+        base_chains = (CROP_CHAINS_YOUNG if young else CROP_CHAINS)[ongoing]
     elif kind in CHAINS_BY_KIND:
         base_chains = CHAINS_BY_KIND[kind]
     else:
@@ -338,28 +356,43 @@ def chain_ops(chain_id: int) -> tuple[str, ...]:
     return registry()[chain_id]
 
 
-def write_table(contract: str) -> Path:
+def write_table(contract: str, chains=None) -> Path:
     """Write the chain table the agent loads, stamped with the GRAPH's contract.
 
     Called by the graph builder, never on its own: the graph's action indices ARE these
     chains, so the two artifacts are one build.
     """
-    chains = registry()
+    chains = tuple(registry() if chains is None else chains)
     overlong = [c for c in chains if base.chain_steps(c) > TURNS_PER_DAY]
     if overlong:
         raise AssertionError(f"chains needing more than {TURNS_PER_DAY} steps: {overlong}")
     TABLE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    TABLE_PATH.write_text(json.dumps({"chains": [list(c) for c in chains]}, indent=1) + "\n")
+    # Only the chains that survived pruning reach the artifact (the owner's rule: the
+    # artifact carries the USEFUL actions), and they are packed: one integer per chain.
+    # The op table is the ops these chains ACTUALLY use, not the whole vocabulary: one
+    # nibble holds 15 codes and TILE_OPS has more, so a vocabulary-wide table collided
+    # codes and corrupted every chain on the way back in.
+    names = tuple(sorted({op for chain in chains for op in chain}))
+    if len(names) > (1 << base.OP_BITS) - 1:
+        raise AssertionError(f"{len(names)} ops do not fit {base.OP_BITS} bits")
+    codes = {op: i + 1 for i, op in enumerate(names)}
+    TABLE_PATH.write_text(json.dumps({"ops": list(names),
+                                      "chains": [base.pack_chain(c, codes)
+                                                 for c in chains]}) + "\n")
     return write_info(NAME, kind="tile_chains", file=TABLE_PATH.name,
                       contract=contract,
                       engine=base.engine_fingerprint(),
                       registry=registry_fingerprint(chains),
                       stats={"chains": len(chains),
                              "no_action": chain_name(NO_ACTION),
-                             "ops": sorted(TILE_OPS),
+                             "ops": list(names),
+                             "op_bits": base.OP_BITS,
                              "columns": base.RESOURCE_NAMES,
-                             "per_kind": {kind.value: len(chains_of_kind(kind))
-                                          for kind in CHAINS_BY_KIND}},
+                             "per_kind": {**{kind.value: len(chains_of_kind(kind))
+                                             for kind in CHAINS_BY_KIND},
+                                          "PLANT": len(CROP_CHAINS[True]) + len(CROP_CHAINS[False]),
+                                          "PLANT_ongoing": len(CROP_CHAINS[True]),
+                                          "PLANT_oneshot": len(CROP_CHAINS[False])}},
                       source="offline_lab.build.graph (the graph's action index)")
 
 

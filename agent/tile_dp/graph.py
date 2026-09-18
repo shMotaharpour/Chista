@@ -31,12 +31,23 @@ from typing import Iterator
 import numpy as np
 
 from agent.tile_dp.chains import (chain_name, chain_ops, contract_id,
-                                  registry_fingerprint)
+                                  fingerprint_chains, registry_fingerprint)
 from agent.tile_dp.tile_state import KEY_BITS, TileState, TileZeroCode
 
 #: Identity of the artifact contract, COMPUTED from its inputs (chains.contract_id).
 CONTRACT_ID = contract_id()
 ENGINE_TAG = CONTRACT_ID
+
+
+def _engine_part(tag: str) -> str:
+    """The engine facts of a tag, without the build/registry fingerprints.
+
+    The registry is checked separately and freshly (the table on disk is read again), so
+    comparing the whole tag here would make a builder refuse its own output: the tag was
+    stamped at import time, before this run rewrote the table.
+    """
+    return "+".join(part for part in tag.split("+")
+                    if part.startswith(("eng=", "tpd=", "pb=")))
 
 
 
@@ -113,7 +124,8 @@ class Edge:
 class TileGraph:
     """One tile's lifecycle graph: day-invariant states, one-day edges (CSR).
 
-    `edge_cost` / `edge_produce` are (n_edges, N_RESOURCE) int matrices and are
+    `chains` is the table this graph's chain ids index into (written by the builder, read
+    by the loader); `edge_cost` / `edge_produce` are (n_edges, N_RESOURCE) int matrices and are
     never netted. State `s` owns the edge slice
     [edge_offsets[s], edge_offsets[s + 1]).
     """
@@ -133,6 +145,8 @@ class TileGraph:
                                       # bracket on LABOR_HOURS, which counts
                                       # worker ops only - see chains.OP_STEPS)
     engine_tag: str
+    chains: tuple = ()
+    registry_tag: str = ""
 
     @property
     def entity(self) -> str | None:
@@ -190,10 +204,24 @@ class TileGraph:
             edge_next=self.edge_next, edge_chain=self.edge_chain,
             edge_entity=self.edge_entity, edge_cost=self.edge_cost,
             edge_produce=self.edge_produce, edge_steps=self.edge_steps,
-            engine_tag=self.engine_tag,
-            registry=registry_fingerprint(),
+            registry=self._registry_tag(),
+            engine_tag=self._tag(),
             n_expanded=self.report.n_expanded,
             n_noop_edges=self.report.n_noop_edges)
+
+    def _registry_tag(self) -> str:
+        """The stamp of the chain table THIS graph indexes into.
+
+        The builder writes the table in the same run, so the tag must come from the chains
+        the graph carries - the loader's own fingerprint is only valid for a graph read back
+        from disk.
+        """
+        return fingerprint_chains(self.chains) if self.chains else registry_fingerprint()
+
+    def _tag(self) -> str:
+        """The engine tag with the registry part re-stamped (see `_registry_tag`)."""
+        from re import sub
+        return sub(r"reg=[0-9a-f]+", f"reg={self._registry_tag()}", self.engine_tag)
 
     @classmethod
     def load(cls, path: Path) -> "TileGraph":
@@ -206,7 +234,7 @@ class TileGraph:
         """
         data = np.load(Path(path), allow_pickle=True)
         tag = str(data["engine_tag"])
-        if tag != ENGINE_TAG:
+        if _engine_part(tag) != _engine_part(ENGINE_TAG):
             raise ValueError(f"graph engine tag {tag!r} != {ENGINE_TAG!r}; "
                              "rebuild the cache")
         registry = str(data["registry"])
