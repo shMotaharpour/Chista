@@ -62,11 +62,13 @@ class Worker:
     def cost(self) -> int:
         """What adding this worker costs the SCHEDULE, not the purse.
 
-        The WSR does not handle money: what it minimises is the number of workers, so the cost
-        rises with the index and the first two hands are free. What the day actually pays - the
-        engine's hire ladder, and how many hands were hired - is the market's business.
+        The WSR does not handle money: what it minimises is the number of workers, and the cost
+        grows with the index so that a few workers doing everything beats many doing a little.
+        What the day actually pays - the engine's hire ladder, and how many hands were hired -
+        is the market's business.
         """
-        return max(self.index - 1, 0)
+        index = self.index
+        return index * (index + 1) // 2
 
 
 @dataclass
@@ -129,12 +131,21 @@ def structural_edges(op_ids: Sequence[tuple[str, str]]) -> list[tuple[str, str]]
     return edges
 
 
-ExpansionResult = tuple[list[MinorTask], list[tuple[str, str]], list[str]]
+class Expansion(NamedTuple):
+    """One chain, expanded into the tasks a scheduler reads.
+
+    `tasks` is every op of the chain plus the PICKUP each carried op needs. `order` is the
+    (before, after) pairs the engine enforces. `same_worker` is the one worker who must do all
+    of them: a day is one cell, and the ops on a cell belong to whoever works it.
+    """
+    tasks: list[MinorTask]
+    order: list[tuple[str, str]]
+    same_worker: list[str]
 
 
 def expand_chain(ops: Sequence[str], entity: Item | None = None, cell: Cell | None = None,
                  item: Item | None = None, harvested_n: int = 1,
-                 prefix: str = "") -> ExpansionResult:
+                 prefix: str = "") -> Expansion:
     """One day's chain -> its tasks, the precedence between them, and the pairs that
     the SAME worker must do (a PICKUP and the op that consumes what it carried).
 
@@ -195,7 +206,7 @@ def expand_chain(ops: Sequence[str], entity: Item | None = None, cell: Cell | No
     for edge in structural_edges(op_ids):
         if edge not in precedence:
             precedence.append(edge)
-    return tasks, precedence, same_worker
+    return Expansion(tasks=tasks, order=precedence, same_worker=same_worker)
 
 
 # ============================================================================
@@ -348,16 +359,16 @@ class Instance:
         seen_ids = {task.id for task in minor_tasks}
         
         for index, day in enumerate(days):
-            tasks, edges, group = expand_chain(day.ops, day.entity, day.cell, day.item,
+            expansion = expand_chain(day.ops, day.entity, day.cell, day.item,
                                                prefix=f"d{index}_")
-            for task in tasks:
+            for task in expansion.tasks:
                 if task.id in seen_ids:
                     raise ValueError(f"duplicate task id {task.id!r} (day {index})")
                 seen_ids.add(task.id)
-            minor_tasks.extend(tasks)
-            precedence.extend(edges)
-            if group:
-                groups.append(group)
+            minor_tasks.extend(expansion.tasks)
+            precedence.extend(expansion.order)
+            if expansion.same_worker:
+                groups.append(expansion.same_worker)
 
         return cls(
             minor_tasks=minor_tasks,
