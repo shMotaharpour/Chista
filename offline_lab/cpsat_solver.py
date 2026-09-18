@@ -14,9 +14,9 @@ from typing import Optional
 
 from ortools.sat.python import cp_model
 
-from ..distances import manhattan
+from agent.wsr.distances import manhattan
 from agent.world.rules import hire_cost
-from ..models import (
+from agent.wsr.models import (
     CONSUME_ACTIONS,
     PRODUCE_ACTIONS,
     Instance,
@@ -31,8 +31,8 @@ from ..models import (
     Solution,
     WorkerRoute,
 )
-from ..verify import verify_solution
-from .base_config import BaseSolverConfig
+from offline_lab.verify import verify_solution
+from agent.wsr.base_config import BaseSolverConfig
 
 @dataclass
 class CpSatConfig(BaseSolverConfig):
