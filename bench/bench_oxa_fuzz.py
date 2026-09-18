@@ -112,7 +112,7 @@ def main() -> int:
 
     oracle = None
     if args.oracle:
-        from offline.cpsat_solver import CpSatConfig, cpsat_binarySearch
+        from offline_lab.cpsat_solver import CpSatConfig, cpsat_binarySearch
         oracle = CpSatConfig(time_limit_seconds=args.oracle_seconds)
 
     statuses: Counter[str] = Counter()

@@ -15,4 +15,4 @@ and nothing here reimplements the game — the engine stays the executor (R002/R
 | `prices.py` | the price function and the town's drain |
 
 Authority: `kaggle_environments.envs.kaggriculture` — every fact cites its lines. Tools
-(simulators, harness wrapper, replay agent, action-shape check) are in `offline/`.
+(simulators, harness wrapper, replay agent, action-shape check) are in `offline_lab/`.

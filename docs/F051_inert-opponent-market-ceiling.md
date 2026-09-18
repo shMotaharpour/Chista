@@ -4,7 +4,7 @@ Summary: against a PASS opponent the market saturates near 191,812 coins
 and distinct competent agents land on that ceiling exactly — tables
 measured against an inert opponent read the ceiling, not the agents.
 
-Source: offline/runner.py episodes, seed 0 (measured 2026-09-15 for
+Source: offline_lab/runner.py episodes, seed 0 (measured 2026-09-15 for
 issue #20's baseline). Evidence: v3-agent (345 lines) and
 precomputed-schedule-policy (6,872 lines) produced DIFFERENT action
 sequences (sha256 action hashes differ) and IDENTICAL rewards

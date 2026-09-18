@@ -20,7 +20,7 @@ Every number the #15 tests and docs quote comes from here:
               the SHED, and a same-turn `DROP` + `SELL` lands that turn.
 - `--layer-timing` the market layer's own p99 (issue budget ≤ 10 ms).
 
-The probe lists are the same ones `offline.fast_sim` drives for the graph
+The probe lists are the same ones `offline_lab.fast_sim` drives for the graph
 builder (R003: the simulator wraps the interpreter, it never reimplements
 it), so an engine change moves these numbers instead of hiding behind a
 hand-written table.
@@ -36,7 +36,7 @@ from kaggle_environments.envs.kaggriculture import kaggriculture as K
 from agent.greedy import greedy_action
 from agent.market_layer import MarketLayer
 from agent.belief.market import PRODUCTS, forecast, town_deltas
-from offline.fast_sim import FastSim
+from offline_lab.fast_sim import FastSim
 
 PASS = {"farmer": ["PASS"], "hands": [], "market": []}
 I0 = {item: float(K.MARKET_PARAMS[item]["I0"]) for item in PRODUCTS}

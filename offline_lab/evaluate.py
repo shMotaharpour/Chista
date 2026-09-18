@@ -3,7 +3,7 @@ r"""The arena: paired-seed evaluation of two agent versions (issue #18).
 One command answering "is this version better than that one, against whom,
 by how much, and is the difference real?":
 
-    .venv/bin/python -m offline.evaluate --a <slug-or-ref> --b <slug-or-ref> \
+    .venv/bin/python -m offline_lab.evaluate --a <slug-or-ref> --b <slug-or-ref> \
         --tier smoke|ladder|full
 
 Design (issue #18, corrections from #20's brief and addendum):
@@ -67,7 +67,7 @@ Design (issue #18, corrections from #20's brief and addendum):
   the gap opened". `--autopsy N` (default 2, 0 disables). Every number
   in every file names where it came from (R005).
 
-Scoreboard: each run appends one row to `offline/scoreboard.csv` and
+Scoreboard: each run appends one row to `offline_lab/scoreboard.csv` and
 writes the full report + records under `artifacts/evaluate/<id>/`, so
 the trajectory across milestones is visible rather than remembered.
 """
@@ -131,7 +131,7 @@ def _resolve_ref(ref: str) -> str:
     """'main' / 'agent.main:agent' / a pool slug -> a runner-side ref.
 
     Pool slugs pass through; agent-side refs become "ref:<module>:<attr>"
-    which offline.runner._load_agent imports directly from the repo (no
+    which offline_lab.runner._load_agent imports directly from the repo (no
     shim under opponents/ - the vendored tree is SHA-pinned by
     tests/test_opponents.py and must not gain entries).
     """
@@ -157,14 +157,14 @@ def _dev_split() -> tuple[list[str] | None, str]:
     """The measured dev / held-out split from #20's registry (11/5 over
     the canonical 16 - amendment A dropped the three duplicates)."""
     try:
-        from offline.pool.registry import dev_and_heldout
+        from offline_lab.pool.registry import dev_and_heldout
     except Exception:                                # noqa: BLE001 - not yet
         return None, HELD_OUT_NOTE
     dev, _held = dev_and_heldout()
     if not dev:
         return None, HELD_OUT_NOTE
     return sorted(dev), ("measured 11-dev/5-held-out split from "
-                         "offline/pool/registry.py (#20, canonical 16)")
+                         "offline_lab/pool/registry.py (#20, canonical 16)")
 
 
 def _pick_opponents(tier: str, override: str | None) -> tuple[list[str], str]:
@@ -174,7 +174,7 @@ def _pick_opponents(tier: str, override: str | None) -> tuple[list[str], str]:
         slugs = [s.strip() for s in override.split(",") if s.strip()]
         return slugs, "--opponents override"
     dev, note = _dev_split()
-    from offline.pool.loader import slugs
+    from offline_lab.pool.loader import slugs
     if tier == "full":
         return sorted(slugs(include_aliases=True)), (
             "all 19 vendored opponents incl. aliases, M5 gate - #20 "
@@ -214,7 +214,7 @@ def _run_pair(a_slug: str, b_slug: str, opp: str, seed: int,
     Two physical episodes (one per version); the opponent's seat record
     is not part of the comparison. Returns one merged paired record.
     """
-    from offline import runner as R
+    from offline_lab import runner as R
     rec_a = R.run_episode_process(a_slug, opp, seed, episode_steps, timeout_s)
     rec_b = R.run_episode_process(b_slug, opp, seed, episode_steps, timeout_s)
     sa, sb = rec_a["seats"][0], rec_b["seats"][0]
@@ -305,7 +305,7 @@ def _timed_episode_worker_code(slug: str, opp: str, seed: int,
     return (
         "import sys, json\n"
         "sys.path.insert(0, '.')\n"
-        "from offline.runner import _timed_episode_worker\n"
+        "from offline_lab.runner import _timed_episode_worker\n"
         f"rec = _timed_episode_worker({slug!r}, {opp!r}, {seed}, "
         f"{episode_steps})\n"
         "print(json.dumps(rec))\n"
@@ -315,7 +315,7 @@ def _timed_episode_worker_code(slug: str, opp: str, seed: int,
 def _timed_episode(slug: str, opp: str, seed: int,
                    episode_steps: int = 720) -> dict:
     """Serial timing run: one process, per-turn wall time for `slug`."""
-    from offline import runner as R
+    from offline_lab import runner as R
     proc = subprocess.run(
         [sys.executable, "-c",
          _timed_episode_worker_code(slug, opp, seed, episode_steps)],
@@ -371,7 +371,7 @@ def _timing_block(a_slug: str, b_slug: str, records: list[dict],
       (highest guard self-p95); the honest number the bank policy
       derives from (A4: a competing opponent took 59% of compute).
     """
-    from offline.runner import run_episode_process  # noqa: F401 - pattern only
+    from offline_lab.runner import run_episode_process  # noqa: F401 - pattern only
     lines = ["", "timing (serial, per-turn wall time; F046 floor)"]
 
     solo = {}
@@ -422,7 +422,7 @@ def _slowest_opponent(records: list[dict]) -> str:
     if best is None:
         # no guard data (abandoned run): a named default, to be replaced
         # by the measured slowest once #20's registry lands
-        from offline.pool.loader import slugs
+        from offline_lab.pool.loader import slugs
         return sorted(slugs())[0]
     return best
 
@@ -432,7 +432,7 @@ def _slowest_opponent(records: list[dict]) -> str:
 _AUTOPSY_WORKER = (
     "import sys, json\n"
     "sys.path.insert(0, '.')\n"
-    "from offline.runner import _episode_worker\n"
+    "from offline_lab.runner import _episode_worker\n"
     "rec = _episode_worker({slug!r}, {opp!r}, {seed}, {steps})\n"
     "print(json.dumps(rec))\n"
 )
@@ -451,7 +451,7 @@ def _run_autopsy(a_slug: str, opp: str, seed: int, episode_steps: int,
     vs ours, the day the gap opened. This file is the raw material - the
     readable report over it is the analysis layer's job.
     """
-    from offline import runner as R
+    from offline_lab import runner as R
 
     def _full(slug: str) -> dict:
         proc = subprocess.run(
@@ -471,7 +471,7 @@ def _run_autopsy(a_slug: str, opp: str, seed: int, episode_steps: int,
     opp0 = opp_seats.get("0", opp_seats.get(0, {}))
     opp1 = opp_seats.get("1", opp_seats.get(1, {}))
     doc = {
-        "source": "offline/evaluate.py loss autopsy (issue #18)",
+        "source": "offline_lab/evaluate.py loss autopsy (issue #18)",
         "generated_utc": datetime.now(timezone.utc).isoformat(),
         "pairing": {"a": a_slug, "b": b_slug, "opponent": opp, "seed": seed},
         "a_actions": ra.get("actions"),
@@ -666,7 +666,7 @@ def _seed_count_line(sd: float, mean: float) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
-        prog="python -m offline.evaluate",
+        prog="python -m offline_lab.evaluate",
         description="Paired-seed evaluation of two agent versions (#18).")
     ap.add_argument("--a", required=True,
                     help="version A: 'main', 'agent.main:agent', or a pool slug")

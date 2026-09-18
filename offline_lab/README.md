@@ -1,4 +1,4 @@
-# offline/
+# offline_lab/
 
 Tools that never run inside a turn: evaluation, simulation, the pool.
 
@@ -12,4 +12,4 @@ Tools that never run inside a turn: evaluation, simulation, the pool.
 | one episode, one process, per seat | `runner.py` |
 | the opponent pool | `pool/` |
 
-`offline/` may import `world/` (the definitions). `world/` never imports `offline/`.
+`offline_lab/` may import `world/` (the definitions). `world/` never imports `offline_lab/`.

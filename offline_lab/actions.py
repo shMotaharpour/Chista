@@ -1,7 +1,7 @@
 """Action-shape validation — one implementation of the truth.
 
 Promoted from `fast_sim._validate_action` (issue #20 §2.3): the
-pool guard in `offline/pool/guard.py` must shape-check vendored agents
+pool guard in `offline_lab/pool/guard.py` must shape-check vendored agents
 against the SAME contract our own agent gets, and the brief forbids
 copying a private helper. fast_sim keeps calling this; the import moves,
 the behaviour does not.

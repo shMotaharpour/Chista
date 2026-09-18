@@ -36,7 +36,7 @@ import numpy as np
 
 from agent.tile_dp import graph as G
 from agent.tile_dp.contractor import TileContractor
-from offline.build.graph import build_graph
+from offline_lab.build.graph import build_graph
 
 
 def _unpruned_build(entity: str | None):

@@ -7,10 +7,10 @@ an episode. The wrapper contains all four and turns them into LABELS:
 - `raises`: count + first traceback (an agent that raised on turn 300
   still produced 300 turns of data; how OFTEN it raises is itself a
   characterisation number);
-- `malformed`: the returned action fails offline.actions.validate_action;
+- `malformed`: the returned action fails offline_lab.actions.validate_action;
 - `slow`: per-call wall time p95 above the 1 s free turn (F046) - it
   would time out on Kaggle, so its score carries the label;
-- `abandoned`: the episode's process timeout tripped (offline.runner) -
+- `abandoned`: the episode's process timeout tripped (offline_lab.runner) -
   M1 has no in-call ceiling; the per-call one is a named TODO.
 
 The substituted action on any failure is the same PASS our own agent's
@@ -23,7 +23,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from offline.actions import validate_action
+from offline_lab.actions import validate_action
 
 # Hard per-turn ceiling for a pool agent: named TODO (R005) - the
 # number below has NO measurement behind it; the M1 bench distribution
@@ -81,7 +81,7 @@ def guarded_call(fn, obs, configuration, stats: GuardStats,
     decision is made once at load, not re-inspected per call (720 x 2
     per episode). Callers holding a bare callable may omit it; the
     signature is inspected then. The observation handed over is the
-    caller's responsibility (offline.runner passes detached per-seat
+    caller's responsibility (offline_lab.runner passes detached per-seat
     views); `copy=True` deep-copies here for callers holding a live
     view. The per-episode hard stop is the RUNNER's process timeout -
     `abandoned` there - because a thread cannot be killed.

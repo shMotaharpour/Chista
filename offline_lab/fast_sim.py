@@ -325,8 +325,8 @@ def _pass_policy(_obs: dict[str, Any]) -> dict[str, Any]:
 
 
 def _validate_action(index: int, action: Any) -> None:
-    """Dev-mode action shape check (promoted to offline/actions.py, #20)."""
-    from offline.actions import validate_action
+    """Dev-mode action shape check (promoted to offline_lab/actions.py, #20)."""
+    from offline_lab.actions import validate_action
     validate_action(index, action)
 
 

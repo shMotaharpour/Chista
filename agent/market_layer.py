@@ -21,7 +21,7 @@ Modes, and why there are two (`CHISTA_MARKET`):
 - `dump` — the baseline `spread` has to beat: every sellable item, one order,
   at hour 0, the moment it is in the shed.
 
-The measured margin between the two modes (`offline/scoreboard.csv`, ladder
+The measured margin between the two modes (`offline_lab/scoreboard.csv`, ladder
 tier) is measured with BOTH arms on the same greedy brain, so it isolates
 this layer and says nothing about how it behaves on a stronger unit policy:
 once #14's plan drives the units, that number has to be re-measured, not

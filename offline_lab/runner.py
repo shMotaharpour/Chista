@@ -79,7 +79,7 @@ def run_episode_process(slug0: str, slug1: str, seed: int,
     worker_code = (
         "import sys, json\n"
         "sys.path.insert(0, '.')\n"
-        "from offline.runner import _episode_worker\n"
+        "from offline_lab.runner import _episode_worker\n"
         f"rec = _episode_worker({slug0!r}, {slug1!r}, {seed}, "
         f"{episode_steps})\n"
         "print(json.dumps(rec))\n"
@@ -116,7 +116,7 @@ def run_episode_timed(slug0: str, slug1: str = "PASS-proxy", seed: int = 0,
     What this BUILDS: one process, one episode, the record tagged
     mode="timing" so the reporting layer can refuse on the tag. The
     per-turn readings live in `_timed_episode_worker` (used by
-    `offline.evaluate`'s timing block): `timing_solo` against
+    `offline_lab.evaluate`'s timing block): `timing_solo` against
     "PASS-proxy" and `timing_contended` against a real pool opponent,
     with the addendum's direction assertion (contended >= solo — a
     contended reading faster than solo is a broken harness, not fast
@@ -140,12 +140,12 @@ def _load_agent(slug: str):
 
     - "PASS-proxy": the built-in PASS policy;
     - "chista-m1": OUR agent (the sweep/baseline subject, main's
-      offline/pool/sweep.py slugs it); kept from main — the arena
+      offline_lab/pool/sweep.py slugs it); kept from main — the arena
       rebase must not drop it;
     - "ref:<module>:<attr>": an in-repo agent (issue #18 --a/--b refs);
-    - otherwise: a vendored pool slug via offline.pool.loader.
+    - otherwise: a vendored pool slug via offline_lab.pool.loader.
     """
-    from offline.pool.loader import LoadedAgent, load
+    from offline_lab.pool.loader import LoadedAgent, load
 
     if slug == "PASS-proxy":
         return LoadedAgent(slug="PASS-proxy", fn=_pass_agent,
@@ -185,12 +185,12 @@ def _episode_worker(slug0: str, slug1: str, seed: int,
     per-turn action dicts and each seat's money series - used only by
     single-episode re-runs, never in the bulk sweep (record size).
     """
-    from offline.pool.guard import guarded_call, GuardStats
+    from offline_lab.pool.guard import guarded_call, GuardStats
 
     agents = {0: _load_agent(slug0), 1: _load_agent(slug1)}
     stats = {0: GuardStats(), 1: GuardStats()}
 
-    from offline.fast_sim import FastSim
+    from offline_lab.fast_sim import FastSim
     sim = FastSim({"episodeSteps": episode_steps, "seed": seed,
                    "weedSpawnChance": 0.005}, validate="fast")
 
@@ -241,7 +241,7 @@ def _episode_worker(slug0: str, slug1: str, seed: int,
         # the A2 self-play filter: identical sequences across the two
         # seats = strong P candidate (classify.py's pure comparison,
         # applied inside the worker per brief part 2 section 1)
-        from offline.pool.classify import classify_from_sequences
+        from offline_lab.pool.classify import classify_from_sequences
         record["class_verdict"] = classify_from_sequences(
             actions[0], actions[1], actions[0], actions[0])
     return record
@@ -257,14 +257,14 @@ def _timed_episode_worker(slug: str, opp: str, seed: int,
     A4-honest number). The caller tags mode/reading and enforces the
     direction assertion (contended >= solo).
     """
-    from offline.pool.guard import guarded_call, GuardStats
+    from offline_lab.pool.guard import guarded_call, GuardStats
 
     me = _load_agent(slug)
     other = _load_agent(opp)
     stats_me = GuardStats()
     stats_other = GuardStats()
 
-    from offline.fast_sim import FastSim
+    from offline_lab.fast_sim import FastSim
     sim = FastSim({"episodeSteps": episode_steps, "seed": seed,
                    "weedSpawnChance": 0.005}, validate="fast")
 

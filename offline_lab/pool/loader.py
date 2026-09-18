@@ -37,7 +37,7 @@ def slugs(include_aliases: bool = False) -> list[str]:
                        if p.is_dir() and (p / "agent.py").is_file())
     if include_aliases:
         return all_slugs
-    from offline.pool.registry import DUPLICATE_OF
+    from offline_lab.pool.registry import DUPLICATE_OF
     return [s for s in all_slugs if s not in DUPLICATE_OF]
 
 

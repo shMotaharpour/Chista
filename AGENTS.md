@@ -9,7 +9,7 @@
 - The submission is `agent/`, self-contained: everything the entry point loads
   lives inside it (`agent/world/` for the definitions, `agent/tile_dp/models/` for
   the model artifacts, and one folder per layer). Nothing inside `agent/` may import
-  from outside it. `offline/` and `tests/` import `agent/` as they need, and the
+  from outside it. `offline_lab/` and `tests/` import `agent/` as they need, and the
   builders write their artifacts into `agent/`.
 
 ## Findings & rules files (hard rules — always follow)
@@ -57,19 +57,19 @@ Python 3.11 venv at `.venv/`, CPU-only PyTorch, built from `requirements.txt`:
 `requirements.txt` lists the core stack (kaggle-environments, ortools, scipy,
 torch CPU) plus analysis/plotting extras.
 
-## Game environment access — `offline/`
+## Game environment access — `offline_lab/`
 
-All interaction with the game goes through the wrappers in `offline/` (see
-`offline/README.md`). `world/` is the reference of definitions and holds no tools.
+All interaction with the game goes through the wrappers in `offline_lab/` (see
+`offline_lab/README.md`). `world/` is the reference of definitions and holds no tools.
 Do not call `kaggle_environments` or the interpreter ad hoc elsewhere; import one of
 the two paths:
 
-- **`offline.kaggle_env`** — the full, official path. Real harness
+- **`offline_lab.kaggle_env`** — the full, official path. Real harness
   (`make()`), any configuration, agents passed at call time, HTML replay
   via the environment's own `render()`. Outputs go to `artifacts/replays/`
   (gitignored, in-repo) unless another `output_path` is passed. Use for
   submission-style evaluation and replays.
-- **`offline.fast_sim`** — the fast path. `FastSim` drives
+- **`offline_lab.fast_sim`** — the fast path. `FastSim` drives
   `kaggriculture.interpreter()` directly on structify-cloned state:
   `step()` for single turns, `run()` for episodes, `clone()`/`what_if()`
   for hypothetical branches (DP/MDP), and `run_parallel()` for multi-core
@@ -86,15 +86,15 @@ wrong.
 
 **The arena** — the evaluation loop that plays our agent against the vendored
 competitors in `opponents/` over paired seeds, and reports win rate and coin
-margin. It is `offline/evaluate.py` (issue #18) driving `offline/pool/`
+margin. It is `offline_lab/evaluate.py` (issue #18) driving `offline_lab/pool/`
 (issue #20).
 
-`offline/evaluate.py` exists (issue #18): paired-seed comparison of two
+`offline_lab/evaluate.py` exists (issue #18): paired-seed comparison of two
 versions, paired coin margin as the development signal and win rate against
 the pool as the ship gate, ties counted explicitly, loss autopsy, a measured
 seed-count line, and a serial `--timing` path for the F046 budget. Opponent
 selection consumes the measured dev/held-out split from
-`offline/pool/registry.py` (#20: 11 dev / 5 held-out over the canonical 16 —
+`offline_lab/pool/registry.py` (#20: 11 dev / 5 held-out over the canonical 16 —
 amendment A dropped 3 byte-identical duplicates); the sorted-prefix fallback
 fires only if the registry module is missing, and every report names which
 selection ran. The ship gate's win rate is seat-0-only (measured seat effect

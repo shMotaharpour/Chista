@@ -26,7 +26,7 @@ from typing import Any
 from kaggle_environments import make
 from kaggle_environments.envs.kaggriculture import kaggriculture as K
 
-from offline.fast_sim import FastSim
+from offline_lab.fast_sim import FastSim
 
 PASS_ACTION: dict[str, Any] = {"farmer": ["PASS"], "hands": [], "market": []}
 

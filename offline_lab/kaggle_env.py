@@ -6,7 +6,7 @@ configuration and agents supplied at call time, then renders the game to an
 HTML file through the environment's own render() method.
 
 This is the slow, official path — use it for submission-style evaluation
-and replays. For bulk simulation (DP/MDP/RL), use `offline.fast_sim` instead
+and replays. For bulk simulation (DP/MDP/RL), use `offline_lab.fast_sim` instead
 (per R003; measured on a 720-step season: 1.785 s/episode here vs 0.035 s in
 `fast_sim`, i.e. 50.6x — reproduce with bench/bench_paths.py).
 """

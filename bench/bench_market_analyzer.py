@@ -1,6 +1,6 @@
 """The measurements behind `belief/`'s docstrings, reproducible from a checkout.
 
-Run from the repository root (dev mode, seed 11, `offline.fast_sim`):
+Run from the repository root (dev mode, seed 11, `offline_lab.fast_sim`):
 
     .venv/bin/python -m bench.bench_market_analyzer [days]
 
@@ -29,7 +29,7 @@ import time
 import numpy as np
 
 from kaggle_environments.envs.kaggriculture import kaggriculture as K
-from offline.fast_sim import FastSim
+from offline_lab.fast_sim import FastSim
 from agent.world.prices import price_of, price_vec
 from agent.world.vocabulary import G_IX, GOODS, MAX_ORDERS, SHED_ACCESS, SHED_CAP
 

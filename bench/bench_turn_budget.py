@@ -5,7 +5,7 @@ Run from the repo root:
     .venv/bin/python -m bench.bench_turn_budget [seeds]
 
 Plays the agent spine against `random` on the official path
-(offline.kaggle_env.run_episode), records every turn's self_ms and prints
+(offline_lab.kaggle_env.run_episode), records every turn's self_ms and prints
 the p50/p95/p99/max table plus the bank draw. Acceptance (#9): bank
 drawn = 0 s, max <= 400 ms; this table is the baseline later milestones
 compare against, and SAFETY / FLOOR_S for the bank policy derive from it
@@ -34,7 +34,7 @@ from agent.main import agent
 
 
 def bench(seeds: int = 3) -> int:
-    from offline.kaggle_env import run_episode
+    from offline_lab.kaggle_env import run_episode
 
     all_ms: list[float] = []
     first_turns: list[float] = []

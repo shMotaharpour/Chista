@@ -7,7 +7,7 @@ tile the unit stands on, a market order is applied to the market, and neither ca
 the other's job. An action whose precondition does not hold is a **silent no-op** —
 the engine returns without a word (:313).
 
-(`offline/actions.py` is a different file: the action-shape validator the pool
+(`offline_lab/actions.py` is a different file: the action-shape validator the pool
 guard uses. This one is the reference.)
 """
 

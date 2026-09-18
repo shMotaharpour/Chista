@@ -10,7 +10,7 @@ wheat is both the FEED input and the WHEAT crop's product.
 
 This module is what the runtime loads: `TileGraph.load(path)` and the queries over
 it. The BUILD is not here — it drives the simulator and lives offline
-(`offline/build/graph.py`), because the submission is `agent/` and a builder is not
+(`offline_lab/build/graph.py`), because the submission is `agent/` and a builder is not
 part of it. The artifact it writes is `agent/tile_dp/models/graph_tile_lifecycle.npz`.
 
 Hossein's age conventions, enforced by the decode that labels every edge.

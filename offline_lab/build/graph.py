@@ -2,7 +2,7 @@
 
 Run from the repo root:
 
-    .venv/bin/python -m offline.build.graph
+    .venv/bin/python -m offline_lab.build.graph
 
 Writes `tile_dp/models/graph_tile_lifecycle.npz` (the merged graph) and
 `agent/tile_dp/models/build_report.json`, then reloads the written file to prove the
@@ -10,7 +10,7 @@ round-trip works. The artifact is a tracked model file: it is committed, and thi
 builder is the only thing that writes it.
 
 It lives outside `agent/` on purpose: it drives the simulator
-(`offline/fast_sim.FastSim`), the submission never imports it, and the runtime reads
+(`offline_lab/fast_sim.FastSim`), the submission never imports it, and the runtime reads
 the artifact with `agent.tile_dp.graph.TileGraph.load`.
 
 Simulation inheritance (decision 6): a node is expanded with the SAME sim that
@@ -49,7 +49,7 @@ import numpy as np
 
 from kaggle_environments.envs.kaggriculture import kaggriculture as K
 
-from offline.fast_sim import FastSim
+from offline_lab.fast_sim import FastSim
 
 import agent.tile_dp as _tile_dp
 from agent.tile_dp.chains import (CONSTRUCTIVE_OPS, ENTITY_CODE, ENTITY_NAMES,
