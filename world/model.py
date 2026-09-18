@@ -20,6 +20,11 @@ makes fertiliser, FERTILIZE eats it). What *is* two numbers is their market pric
 the engine quotes a buy at `price(I-1)` and pays a sale at `price(I)` (F033), and
 that spread belongs to the market layer, not to this column space.
 
+Three vocabularies, in the order a plan is built: a **tile chain** names `TILE_OPS`
+and is all the contractor prices; the **day compiler** inserts the shed trips
+(`SHED_OPS`) around it and spends the moves; a **worker** executes `WORKER_OPS` —
+the tile ops plus those trips, the moves and the pass.
+
 The division of labour that answers "how does the layer above know": the **vector
 is the ledger** (what a day costs and makes, which is what the DP prices), the
 **chain's op list is the schedule** (which op must have what in the bag, and in
@@ -92,15 +97,27 @@ MOVE_DELTA: Mapping[str, tuple[int, int]] = {
 MARKET_ACTIONS: tuple[str, ...] = ("SELL", "BUY_SEED", "BUY_PRODUCT",
                                    "BUY_ANIMAL", "HIRE", "BUY_LAND")
 
-#: Worker ops: what a unit spends a turn on. No market op appears here — the
-#: contractor and the WSR never touch the market.
-WORKER_OPS: tuple[str, ...] = ("PLANT", "WATER", "FERTILIZE", "HARVEST", "DIG",
-                               "BUILD", "PLACE", "FEED", "CARE",
-                               "COLLECT_FERTILIZER")
+#: TILE ops: what a tile chain names, and all the contractor prices. One tile, so
+#: it never leaves it: no shed trip, no move. No market op either — the contractor
+#: and the WSR never touch the market.
+TILE_OPS: tuple[str, ...] = ("PLANT", "WATER", "FERTILIZE", "HARVEST", "DIG",
+                             "BUILD", "PLACE", "FEED", "CARE",
+                             "COLLECT_FERTILIZER")
 
-#: What a chain may name: worker ops + the market buys it needs + the day pass.
-CHAIN_OPS: tuple[str, ...] = WORKER_OPS + ("BUY_SEED", "BUY_PRODUCT",
-                                           "BUY_ANIMAL", "NO_ACT")
+#: The shed trips. NOT tile ops: a tile chain never names one (the compiler refuses
+#: it), and the WSR's worker chain gets them from `day/routing.py`, which inserts a
+#: PICKUP before an op whose good must be carried (`CARRIES`) and a DROP after the
+#: op that fills the bag (`PRODUCES`). This is the difference between the
+#: contractor's vocabulary and a worker's.
+SHED_OPS: tuple[str, ...] = ("PICKUP", "DROP")
+
+#: A worker's complete vocabulary in a turn: the tile ops, the shed trips the
+#: compiler adds, the four moves and the pass. What a unit can actually execute.
+WORKER_OPS: tuple[str, ...] = TILE_OPS + SHED_OPS + MOVEMENT + ("PASS",)
+
+#: What a *tile chain* may name: tile ops + the market buys it needs + the day pass.
+CHAIN_OPS: tuple[str, ...] = TILE_OPS + ("BUY_SEED", "BUY_PRODUCT",
+                                         "BUY_ANIMAL", "NO_ACT")
 
 #: The two directions an upper layer reads a good in.
 #:
@@ -135,6 +152,7 @@ def _names(cls_name: str, values) -> Enum:
     return Enum(cls_name, {str(v): str(v) for v in values}, type=str, module=__name__)
 
 
+TileOp = _names("TileOp", TILE_OPS)
 Good = _names("Good", GOODS)
 Crop = _names("Crop", CROPS)
 Species = _names("Species", ANIMALS)
@@ -147,6 +165,7 @@ Result = _names("Result", RESULT_VECTORS)
 TileKind = _names("TileKind", TILE_KINDS)
 Action = _names("Action", ACTIONS)
 WorkerOp = _names("WorkerOp", WORKER_OPS)
+ShedOp = _names("ShedOp", SHED_OPS)
 MarketAction = _names("MarketAction", MARKET_ACTIONS)
 ChainOp = _names("ChainOp", CHAIN_OPS)
 Move = _names("Move", MOVEMENT)

@@ -104,14 +104,20 @@ def test_the_graph_vector_is_the_union_in_the_stored_order() -> None:
 
 def test_the_market_and_the_worker_do_not_share_ops() -> None:
     """No market action is a worker op; the contractor and the WSR stay out of the market."""
-    assert not (set(M.WORKER_OPS) & set(M.MARKET_ACTIONS))
+    assert not (set(M.TILE_OPS) & set(M.MARKET_ACTIONS))
+    # The contractor's vocabulary and a worker's differ by exactly the shed trips,
+    # the moves and the pass: a tile chain can never name a PICKUP or a DROP.
+    assert not (set(M.SHED_OPS) & set(M.CHAIN_OPS)), "a tile chain cannot name a shed trip"
+    assert set(M.WORKER_OPS) == (set(M.TILE_OPS) | set(M.SHED_OPS)
+                                | set(M.MOVEMENT) | {"PASS"})
+    assert set(M.TILE_OPS) == set(M.WORKER_OPS) - set(M.SHED_OPS) - set(M.MOVEMENT) - {"PASS"}
     assert {"SELL", "BUY_LAND", "HIRE"} <= set(M.MARKET_ACTIONS)
     assert {"BUY_SEED", "BUY_PRODUCT", "BUY_ANIMAL"} <= set(M.MARKET_ACTIONS)
     for op in sorted(set(M.CHAIN_OPS) - {"NO_ACT"}):
         if op.startswith("BUY_"):
             assert op in M.MARKET_ACTIONS, f"{op} is a market op"
         else:
-            assert op in M.WORKER_OPS, f"{op} is not a worker op"
+            assert op in M.TILE_OPS, f"{op} is not a tile op"
 
 
 def test_the_action_vocabulary_matches_the_engine() -> None:

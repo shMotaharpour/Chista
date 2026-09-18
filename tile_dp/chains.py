@@ -18,7 +18,7 @@ appear on both sides - wheat is the FEED input and the WHEAT crop's product - an
 the two sides are never netted nor collapsed into one vector.
 
 Cost model (contract, 2026-09-14):
-  * labour = number of ops that are in WORKER_OPS (allow-list below). Market
+  * labour = number of ops that are in TILE_OPS (allow-list below). Market
     buys are the market's action and a PICKUP is a carry of the day
     layer, so both cost 0 hours: supplying the inputs (seed / fertilizer /
     wheat / animal) is the SECRETARY layer's job.
@@ -130,7 +130,7 @@ N_RESOURCE = len(RESOURCE_NAMES)
 # step 6), so a chain cannot name an op the model does not have.
 from world.model import CHAIN_OPS as _CHAIN_OPS
 from world.model import MARKET_ACTIONS as _MARKET_ACTIONS
-from world.model import WORKER_OPS as _WORKER_OPS
+from world.model import TILE_OPS as _TILE_OPS
 
 NO_ACT = "NO_ACT"
 # Market ops a chain may name: the buys it needs. The market's other actions
@@ -138,7 +138,7 @@ NO_ACT = "NO_ACT"
 MARKET_OPS: tuple[str, ...] = tuple(sorted(set(_MARKET_ACTIONS) & set(_CHAIN_OPS)))
 # Worker ops = the only ops that cost hours: market buys are the market's action
 # and a PICKUP is a carry of the day layer, so both cost 0 worker hours.
-WORKER_OPS: frozenset[str] = frozenset(_WORKER_OPS)
+TILE_OPS: frozenset[str] = frozenset(_TILE_OPS)
 # Every op a chain may name.
 ALL_OPS: frozenset[str] = frozenset(_CHAIN_OPS)
 
@@ -334,8 +334,9 @@ def chain_id_of(ops: tuple[str, ...]) -> int:
 
 
 def _worker_hours(ops: tuple[str, ...]) -> int:
-    """Worker hours of a chain: only ops in WORKER_OPS cost hours."""
-    return sum(1 for op in ops if op in WORKER_OPS)
+    """Worker hours of a chain: only ops in TILE_OPS cost hours. A shed trip is
+    the WSR's to schedule, not the contractor's to price."""
+    return sum(1 for op in ops if op in TILE_OPS)
 
 
 def chain_labor(ops: tuple[str, ...]) -> int:
