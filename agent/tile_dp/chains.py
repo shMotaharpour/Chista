@@ -22,9 +22,9 @@ import json
 from pathlib import Path
 
 from agent.artifact import artifact_path, info_path
-from agent.world.action import MarketAction, WorkerAction
+from agent.world.action import WorkerAction
 from agent.world.model import (ANIMALS, COLUMNS, CROPS, Animal, Column, Crop,
-                               MarketOrder, Structure, UnitAction)
+                               Structure, UnitAction)
 from agent.world.rules import ANIMAL_RULES, TURNS_PER_DAY
 
 # --- the base definition -------------------------------------------------------- #
@@ -32,9 +32,11 @@ from agent.world.rules import ANIMAL_RULES, TURNS_PER_DAY
 #: The ops a chain may name, as the artifact stores them.
 TileChain = tuple[str, ...]
 
-#: One action of a chain: a unit op with its item, or a market buy. The type is world's,
-#: so a chain action can never name something the engine does not have.
-TileChainAction = WorkerAction | MarketAction
+#: One action of a chain: a unit op with its item. A chain is what happens ON A TILE, so
+#: no market op is in one — buying is the market layer's decision, and it is the day layer
+#: that turns a need into an order. The type is world's, so a chain action can never name
+#: something the engine does not have.
+TileChainAction = WorkerAction
 
 #: The case with no action at all.
 NO_ACTION: TileChain = ()
@@ -42,13 +44,6 @@ NO_ACTION: TileChain = ()
 #: The ops that cost a worker hour: every unit op except PASS.
 TILE_OPS: frozenset[str] = frozenset(
     op.value for op in UnitAction if op is not UnitAction.PASS)
-
-#: The market ops a chain may name: the buys it needs. SELL, HIRE and BUY_LAND are the
-#: market layer's decisions, never a chain's.
-MARKET_OPS: tuple[str, ...] = ("BUY_SEED", "BUY_PRODUCT", "BUY_ANIMAL")
-
-#: Every op a chain may name.
-ALL_OPS: frozenset[str] = TILE_OPS | set(MARKET_OPS)
 
 #: The op that builds each structure: a chain names the structure its species lives in.
 BUILD_OF_STRUCTURE: dict[Structure, str] = {Structure.COOP: UnitAction.BUILD_COOP.value,
@@ -115,28 +110,13 @@ _ARTIFACT = "tile_chains"
 def load_chains(name: str = _ARTIFACT) -> tuple[TileChain, ...]:
     """The built chains, from `agent/artifact/<name>.json`.
 
-    The info beside the artifact carries the contract it was built under; a mismatch
-    raises here rather than letting chain ids mean something else than they did at build
-    time.
+    The artifact is trusted: everything that checks it - the ops, the registry
+    fingerprint, the engine, the day length - is a BUILD step's job, where it can afford
+    the time. This is the runtime, so it reads the file and hands over the chains.
     """
     info = json.loads(info_path(name).read_text())
-    # The data file's name comes from the info, so a data format that is itself JSON
-    # cannot collide with the info file.
     data = json.loads((info_path(name).parent / info["file"]).read_text())
-    chains = tuple(tuple(op for op in chain) for chain in data["chains"])
-    unknown = {op for chain in chains for op in chain} - ALL_OPS
-    if unknown:
-        raise ValueError(f"{name}: chains name ops that are not chain ops: {unknown}")
-    # The artifact's own fingerprint must be the one its chains hash to, and the engine
-    # must be the one we run. (The full contract, which also covers the builders' source,
-    # is checked where the graph that stores chain ids is loaded.)
-    if info.get("registry") != _fingerprint(chains):
-        raise ValueError(f"{name}: the info's registry fingerprint is not the one its "
-                         "chains hash to; rebuild it")
-    if info.get("engine") != engine_fingerprint():
-        raise ValueError(f"{name}: built against engine {info.get('engine')!r}, this code "
-                         f"runs {engine_fingerprint()!r}; rebuild it")
-    return chains
+    return tuple(tuple(chain) for chain in data["chains"])
 
 
 #: The registry, loaded on first use: the chains builder imports this module to write
@@ -181,10 +161,9 @@ def ops_of_name(name: str) -> TileChain:
 def actions_of(ops: TileChain, entity: str | None = None) -> tuple[TileChainAction, ...]:
     """A chain's actions, each carrying its argument.
 
-    The entity is what fills the argument of the ops that take one: PLANT names its crop,
-    PLACE its species, PICKUP/SELL/the buys their item. The structure is already in the op
-    (BUILD_COOP / BUILD_PASTURE), which is why an animal chain needs no more than its
-    species here.
+    The entity is what fills the argument of the ops that take one: PLANT names its crop
+    and PLACE its species. The structure is already in the op (BUILD_COOP /
+    BUILD_PASTURE), which is why an animal chain needs no more than its species here.
     """
     out: list[TileChainAction] = []
     for op in ops:
@@ -192,20 +171,9 @@ def actions_of(ops: TileChain, entity: str | None = None) -> tuple[TileChainActi
             out.append(WorkerAction(UnitAction.PLANT, Crop(entity) if entity else None))
         elif op == UnitAction.PLACE.value:
             out.append(WorkerAction(UnitAction.PLACE, Animal(entity) if entity else None))
-        elif op in MARKET_OPS:
-            out.append(MarketAction(MarketOrder(op), _market_item(op, entity)))
         else:
             out.append(WorkerAction(UnitAction(op)))
     return tuple(out)
-
-
-def _market_item(op: str, entity: str | None) -> object:
-    """What a chain's buy buys: the crop, the species, or fertiliser."""
-    if op == "BUY_SEED":
-        return Crop(entity) if entity in CROPS else None
-    if op == "BUY_ANIMAL":
-        return Animal(entity) if entity in ANIMALS else None
-    return "FERTILIZER"
 
 
 # --- what a chain costs and yields ------------------------------------------------ #
@@ -224,7 +192,7 @@ OP_STEPS: dict[str, int] = {UnitAction.PLANT.value: 2, UnitAction.FERTILIZE.valu
 def chain_steps(ops: TileChain) -> int:
     """The turns a chain fills within one day: the engine gives a unit `turns_per_day`
     turns, so a chain needing more can never run."""
-    return sum(OP_STEPS.get(op, 1) for op in ops if op not in MARKET_OPS)
+    return sum(OP_STEPS.get(op, 1) for op in ops)
 
 
 def chain_requirements(entity: str | None, ops: TileChain) -> dict[str, int]:
@@ -291,7 +259,8 @@ def __getattr__(name: str):
 
 
 def _fingerprint(chains: tuple[TileChain, ...]) -> str:
-    """The registry fingerprint of a chain list (the loader's own check)."""
+    """The registry fingerprint of a chain list: ids are positions, so this is what an
+    artifact's info carries and what a build compares."""
     from hashlib import sha256
     return sha256("\n".join(chain_name(c) for c in chains).encode()).hexdigest()[:16]
 

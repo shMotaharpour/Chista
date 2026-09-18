@@ -18,9 +18,9 @@ from pathlib import Path
 
 from agent.artifact import artifact_path, write_info
 from agent.tile_dp import chains as base
-from agent.tile_dp.chains import (ALL_OPS, ANIMAL_RES, BUILD_OF_STRUCTURE, MARKET_OPS,
-                                  NO_ACTION, PRODUCT_RES, SEED_RES, TILE_OPS,
-                                  chain_name, entity_code_of, engine_fingerprint)
+from agent.tile_dp.chains import (ANIMAL_RES, BUILD_OF_STRUCTURE, NO_ACTION, PRODUCT_RES,
+                                  SEED_RES, TILE_OPS, chain_name, entity_code_of,
+                                  engine_fingerprint)
 from agent.world.model import (ANIMALS, CROPS, Column, Structure, TileKind, UnitAction)
 from agent.world.rules import ANIMAL_RULES, CROP_RULES, TURNS_PER_DAY
 from agent.world.tile import crop_age_origin
@@ -173,15 +173,28 @@ def _harvest_min_age(crop: str) -> int:
 
 
 def domain_ok(ops: tuple[str, ...], entity: str) -> bool:
-    """False when `entity` must not run `ops`: a crop never runs an animal op, an animal
-    never plants, and a structure must be the one the species lives in."""
+    """False when `entity` must not run `ops`.
+
+    A crop never runs an animal op and an animal never plants. A structure must be the one
+    the species lives in - with one exception, the engine's own rule: BUILD_COOP needs an
+    EMPTY tile, so changing a barn into a coop is only possible by DIGGING it first
+    (kaggriculture.py:493-503). A chain that digs and then builds the other structure is
+    therefore legal, and a chain that builds it out of a standing one is not.
+    """
     ops_set = set(ops)
     if entity in ANIMALS:
         if ops_set & CROP_ONLY_OPS:
             return False
         structure = ANIMAL_RULES[entity]["structure"]
-        return not (ops_set & (set(BUILD_OF_STRUCTURE.values())
-                               - {BUILD_OF_STRUCTURE[structure]}))
+        other = set(BUILD_OF_STRUCTURE.values()) - {BUILD_OF_STRUCTURE[structure]}
+        if not ops_set & other:
+            return True
+        # a structure change needs the DIG that empties the tile first, and the build must
+        # come after it
+        if UnitAction.DIG.value not in ops:
+            return False
+        return ops.index(BUILD_OF_STRUCTURE[structure]) > ops.index(UnitAction.DIG.value) \
+            if BUILD_OF_STRUCTURE[structure] in ops else True
     return not (ops_set & ANIMAL_ONLY_OPS)
 
 
@@ -235,8 +248,7 @@ def main() -> int:
                       registry=registry_fingerprint(chains),
                       stats={"chains": len(chains),
                              "no_action": chain_name(NO_ACTION),
-                             "ops": sorted(ALL_OPS),
-                             "market_ops": sorted(MARKET_OPS),
+                             "ops": sorted(TILE_OPS),
                              "columns": base.RESOURCE_NAMES,
                              "steps_per_chain": {chain_name(c): base.chain_steps(c)
                                                  for c in chains}},

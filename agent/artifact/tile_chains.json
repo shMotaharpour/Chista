@@ -2,7 +2,7 @@
   "name": "tile_chains",
   "kind": "tile_chains",
   "file": "tile_chains.data.json",
-  "contract": "tile-dp/reg=98682fbb06d60f5a+eng=a2278746+tpd=24+pb=30+chn=7762de9d",
+  "contract": "tile-dp/reg=98682fbb06d60f5a+eng=a2278746+tpd=24+pb=30+chn=a2e55be5",
   "engine": "a2278746",
   "registry": "98682fbb06d60f5a",
   "stats": {
@@ -11,9 +11,6 @@
     "ops": [
       "BUILD_COOP",
       "BUILD_PASTURE",
-      "BUY_ANIMAL",
-      "BUY_PRODUCT",
-      "BUY_SEED",
       "CARE",
       "COLLECT_FERTILIZER",
       "DIG",
@@ -29,11 +26,6 @@
       "SOUTH",
       "WATER",
       "WEST"
-    ],
-    "market_ops": [
-      "BUY_ANIMAL",
-      "BUY_PRODUCT",
-      "BUY_SEED"
     ],
     "columns": [
       "LABOR",
@@ -137,5 +129,5 @@
     }
   },
   "source": "offline_lab.build.chains:registry",
-  "created_utc": "2026-09-18T14:48:34Z"
+  "created_utc": "2026-09-18T15:01:28Z"
 }
