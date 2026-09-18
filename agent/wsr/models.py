@@ -100,6 +100,35 @@ class Solution:
 DayOnCell = NamedTuple("DayOnCell", [("ops", Sequence[str]), ("cell", Cell),
                                      ("entity", Optional[Item]), ("item", Optional[Item])])
 
+#: Op pairs whose order the engine enforces whatever the entity, because the first op brings
+#: the thing the second one acts on into existence. The order of the daily acts - fertilise,
+#: water, harvest - is NOT here: those commute for an ongoing crop and for an animal.
+STRUCTURAL_ORDER: tuple[tuple[str, str], ...] = (
+    ("BUILD_COOP", "PLACE"),
+    ("BUILD_PASTURE", "PLACE"),
+    ("PLACE", "FEED"),
+    ("PLANT", "WATER"),
+)
+
+def structural_edges(op_ids: Sequence[tuple[str, str]]) -> list[tuple[str, str]]:
+    """The order the engine enforces whatever the entity, as edges between task ids.
+
+    For each pair the engine cares about, an op is linked to the FIRST later op of the wanted
+    kind - which is what "the planting's own water" means in `WATER, HARVEST, PLANT, WATER`:
+    the first water belongs to the crop being harvested, the second to the one just planted.
+    """
+    edges: list[tuple[str, str]] = []
+    for before, after in STRUCTURAL_ORDER:
+        for index, (name, task_id) in enumerate(op_ids):
+            if name != before:
+                continue
+            for later_name, later_id in op_ids[index + 1:]:
+                if later_name == after:
+                    edges.append((task_id, later_id))
+                    break
+    return edges
+
+
 ExpansionResult = tuple[list[MinorTask], list[tuple[str, str]], list[str]]
 
 
@@ -119,6 +148,7 @@ def expand_chain(ops: Sequence[str], entity: Item | None = None, cell: Cell | No
     precedence: list[tuple[str, str]] = []
     same_worker: list[str] = []
     seen: dict[str, int] = {}
+    op_ids: list[tuple[str, str]] = []
     previous: Optional[str] = None
 
     def unique(name: str) -> str:
@@ -159,7 +189,12 @@ def expand_chain(ops: Sequence[str], entity: Item | None = None, cell: Cell | No
         previous = task.id
         if carried is not None:
             same_worker.append(task.id)
+        op_ids.append((name, task.id))
 
+    # a pair can be required both by the chain's own order and by the structural table
+    for edge in structural_edges(op_ids):
+        if edge not in precedence:
+            precedence.append(edge)
     return tasks, precedence, same_worker
 
 
