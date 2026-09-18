@@ -52,13 +52,14 @@ from kaggle_environments.envs.kaggriculture import kaggriculture as K
 from offline_lab.fast_sim import FastSim
 
 from agent.artifact import artifact_path, write_info
+from agent.world.model import UnitAction
 from agent.world.rules import ANIMAL_RULES, CROP_RULES
 from offline_lab.build.chains import chains_for, domain_ok
 from agent.tile_dp.chains import (CONSTRUCTIVE_OPS, ENTITY_CODE, ENTITY_NAMES,
                                   MARKET_OPS, N_RESOURCE, OP_STEPS,
                                   RESOURCE_ID, chain_id_of, chain_name, chain_ops,
-                                  chain_steps, chains_for, contract_id, cost_vector,
-                                  domain_ok, entity_code_of, entity_of_code,
+                                  chain_steps, contract_id, cost_vector,
+                                  entity_code_of, entity_of_code,
                                   engine_fingerprint, is_animal, produce_vector,
                                   registry_fingerprint)
 from agent.tile_dp.graph import (ENGINE_TAG, BuildReport, BuildSpec, ChainOutcome,
@@ -73,11 +74,10 @@ from agent.tile_dp.tile_state import (EMPTY_KIND_OF_STRUCTURE, EMPTY_KINDS,
 # EMPTY_STRUCTURE candidates are decided). Crops are absent on purpose.
 _STRUCTURE_OF = {name: K.ANIMALS[name]["structure"] for name in K.ANIMALS}
 
-# The artifact the runtime loads, inside the agent folder (AGENTS.md: the submission
-# is agent/, and the builders write their artifacts into it).
-MODEL_DIR = Path(_tile_dp.__file__).resolve().parent / "models"
-GRAPH_PATH = MODEL_DIR / "graph_tile_lifecycle.npz"
-REPORT_PATH = MODEL_DIR / "build_report.json"
+# The artifact the runtime loads: `agent/artifact/`, beside its info file (AGENTS.md:
+# the submission is agent/, and the builders write their artifacts into it).
+NAME = "tile_graph"
+GRAPH_PATH = artifact_path(NAME, ".npz")
 
 
 
@@ -552,7 +552,7 @@ def _plan(state: TileState, restrict: str | None
     plan: list[tuple[str | None, tuple[str, ...], int]] = []
     seen: set[tuple[int, tuple[str, ...]]] = set()
     for ent in _candidates(state, restrict):
-        for ops in chains_for(state.kind, age=age, ),
+        for ops in chains_for(state.kind, age=age,
                               yield_units=state.yield_units, entity=own):
             if not domain_ok(ops, ent):
                 continue         # domain filter (decision 9)

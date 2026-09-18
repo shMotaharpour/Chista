@@ -165,7 +165,7 @@ def chain_ops(chain_id: int) -> TileChain:
 
 def chain_id_of(ops: TileChain) -> int:
     """The registry id of a chain."""
-    return CHAIN_ID_OF[ops]
+    return _registry()[1][ops]
 
 
 def chain_name(ops: TileChain) -> str:
