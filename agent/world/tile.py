@@ -8,6 +8,10 @@ whether a dose is still active). It deliberately does NOT decide legality: the
 engine's handlers are the arbiter of what an op does on a tile (R003), and a table of
 "which ops work here" would be a second implementation of the game.
 
+Every name in it comes from `agent.world.model` — `TileKind`, `Crop`, `Animal`,
+`Structure`, `Product` — so a reader never sees a bare string where the world has a
+member.
+
 Day-anchored, not normalized. `born_day`, `max_lifespan_step` and
 `fertilized_until_day` are absolute engine days, exactly as the engine stores them. A
 layer that wants a day-invariant key (the DP's node) does its own normalizing on top
@@ -20,30 +24,30 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Any
 
-from agent.world.model import STRUCTURES, TILE_STATES
+from agent.world.model import (Animal, Crop, Product, Structure, TileKind)
 from agent.world.rules import ANIMAL_RULES, CROP_RULES
 
-#: The engine's tile kinds, spelled as `model.TILE_STATES` spells them.
-EMPTY, LOCKED, PLANT, WEED = "EMPTY", "LOCKED", "PLANT", "WEED"
-COOP, PASTURE = STRUCTURES
+#: The kinds that hold nothing a unit can work on.
+HOLDS_NOTHING: frozenset[TileKind] = frozenset(
+    {TileKind.EMPTY, TileKind.LOCKED, TileKind.WEED})
 
-#: What a tile holds, for a reader that only needs the coarse answer.
-HOLDS_NOTHING = (EMPTY, LOCKED, WEED)
+#: The two kinds that are a structure, and so can hold an animal.
+STRUCTURE_KINDS: frozenset[TileKind] = frozenset({TileKind.COOP, TileKind.PASTURE})
 
 #: `ANIMALS[species]["product"]`, read from the engine's table (kaggriculture.py:19).
-ANIMAL_PRODUCT: dict[str, str] = {name: ANIMAL_RULES[name]["product"]
-                                  for name in ANIMAL_RULES}
+ANIMAL_PRODUCT: dict[Animal, Product] = {
+    Animal(name): Product(spec["product"]) for name, spec in ANIMAL_RULES.items()}
 
 
 @dataclass(frozen=True)
 class Tile:
-    """One tile, decoded. `kind` is one of `model.TILE_STATES`."""
+    """One tile, decoded. `kind` is a `TileKind`."""
 
-    kind: str
+    kind: TileKind
     #: PLANT only: the crop growing here.
-    crop: str | None = None
+    crop: Crop | None = None
     #: A structure holding an animal: the species.
-    animal: str | None = None
+    animal: Animal | None = None
     #: PLANT: `planted_day`; an animal: `placed_day`. Absolute engine day.
     born_day: int | None = None
     watered_today: bool = False
@@ -74,20 +78,20 @@ class Tile:
     def decode(cls, tile: Any) -> "Tile":
         """The engine's `tiles[y][x]` as a `Tile`: `None`, `"LOCKED"`, or a dict."""
         if tile is None:
-            return cls(EMPTY)
-        if tile == LOCKED:
-            return cls(LOCKED)
+            return cls(TileKind.EMPTY)
+        if tile == TileKind.LOCKED:
+            return cls(TileKind.LOCKED)
         if not isinstance(tile, dict):
             raise TypeError(f"not an engine tile: {tile!r}")
-        kind = tile.get("kind")
-        if kind is None:
+        raw_kind = tile.get("kind")
+        if raw_kind is None:
             raise ValueError(f"an engine tile dict always carries 'kind': {tile!r}")
-        if kind not in TILE_STATES:
-            raise ValueError(f"unknown tile kind {kind!r}")
-        animal = tile.get("animal")
+        kind = TileKind(raw_kind)
+        animal = Animal(tile["animal"]) if tile.get("animal") else None
+        crop = Crop(tile["crop"]) if tile.get("crop") else None
         return cls(
             kind=kind,
-            crop=tile.get("crop"),
+            crop=crop,
             animal=animal,
             born_day=tile.get("placed_day" if animal else "planted_day",
                               tile.get("born_day")),
@@ -115,24 +119,28 @@ class Tile:
 
     @property
     def is_empty(self) -> bool:
-        return self.kind == EMPTY
+        return self.kind is TileKind.EMPTY
 
     @property
     def is_locked(self) -> bool:
-        return self.kind == LOCKED
+        return self.kind is TileKind.LOCKED
 
     @property
     def is_plant(self) -> bool:
-        return self.kind == PLANT
+        return self.kind is TileKind.PLANT
 
     @property
     def is_weed(self) -> bool:
-        return self.kind == WEED
+        return self.kind is TileKind.WEED
 
     @property
-    def structure(self) -> str | None:
+    def holds_nothing(self) -> bool:
+        return self.kind in HOLDS_NOTHING
+
+    @property
+    def structure(self) -> Structure | None:
         """The structure on the tile: its own kind, or where its animal lives."""
-        return self.kind if self.kind in STRUCTURES else None
+        return Structure(self.kind) if self.kind in STRUCTURE_KINDS else None
 
     @property
     def holds_animal(self) -> bool:
@@ -146,10 +154,10 @@ class Tile:
     # --- what it produces --------------------------------------------------- #
 
     @property
-    def product(self) -> str | None:
+    def product(self) -> Product | None:
         """What a HARVEST here yields: the crop, or the animal's product (:466-472)."""
         if self.is_plant:
-            return self.crop
+            return Product(self.crop) if self.crop is not None else None
         if self.animal is not None:
             return ANIMAL_PRODUCT[self.animal]
         return None
@@ -157,9 +165,9 @@ class Tile:
     @property
     def yield_cap(self) -> int:
         """The cap on `yield_units`: the crop's `max_yield`, the animal's `max_held`."""
-        if self.is_plant and self.crop in CROP_RULES:
+        if self.is_plant and self.crop is not None:
             return int(CROP_RULES[self.crop]["max_yield"])
-        if self.animal in ANIMAL_RULES:
+        if self.animal is not None:
             return int(ANIMAL_RULES[self.animal]["max_held"])
         return 0
 
@@ -173,11 +181,11 @@ class Tile:
 
     def describe(self) -> str:
         """One line, for a message or a report."""
-        bits = [self.kind]
+        bits = [str(self.kind)]
         if self.crop:
-            bits.append(self.crop)
+            bits.append(str(self.crop))
         if self.animal:
-            bits.append(self.animal)
+            bits.append(str(self.animal))
         if self.born_day is not None:
             bits.append(f"born={self.born_day}")
         if self.yield_units:
