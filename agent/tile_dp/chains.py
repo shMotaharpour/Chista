@@ -115,7 +115,13 @@ OP_MASK = (1 << OP_BITS) - 1
 
 
 def pack_chain(ops: tuple[str, ...], codes: dict[str, int]) -> int:
-    """A chain as one integer. Codes start at 1, so a zero nibble can only be the end."""
+    """A chain as one integer. Codes start at 1, so a zero nibble can only be the end.
+
+    The op table is 1-based on purpose: 0 is the END sentinel, so the empty chain
+    (NO_ACTION) is the only chain whose code is 0 and no real chain can be mistaken for it.
+    A vocabulary-wide table would break this - 17 ops do not fit 15 codes in one nibble -
+    which is why the table names only the ops the chains actually use.
+    """
     if len(ops) * OP_BITS >= 64:
         raise ValueError(f"chain too long to pack: {ops}")
     for op in ops:
@@ -128,7 +134,7 @@ def pack_chain(ops: tuple[str, ...], codes: dict[str, int]) -> int:
 
 
 def unpack_chain(value: int, names: tuple[str, ...]) -> TileChain:
-    """The ops of a packed chain."""
+    """The ops of a packed chain, stopping at the END sentinel (a zero nibble)."""
     ops = []
     while value:
         code = value & OP_MASK
@@ -148,8 +154,6 @@ def load_chains(name: str = _ARTIFACT) -> tuple[TileChain, ...]:
     """
     info = json.loads(info_path(name).read_text())
     data = json.loads((info_path(name).parent / info["file"]).read_text())
-    if "ops" not in data:       # a table written before packing: plain op lists
-        return tuple(tuple(chain) for chain in data["chains"])
     names = tuple(data["ops"])
     return tuple(unpack_chain(int(v), names) for v in data["chains"])
 

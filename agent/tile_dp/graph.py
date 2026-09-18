@@ -243,6 +243,10 @@ class TileGraph:
                 f"artifact built with chain registry {registry!r}, this code has "
                 f"{registry_fingerprint()!r}: chain ids shifted, rebuild it")
         entity = str(data["entity"]) or None
+        # Keep the stamp the artifact carries: a graph read back and saved again must stamp
+        # the table it indexes into, not whatever the loader's own registry happens to be
+        # (its `chains` field is empty after a load, since the table lives in its own file).
+
         keys = data["state_keys"]
         kinds: dict[str, int] = {}
         for key in keys:
@@ -251,6 +255,7 @@ class TileGraph:
         spec = BuildSpec(entity=entity)
         return cls(
             spec=spec,
+            registry_tag=registry,
             report=BuildReport(spec=spec, n_states=int(data["n_states"]),
                                n_edges=int(data["edge_offsets"][-1]),
                                n_expanded=int(data["n_expanded"]),
