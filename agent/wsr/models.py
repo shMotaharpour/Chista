@@ -12,7 +12,7 @@ fed, watered and harvested. Imposing the order everywhere would forbid days that
 
 from __future__ import annotations
 from dataclasses import dataclass, field
-from typing import NamedTuple, Optional
+from typing import NamedTuple, Optional, Sequence
 
 from agent.world.action import Item, item_of
 from agent.world.action_rules import CARRIES
@@ -94,6 +94,11 @@ class Solution:
 # ============================================================================
 # 2. Major Task Definitions & Expansion Logic
 # ============================================================================
+
+#: A day's work: a chain of the DP's registry, the cell it runs on, and the entity standing
+#: there (the crop or animal whose rules decide whether the op order matters).
+DayOnCell = NamedTuple("DayOnCell", [("ops", Sequence[str]), ("cell", Cell),
+                                     ("entity", Optional[Item]), ("item", Optional[Item])])
 
 ExpansionResult = tuple[list[MinorTask], list[tuple[str, str]], list[str]]
 
@@ -286,8 +291,8 @@ class Instance:
         cls,
         *,
         workers: list[Worker],
+        days: Sequence[DayOnCell] = (),
         standalone_minor_tasks: Optional[list[MinorTask]] = None,
-        major_tasks: Optional[list[MajorTask]] = None,
         explicit_precedence: Optional[list[tuple[str, str]]] = None,
         explicit_single_worker_groups: Optional[list[list[str]]] = None,
         warehouse_stock: Optional[dict[Item, int]] = None,
@@ -295,9 +300,11 @@ class Instance:
         clct_deadline: Optional[int] = None,
         worker_pool_size: Optional[int] = None,
     ) -> "Instance":
-        """
-        Factory method to compile major tasks and minor tasks into a unified Instance.
-        Replaces the old `instance_compiler.py`.
+        """A day's work -> the instance a scheduler reads.
+
+        A day is one chain of the DP's registry on one cell, so the caller passes the days and
+        the tasks come out of them; `standalone_minor_tasks` is for work that is not a chain.
+        Task ids are prefixed per day so two cells running the same chain stay distinct.
         """
         minor_tasks = list(standalone_minor_tasks or [])
         precedence = list(explicit_precedence or [])
@@ -305,13 +312,14 @@ class Instance:
 
         seen_ids = {task.id for task in minor_tasks}
         
-        for major in major_tasks or []:
-            tasks, edges, group = expand_chain(ops, entity, cell)
-            for minor in minors:
-                if minor.id in seen_ids:
-                    raise ValueError(f"Duplicate minor_task id: {minor.id!r} (from major_task {major.id!r})")
-                seen_ids.add(minor.id)
-            minor_tasks.extend(minors)
+        for index, day in enumerate(days):
+            tasks, edges, group = expand_chain(day.ops, day.entity, day.cell, day.item,
+                                               prefix=f"d{index}_")
+            for task in tasks:
+                if task.id in seen_ids:
+                    raise ValueError(f"duplicate task id {task.id!r} (day {index})")
+                seen_ids.add(task.id)
+            minor_tasks.extend(tasks)
             precedence.extend(edges)
             if group:
                 groups.append(group)
