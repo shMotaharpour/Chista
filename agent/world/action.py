@@ -1,12 +1,17 @@
-"""An action as a value: an op, then an item if it takes one, then a count if it takes one.
+"""Actions as values: a worker's, and the market's, kept apart.
 
 The engine takes an action as a list — `["WATER"]`, `["PLANT", "MELON"]`,
-`["PICKUP", "WHEAT", 2]` (kaggriculture.py:312-375, :631-649) — and a list can hold
-anything. This is the same thing with its slots pinned:
+`["PICKUP", "WHEAT", 2]` for a unit, `["SELL", "WOOL", 5]` for the market
+(kaggriculture.py:312-375, :631-649). This is the same thing with its slots pinned:
 
-    [0]  always a `UnitAction` or a `MarketOrder`
+    [0]  the op — a `UnitAction` in a `WorkerAction`, a `MarketOrder` in a `MarketAction`
     [1]  an item, if the op takes one: a `Crop`, an `Animal` or a `Product`
     [2]  a count, if the op takes one: an int > 0
+
+They are two classes, not one with a union: a worker op and a market order are executed
+by different code (a unit's action changes the tile it stands on; an order changes the
+market), and a value that could be either is a value nobody can check. `parse_action`
+picks the class from the op when the source is the engine's own list.
 
 Which ops take an item and which take a count is in `action_rules.SIGNATURE`, read from
 the engine's handlers; `Action` checks itself against it, so an action that could never
@@ -24,8 +29,12 @@ from agent.world.model import Animal, Crop, MarketOrder, Product, UnitAction
 #: Anything an action can name: a seed's crop, a species, or a product.
 Item = Crop | Animal | Product
 
-#: Every op an action can carry, from the two vocabularies.
-Op = UnitAction | MarketOrder
+#: The worker ops, and the market's, as the two vocabularies they are.
+WORKER_OPS: tuple[str, ...] = tuple(op.value for op in UnitAction)
+MARKET_OPS: tuple[str, ...] = tuple(op.value for op in MarketOrder)
+
+_BY_VALUE: dict[str, Any] = {op.value: op for op in UnitAction}
+_BY_VALUE.update({op.value: op for op in MarketOrder})
 
 
 def _op_name(op: Any) -> str:
@@ -36,9 +45,9 @@ def _op_name(op: Any) -> str:
 
 @dataclass(frozen=True)
 class Action:
-    """One action, exactly: `op`, then `item` if the op takes one, then `n` if it does."""
+    """The shared shape: `op`, then `item` if the op takes one, then `n` if it does."""
 
-    op: Op
+    op: Any
     item: Item | None = None
     n: int | None = None
 
@@ -58,33 +67,9 @@ class Action:
                 names = " or ".join(t.__name__ for t in allowed)
                 raise ValueError(f"{self.op} takes a {names}, got {self.item!r}")
 
-    @classmethod
-    def parse(cls, raw: Any) -> "Action":
-        """The engine's own list (or a tuple in the same shape) as an `Action`."""
-        if isinstance(raw, Action):
-            return raw
-        if isinstance(raw, str):
-            return cls(UnitAction(raw))
-        if not isinstance(raw, (list, tuple)) or not raw:
-            raise ValueError(f"not an action: {raw!r}")
-        op = _op_name(raw[0])
-        known: dict[str, Op] = {op.value: op for op in UnitAction}
-        for order in MarketOrder:
-            known[order.value] = order
-        if op not in known:
-            raise ValueError(f"unknown action {raw[0]!r}")
-        item = raw[1] if len(raw) > 1 else None
-        n = raw[2] if len(raw) > 2 else None
-        takes_item, takes_n = SIGNATURE.get(op, (False, False))
-        if item is not None and takes_item:
-            item = _as_item(str(item), op)
-        if n is not None and takes_n:
-            n = int(n)
-        return cls(known[op], item, n)
-
     def as_list(self) -> list:
         """The engine's own form, ready to send."""
-        out: list[Any] = [str(self.op.value)]
+        out: list[Any] = [_op_name(self.op)]
         if self.item is not None:
             out.append(str(getattr(self.item, "value", self.item)))
         if self.n is not None:
@@ -93,6 +78,77 @@ class Action:
 
     def __str__(self) -> str:
         return " ".join(str(x) for x in self.as_list())
+
+
+@dataclass(frozen=True)
+class WorkerAction(Action):
+    """One thing a unit does in a turn: what changes the tile it stands on."""
+
+    op: UnitAction
+
+    def __post_init__(self) -> None:
+        if _op_name(self.op) not in WORKER_OPS:
+            raise ValueError(f"{self.op!r} is not a worker op: {list(WORKER_OPS)}")
+        super().__post_init__()
+
+    @classmethod
+    def parse(cls, raw: Any) -> "WorkerAction":
+        """The engine's own list (or a tuple in the same shape) as a `WorkerAction`."""
+        if isinstance(raw, WorkerAction):
+            return raw
+        op, item, n = _slots(raw)
+        return cls(_BY_VALUE[op], item, n)
+
+
+@dataclass(frozen=True)
+class MarketAction(Action):
+    """One order the market executes: the worker never runs it."""
+
+    op: MarketOrder
+
+    def __post_init__(self) -> None:
+        if _op_name(self.op) not in MARKET_OPS:
+            raise ValueError(f"{self.op!r} is not a market order: {list(MARKET_OPS)}")
+        super().__post_init__()
+
+    @classmethod
+    def parse(cls, raw: Any) -> "MarketAction":
+        """The engine's own list (or a tuple in the same shape) as a `MarketAction`."""
+        if isinstance(raw, MarketAction):
+            return raw
+        op, item, n = _slots(raw)
+        return cls(_BY_VALUE[op], item, n)
+
+
+def parse_action(raw: Any) -> Action:
+    """The class the op belongs to, for a list from the engine or a plan."""
+    op, _, _ = _slots(raw)
+    if op in WORKER_OPS:
+        return WorkerAction.parse(raw)
+    if op in MARKET_OPS:
+        return MarketAction.parse(raw)
+    raise ValueError(f"unknown action {raw!r}")
+
+
+def _slots(raw: Any) -> tuple[str, Any, Any]:
+    """`(op name, item, count)` out of the engine's list, with the item typed."""
+    if isinstance(raw, Action):
+        return _op_name(raw.op), raw.item, raw.n
+    if isinstance(raw, str):
+        return _op_name(raw), None, None
+    if not isinstance(raw, (list, tuple)) or not raw:
+        raise ValueError(f"not an action: {raw!r}")
+    op = _op_name(raw[0])
+    if op not in _BY_VALUE:
+        raise ValueError(f"unknown action {raw[0]!r}")
+    item = raw[1] if len(raw) > 1 else None
+    n = raw[2] if len(raw) > 2 else None
+    takes_item, takes_n = SIGNATURE.get(op, (False, False))
+    if item is not None and takes_item:
+        item = _as_item(str(item), op)
+    if n is not None and takes_n:
+        n = int(n)
+    return op, item, n
 
 
 def _as_item(name: str, op: str) -> Item:

@@ -8,7 +8,7 @@ The reference of definitions: what the game is, as the engine has it.
 | `rules.py` | the numbers: the season, the crop and animal tables, land, labour, the shed, the town, the turn order |
 | `action_rules.py` | what each action needs and what it does |
 | `tile.py` | a tile: `TileHourZero` at a day start, `TileInDay` inside a day, and `delta()` — what one hour of work changed |
-| `action.py` | `Action`: an op, then an item if it takes one, then a count |
+| `action.py` | `WorkerAction` and `MarketAction` apart: an op, then an item if it takes one, then a count |
 | `board.py` | cells, quadrants, `tiles[y][x]`, the shed's four doors |
 | `worker.py` | `WorkerTrace`: a worker's start cell and its 24 hours |
 | `prices.py` | the price function and the town's drain |

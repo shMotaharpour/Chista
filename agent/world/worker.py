@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 
-from agent.world.action import Action
+from agent.world.action import WorkerAction
 from agent.world.board import Cell, in_board
 from agent.world.model import Move
 from agent.world.rules import TURNS_PER_DAY
@@ -32,7 +32,7 @@ class WorkerTrace:
     #: Where the worker stands at hour 0 (the engine sends the farmer back to the spawn
     #: tile every night, and hands are removed: :879-882).
     start: Cell
-    hours: tuple[Action | None, ...] = field(default_factory=tuple)
+    hours: tuple[WorkerAction | None, ...] = field(default_factory=tuple)
 
     @classmethod
     def begin(cls, start: Cell, turns_per_day: int = TURNS_PER_DAY) -> "WorkerTrace":
@@ -40,7 +40,7 @@ class WorkerTrace:
         return cls(start=(int(start[0]), int(start[1])),
                    hours=(None,) * turns_per_day)
 
-    def record(self, hour: int, action: Action | None) -> "WorkerTrace":
+    def record(self, hour: int, action: WorkerAction | None) -> "WorkerTrace":
         """The same trace with hour `hour` filled in (immutable, like every state)."""
         if not 0 <= hour < len(self.hours):
             raise ValueError(f"hour {hour} is outside the {len(self.hours)}-turn day")
@@ -50,11 +50,11 @@ class WorkerTrace:
 
     # --- what it did -------------------------------------------------------- #
 
-    def action_at(self, hour: int) -> Action | None:
+    def action_at(self, hour: int) -> WorkerAction | None:
         return self.hours[hour]
 
     @property
-    def done(self) -> tuple[tuple[int, Action], ...]:
+    def done(self) -> tuple[tuple[int, WorkerAction], ...]:
         """`(hour, action)` for every hour that has been decided."""
         return tuple((h, a) for h, a in enumerate(self.hours) if a is not None)
 

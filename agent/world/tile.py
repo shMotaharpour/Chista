@@ -38,7 +38,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Any
 
-from agent.world.action import Action
+from agent.world.action import WorkerAction
 from agent.world.model import Animal, Crop, Product, Structure, TileKind, UnitAction
 from agent.world.rules import ANIMAL_RULES, CROP_RULES
 
@@ -328,7 +328,7 @@ class TileInDay(TileHourZero):
 # --- reading one hour of work off a tile -------------------------------------- #
 
 #: The actions a tile can show, and what each change means.
-def delta(later: TileInDay, earlier: TileInDay) -> tuple[Action, ...]:
+def delta(later: TileInDay, earlier: TileInDay) -> tuple[WorkerAction, ...]:
     """The actions consistent with one hour of change on one tile.
 
     `later` and `earlier` are the same tile one hour apart, `later.hour ==
@@ -361,17 +361,17 @@ def delta(later: TileInDay, earlier: TileInDay) -> tuple[Action, ...]:
                              "ongoing crop and an animal produce at the night, so the "
                              "two are not one hour apart")
 
-    acts: list[Action] = []
+    acts: list[WorkerAction] = []
     if later.watered_today and not earlier.watered_today:
-        acts.append(Action(UnitAction.WATER))
+        acts.append(WorkerAction(UnitAction.WATER))
     if later.fertilized_today and not earlier.fertilized_today:
-        acts.append(Action(UnitAction.FERTILIZE))
+        acts.append(WorkerAction(UnitAction.FERTILIZE))
     if later.fertilizer_collected_today and not earlier.fertilizer_collected_today:
-        acts.append(Action(UnitAction.COLLECT_FERTILIZER))
+        acts.append(WorkerAction(UnitAction.COLLECT_FERTILIZER))
     if later.fed_today and not earlier.fed_today:
-        acts.append(Action(UnitAction.FEED))
+        acts.append(WorkerAction(UnitAction.FEED))
     if later.cared_today and not earlier.cared_today:
-        acts.append(Action(UnitAction.CARE))
+        acts.append(WorkerAction(UnitAction.CARE))
 
     if not same_kind:
         explained = _kind_change_actions(later, earlier)
@@ -381,11 +381,11 @@ def delta(later: TileInDay, earlier: TileInDay) -> tuple[Action, ...]:
                              "action explains it")
         acts.extend(explained)
     elif later.yield_units < earlier.yield_units:
-        acts.append(Action(UnitAction.HARVEST))
+        acts.append(WorkerAction(UnitAction.HARVEST))
     return tuple(acts)
 
 
-def _kind_change_actions(later: TileInDay, earlier: TileInDay) -> tuple[Action, ...]:
+def _kind_change_actions(later: TileInDay, earlier: TileInDay) -> tuple[WorkerAction, ...]:
     """What the kind change alone allows: the constructive and destructive ops.
 
     DIG empties a plant, a weed or an empty structure (:484-491); HARVEST does it to a
@@ -393,21 +393,21 @@ def _kind_change_actions(later: TileInDay, earlier: TileInDay) -> tuple[Action, 
     make one kind out of another (:417-429, :493-503, :384-392).
     """
     if earlier.is_none and later.is_plant:
-        return (Action(UnitAction.PLANT, later.crop),)
+        return (WorkerAction(UnitAction.PLANT, later.crop),)
     if earlier.is_none and later.is_empty_structure:
-        return (Action(UnitAction.BUILD_COOP if later.structure is Structure.COOP
+        return (WorkerAction(UnitAction.BUILD_COOP if later.structure is Structure.COOP
                        else UnitAction.BUILD_PASTURE),)
     if earlier.is_empty_structure and later.is_animal:
-        return (Action(UnitAction.PLACE, later.animal),)
+        return (WorkerAction(UnitAction.PLACE, later.animal),)
     if later.is_none and earlier.is_weed:
-        return (Action(UnitAction.DIG),)
+        return (WorkerAction(UnitAction.DIG),)
     if later.is_none and earlier.is_plant:
         # A one-shot crop: it had something on it, so it was HARVESTed; it had nothing,
         # so it was DUG. (The engine would let a DIG remove a plant that has yield too
         # (:484-491), but a plan does not dig a crop it could harvest - the owner's
         # rule, and the only reading a tile can support.)
-        return ((Action(UnitAction.HARVEST),) if earlier.yield_units > 0
-                else (Action(UnitAction.DIG),))
+        return ((WorkerAction(UnitAction.HARVEST),) if earlier.yield_units > 0
+                else (WorkerAction(UnitAction.DIG),))
     if later.is_none and earlier.is_empty_structure:
-        return (Action(UnitAction.DIG),)
+        return (WorkerAction(UnitAction.DIG),)
     return ()

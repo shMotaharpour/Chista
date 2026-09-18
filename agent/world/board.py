@@ -12,6 +12,14 @@ from agent.world.rules import BOARD_SIZE, HALF, SHED_ACCESS
 #: A place on the farm: `(x, y)`, y grows downward.
 Cell = tuple[int, int]
 
+#: A move's delta is `(dx, dy)`, y growing downward (kaggriculture.py:87-93): NORTH is
+#: `(0, -1)` — x does not change, y decreases. That is the MOVE's delta and not the
+#: action: the action for north is the one-element list `["NORTH"]`, and a cell is
+#: `(x, y)` while the board array is indexed `[y][x]`. Both are true at once, and
+#: `tile_at` is the only place the array order is written.
+MOVE_DELTA: dict[str, Cell] = {
+    "NORTH": (0, -1), "SOUTH": (0, 1), "EAST": (1, 0), "WEST": (-1, 0)}
+
 #: The four 5x5 quadrants, NW first (kaggriculture.py:96, :127-129). NW is free.
 QUADRANTS: tuple[str, ...] = ("NW", "NE", "SW", "SE")
 
