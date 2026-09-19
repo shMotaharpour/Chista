@@ -584,7 +584,7 @@ def solve_oxa(instance: Instance, config: OxaConfig = OxaConfig()) -> OxaResult:
     max_active = max((route.worker_index for route in routes), default=-1)
     solution = Solution(
         routes=routes, 
-        hired=max(max_active - 1, 0)
+        hired=max(max_active, 0)      # the hands beyond the one every day starts with
     )
     
     is_optimal = active_workers <= config.min_workers

@@ -90,7 +90,7 @@ class WorkerRoute:
 @dataclass
 class Solution:
     routes: list[WorkerRoute] = field(default_factory=list)
-    hired: Optional[int] = None      # how many hands the day hires: max_active - 1
+    hired: Optional[int] = None      # how many hands the day hires: one less than active
 
 
 # ============================================================================
