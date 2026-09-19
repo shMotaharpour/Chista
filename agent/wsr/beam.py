@@ -233,24 +233,28 @@ def _better(candidate, best) -> bool:
 
 
 def _start_positions(day: Day, hands: int, settled=None) -> np.ndarray:
-    """Who is on the field and where each stands, at the moment the hires settle.
+    """Who is on the field and where each stands.
 
-    A hired hand appears on one of the four shed doors - the one with the fewest units on it, ties
-    by door order - and that is the engine's rule, so where the hands land depends on who is
-    standing on a door WHEN THEY ARE HIRED, not where those units began the day.
+    Two different questions, and conflating them is what put crops on the wrong tiles:
 
-    The difference is not academic: a unit that walks off its door in the first turn leaves that
-    door empty, and the next hand takes it instead of the one it would otherwise have had. Read
-    from the day's start, the model put every hand one door off and the plantings landed on the
-    wrong tiles. `settled` is where the units already on the field stand at that moment, which is
-    what the search computes from its own first turn.
+      the units   start the day where they are, so their walks are priced from there and nowhere
+                  else. A unit that will walk in the first turn has NOT started halfway.
+      the hands   appear on one of the four shed doors - the fewest units on it, ties by door
+                  order - and that is counted WHEN THEY ARE HIRED, which is after the first turn's
+                  actions. So a unit that walks off its door leaves that door for the next hand.
+
+    `settled` is where the units stand once the first turn is over, and it is used for the hands
+    alone. Pricing a unit's walk from `settled` would credit it a move it has not made yet, which
+    is exactly the bug: the farmer was started at (3,4) and planted (3,3) while the engine had it
+    at (4,4), so the planting landed one tile short and was refused in silence.
     """
     from agent.world.rules import spawn_cell
-    out = [(int(c[0]), int(c[1]))
-           for c in (day.units if settled is None else settled)]
+    out = [(int(c[0]), int(c[1])) for c in day.units]
+    occupied = list(out if settled is None else [(int(c[0]), int(c[1])) for c in settled])
     for _ in range(hands):
-        cell = spawn_cell(out)
+        cell = spawn_cell(occupied)
         out.append((int(cell[0]), int(cell[1])))
+        occupied.append((int(cell[0]), int(cell[1])))
     return np.asarray(out, dtype=np.int16)
 
 
@@ -275,7 +279,13 @@ def _settled_after_first_turn(day: Day, tasks: TaskArray, result: Result) -> lis
         row = tasks.ids.index(task_id)
         target = _stand_for(tasks, row, occupied[worker])
         moves = walk(occupied[worker], target)
-        if moves and turn - len(moves) <= 0:
+        if not moves:
+            continue
+        # The walk occupies the turns immediately before the task, and a unit is free from the
+        # first turn of its day. It moves in turn zero only when the walk begins exactly there -
+        # a walk that would have to start before the day did is not a walk the day can make, and
+        # assuming otherwise is what let the model credit the farmer a move it never took.
+        if turn - len(moves) == 0:
             step = moves[0][0]
             if step in MOVE_DELTA:
                 dx, dy = MOVE_DELTA[step]
