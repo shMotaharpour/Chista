@@ -1,0 +1,158 @@
+"""Evaluate the trained opponent model on the holdout dates.
+
+Run from the repo root:
+
+    .venv/bin/python -m offline_lab.build.opponent_eval
+
+The claim under test: the corpus-primed `OpponentModel` predicts the rival's
+next-turn action better than the two baselines it must beat —
+
+  1. always-hold  (predict bin 3 everywhere; the corpus's global mode),
+  2. the global frequency model (one distribution for every state).
+
+Score: log loss and Brier score over the holdout dates' (state, action)
+pairs, per good and overall — computed exactly, no sampling. The held-out
+DATES (the last 7 of the store, named in the artifact info) were never seen
+in training.
+"""
+from __future__ import annotations
+
+import glob
+import json
+import os
+import time
+from pathlib import Path
+
+import numpy as np
+
+from agent.belief.opponent import OpponentModel
+from agent.world.model import PRODUCTS
+
+STORE = Path("/chista/Chista/kaggriculture-episodes-analyses/data/replays_parquet")
+_DAY = 24
+EPS = 1e-12
+
+
+def _holdout_dates() -> list[str]:
+    info = json.loads((Path("agent/artifact/opponent_counts.json")).read_text())
+    return list(info["stats"]["holdout"])
+
+
+def _state_action_rows(dates: list[str]) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """(state_idx, action_idx, good_idx) rows from the holdout dates.
+
+    The state key/bins come from OpponentModel itself; the rows are the
+    ACTUAL actions the seats committed on the held-out days.
+    """
+    import duckdb
+
+    con = duckdb.connect(config={"threads": 2, "memory_limit": "1GB"})
+    model = OpponentModel(pretrained=True)
+    price_cols = ", ".join(f"price_{g}" for g in PRODUCTS)
+    items_sql = ", ".join(repr(g) for g in PRODUCTS)
+
+    keys = sorted(model.counts)
+    key_ix = {k: i for i, k in enumerate(keys)}
+
+    s_idx, a_idx, g_idx = [], [], []
+    for date in dates:
+        mo = str(STORE / date / "market_orders.parquet")
+        city = str(STORE / date / "city_steps.parquet")
+        state: dict[tuple[int, int], tuple] = {}
+        for e, s, *rest in con.execute(
+            f"select episode_id, step, {price_cols} "
+            f"from read_parquet('{city}')"
+        ).fetchall():
+            state[(e, s)] = tuple(rest)
+        agg = con.execute(
+            f"select episode_id, step, op, item, sum(qty)::DOUBLE qty "
+            f"from read_parquet('{mo}') "
+            f"where op in ('SELL', 'BUY_PRODUCT') and item in ({items_sql}) "
+            f"group by 1, 2, 3, 4"
+        ).fetchall()
+        for e, s, op, item, qty in agg:
+            prices = state.get((e, s))
+            if prices is None:
+                continue
+            key = model._key(item, s, prices[PRODUCTS.index(item)])
+            ix = key_ix.get(key)
+            if ix is None:
+                continue                      # a state training never saw
+            b = model._bin(float(qty)) if op == "SELL" else model.n_bins - 1
+            s_idx.append(ix)
+            a_idx.append(b)
+            g_idx.append(PRODUCTS.index(item))
+    return np.array(s_idx), np.array(a_idx), np.array(g_idx)
+
+
+def _policy_matrix(model: OpponentModel, keys) -> np.ndarray:
+    out = np.zeros((len(keys), model.n_bins))
+    for i, k in enumerate(keys):
+        arr = model.counts.get(k)
+        if arr is None:
+            out[i] = [1.0] + [0.0] * (model.n_bins - 1)
+            continue
+        p = np.asarray(arr) + model.alpha
+        out[i] = p / p.sum()
+    return out
+
+
+def main() -> int:
+    t0 = time.time()
+    holdout = _holdout_dates()
+    print(f"holdout dates: {holdout}")
+
+    trained = OpponentModel(pretrained=True)
+    keys = sorted(trained.counts)
+    P_trained = _policy_matrix(trained, keys)
+
+    # baseline 2: the GLOBAL frequency distribution (ignores the state)
+    global_counts = np.zeros(trained.n_bins)
+    for arr in trained.counts.values():
+        global_counts += np.asarray(arr)
+    P_global = np.tile((global_counts + trained.alpha) /
+                       (global_counts.sum() + trained.alpha * trained.n_bins),
+                       (len(keys), 1))
+
+    # baseline 1: always-hold = bin 3 with certainty
+    P_hold = np.zeros((len(keys), trained.n_bins))
+    P_hold[:, trained.n_bins - 1] = 1.0
+
+    s_idx, a_idx, g_idx = _state_action_rows(holdout)
+    n = len(s_idx)
+    print(f"holdout rows: {n:,} over {len(set(s_idx.tolist())):,} seen states "
+          f"({time.time()-t0:.0f}s)")
+
+    onehot = np.zeros((n, trained.n_bins))
+    onehot[np.arange(n), a_idx] = 1.0
+
+    print(f"\n{'model':<14} {'log loss':>9} {'brier':>7}")
+    rows = {}
+    for name, P in (("trained", P_trained), ("global-freq", P_global),
+                    ("always-hold", P_hold)):
+        q = np.clip(P[s_idx], EPS, 1.0)
+        ll = float(-np.mean(np.log(q[np.arange(n), a_idx])))
+        br = float(np.mean(np.sum((P[s_idx] - onehot) ** 2, axis=1)))
+        rows[name] = (ll, br)
+        print(f"{name:<14} {ll:9.4f} {br:7.4f}")
+
+    print("\nper-good log loss (trained vs global vs hold):")
+    for gi, g in enumerate(PRODUCTS):
+        m = g_idx == gi
+        if not m.any():
+            continue
+        line = f"  {g:<11} n={int(m.sum()):>8,} "
+        for name, P in (("trained", P_trained), ("global-freq", P_global),
+                        ("always-hold", P_hold)):
+            q = np.clip(P[s_idx[m]], EPS, 1.0)
+            line += f" {name}={-np.mean(np.log(q[np.arange(m.sum()), a_idx[m]])):.4f}"
+        print(line)
+
+    better = rows["trained"][0] < rows["global-freq"][0] and \
+        rows["trained"][0] < rows["always-hold"][0]
+    print(f"\nverdict: trained beats both baselines on log loss: {better}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
