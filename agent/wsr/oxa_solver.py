@@ -89,6 +89,9 @@ def _build_worker_route(
         pending = frozenset(remaining_targets)
         tail_turns: dict[str, int] = {}
         available = [
+            # Candidates come in whatever order the set hands them out; a tie between two of
+            # them is settled by the first match, so an explicit tie-break belongs here if two
+            # candidates ever score the same.
             tid for tid in remaining_targets 
             if all(p in done_targets or p in route_task_ids for p in target_preds[tid])
         ]
@@ -130,6 +133,9 @@ def _build_worker_route(
             # completion of it, so skipping the task here can never lose a
             # schedule that fits.
             tail = _unfinished_tail_turns(tid, pending, successor_gaps, tail_turns)
+            # A task whose successors would not finish inside the day is not started: a chain
+            # begun and abandoned leaves the tile half-worked. What is skipped this way is
+            # reported through the returned remaining_targets, never dropped in silence.
             if actual_exec + tail > horizon:
                 continue
                 
