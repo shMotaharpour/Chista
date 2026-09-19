@@ -477,9 +477,6 @@ def plan_day(tiles: Sequence[tuple[tuple[int, int], Sequence[str], str | None]],
             assignments=tuple(None for _ in positions))
 
     existing = list(range(len(units)))
-    free: list[int] = []
-    for index in range(len(existing), len(positions)):
-        assigned[index] = None
     settled = list(positions)
     def day_bill(chosen: list[UnitRoute]) -> tuple[float, float]:
         """(the market bill, and what tomorrow's seeds for the same work would cost).
