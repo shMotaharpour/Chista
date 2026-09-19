@@ -26,7 +26,9 @@ from typing import NamedTuple
 
 import numpy as np
 
+from agent.world.board import MOVE_DELTA, manhattan
 from agent.world.rules import BOARD_SIZE, SHED_ACCESS, TURNS_PER_DAY
+from agent.wsr.routing import walk
 from agent.wsr.tasks import DISTANCE, NO_ITEM, SHED_INDEX, TaskArray
 
 Cell = tuple[int, int]
@@ -144,7 +146,19 @@ def search(day: Day, tasks: TaskArray, *, beam: int = 64,
 
     partial: Result | None = None
     for pool in range(start, ceiling + 1):
+        # The hands land on the doors that are free WHEN THEY ARE HIRED, and a unit walking off a
+        # door in the first turn changes which doors those are. So the positions are settled
+        # against the search's own first turn and the day is searched again until they agree -
+        # a fixed point, and a cheap one: the search is milliseconds and this converges in two
+        # passes or not at all.
+        settled = None
         result = _run(day, tasks, hands=pool, beam=beam)
+        for _attempt in range(3):
+            nxt = _settled_after_first_turn(day, tasks, result)
+            if settled is not None and nxt == settled:
+                break
+            settled = nxt
+            result = _run(day, tasks, hands=pool, beam=beam, settled=settled)
         if result.complete:
             return result
         if partial is None or len(result.route) > len(partial.route):
@@ -155,10 +169,11 @@ def search(day: Day, tasks: TaskArray, *, beam: int = 64,
 
 
 
-def _run(day: Day, tasks: TaskArray, *, hands: int, beam: int) -> Result:
+def _run(day: Day, tasks: TaskArray, *, hands: int, beam: int,
+         settled=None) -> Result:
     """One pool size: search the day, and report how much of it the pool could carry."""
     n = tasks.n
-    start_pos = _start_positions(day, hands)                 # (m, 2)
+    start_pos = _start_positions(day, hands, settled)         # (m, 2)
     first_hand = len(day.units)                              # workers before this index are units
 
     done = np.zeros((beam, n), dtype=bool)
@@ -217,22 +232,64 @@ def _better(candidate, best) -> bool:
     return int(when.max()) < int(best_when.max())
 
 
-def _start_positions(day: Day, hands: int) -> np.ndarray:
-    """Who is on the field and where each stands.
+def _start_positions(day: Day, hands: int, settled=None) -> np.ndarray:
+    """Who is on the field and where each stands, at the moment the hires settle.
 
-    The units already there keep their cells. A hired hand appears on one of the four shed doors -
-    the one with the fewest units on it, ties by door order - which is the engine's rule, and the
-    reason a hand's first move is not free: it starts at a door, not at the tile it must work.
+    A hired hand appears on one of the four shed doors - the one with the fewest units on it, ties
+    by door order - and that is the engine's rule, so where the hands land depends on who is
+    standing on a door WHEN THEY ARE HIRED, not where those units began the day.
 
-    Where a hand stands does not depend on when it may begin, so the position and the start hour
-    are read separately: this gives the cells, `_start_hours` the clocks.
+    The difference is not academic: a unit that walks off its door in the first turn leaves that
+    door empty, and the next hand takes it instead of the one it would otherwise have had. Read
+    from the day's start, the model put every hand one door off and the plantings landed on the
+    wrong tiles. `settled` is where the units already on the field stand at that moment, which is
+    what the search computes from its own first turn.
     """
     from agent.world.rules import spawn_cell
-    out = [tuple(c) for c in day.units]
+    out = [(int(c[0]), int(c[1]))
+           for c in (day.units if settled is None else settled)]
     for _ in range(hands):
         cell = spawn_cell(out)
         out.append((int(cell[0]), int(cell[1])))
     return np.asarray(out, dtype=np.int16)
+
+
+def _settled_after_first_turn(day: Day, tasks: TaskArray, result: Result) -> list:
+    """Where the units already on the field stand when the first turn is over.
+
+    A unit moves in the first turn only if its first task needs a walk that starts then - the walk
+    occupies the turns immediately before the task, so a task at turn t with a walk of w moves
+    from turn t-w. This is the compiler's own rule, applied to the route the search just built.
+    """
+
+    occupied = [(int(c[0]), int(c[1])) for c in day.units]
+    first: dict[int, tuple[int, str]] = {}
+    for turn, task_id, worker in result.route:
+        worker, turn = int(worker), int(turn)
+        if worker >= len(occupied):
+            continue
+        if worker not in first or turn < first[worker][0]:
+            first[worker] = (turn, task_id)
+
+    for worker, (turn, task_id) in first.items():
+        row = tasks.ids.index(task_id)
+        target = _stand_for(tasks, row, occupied[worker])
+        moves = walk(occupied[worker], target)
+        if moves and turn - len(moves) <= 0:
+            step = moves[0][0]
+            if step in MOVE_DELTA:
+                dx, dy = MOVE_DELTA[step]
+                occupied[worker] = (occupied[worker][0] + int(dx), occupied[worker][1] + int(dy))
+    return occupied
+
+
+def _stand_for(tasks: TaskArray, row: int, at: tuple[int, int]) -> tuple[int, int]:
+    """Where a worker must stand to do a task: a door for a fetch, the tile for anything else."""
+    if bool(_fetch_mask(tasks)[row]):
+        return min(((int(x), int(y)) for x, y in SHED_ACCESS),
+                   key=lambda tile: (manhattan(at, tile),
+                                     SHED_ACCESS.index((tile[0], tile[1]))))
+    return (int(tasks.cells[row][0]), int(tasks.cells[row][1]))
 
 
 def _start_hours(day: Day, hands: int) -> np.ndarray:

@@ -20,7 +20,8 @@ from __future__ import annotations
 
 from agent.world.board import manhattan
 from agent.world.rules import SHED_ACCESS
-from agent.wsr.beam import Day, Result, _fetch_mask, _start_hours, _start_positions
+from agent.wsr.beam import (Day, Result, _fetch_mask, _settled_after_first_turn,
+                            _start_hours, _start_positions)
 from agent.wsr.routing import walk
 from agent.wsr.tasks import TaskArray
 
@@ -28,14 +29,21 @@ PASS = ("PASS",)
 
 
 def compile_route(day: Day, tasks: TaskArray, result: Result, *,
-                  horizon: int | None = None) -> list[list[tuple]]:
+                  horizon: int | None = None, settled=None) -> list[list[tuple]]:
     """A route -> one op list per worker, `horizon` turns long and PASS-padded.
 
     The list is indexed by turn, so `ops[worker][hour]` is what that worker does at that hour -
     which is the shape the dispatcher slices.
+
+    `settled` is where the units already on the field stand once the first turn is over. The hands
+    land on the doors that are free when they are hired, so a unit that walks off its door in turn
+    zero moves every hand after it - the search prices that, and this must walk the same cells or
+    the day it writes is not the day that was searched.
     """
     horizon = int(horizon if horizon is not None else day.horizon)
-    starts = _start_positions(day, result.pool)
+    if settled is None:
+        settled = _settled_after_first_turn(day, tasks, result)
+    starts = _start_positions(day, result.pool, settled)
     hours = _start_hours(day, result.pool)
     m = int(starts.shape[0])
 
@@ -122,14 +130,16 @@ def _nearest_door(at: tuple[int, int]) -> tuple[int, int]:
                                  SHED_ACCESS.index((tile[0], tile[1]))))
 
 
-def check_route(day: Day, tasks: TaskArray, result: Result) -> list[str]:
+def check_route(day: Day, tasks: TaskArray, result: Result, settled=None) -> list[str]:
     """Everything a compiled route promises, checked - so a caller can report instead of hope.
 
     The engine refuses a bad op in silence, which is why a day is worth verifying rather than
     trusting: this names what is wrong, and an empty list means nothing is.
     """
     complaints: list[str] = []
-    starts = _start_positions(day, result.pool)
+    if settled is None:
+        settled = _settled_after_first_turn(day, tasks, result)
+    starts = _start_positions(day, result.pool, settled)
     hours = _start_hours(day, result.pool)
     fetch = _fetch_mask(tasks)
 
