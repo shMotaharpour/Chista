@@ -92,7 +92,13 @@ class TaskArray:
 
     @property
     def pred_count(self) -> np.ndarray:
-        return self.pred.sum(axis=0)
+        """How many predecessors each task waits for.
+
+        `pred[i, j]` means j precedes i, so the count for a task is its ROW sum. Summing the
+        column would count the tasks a task precedes, which reads as a satisfied constraint the
+        moment any descendant is done - and that is how a feed gets scheduled before its wheat.
+        """
+        return self.pred.sum(axis=1)
 
     def window(self, hour: np.ndarray) -> np.ndarray:
         """Which tasks may run at `hour`, per state - both columns at once.
@@ -106,9 +112,12 @@ class TaskArray:
     def ready(self, done: np.ndarray) -> np.ndarray:
         """Which tasks have all their predecessors done - one matrix product.
 
-        `done` is (batch, n) booleans. The result is (batch, n): True where a task may start.
+        `done` is (batch, n) booleans, and the result is (batch, n): True where a task may start.
+        The matrix is transposed because `pred[i, j]` means j precedes i, so reading task i's row
+        means asking for column i of the product - `done @ pred` would count the tasks i precedes,
+        which is the opposite question and reads as satisfied the moment any descendant is done.
         """
-        return (done.astype(np.int8) @ self.pred.astype(np.int8)) == self.pred_count
+        return (done.astype(np.int8) @ self.pred.T.astype(np.int8)) == self.pred_count
 
     def done_by_column(self, done: np.ndarray) -> np.ndarray:
         """How many of each column's tasks are done, per state - for the tile-block preference."""
