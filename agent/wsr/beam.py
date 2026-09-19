@@ -127,6 +127,19 @@ def search(day: Day, tasks: TaskArray, *, beam: int = 64,
     return partial if partial is not None else Result(hi, [], False)
 
 
+def _prefetch_table() -> np.ndarray:
+    """The distance from every board cell to the nearest shed door, built once.
+
+    A fetch is a detour through a door, and the door's distance from a task's tile does not depend
+    on the state - only the worker's side of the trip does. Precomputing the tile side turns a
+    (workers, doors) reduction per step into one lookup per task.
+    """
+    return DISTANCE[:, SHED_INDEX].min(axis=1).astype(np.int16)
+
+
+DOOR_FROM: np.ndarray = _prefetch_table()
+
+
 def _run(day: Day, tasks: TaskArray, *, hands: int, beam: int) -> Result:
     """One pool size: search the day, and report how much of it the pool could carry."""
     n = tasks.n
@@ -213,9 +226,14 @@ def _expand(day: Day, tasks: TaskArray, done, when, free, where, travel, live):
 
     # A fetch happens at a shed door, not on the tile the good is for, and the worker picks the
     # nearest door. Every other task is worked on its own tile.
+    # A fetch is a detour through a door: out to the nearest one, then on to the tile. The tile
+    # side of that trip is a property of the tile alone, so it is looked up rather than measured,
+    # and only the worker's side is computed per step.
     is_fetch = _fetch_mask(tasks)
-    door = DISTANCE[here[:, :, None], SHED_INDEX[None, None, :]].astype(np.int16).min(axis=-1)
-    hop = np.where(is_fetch[None, None, :], door[:, :, None], hop)
+    if is_fetch.any():
+        door = DISTANCE[here[:, :, None], SHED_INDEX[None, None, :]].min(axis=-1).astype(np.int16)
+        via_door = door[:, :, None] + DOOR_FROM[tasks.cell_index][None, None, :]
+        hop = np.where(is_fetch[None, None, :], via_door, hop)
 
     arrive = free[:, :, None] + hop                          # (b, m, n)
     released = _released(when, tasks)                        # (b, n): the predecessors' finish
@@ -239,35 +257,39 @@ def _expand(day: Day, tasks: TaskArray, done, when, free, where, travel, live):
 
 
 def _select(expanded, tasks: TaskArray, beam: int, first_hand: int):
-    """Keep the best `beam` children, and drop the ones a sibling already stands for.
+    """Keep the best `beam` children, ranked BEFORE they are built.
 
-    Children are generated per live route and then deduplicated by what they have done, because
-    identical routes reached from different parents are one route: keeping them would spend the
-    beam on copies. Survivors are ordered by the layered objective.
+    A child is a copy of its parent's whole state - what is done, when each worker is free, where
+    each stands - so materialising every candidate costs (live x tasks x state) and then throws
+    almost all of it away. The hour a child would finish at is already known from the candidate
+    arrays, so the shortlist is taken on that and only the survivors are copied. The layered
+    objective then orders the survivors, and duplicates among them are dropped.
+
+    The shortlist is a few times the beam wide, not the whole field: the dedupe and the layered
+    sort need a choice, but they do not need every task of every live route.
     """
     n = tasks.n
-    rows, finish, hop = expanded["rows"], expanded["finish"], expanded["hop"]
+    rows = expanded["rows"]
     done, when, free = expanded["done"], expanded["when"], expanded["free"]
-    where, travel = expanded["where"], expanded["travel"]
+    where, travel, hop = expanded["where"], expanded["travel"], expanded["hop"]
+    flat_hour = expanded["earliest"][rows].ravel()           # (live * n)
 
-    # Only the live rows have children, so the candidates are gathered on those rows and the
-    # parents are repeated to match: one row of candidates per live route.
-    width = min(beam, n)
-    live_hour = expanded["earliest"][rows]
-    picks = np.argsort(live_hour, axis=1, kind="stable")[:, :width]
-    values = np.take_along_axis(live_hour, picks, axis=1)
-
-    parent = np.repeat(rows, width)
-    task = picks.ravel()
-    hour = values.ravel()
-    worker = np.take_along_axis(expanded["worker"][rows], picks, axis=1).ravel()
-    ok = hour < BIG
-
-    parent, task, hour, worker = parent[ok], task[ok], hour[ok], worker[ok]
-    if parent.size == 0:
+    legal = np.flatnonzero(flat_hour < BIG)
+    if legal.size == 0:
         return (_empty_like(done, beam), _empty_like(when, beam), _empty_like(free, beam),
                 _empty_like(where, beam), np.zeros((beam,), dtype=np.int16),
                 np.zeros((beam,), dtype=bool))
+
+    budget = min(legal.size, beam * 4)
+    if legal.size > budget:
+        shortlist = legal[np.argpartition(flat_hour[legal], budget - 1)[:budget]]
+    else:
+        shortlist = legal
+
+    parent = np.repeat(rows, n)[shortlist]
+    task = shortlist % n
+    hour = flat_hour[shortlist]
+    worker = expanded["worker"][rows].ravel()[shortlist]
 
     child_done = done[parent].copy()
     child_done[np.arange(parent.size), task] = True
@@ -288,8 +310,6 @@ def _select(expanded, tasks: TaskArray, beam: int, first_hand: int):
     makespan = child_free.max(axis=1)
     order = np.lexsort((child_travel, makespan, hands_used))[:beam]
 
-    # A beam of fixed width, so a step that produces fewer children leaves the rest of the rows
-    # empty rather than shrinking the arrays the next step reads.
     out_done = _empty_like(child_done, beam)
     out_when = _empty_like(child_when, beam)
     out_free = _empty_like(child_free, beam)
@@ -330,11 +350,17 @@ def _released(when: np.ndarray, tasks: TaskArray) -> np.ndarray:
     """When each task's predecessors finish, per route.
 
     `pred[i, j]` means j precedes i, so the answer for task i is the largest `when` among its
-    predecessors - one broadcast product over the matrix, and zero where there are none.
+    predecessors. The precedence graph is SPARSE - a few edges per task, not a matrix - so this
+    walks the edges instead of multiplying the whole matrix: the product would be (batch, n, n)
+    and cost n^2 per step for a graph that has only n edges.
     """
-    if tasks.n == 0 or not tasks.pred.any():
-        return np.zeros_like(when)
-    return (when[:, None, :] * tasks.pred[None, :, :]).max(axis=2).astype(np.int16)
+    out = np.zeros_like(when)
+    if tasks.n == 0:
+        return out
+    edges = tasks.edges
+    for after, before in edges:
+        np.maximum(out[:, after], when[:, before], out=out[:, after])
+    return out
 
 
 def _flat(where: np.ndarray) -> np.ndarray:

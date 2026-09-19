@@ -91,6 +91,16 @@ class TaskArray:
         return self.items
 
     @property
+    def edges(self) -> list[tuple[int, int]]:
+        """The precedence edges as (after, before) row pairs.
+
+        The matrix is the shape a broadcast wants, but the graph itself is a handful of edges per
+        task, and walking them costs the number of edges instead of their square.
+        """
+        after, before = np.nonzero(self.pred)
+        return list(zip(after.tolist(), before.tolist()))
+
+    @property
     def pred_count(self) -> np.ndarray:
         """How many predecessors each task waits for.
 
