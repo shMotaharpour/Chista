@@ -113,6 +113,7 @@ ORDER_MATTERS: tuple[tuple[str, str], ...] = (
     ("BUILD_COOP", "PLACE"),
     ("BUILD_PASTURE", "PLACE"),
     ("PLACE", "FEED"),
+    ("PLACE", "CARE"),          # care is about an animal that is on the tile, not in a bag
     ("HARVEST", "PLANT"),
     ("HARVEST", "DIG"),
     ("PLANT", "WATER"),
