@@ -24,9 +24,9 @@ the internal prices only where the tiles' shared stocks actually bind. The
 measured table below predates the master; the F047 execution gap it reports
 is unchanged (the chains' purchases still ride on #14).
 
-**The secretary (#14).** The contractor prices ONE TILE at a time; turning tile
+**The day (#14).** The contractor prices ONE TILE at a time; turning tile
 chains into per-unit op lists — movement, pickups, market batching — is the
-secretary's job and is not written. So each unit works the tile it already
+day's job and is not written. So each unit works the tile it already
 stands on, and only the chain's own worker ops are dispatched: the purchases and
 carries the chain assumes are missing, and the engine refuses an op whose input
 the unit does not carry, **in silence** (F047).
@@ -75,25 +75,26 @@ import numpy as np
 from kaggle_environments.envs.kaggriculture import kaggriculture as K
 
 from agent.obs import LOCKED_KEY, WorldView, _nearest_modelled, decode_world
-from tile_dp.chains import (NO_ACT, N_RESOURCE, RESOURCE_ID, chain_ops,
-                            entity_of_code)
-from tile_dp.contractor import HORIZON_DAYS, TileContractor
-from tile_dp.graph import TileGraph
+from agent.tile_dp.chains import chain_ops, entity_of_code
+from agent.world.model import N_RESOURCE, RESOURCE_ID
+from agent.wsr.routing import plan_day
+from agent.tile_dp.contractor import HORIZON_DAYS, TileContractor
+from agent.artifact import artifact_path
+from agent.tile_dp.graph import TileGraph
 
 from pathlib import Path
 
-GRAPH_PATH = (Path(__file__).resolve().parents[1] / "tile_dp" / "models"
-              / "graph_tile_lifecycle.npz")
+GRAPH_PATH = artifact_path("tile_graph", ".npz")
 
 # The engine's own hire cost is imported, never transcribed (R002): the n-th
 # hire of a day costs `_hire_cost(n)`. A hand hired at hour 0 first acts at
 # hour 1 (F040), so a hand buys 23 hours and that is what an hour costs.
 HOURS_PER_HAND = 23
 
-# Ops that name the entity a chain constructs, and therefore cannot be
-# dispatched without one.
-_ENTITY_OPS = frozenset(("PLANT", "BUILD", "PLACE", "PLACE_ANIMAL"))
-
+# Hands are cleared every night (F039), so this is a daily decision. Five cost
+# 1+1+2+3+5 = 12 coins and a hand has to walk to its tile, so beyond five the
+# day's travel eats the work it buys.
+MAX_HANDS = 5
 
 def load_contractor() -> TileContractor:
     """The shipped graph, cast once per process — never rebuilt at runtime."""
@@ -127,42 +128,9 @@ def dual_stand_in(obs: Any) -> tuple[np.ndarray, np.ndarray]:
     # fertilizer dose cost is the price they are bought back at.
     w[:, RESOURCE_ID["WHEAT"]] = float(prices.get("WHEAT", 0.0))
     w[:, RESOURCE_ID["FERTILIZER"]] = float(prices.get("FERTILIZER", 0.0))
-    w[:, RESOURCE_ID["LABOR_HOURS"]] = (
+    w[:, RESOURCE_ID[Column.LABOR.value]] = (
         float(K._hire_cost(int(farm.get("hires_today", 0)))) / HOURS_PER_HAND)
     return p, w
-
-
-def chain_turns(ops: tuple[str, ...], entity: str | None) -> list[list[str]]:
-    """One chain -> the unit's op per turn, in canonical order.
-
-    The worker side of the expansion `tile_dp/graph.py::_exec_chain` runs on a
-    scratch sim at build time. The purchases that function also realises are
-    deliberately absent here — see the module docstring: nothing carries them
-    yet (#14).
-    """
-    turns: list[list[str]] = []
-    for op in ops:
-        if op in _ENTITY_OPS and entity is None:
-            raise ValueError(
-                f"chain {ops} runs {op} but names no entity: the graph should "
-                "never carry such an edge")
-        if op == NO_ACT or op == "PASS":
-            turns.append(["PASS"])
-        elif op == "BUILD":
-            if entity not in K.ANIMALS:
-                raise ValueError(f"BUILD {entity!r} is not an animal")
-            turns.append([f"BUILD_{K.ANIMALS[entity]['structure']}"])
-        elif op in ("PLACE", "PLACE_ANIMAL"):
-            if entity not in K.ANIMALS:
-                raise ValueError(f"PLACE {entity!r} is not an animal")
-            turns.append(["PLACE", str(entity)])
-        elif op == "PLANT":
-            if entity not in K.CROPS:
-                raise ValueError(f"PLANT {entity!r} is not a crop")
-            turns.append(["PLANT", str(entity)])
-        else:                      # WATER, HARVEST, DIG, FERTILIZE, FEED, CARE,
-            turns.append([op])     # COLLECT_FERTILIZER - single worker ops
-    return turns
 
 
 def unit_positions(view: WorldView) -> list[tuple[int, int]]:
@@ -194,33 +162,53 @@ def unit_state_ids(view: WorldView, graph: TileGraph) -> list[int | None]:
     return ids
 
 
-def project_day(board, columns: list[int | None]) -> dict:
-    """The priced chains -> the dispatcher's plan for this day.
+def owned_tiles(view: WorldView, graph: TileGraph) -> list[tuple[tuple[int, int], int]]:
+    """Every non-LOCKED tile we own, with the graph state standing on it.
 
-    One unit per column, in `unit_positions` order; a unit with no priceable
-    tile gets an empty list (it passes). Chains are one day long by contract
-    (`ChainSpansDays`), so day 0 of the recovered plan is the day we are in.
+    The old rung priced only the tiles the units happened to stand on, so the
+    rest of the farm was never planned at all (one column per unit). The board is
+    position-invariant, so pricing every owned tile costs one more column.
     """
-    units: list[list[list[str]]] = []
-    for column in columns:
-        if column is None:
-            units.append([])
-            continue
-        _day, _state_id, chain_id = board.plans[column][0]
-        entity = entity_of_code(int(board.per_day_entity[column, 0]))
-        units.append(chain_turns(chain_ops(chain_id), entity))
-    return {"units": units, "market": []}
+    keys = view.me.keys
+    known = frozenset(graph.key_index)
+    out: list[tuple[tuple[int, int], int]] = []
+    for y in range(keys.shape[0]):
+        for x in range(keys.shape[1]):
+            key = int(keys[y][x])
+            if key == LOCKED_KEY:
+                continue
+            state_id = graph.key_index.get(key)
+            if state_id is None:
+                state_id = _nearest_modelled(key, known)
+            out.append(((x, y), int(state_id)))
+    return out
 
 
-def _poll(deadline) -> None:
-    """The rung's own bail: the ladder only gates BETWEEN rungs."""
-    if deadline is not None and deadline.expired():
-        raise TimeoutError("replanner over budget: the plan rung bailed")
+def hire_count(view: WorldView, tiles: list, money: float) -> int:
+    """How many hands to hire today (F039: they are cleared every night).
+
+    The ladder is cheap (1, 1, 2, 3, 5 for five hands) but not free, and the
+    seeds are the first claim on the purse, so the count is what fits after them
+    and is bounded by the tile-work actually waiting.
+    """
+    spare = max(0, len(tiles) - (1 + len(view.me.hands)))
+    want = min(MAX_HANDS, spare)
+    seed_bill = sum(float(K.CROPS[entity]["seed"]) for _xy, ops, entity in tiles
+                    if "PLANT" in ops and entity in K.CROPS)
+    purse = float(money) - seed_bill
+    hired = 0
+    while hired < want:
+        cost = float(K._hire_cost(int(view.me.hires_today) + hired))
+        if cost > purse:
+            break
+        purse -= cost
+        hired += 1
+    return hired
 
 
 def replan_day(runtime, obs, graph: TileGraph | None = None,
                contractor: TileContractor | None = None) -> dict:
-    """One day's plan: decode, price the board, project it. Polls at each step.
+    """One day's plan: decode, price the whole board, compile the day. Polls at each step.
 
     `graph` / `contractor` are injectable for tests; in the runtime they are
     loaded once and cached on the runtime object.
@@ -241,8 +229,8 @@ def replan_day(runtime, obs, graph: TileGraph | None = None,
     view = decode_world(obs, at_day_start=True,
                         graph_keys=frozenset(graph.key_index))
     _poll(deadline)
-    state_ids = unit_state_ids(view, graph)
-    owned = [state_id for state_id in state_ids if state_id is not None]
+    priced = owned_tiles(view, graph)
+    owned = [state_id for _xy, state_id in priced]
     # #12: the Walrasian master sets the internal prices. The stand-in
     # quotes stay as the FLOOR (the farm can buy any input at the quote)
     # and the exogenous product prices; the master's tâtonnement raises
@@ -251,32 +239,56 @@ def replan_day(runtime, obs, graph: TileGraph | None = None,
     # `CHISTA_MASTER=0` falls back to the flat stand-in quotes.
     import os
     if os.environ.get("CHISTA_MASTER", "1") == "1":
-        from planner.master import equilibrate, supply_from_obs
+        from agent.planner.master import equilibrate, supply_from_obs
         master = equilibrate(runtime, obs, contractor,
                              supply_from_obs(obs),
                              w_warm=getattr(runtime, "_master_w", None),
                              owned=owned, poll=lambda: _poll(deadline))
-        runtime._master_w = master.w          # tomorrow's warm start
-        runtime._master_last = master         # the plan record's evidence
+        runtime._master_w = master.w            # tomorrow's warm start
+        runtime._master_last = master           # the plan record's evidence
         p, w = master.p, master.w
     else:
         p, w = dual_stand_in(obs)
     _poll(deadline)
     # the day's plan: each tile's best response at the PUBLISHED prices
-    # (the master's λ mix is fractional; per-tile rounding is #13 and
-    # the secretary's routing is #14)
+    # (the master's λ mix is fractional; per-tile rounding is #13)
     board = contractor.price(p, w, owned)
     _poll(deadline)
-    # map each unit back onto its column in `owned`
-    columns: list[int | None] = []
-    column = 0
-    for state_id in state_ids:
-        if state_id is None:
-            columns.append(None)
-        else:
-            columns.append(column)
-            column += 1
-    return project_day(board, columns)
+    tiles: list[tuple[tuple[int, int], tuple[str, ...], str | None]] = []
+    yields: list[dict[str, int]] = []
+    for column, (xy, _state_id) in enumerate(priced):
+        _day, _state, chain_id = board.plans[column][0]
+        entity = entity_of_code(int(board.per_day_entity[column, 0]))
+        tiles.append((xy, chain_ops(chain_id), entity))
+        # what a HARVEST on this tile hands over, read off the observation: the
+        # engine's own yield_units (the tile is the one the chain works).
+        raw = obs["farms"][int(obs["player"])]["tiles"][xy[1]][xy[0]]
+        n = int(raw.get("yield_units", 0)) if isinstance(raw, dict) else 0
+        crop = raw.get("crop") if isinstance(raw, dict) else None
+        yields.append({str(crop): n} if n > 0 and crop else {})
+    _poll(deadline)
+    hires = hire_count(view, tiles, float(view.me.money))
+    # The sell side (#15): the shed guard needs to know what today will bring in.
+    # The compiler knows exactly (one unit per harvest chain is a lower bound for
+    # the guard; the routes themselves publish the real arrivals to the queue).
+    from agent.belief.shed import market_queue
+    harvest_estimate = sum(sum(y.values()) for y in yields)
+    sells = market_queue(obs, harvest_expected=harvest_estimate)
+    _poll(deadline)
+    plan = plan_day(tiles, unit_positions(view), new_hands=hires,
+                    bags=view.private.inventories, shed=view.private.shed,
+                    money=float(view.me.money), hires_today=view.me.hires_today,
+                    sells=sells, yields=yields,
+                    values=[float(v) for v in board.tile_values],
+                    prices=view.market_prices)
+    runtime._day_plan = plan                    # the record's evidence
+    return plan.as_plan()
+
+
+def _poll(deadline) -> None:
+    """The rung's own bail: the ladder only gates BETWEEN rungs."""
+    if deadline is not None and deadline.expired():
+        raise TimeoutError("replanner over budget: the plan rung bailed")
 
 
 def enable(runtime) -> None:

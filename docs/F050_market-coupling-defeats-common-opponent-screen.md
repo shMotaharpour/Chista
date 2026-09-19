@@ -3,7 +3,7 @@ opponents — ~330× the difference between adjacent pool agents — so a
 common-opponent screen cannot rank the pool: results are pair
 properties, not agent scalars.
 
-Source: offline/runner.py episodes, seed 0 (measured 2026-09-15 for
+Source: offline_lab/runner.py episodes, seed 0 (measured 2026-09-15 for
 issue #20's amendment). Evidence: precomputed-schedule-policy (the one
 confirmed open-loop agent) scored 191,812 vs PASS-proxy, 52,080 vs
 adaptive-replay-agent, 34,486 vs adaptive-public-state-multi-route,

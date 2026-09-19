@@ -25,8 +25,8 @@ from pathlib import Path
 import numpy as np
 
 from agent.obs import LOCKED_KEY, WorldView, decode_farm, decode_world
-from tile_dp.graph import TileGraph
-from tile_dp.tile_state import decode_tile
+from agent.tile_dp.graph import TileGraph
+from agent.tile_dp.tile_state import decode_tile
 
 GRAPH_PATH = Path(__file__).resolve().parents[1] / "tile_dp" / "models" \
     / "graph_tile_lifecycle.npz"
@@ -108,7 +108,7 @@ def test_equivalence_classes_count_plannable() -> None:
 def test_coverage_roundtrip_weedspawn_zero() -> None:
     """Scripted episode, weedSpawnChance = 0: every day-start key on BOTH
     farms is inside the shipped graph's key_index (graph coverage test)."""
-    from world.fast_sim import FastSim
+    from offline_lab.fast_sim import FastSim
 
     graph = _graph()
     known = frozenset(graph.key_index)
@@ -141,8 +141,8 @@ def test_magic_number_pinned_by_engine_probe() -> None:
     max_lifespan_step back, and pin the decoder's formula
     (planted + max_yield_day + 1) * TURNS_PER_DAY against it."""
     from kaggle_environments.envs.kaggriculture import kaggriculture as K
-    from tile_dp.tile_state import TURNS_PER_DAY
-    from world.fast_sim import FastSim
+    from agent.tile_dp.tile_state import TURNS_PER_DAY
+    from offline_lab.fast_sim import FastSim
 
     sim = FastSim({"episodeSteps": 5 * 24, "seed": 11,
                    "weedSpawnChance": 0.0})

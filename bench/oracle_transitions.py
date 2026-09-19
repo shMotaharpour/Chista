@@ -54,8 +54,8 @@ from __future__ import annotations
 import argparse
 from itertools import permutations
 
-from tile_dp import graph as G
-from tile_dp.chains import RESOURCE_NAMES
+from agent.tile_dp import graph as G
+from agent.tile_dp.chains import RESOURCE_NAMES
 
 # Ops the oracle permutes, per graph kind; the market-buying preconditions are
 # the executor's business (`_exec_chain` supplies them, exactly as the builder
@@ -73,7 +73,7 @@ def op_vocab(entity: str | None) -> tuple[str, ...]:
     One entity's graph gets that kind's vocabulary; the MERGED graph gets the
     union, because its states include both crops and animals.
     """
-    from tile_dp.chains import is_animal
+    from agent.tile_dp.chains import is_animal
 
     if entity is None:
         return tuple(sorted(set(OP_VOCAB_CROP) | set(OP_VOCAB_ANIMAL)))
@@ -142,7 +142,7 @@ def _op_gated_by_canon(graph, sid: int, ops) -> bool:
 
 
 def _state_of_node(graph, sid: int):
-    from tile_dp.tile_state import TileState
+    from agent.tile_dp.tile_state import TileState
 
     return TileState.unpack(int(graph.state_keys[sid]))
 

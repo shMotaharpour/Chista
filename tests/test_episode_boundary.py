@@ -19,7 +19,7 @@ this is a fact about how the harness invokes an agent, not about the rules.
 """
 from __future__ import annotations
 
-from world.kaggle_env import run_episode
+from offline_lab.kaggle_env import run_episode
 
 TURNS_PER_DAY = 24          # competition rule, fixed (F029)
 EPISODE_STATES = 720        # F029: "720 turns" - states, as this file shows

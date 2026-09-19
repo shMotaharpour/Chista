@@ -29,10 +29,12 @@ from pathlib import Path
 
 import numpy as np
 
-from tile_dp.chains import N_RESOURCE, RESOURCE_ID, chain_ops
-from tile_dp.contractor import HORIZON_DAYS, TileContractor, price_board
-from tile_dp.graph import build_graph
-from tile_dp.tile_state import KIND_NONE, KIND_PLANT, TileState
+from agent.tile_dp.chains import chain_ops
+from agent.world.model import RESOURCE_ID
+from agent.world.model import N_RESOURCE
+from agent.tile_dp.contractor import HORIZON_DAYS, TileContractor, price_board
+from agent.tile_dp.graph import build_graph
+from agent.tile_dp.tile_state import KIND_NONE, KIND_PLANT, TileState
 
 from kaggle_environments.envs.kaggriculture import kaggriculture as K
 
@@ -51,7 +53,7 @@ def _graph():
     """The shipped merged graph, loaded once per run."""
     global _GRAPH
     if _GRAPH is None:
-        from tile_dp.graph import TileGraph
+        from agent.tile_dp.graph import TileGraph
         _GRAPH = TileGraph.load(GRAPH_PATH)
     return _GRAPH
 
@@ -402,7 +404,13 @@ def test_budget_sweep_and_recovery() -> None:
     owned = list(range(0, min(100, graph.n_states)))
     one = min(_time_ms(contractor.price, p, w, [0]) for _ in range(5))
     hundred = min(_time_ms(contractor.price, p, w, owned) for _ in range(5))
-    recovery = max(0.0, hundred - one)
+    # The recovery is a DIFFERENCE of two readings, so both must see the same
+    # machine: measured under the six-worker suite, taking the minimum of each
+    # separately inflated it (16.6 ms and 6.6 ms on runs whose solo readings were
+    # unchanged) because `hundred` caught another process while `one` did not.
+    # Paired back-to-back, then the floor of the pairs.
+    recovery = min(max(0.0, _time_ms(contractor.price, p, w, owned)
+                       - _time_ms(contractor.price, p, w, [0])) for _ in range(5))
     print(f"  sweep {solo:.2f} ms  price(1 tile) {one:.2f} ms  "
           f"price(100 tiles) {hundred:.2f} ms  recovery {recovery:.2f} ms")
     assert solo <= SWEEP_CEILING_MS, f"sweep {solo:.2f} ms"

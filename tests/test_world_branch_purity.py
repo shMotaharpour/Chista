@@ -18,7 +18,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from world.fast_sim import FastSim
+from offline_lab.fast_sim import FastSim
 
 from tests.test_world_parity import action_for, _clean
 
