@@ -106,7 +106,15 @@ def _build_worker_route(
             task = tasks_by_id[tid]
             needed_item = target_needs_item.get(tid)
             
-            setup = 1 if (needed_item and needed_item not in worker_items) else 0
+            # A fetch is a trip to a shed door and back, not one turn. Charging one turn let the
+            # schedule promise a consume at an hour the compiler could not travel to, so the op
+            # was dropped and the chain stayed half-worked. What the fetch costs OVER the direct
+            # walk is the extra distance, and it is zero when the worker is already at a door.
+            setup = 0
+            if needed_item and needed_item not in worker_items:
+                door = min(SHED_ACCESS, key=lambda t: manhattan(current_pos, t))
+                setup = (manhattan(current_pos, door) + manhattan(door, task_cell)
+                         - manhattan(current_pos, task_cell))
             task_cell = task.cell if task.cell else SHED_ACCESS[0]
             dist = manhattan(current_pos, task_cell)
             
