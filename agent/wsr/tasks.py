@@ -61,7 +61,19 @@ class TaskArray:
     cells: np.ndarray = field(default_factory=lambda: np.zeros((0, 2), dtype=np.int16))
     columns: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int8))
     pred: np.ndarray = field(default_factory=lambda: np.zeros((0, 0), dtype=bool))
-    op_of: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int8))
+    earliest: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int8))
+    latest: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int8))
+
+    # Two columns bound every task in time, and both are given to the search rather than looked up
+    # by it: the timetable the planner hands over is the only source.
+    #
+    #   earliest  a fetch cannot happen before its good is in the shed, and a planting cannot
+    #             happen before its seed is bought - same rule, different actor.
+    #   latest    the last hour the task may run, the horizon by default.
+    #
+    # Not yet carried: a ceiling on a tile that harvests, saying the crop must reach the shed by a
+    # given hour, and the harvest aggregation that lets a worker take wheat or fertilizer off the
+    # tile instead of the shed. The columns are here so those land without reshaping the array.
 
     @property
     def n(self) -> int:
@@ -81,6 +93,15 @@ class TaskArray:
     @property
     def pred_count(self) -> np.ndarray:
         return self.pred.sum(axis=0)
+
+    def window(self, hour: np.ndarray) -> np.ndarray:
+        """Which tasks may run at `hour`, per state - both columns at once.
+
+        `hour` is (batch, n): the hour each state would reach each task. A task outside its window
+        is not a candidate, which is how an action the clock forbids gets dropped rather than
+        scheduled and discarded later.
+        """
+        return (hour >= self.earliest) & (hour <= self.latest)
 
     def ready(self, done: np.ndarray) -> np.ndarray:
         """Which tasks have all their predecessors done - one matrix product.
