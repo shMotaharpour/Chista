@@ -34,9 +34,9 @@ from dataclasses import replace
 
 import numpy as np
 
-from tile_dp import graph as G
-from tile_dp.contractor import TileContractor
-from tile_dp.graph import build_graph
+from agent.tile_dp import graph as G
+from agent.tile_dp.contractor import TileContractor
+from offline_lab.build.graph import build_graph
 
 
 def _unpruned_build(entity: str | None):

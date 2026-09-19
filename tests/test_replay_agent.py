@@ -18,8 +18,8 @@ import random
 from pathlib import Path
 from typing import Any
 
-from world.fast_sim import FastSim
-from world.replay_agent import (EpisodeRecord, PASS_ACTION,
+from offline_lab.fast_sim import FastSim
+from agent.world.replay_agent import (EpisodeRecord, PASS_ACTION,
                                 ReplayValidationError, ReplayAgent, SCHEMA)
 
 STEPS = 96
@@ -262,7 +262,7 @@ def test_engine_never_mutates_shared_actions(tmp_path: Path) -> None:
     sim.run([MixedAgent(rec0), MixedAgent(rec1)])
     assert shared == orig, "fast_sim mutated a submitted action"
 
-    from world import kaggle_env
+    from offline_lab import kaggle_env
     env = kaggle_env.run_episode(
         [MixedAgent(rec0), MixedAgent(rec1)],
         configuration={"episodeSteps": STEPS, "seed": SEED})
@@ -283,7 +283,7 @@ def _replay_via_fast_sim(rec0: EpisodeRecord, rec1: EpisodeRecord,
 
 def _replay_via_harness(rec0: EpisodeRecord, rec1: EpisodeRecord,
                         seed: int, steps: int) -> list[float]:
-    from world import kaggle_env
+    from offline_lab import kaggle_env
     env = kaggle_env.run_episode(
         [ReplayAgent(rec0), ReplayAgent(rec1)],
         configuration={"episodeSteps": steps, "seed": seed})

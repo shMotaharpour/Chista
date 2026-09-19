@@ -44,6 +44,10 @@ def market_at(market, hour: int) -> list:
     if per_hour:
         row = market[hour] if 0 <= hour < len(market) else []
         return [list(order) for order in (row or [])]
+    # A day plan may queue orders as a FLAT list of orders (the M1 shape and the
+    # compiler's own output) or as naive rows without being nested one level
+    # deeper than an order. Both mean "hour 0"; only a row whose elements are
+    # lists is a per-hour row.
     return [list(order) for order in market] if hour == 0 else []
 
 
@@ -88,7 +92,7 @@ def dispatch_plan(plan, obs) -> dict:
         # F031: the engine drops the 11th silently - never send one
         market = market[:MAX_MARKET_ORDERS]
     # #15: `plan["market"]` is a per-hour queue (`market[hour] -> [orders]`),
-    # built by `secretary/inventory.py::market_queue`: the cap is per TURN
+    # built by `day/inventory.py::market_queue`: the cap is per TURN
     # (F031), so a 24-turn day has 240 slots, and a large forced sale is
     # spread across the day's turns instead of landing as one basket (the
     # measured scope of that is in `plan_sales`).

@@ -11,13 +11,13 @@ reader could not repeat it -- and the numbers did not reproduce (R005).
 The instance is the one the docs/F057 sweep builds for `feed`: `n` major feed
 tasks on the 5x5 grid, ten workers with the first entering at hour 0 and the
 rest at hour 1, horizon 24 -- the same `build()` as
-`tests/wrs/test_oxa_false_infeasible.py` and `bench/bench_oxa_fuzz.py`'s
+`tests/day_layer/test_oxa_false_infeasible.py` and `bench/bench_oxa_fuzz.py`'s
 sweep. Compare revisions the F057 way, one revision at a time:
 
-    git show <rev>:secretary/solvers/oxa_solver.py > /tmp/old.py
-    cp /tmp/old.py secretary/solvers/oxa_solver.py
+    git show <rev>:day/solvers/oxa_solver.py > /tmp/old.py
+    cp /tmp/old.py day/solvers/oxa_solver.py
     .venv/bin/python -m bench.bench_oxa_guard_cost
-    git checkout secretary/solvers/oxa_solver.py
+    git checkout day/solvers/oxa_solver.py
 
 `validate=False` is deliberate: the guard's cost is the solver's own, not the
 verifier's, and the runtime path (`agent/`) does not verify.
@@ -26,8 +26,8 @@ from __future__ import annotations
 
 import time
 
-from secretary.models import Cell, Instance, Item, MajorTask, Worker
-from secretary.solvers.oxa_solver import OxaConfig, solve_oxa
+from agent.wsr.models import Cell, Instance, Item, MajorTask, Worker
+from agent.wsr.solvers.oxa_solver import OxaConfig, solve_oxa
 
 STOCK = {Item.WHEAT: 200, Item.FERTILIZER: 200, Item.COW: 50, Item.SHEEP: 50, Item.GOOSE: 50}
 TILES = (8, 12, 20, 25)

@@ -7,9 +7,9 @@ the optimum. The monolithic solve's default mode builds no objective —
 
 ## What was measured
 
-The instance is the aggregating one from `tests/wrs/test_cpsat_solver.py`
+The instance is the aggregating one from `tests/day_layer/test_cpsat_solver.py`
 (4 × `feed`, 6 workers offered, 50 wheat, 24 hours), against
-`secretary/solvers/cpsat_solver.py` as ported in F052.
+`day/solvers/cpsat_solver.py` as ported in F052.
 
 | configuration | result |
 |---|---|
@@ -40,7 +40,7 @@ parasitic on the one solver whose cost is meaningless for this objective.
 
 ## What the test asserts now
 
-`tests/wrs/test_cpsat_solver.py::test_binary_search_pool_is_the_minimum_feasible_pool`:
+`tests/day_layer/test_cpsat_solver.py::test_binary_search_pool_is_the_minimum_feasible_pool`:
 
 1. the binary search returns a schedule, `verify_solution` accepts it;
 2. its pool is **minimal**: re-solving the same instance with the pool capped one
@@ -53,6 +53,6 @@ of `active - 1`, which admits a schedule and reddens the assertion).
 ## Why it matters
 
 The `xfail` is gone and the suite is deterministic (5/5 runs of the settled test,
-80 passed + 1 skipped for `tests/wrs`). The secretary's drop loop (#14 §6) leans
+80 passed + 1 skipped for `tests/day_layer`). The day's drop loop (#14 §6) leans
 on INFEASIBLE verdicts, so which verdicts are trustworthy had to be settled
 before any solver comparison — that is what this finding records.

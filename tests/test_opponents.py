@@ -106,7 +106,7 @@ def test_every_duplicate_payload_is_declared() -> None:
         digest = hashlib.sha256((slug / "agent.py").read_bytes()).hexdigest()
         by_hash.setdefault(digest, []).append(slug.name)
     dupes = {h: names for h, names in by_hash.items() if len(names) > 1}
-    from offline.pool.registry import DUPLICATE_OF
+    from offline_lab.pool.registry import DUPLICATE_OF
     undeclared = {}
     for digest, names in dupes.items():
         # every slug with a twin must be a KEY in DUPLICATE_OF naming its

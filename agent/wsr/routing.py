@@ -1,0 +1,535 @@
+"""The day compiler: one chain, one unit, one day the engine accepts.
+
+The tile graph prices a chain as if the worker already stood on the tile with its inputs in
+its bag. The engine does not: it refuses an unmet precondition in silence, which looks like
+work in the log. This module builds the day that satisfies the preconditions - the walk, the
+shed trips, the pickups, the drop - and names whatever it could not fit rather than emitting
+an op the engine would refuse.
+
+What the day needs from the market is reported, not scheduled: when a purchase lands is the
+secretary's decision, and so is when hands are hired.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Iterable, Mapping, Sequence
+
+from kaggle_environments.envs.kaggriculture import kaggriculture as K
+
+from agent.tile_dp.chains import actions_of
+from agent.wsr.models import DayOnCell, Instance, Worker
+from agent.wsr.oxa_solver import OxaConfig, solve_oxa
+from agent.world.action_rules import CARRIES, YIELDS
+from agent.world.board import MOVE_DELTA
+from agent.world.board import manhattan
+from agent.world.rules import (DEFAULT_BOARD, MAX_ORDERS_PER_TURN, SHED_ACCESS,
+                               TURNS_PER_DAY, spawn_cell)
+
+
+
+
+def shed_access(board: int = DEFAULT_BOARD) -> tuple[tuple[int, int], ...]:
+    """The tiles from which PICKUP and DROP work.
+
+    A definition, so it comes from the world rather than from the engine's private helper:
+    `SHED_ACCESS` is the same four inner-corner tiles in the engine's NWSE order.
+    """
+    return tuple((int(x), int(y)) for x, y in SHED_ACCESS)
+
+
+def walk(start: tuple[int, int], goal: tuple[int, int],
+         board: int = DEFAULT_BOARD) -> list[tuple[str, ...]]:
+    """The move ops that carry a unit from `start` to `goal`, x first then y.
+
+    Shortest by construction (Manhattan) and always legal: the engine only
+    refuses a move that leaves the board, and this never emits one. Ties are
+    broken x-then-y so a plan is a function of its inputs, not of a hash order.
+    """
+    x, y = int(start[0]), int(start[1])
+    gx, gy = int(goal[0]), int(goal[1])
+    out: list[tuple[str, ...]] = []
+    while x != gx:
+        step = "EAST" if gx > x else "WEST"
+        x += MOVE_DELTA[step][0]
+        out.append((step,))
+    while y != gy:
+        step = "SOUTH" if gy > y else "NORTH"
+        y += MOVE_DELTA[step][1]
+        out.append((step,))
+    if not (0 <= x < board and 0 <= y < board):
+        raise ValueError(f"walk({start}, {goal}) leaves the board")
+    return out
+
+
+def nearest_shed(pos: tuple[int, int], board: int = DEFAULT_BOARD) -> tuple[int, int]:
+    """The closest shed-access tile, ties broken by the engine's NWSE order."""
+    tiles = shed_access(board)
+    return min(tiles, key=lambda t: (abs(t[0] - pos[0]) + abs(t[1] - pos[1]), tiles.index(t)))
+
+
+@dataclass(frozen=True)
+class Need:
+    """One thing the market must deliver, and the last turn it may land on."""
+
+    hour: int                # latest landing hour (a pickup needs h_buy < h_pick)
+    order: tuple             # the engine order, e.g. ("BUY_SEED", crop, 1)
+    reason: str              # which op wanted it
+
+
+@dataclass(frozen=True)
+class UnitRoute:
+    """One unit's whole day, plus what it cost the plan to build it."""
+
+    unit: int
+    ops: tuple[tuple[str, ...], ...]     # TURNS_PER_DAY entries, PASS-padded
+    needs: tuple[Need, ...]
+    dropped: tuple[str, ...]             # ops the day could not carry
+    hours_used: int
+    drop_hour: int | None
+    walked: int                          # move ops spent
+    #: (hour, item, units) the day's DROP puts in the shed. A SELL can only
+    #: reach the shed, so this is what the day's market may actually sell.
+    arrivals: tuple[tuple[int, str, int], ...] = ()
+
+    @property
+    def carry_trips(self) -> int:
+        """Shed trips this route spends — the travel the tile graph does not see."""
+        return sum(1 for op in self.ops if op and op[0] == "PICKUP")
+
+
+def op_name(action) -> str:
+    """The engine's spelling of an op, for an op that arrived from the chain registry."""
+    return str(getattr(action.op, "value", action.op))
+
+
+def carried_item(action, entity: str | None) -> str | None:
+    """What this op needs in the unit's bag, or None if it needs nothing."""
+    name = op_name(action)
+    if name == "PLACE":
+        return entity
+    return CARRIES.get(name)
+
+
+def buy_order(item: str, *, for_seed: bool = False) -> tuple:
+    """The engine's order for something a day needs.
+
+    A crop is BOTH a seed and a product - wheat is both - so the order cannot be read off the
+    item: it follows from the op that wants it. PLANT spends a seed, FEED and FERTILIZE spend
+    a product, PLACE an animal.
+    """
+    if for_seed:
+        return ("BUY_SEED", item, 1)
+    if item in K.ANIMALS:
+        return ("BUY_ANIMAL", item, 1)
+    return ("BUY_PRODUCT", item, 1)
+
+
+def route_unit(ops: Sequence[str], entity: str | None, pos: tuple[int, int], *,
+               unit: int = 0, hour: int = 0, hours: int = TURNS_PER_DAY,
+               stock: Mapping[str, int] | None = None,
+               times: Sequence[int] | None = None,
+               target: tuple[int, int] | None = None,
+               carried: Mapping[str, int] | None = None,
+               harvest_yields: Mapping[str, int] | None = None,
+               drop: bool = True, board: int = DEFAULT_BOARD) -> UnitRoute:
+    """Compile one chain into one unit's day.
+
+    `ops` is a chain from the registry, so its ops arrive as `WorkerAction` objects; the day
+    this returns is the engine's own shape - one tuple of strings per turn.
+
+    `pos` is where the unit stands at `hour`; `target` is the tile the chain
+    works (defaults to `pos` — the tile it is standing on). `carried` is what
+    the unit already holds, so a route does not buy what it already has.
+
+    Ops whose preconditions cannot be met inside `hours` are **dropped and
+    named**, never emitted: an op the engine refuses is worse than an op that
+    was never sent, because it looks like work in the log.
+    """
+    target = (int((target or pos)[0]), int((target or pos)[1]))
+    bag = {k: int(v) for k, v in (carried or {}).items()}
+    yields = dict(harvest_yields or {})
+    bagged: dict[str, int] = {}
+    bagged_ops = 0
+    turns = actions_of(tuple(ops), entity)
+    seq: list[tuple[str, ...]] = []
+    needs: list[Need] = []
+    dropped: list[str] = []
+    at = (int(pos[0]), int(pos[1]))
+    walked = 0
+    drop_hour: int | None = None
+
+    def stocked(item: str) -> bool:
+        """Is the good already in the shed?
+
+        Supplying the shed is the secretary's job, not the day layer's, so when the good is
+        there the day asks for nothing - and a day that asks for nothing cannot be refused.
+        """
+        return int(stock.get(item, 0)) > 0 if stock else False
+
+    def free() -> int:
+        """Turns left, counting from `hour`."""
+        return hours - (hour + len(seq))
+
+    def at_hour(want: int) -> None:
+        """Pad with PASS so the op lands on the hour the schedule gave it.
+
+        The scheduler decided when each op happens, travel included; this function only writes
+        the turns. Without it the compiler counted hours of its own and every op landed one
+        turn early - the setup turn the scheduler allows for.
+        """
+        while hour + len(seq) < want:
+            seq.append(("PASS",))
+
+    def push(steps: Iterable[tuple[str, ...]]) -> None:
+        nonlocal walked
+        for step in steps:
+            if step and step[0] in MOVE_DELTA:
+                walked += 1
+            seq.append(step)
+
+    for op_index, action in enumerate(turns):
+        name = op_name(action)
+        item = carried_item(action, entity)
+        if item is not None and bag.get(item, 0) <= 0:
+            shed = nearest_shed(at, board)
+            back = walk(shed, target, board)
+            trip = walk(at, shed, board) + [("PICKUP", item, 1)] + back
+            if free() < len(trip) + 1:
+                dropped.append(name)
+                continue
+            push(trip)
+            # the pickup resolves before that turn's market, so the buy must land on an
+            # earlier turn than the pickup
+            pickup_turn = hour + len(seq) - len(back) - 1
+            if not stocked(item):
+                needs.append(Need(hour=pickup_turn - 1, order=buy_order(item), reason=name))
+            bag[item] = 1
+            at = target
+        elif at != target:
+            trip = walk(at, target, board)
+            if free() < len(trip) + 1:
+                dropped.append(name)
+                continue
+            push(trip)
+            at = target
+        if free() < 1:
+            dropped.append(name)
+            continue
+        if name == "PLANT":
+            # Seeds ride in `private["seeds"]` and PLANT consumes them directly: one market
+            # order and a worker on the tile, with nothing to carry. The buy still lands after
+            # that turn's units, so it must be on an earlier turn than the plant.
+            #
+            # The shed does NOT cover this: the shed holds the nine PRODUCTS, and a seed is a
+            # different good that only ever arrives through a BUY_SEED order.
+            needs.append(Need(hour=hour + len(seq) - 1,
+                              order=buy_order(action.item.value, for_seed=True),
+                              reason="PLANT"))
+        if times is not None and op_index < len(times):
+            # `at_hour` pads until the NEXT push lands on that hour, so the op's own hour is
+            # what it is given
+            at_hour(int(times[op_index]))
+        push([tuple(action.as_list())])
+        if name == "HARVEST":
+            bagged_ops += 1
+            # the tile's own yield_units is what the engine hands over (the
+            # caller reads it off the observation, so this is a measurement);
+            # without it the drop still happens and the sell waits for tomorrow
+            item = action.item.value if action.item is not None else (entity or "")
+            bagged[item] = bagged.get(item, 0) + int(yields.get(item, 0))
+        elif name == "COLLECT_FERTILIZER":
+            bagged_ops += 1
+            bagged[YIELDS["COLLECT_FERTILIZER"]] = bagged.get(YIELDS["COLLECT_FERTILIZER"], 0) + 1
+
+    arrivals: list[tuple[int, str, int]] = []
+    if drop and bagged_ops > 0:
+        shed = nearest_shed(at, board)
+        trip = walk(at, shed, board)
+        if free() >= len(trip) + 1:
+            push(trip)
+            push([("DROP",)])
+            at = shed
+            drop_hour = hour + len(seq) - 1
+            # the DROP resolves before that turn's market (units act, then the
+            # market), so goods dropped at hour h can be sold at hour h
+            arrivals = [(drop_hour, item, units)
+                        for item, units in sorted(bagged.items()) if units > 0]
+
+    head = (("PASS",),) * max(0, int(hour))
+    padded = head + tuple(seq)
+    padded = padded + (("PASS",),) * max(0, hours - len(padded))
+    route = UnitRoute(unit=unit, ops=padded[:hours], needs=tuple(needs),
+                      dropped=tuple(dropped), hours_used=len(seq),
+                      drop_hour=drop_hour, walked=walked,
+                      arrivals=tuple(arrivals))
+    _assert_shed_ops_are_reachable(route, pos, 0, board)
+    return route
+
+
+def _assert_shed_ops_are_reachable(route: UnitRoute, start: tuple[int, int],
+                                   hour: int, board: int) -> None:
+    """Every PICKUP/DROP the route emits must be on a shed-access tile.
+
+    The compiler's own precondition check: the engine refuses both ops anywhere
+    else **in silence** (`:344, 359`), so a route that emits one is a plan that
+    lies about its day. Simulating the walk is cheap and it is the only way to
+    know where the unit actually is at that turn.
+    """
+    tiles = set(shed_access(board))
+    pos = (int(start[0]), int(start[1]))
+    for index, op in enumerate(route.ops):
+        if not op:
+            continue
+        if op[0] in MOVE_DELTA:
+            dx, dy = MOVE_DELTA[op[0]]
+            pos = (pos[0] + dx, pos[1] + dy)
+        elif op[0] in ("PICKUP", "DROP") and pos not in tiles:
+            raise AssertionError(
+                f"unit {route.unit} would {op[0]} at {pos} on turn {hour + index}: "
+                "not a shed-access tile, so the engine refuses it in silence")
+
+
+# --------------------------------------------------------------- the whole day
+
+@dataclass(frozen=True)
+class DayPlan:
+    """A whole farm-day: what each unit does, and what the market does."""
+
+    units: tuple[tuple[tuple[str, ...], ...], ...]
+    market: tuple[tuple[tuple, ...], ...]        # per hour, in the engine's own order
+    needs: tuple[Need, ...]
+    hires: int
+    dropped: tuple[str, ...]                     # ops the day could not carry
+    unplaced: tuple[Need, ...]                   # needs the market could not take
+    idle_units: int                              # units with no tile to work
+    assignments: tuple[tuple[int, int] | None, ...]   # unit -> (tile x, y)
+
+    def as_plan(self) -> dict:
+        """The dispatcher's shape (`agent/dispatch.py`)."""
+        return {"units": [list(unit) for unit in self.units],
+                "market": [list(row) for row in self.market]}
+
+
+def needs_cost(needs: Sequence[Need], prices: Mapping[str, float] | None = None) -> float:
+    """What the market orders cost at the engine's own tables and today's quotes."""
+    total = 0.0
+    for need in needs:
+        op = need.order
+        if op[0] == "BUY_SEED":
+            total += float(K.CROPS[op[1]]["seed"])
+        elif op[0] == "BUY_ANIMAL":
+            total += float(K.ANIMALS[op[1]]["cost"])
+        else:
+            total += float((prices or {}).get(op[1], 0.0))
+    return total
+
+
+def hire_cost(hires_today: int, count: int) -> float:
+    """The engine's own hire ladder, from the hires already made today."""
+    return float(sum(K._hire_cost(int(hires_today) + i) for i in range(int(count))))
+
+
+def merge_market(sells: Sequence[Sequence[Sequence]], needs: Sequence[Need], *,
+                 shed_total: float, capacity: int, hires: int = 0,
+                 hours: int = TURNS_PER_DAY,
+                 harvest_sells: Sequence[tuple[int, str, int]] = ()
+                 ) -> tuple[list[list[tuple]], list[Need]]:
+    """Sells, hires and the routes' buys -> one queue, per turn.
+
+    The engine settles a turn in a fixed order - land, sells, hires, purchases - and it
+    matters: a turn's sells free shed room *before* that turn's buys, and a product or animal
+    buy is refused while the shed is full. A buy whose latest hour passes unplaced is
+    returned, never dropped quietly.
+    """
+    queue: list[list[tuple]] = [[] for _ in range(hours)]
+    for hour in range(hours):
+        row = sells[hour] if hour < len(sells) else []
+        queue[hour].extend(tuple(order) for order in (row or []))
+    # The day's own harvest, sold the same day: a unit's DROP resolves before that turn's
+    # market, so the goods are in the shed in time for a SELL in the same row. Without this
+    # the day's produce waits for tomorrow's queue.
+    for hour, item, units in sorted(harvest_sells):
+        for target in range(max(0, int(hour)), hours):
+            if len(queue[target]) < MAX_ORDERS_PER_TURN:
+                queue[target].append(("SELL", str(item), int(units)))
+                break
+    room = float(capacity) - float(shed_total)
+    pending = sorted(needs, key=lambda n: (n.hour, n.order))
+    unplaced: list[Need] = []
+    for hour in range(hours):
+        room += sum(float(order[2]) for order in queue[hour]
+                    if order and order[0] == "SELL")
+        if hour == 0 and hires:
+            queue[hour].extend(tuple(["HIRE"]) for _ in range(int(hires)))
+        for need in list(pending):
+            if need.hour < hour:
+                pending.remove(need)
+                unplaced.append(need)          # its deadline passed: never sent
+                continue
+            lands_in_shed = need.order[0] in ("BUY_PRODUCT", "BUY_ANIMAL")
+            if lands_in_shed and room < 1.0:
+                continue                        # no room this turn: try the next
+            if len(queue[hour]) >= MAX_ORDERS_PER_TURN:
+                break
+            queue[hour].append(need.order)
+            pending.remove(need)
+            if lands_in_shed:
+                room -= 1.0
+        if len(queue[hour]) > MAX_ORDERS_PER_TURN:
+            raise ValueError(
+                f"hour {hour} queues {len(queue[hour])} market orders; the engine executes "
+                f"{MAX_ORDERS_PER_TURN} and drops the rest in silence")
+    unplaced.extend(pending)
+    return queue, unplaced
+
+
+def plan_day(tiles: Sequence[tuple[tuple[int, int], Sequence[str], str | None]],
+             units: Sequence[tuple[int, int]], *, new_hands: int = 0,
+             bags: Sequence[Mapping[str, int]] = (), shed: Mapping[str, int] | None = None,
+             money: float = 0.0, hires_today: int = 0,
+             sells: Sequence[Sequence[Sequence]] | None = None,
+             yields: Sequence[Mapping[str, int]] | None = None,
+             values: Sequence[float] | None = None,
+             prices: Mapping[str, float] | None = None,
+             capacity: int = 100, board: int = DEFAULT_BOARD,
+             hours: int = TURNS_PER_DAY) -> DayPlan:
+    """The whole farm's day: assign the priced tiles to the units and compile.
+
+    `tiles` is what the contractor priced — `(tile, chain ops, entity)` per column,
+    in the caller's order. `units` are the positions that exist now (farmer first,
+    then hands in order); `new_hands` are the ones hired at hour 0, placed by the
+    engine's own spawn rule so their routes start where they will really stand.
+
+    Assignment is nearest-first, farmer first, ties by tile position — a function
+    of its inputs, not of a hash order. A unit with no tile to work gets a PASS
+    day, and every unit is *counted*: `idle_units` says how much of the farm the
+    day's chains did not reach.
+    """
+    positions = [(int(p[0]), int(p[1])) for p in units]
+    starts = [0] * len(positions)
+
+    def compile_for(hours_by_worker: dict[int, dict[int, list[int]]],
+                    op_hours=None) -> list[UnitRoute]:
+        """One route per (worker, column) the schedule gives that worker."""
+        out: list[UnitRoute] = []
+        for index, schedule in hours_by_worker.items():
+            for column, op_hours_list in schedule.items():
+                tile, ops, entity = tiles[column]
+                out.append(route_unit(ops, entity, positions[index], unit=index,
+                                      hour=starts[index],
+                                      target=tile, times=op_hours_list,
+                                      carried=bags[index] if index < len(bags) else None,
+                                      harvest_yields=(yields[column] if yields
+                                                      and column < len(yields) else None),
+                                      board=board, hours=hours, stock=shed))
+        return out
+
+    def solve_for(workers_starts: list[int]) -> tuple[dict[int, dict[int, list[int]]], list[int]]:
+        """Who works what, and in what order, according to the scheduler."""
+        days = [DayOnCell(ops, tile, entity, None) for tile, ops, entity in tiles]
+        instance = Instance.compile(
+            workers=[Worker(index=index, earliest_start=workers_starts[index])
+                     for index in range(len(workers_starts))],
+            days=days)
+        solved = solve_oxa(instance, OxaConfig(min_workers=1))
+        if solved.solution is None:
+            return {}, []
+        per_worker: dict[int, dict[int, list[int]]] = {}
+        for route in solved.solution.routes:
+            for task in route.tasks:
+                column = int(task.task_id.split("_", 1)[0][1:])
+                per_worker.setdefault(route.worker_index, {}).setdefault(column, []).append(
+                    int(task.exec_time))
+        return per_worker, [route.worker_index for route in solved.solution.routes]
+
+    # A hand is hired inside turn 0's market, AFTER that turn's unit actions, so it stands where
+    # the engine puts it and its first action is hour 1. Spawning from the day-start positions
+    # would put it a tile out. So: solve for the units that exist, walk their first turn, spawn.
+    schedule, _ = solve_for(starts)
+    if not schedule and new_hands:
+        # nothing to do with the units that exist; the hands still get their day
+        pass
+    settled = list(positions)
+    for route in compile_for(schedule):
+        first = route.ops[0] if route.ops else ("PASS",)
+        if first and first[0] in MOVE_DELTA:
+            dx, dy = MOVE_DELTA[first[0]]
+            settled[route.unit] = (settled[route.unit][0] + dx, settled[route.unit][1] + dy)
+
+    occupied = list(settled)
+    for _ in range(int(new_hands)):
+        positions.append(spawn_cell(occupied))
+        starts.append(1)                       # hired in turn 0's market: available from hour 1
+        occupied.append(positions[-1])
+
+    schedule, active = solve_for(starts)
+    routes = compile_for(schedule) if schedule else []
+
+    assigned: list[int | None] = [None] * len(positions)
+    for index, per_column in schedule.items():
+        if per_column:
+            assigned[index] = next(iter(per_column))
+
+    if not routes:
+        # INFEASIBLE: the day's work does not fit the pool it was offered, or the scheduler could
+        # place nothing. An all-PASS day is honest; a schedule the engine would refuse is not.
+        return DayPlan(
+            units=tuple((("PASS",),) * hours for _ in positions), market=(), needs=(), hires=0,
+            dropped=(), unplaced=(), idle_units=len(tiles),
+            assignments=tuple(None for _ in positions))
+
+    existing = list(range(len(units)))
+    settled = list(positions)
+    def day_bill(chosen: list[UnitRoute]) -> tuple[float, float]:
+        """(the market bill, and what tomorrow's seeds for the same work would cost).
+
+        The reserve is the plan's own seed bill, not a tuned fraction: a farm that spends its
+        last coin on animals cannot re-plant tomorrow.
+        """
+        wants = [need for route in chosen for need in route.needs]
+        bill = needs_cost(wants, prices) + hire_cost(hires_today, new_hands)
+        seed_reserve = needs_cost([n for n in wants if n.order[0] == "BUY_SEED"], prices)
+        return bill, seed_reserve
+
+    # A refused buy is a silent no-op, so the day is trimmed until the purse covers it -
+    # least valuable plan first, where "value" is the tile DP's own V_0, a number the
+    # contractor already computed rather than a distance heuristic.
+    for _ in range(len(positions) + 1):
+        bill, reserve = day_bill(routes)
+        if bill + reserve <= float(money):
+            break
+        if not routes:
+            break
+        worst = min(routes, key=lambda route: (values[assigned[route.unit]]
+                                               if values and assigned[route.unit] is not None
+                                               else 0.0, -route.unit))
+        routes.remove(worst)
+
+    needs = [need for route in routes for need in route.needs]
+    arrivals = [arrival for route in routes for arrival in route.arrivals]
+    queue, unplaced = merge_market(sells or [], needs, shed_total=sum(
+        int(v) for v in (shed or {}).values()), capacity=capacity,
+        hires=new_hands, hours=hours, harvest_sells=arrivals)
+
+    by_unit: list[tuple[tuple[str, ...], ...]] = [((("PASS",),) * hours)
+                                                  for _ in positions]
+    for route in routes:
+        by_unit[route.unit] = route.ops
+    # a route whose buy could not be placed is a route that would emit no-ops:
+    # its day becomes PASS rather than a lie
+    bad = {need for need in unplaced}
+    if bad:
+        for route in routes:
+            if bad.intersection(route.needs):
+                by_unit[route.unit] = (("PASS",),) * hours
+
+    return DayPlan(
+        units=tuple(by_unit), market=tuple(tuple(row) for row in queue),
+        needs=tuple(needs), hires=int(new_hands),
+        dropped=tuple(op for route in routes for op in route.dropped),
+        unplaced=tuple(unplaced),
+        idle_units=sum(1 for column in assigned if column is None),
+        assignments=tuple((tiles[c][0] if c is not None else None)
+                          for c in assigned))
+

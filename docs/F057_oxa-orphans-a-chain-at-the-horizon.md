@@ -14,7 +14,7 @@ The issue-#14 sweep: ten workers (the first entering at hour 0, the rest at hour
 each animal. Every INFEASIBLE answer was put to the oracle `cpsat_binarySearch`
 — the oracle by F056, since feasibility under a shrinking pool cap *is* the
 min-worker objective — with `CpSatConfig(time_limit_seconds=10)`. The
-instrument is the sweep in `tests/wrs/test_oxa_false_infeasible.py`, run against
+instrument is the sweep in `tests/day_layer/test_oxa_false_infeasible.py`, run against
 the pre-fix blob with **`PYTHONHASHSEED=0`**:
 
 | kind | `solve_oxa` (pre-fix) INFEASIBLE at n = | the oracle's answer there |
@@ -53,13 +53,13 @@ Raising the pool to 4, 8, 10, 12 or 16 workers leaves the verdict unchanged
 (`plnt` n=15, `wet_harvst_plnt` n=8, `frtz_water` n=7 are `INFEASIBLE` under
 every one of those pools pre-fix and `FEASIBLE`, `verify_solution`-valid, under
 every one post-fix), so this is not a capacity limit. Reproduced by
-`tests/wrs/test_oxa_false_infeasible.py::test_a_bigger_worker_pool_does_not_change_the_verdict`
+`tests/day_layer/test_oxa_false_infeasible.py::test_a_bigger_worker_pool_does_not_change_the_verdict`
 (4/8/12/16) and by hand for 10.
 
 Post-fix the same 140 instances all return a schedule `verify_solution` accepts
 (20 `OPTIMAL`, 120 `FEASIBLE`, 0 rejected), and no oracle call is needed because
 no INFEASIBLE answer is left to check. The sweep takes 0.33-0.35 s for all 140
-instances on this box (`tests/wrs/test_oxa_false_infeasible.py`'s sweep loop,
+instances on this box (`tests/day_layer/test_oxa_false_infeasible.py`'s sweep loop,
 three runs).
 
 The guard is measured, not assumed, to be cheap on the sweep's feed shape —
@@ -109,7 +109,7 @@ remaining workers and each builds an empty route. Same shape on
 
 **The issue-#14 suspicion is refuted.** There is no prefix-size search in this
 module: no `r` loop exists, `compute_lower_bound` is never called by
-`solve_oxa` (only `tests/wrs/test_oxa_solver.py` imports it), and the verdict
+`solve_oxa` (only `tests/day_layer/test_oxa_solver.py` imports it), and the verdict
 comes from the plain leftover-targets check at the end of the dispatch loop.
 Extra workers cannot help for the pinning reason above — not because a search
 gave up.
@@ -135,10 +135,10 @@ order the candidates were visited in, and the verdict is a function of the
 instance alone. `-tail` (serve the more constrained task first) is not only
 canonicalisation: it also fixed fuzz seed 307, where the tie between a
 standalone tile and a chain head was resolved the other way and the greedy
-stranded the chain (`tests/wrs/test_oxa_reproducibility.py::
+stranded the chain (`tests/day_layer/test_oxa_reproducibility.py::
 test_a_side_task_cannot_strand_a_chain`).
 
-Guards for all of it are in `tests/wrs/test_oxa_reproducibility.py`: the audit's
+Guards for all of it are in `tests/day_layer/test_oxa_reproducibility.py`: the audit's
 400 statuses are pinned as the numbers this document reports, and two runs of
 the audit under different hash seeds must produce byte-identical dumps. What
 stays seed-dependent is history: the pre-fix and first-guard blobs in the tables
@@ -174,7 +174,7 @@ first guard and **6 improvements** for the reviewed one. With the comparison
 definition written down in `bench/bench_oxa_diff.py`, the measured answers are
 43/4 and 0/7 against the seed-0 pre-fix run (0/46 against the first guard), and
 the whole table is reproduced by
-`tests/wrs/test_oxa_reproducibility.py::test_the_audit_reproduces_the_statuses_docs_F057_reports`.
+`tests/day_layer/test_oxa_reproducibility.py::test_the_audit_reproduces_the_statuses_docs_F057_reports`.
 One seed moves in neither direction by this definition: 93 goes
 `INFEASIBLE -> INVALID_SOLUTION`, both unusable, counted separately by the tool.
 
@@ -280,7 +280,7 @@ validation:
       "asked to")
 ```
 
-(`tests/wrs/test_oxa_solver.py::
+(`tests/day_layer/test_oxa_solver.py::
 test_an_edge_into_a_preloaded_pickup_is_rejected_not_mis_scheduled`, whose
 R007 direction is the removal of that one call: the test then stops raising and
 gets `INVALID_SOLUTION` back — measured.) The check lives in `solve_oxa` rather
@@ -319,7 +319,7 @@ INFEASIBLE one.
   `cpsat_solver` and the engine's append-only payroll.
 - `reported_cost` now follows the engine's append-only payroll
   (`fib(0..max_active)`), not the sum over the routes that carry tasks.
-- `tests/wrs/test_oxa_false_infeasible.py`: the sweep as a guard (every
+- `tests/day_layer/test_oxa_false_infeasible.py`: the sweep as a guard (every
   INFEASIBLE answer put to the oracle), the eight measured instances pinned by
   name at the seed the table names, the worker-pool invariance check, the
   cross-cell pair, the gap payroll and a positive control that runs the
@@ -328,7 +328,7 @@ INFEASIBLE one.
   confirming (pre-fix, that is 8 of the 18 `wet_harvst_plnt` rows), which is
   why the positive control pins a day the oracle *decides* — it returns
   `INFEASIBLE` there, not `UNKNOWN`.
-- `tests/wrs/test_oxa_reproducibility.py`: the audit's statuses pinned as the
+- `tests/day_layer/test_oxa_reproducibility.py`: the audit's statuses pinned as the
   numbers above, hash-seed independence, and the stranded-chain instance (fuzz
   seed 307).
 - `bench/bench_oxa_fuzz.py`: the seeded audit that produced the table above
@@ -349,11 +349,11 @@ INFEASIBLE one.
   `(cost, tie_breaker)` the two reproducibility guards redden
   (`1 failed, 2 passed`, *"the same instances answered differently under another
   hash order: ['307']"*). All green again with this commit's solver:
-  `tests/wrs` 104 passed, 1 skipped.
+  `tests/day_layer` 104 passed, 1 skipped.
 
 ## Why it matters
 
-OXA is the solver #14 §6 wires in as the secretary's per-turn dispatcher (the
+OXA is the solver #14 §6 wires in as the day's per-turn dispatcher (the
 wiring is not in this tree yet: nothing outside `tests/` and `bench/` calls
 `solve_oxa`). Once it is, an INFEASIBLE verdict drops every chain, the agent
 passes the day and `planted_tiles` stays 0 — and `wet_harvst_plnt` is exactly

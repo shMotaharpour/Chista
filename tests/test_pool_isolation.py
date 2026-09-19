@@ -158,7 +158,7 @@ def test_read_back_proves_the_cap_took_effect() -> None:
 
 
 def _seed_record():
-    from offline.runner import run_episode_process
+    from offline_lab.runner import run_episode_process
     return run_episode_process("v3-agent", "adaptive-replay-agent", 0,
                                episode_steps=96)
 
@@ -181,7 +181,7 @@ def test_each_seat_sees_its_own_player_index() -> None:
     passed a hand-made-dict test while the runner still handed views[0]
     to seat 1 - so this test re-applies the bug and must fail if it
     ever returns (review 2, N2)."""
-    import offline.runner as R
+    import offline_lab.runner as R
 
     seen = {0: [], 1: []}
 
@@ -200,7 +200,7 @@ def test_each_seat_sees_its_own_player_index() -> None:
             seen[self.seat].append(obs.get("player"))
             return {"farmer": ["PASS"], "hands": [], "market": []}
 
-    import offline.pool.loader as PL
+    import offline_lab.pool.loader as PL
     saved = PL.load
     PL.load = lambda slug: ProbeAgent(int(slug))  # slug IS the seat here
     try:
@@ -220,8 +220,8 @@ def test_vendored_mutation_cannot_corrupt_the_episode() -> None:
     writes into its observation must not corrupt the episode's live
     state. Re-introducing the bug (copy_state default inside the loop)
     makes this fail - the reviewer's method, verified below."""
-    import offline.runner as R
-    import offline.pool.loader as PL
+    import offline_lab.runner as R
+    import offline_lab.pool.loader as PL
 
     real_load = PL.load
     written = []          # the money the mutator SAW, per turn
@@ -235,7 +235,7 @@ def test_vendored_mutation_cannot_corrupt_the_episode() -> None:
                 written.append(money)
                 obs["farms"][seat]["money"] = 999999   # the corruption attempt
             return {"farmer": ["PASS"], "hands": [], "market": []}
-        from offline.pool.loader import LoadedAgent
+        from offline_lab.pool.loader import LoadedAgent
         return LoadedAgent(slug=la.slug, fn=fn, fn_name="mutator",
                            arity=la.arity, rule="test-mutator",
                            module=la.module)

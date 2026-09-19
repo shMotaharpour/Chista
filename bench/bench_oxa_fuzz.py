@@ -17,14 +17,14 @@ The audit asserts the two things a verdict must satisfy:
     -- the F057 defect was exactly an INFEASIBLE the oracle could schedule.
 
 `docs/F057`'s differential numbers come from running this script with the
-pre-fix blob in place -- `git show <rev>:secretary/solvers/oxa_solver.py >
+pre-fix blob in place -- `git show <rev>:day/solvers/oxa_solver.py >
 /tmp/old.py`, copy it over the module, run with `--dump`, restore -- and
 comparing the two dumps with `bench/bench_oxa_diff.py`, which is the
 definition of "regression" the document quotes.
 
 Hash order: this solver's candidate order is a total order now, so its 400
 statuses are the same under every `PYTHONHASHSEED`
-(`tests/wrs/test_oxa_reproducibility.py` holds that). The pre-fix blobs are
+(`tests/day_layer/test_oxa_reproducibility.py` holds that). The pre-fix blobs are
 not -- they iterate a set -- so a number taken from one of them is only
 reproducible with the seed named next to it (`PYTHONHASHSEED=0` in F057's
 tables). Run this script with a fixed `PYTHONHASHSEED` when comparing
@@ -48,9 +48,9 @@ import argparse
 import random
 from collections import Counter
 
-from secretary.models import (Cell, Instance, Item, MinorActionType, MinorTask, Worker)
-from secretary.solvers.oxa_solver import OxaConfig, solve_oxa
-from secretary.verify import verify_solution
+from agent.wsr.models import (Cell, Instance, Item, Action, MinorTask, Worker)
+from agent.wsr.solvers.oxa_solver import OxaConfig, solve_oxa
+from agent.wsr.verify import verify_solution
 
 CELLS = [Cell(x, y) for x in (0, 2, 4, 9) for y in (0, 3, 4, 9)]
 
@@ -69,29 +69,29 @@ def build(seed: int) -> Instance:
         shape = rng.choice(['solo', 'pair_same', 'pair_cross', 'triple_mixed'])
         cell_a, cell_b = rng.choice(CELLS), rng.choice(CELLS)
         if shape == 'solo':
-            minors.append(MinorTask(id=f'c{c}_a', cell=cell_a, action=MinorActionType.PASS))
+            minors.append(MinorTask(id=f'c{c}_a', cell=cell_a, action=Action.PASS))
         elif shape == 'pair_same':
-            minors.append(MinorTask(id=f'c{c}_a', cell=cell_a, action=MinorActionType.PASS))
-            minors.append(MinorTask(id=f'c{c}_b', cell=cell_a, action=MinorActionType.PASS))
+            minors.append(MinorTask(id=f'c{c}_a', cell=cell_a, action=Action.PASS))
+            minors.append(MinorTask(id=f'c{c}_b', cell=cell_a, action=Action.PASS))
             precedence.append((f'c{c}_a', f'c{c}_b'))
         elif shape == 'pair_cross':
-            minors.append(MinorTask(id=f'c{c}_a', cell=cell_a, action=MinorActionType.PASS))
-            minors.append(MinorTask(id=f'c{c}_b', cell=cell_b, action=MinorActionType.PASS))
+            minors.append(MinorTask(id=f'c{c}_a', cell=cell_a, action=Action.PASS))
+            minors.append(MinorTask(id=f'c{c}_b', cell=cell_b, action=Action.PASS))
             precedence.append((f'c{c}_a', f'c{c}_b'))
         else:
             item = rng.choice([Item.WHEAT, Item.FERTILIZER])
-            action = MinorActionType.FEED if item is Item.WHEAT else MinorActionType.FERTILIZE
+            action = Action.FEED if item is Item.WHEAT else Action.FERTILIZE
             acq = f'c{c}_acq'
-            minors.append(MinorTask(id=acq, cell=None, action=MinorActionType.PICKUP,
+            minors.append(MinorTask(id=acq, cell=None, action=Action.PICKUP,
                                     item=item, qty=1))
             minors.append(MinorTask(id=f'c{c}_cons', cell=cell_a, action=action,
                                     item=item, qty=1))
-            minors.append(MinorTask(id=f'c{c}_tail', cell=cell_b, action=MinorActionType.PASS))
+            minors.append(MinorTask(id=f'c{c}_tail', cell=cell_b, action=Action.PASS))
             precedence += [(acq, f'c{c}_cons'), (f'c{c}_cons', f'c{c}_tail')]
             groups.append([acq, f'c{c}_cons'])
             stock[item] = stock.get(item, 0) + rng.randint(1, 3)
     if rng.random() < 0.3:
-        minors.append(MinorTask(id='extra', cell=rng.choice(CELLS), action=MinorActionType.PASS))
+        minors.append(MinorTask(id='extra', cell=rng.choice(CELLS), action=Action.PASS))
 
     return Instance.compile(workers=workers, standalone_minor_tasks=minors,
                             explicit_precedence=precedence,
@@ -112,7 +112,7 @@ def main() -> int:
 
     oracle = None
     if args.oracle:
-        from secretary.solvers.cpsat_solver import CpSatConfig, cpsat_binarySearch
+        from offline_lab.cpsat_solver import CpSatConfig, cpsat_binarySearch
         oracle = CpSatConfig(time_limit_seconds=args.oracle_seconds)
 
     statuses: Counter[str] = Counter()
