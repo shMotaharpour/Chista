@@ -256,6 +256,9 @@ def _forecast_stub(prices: dict, days: int = 30, rising: bool = False,
             base = prices.get(item, 25)
             return base + (int(day) - _first if rising else 0)
 
+        # `plan_sales` reads `price_of`; the test's stub spells it `.price`.
+        price_of = price
+
         @property
         def days(self):
             return _days

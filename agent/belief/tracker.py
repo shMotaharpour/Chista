@@ -27,14 +27,19 @@ from typing import Any
 
 import numpy as np
 
-from agent.world.prices import price_of, price_table
-from agent.world.vocabulary import (
-    CENTER_INTERVAL, CENTER_PRODUCTS, DUAL, G_IX, GOODS, MAX_ORDERS,  # noqa: F401
-    SELL_ONLY, SHED_ACCESS, SHED_CAP, SHOP_BASKET, SHOP_INTERVAL,
-)
-from agent.belief.schemas import Turn, field_of
+from agent.world.model import PRODUCTS
+from agent.world.rules import (ANIMAL_RULES, LAND_PRICES, SHED_ACCESS,
+                               SHED_CAPACITY)
+from agent.world.prices import MARKET_I0, PRICE_FLOOR, price_of, price_table
+from agent.belief.schemas import (CENTER_INTERVAL, CENTER_PRODUCTS, DUAL,
+                                  MAX_ORDERS, SELL_ONLY, SHOP_BASKET,
+                                  SHOP_INTERVAL, SHOP_TYPES, UNLOCK_INTERVAL,
+                                  Turn, field_of)
 
-from kaggle_environments.envs.kaggriculture import kaggriculture as K
+#: name -> PRODUCTS index. The (9,) arrays belief carries are in PRODUCTS order.
+G_IX: dict[str, int] = {p: i for i, p in enumerate(PRODUCTS)}
+GOODS: tuple[str, ...] = PRODUCTS
+SHED_CAP: int = SHED_CAPACITY
 
 
 @dataclass
@@ -63,7 +68,7 @@ def fib_hire_costs(n_hands: int) -> int:
 
 def land_cost(n_extra_quadrants: int) -> int:
     """Prefix-locked land: NE, SW, SE at 1000/2000/4000 (F042)."""
-    return int(sum(K.LAND_PRICES[:max(0, n_extra_quadrants)]))
+    return int(sum(LAND_PRICES[:max(0, n_extra_quadrants)]))
 
 
 def tile_item(tile: Any) -> str | None:
@@ -73,7 +78,7 @@ def tile_item(tile: Any) -> str | None:
     if tile.get("kind") == "PLANT":
         return tile.get("crop")
     if "animal" in tile:
-        return K.ANIMALS[tile["animal"]]["product"]
+        return ANIMAL_RULES[tile["animal"]]["product"]
     return None
 
 
@@ -118,7 +123,7 @@ class MarketTracker:
     def __init__(self, player: int = 0) -> None:
         self.player = player
         self.step = -1
-        self.inventory = np.full(len(GOODS), float(K.MARKET_I0))
+        self.inventory = np.full(len(GOODS), float(MARKET_I0))
         self.prices = price_table(self.inventory)
         self.records: list[FlowRecord] = []
         self.rival_stock = np.zeros(len(GOODS))
@@ -258,7 +263,7 @@ class MarketTracker:
             our_buys=self._pending_our_buys.copy(),
             rival_sales=rival_sales,
             rival_buys=rival_buys,
-            price_was_floor=(self.prices <= K.PRICE_FLOOR).copy(),
+            price_was_floor=(self.prices <= PRICE_FLOOR).copy(),
             rival_harvest=harvest,
             rival_stock=self.rival_stock.copy(),
             rival_bag=self.rival_bag.copy(),

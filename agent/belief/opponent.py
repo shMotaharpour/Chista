@@ -34,16 +34,15 @@ from typing import Any
 
 import numpy as np
 
-from agent.world.prices import price_of, price_vec
-from agent.world.vocabulary import (
-    CENTER_INTERVAL, CENTER_PRODUCTS, DUAL, G_IX, GOODS, SHOP_BASKET,
-    SHOP_INTERVAL, SHOP_TYPES, UNLOCK_INTERVAL,
-)
-
-from kaggle_environments.envs.kaggriculture import kaggriculture as K
-
-from agent.belief.schemas import field_of
+from agent.world.model import PRODUCTS
+from agent.world.prices import MARKET_PARAMS, price_of, price_vec
+from agent.belief.schemas import (CENTER_INTERVAL, CENTER_PRODUCTS, DUAL, G_IX,
+                                  MAX_ORDERS, SHOP_BASKET, SHOP_INTERVAL,
+                                  SHOP_TYPES, UNLOCK_INTERVAL, field_of)
 from agent.belief.tracker import FlowRecord, MarketTracker
+
+#: The (9,) goods order, from the world's own name for it.
+GOODS: tuple[str, ...] = PRODUCTS
 
 
 class OpponentModel:
@@ -63,7 +62,7 @@ class OpponentModel:
         return int(np.clip(round((ratio - 1.0) * 3), -3, 3))
 
     def _key(self, good: str, step: int, price: int) -> tuple[str, int, int]:
-        return (good, int(step // 24), self._bucket(price, K.MARKET_PARAMS[good]["base"]))
+        return (good, int(step // 24), self._bucket(price, MARKET_PARAMS[good]["base"]))
 
     def _bin(self, qty: float) -> int:
         b = 0

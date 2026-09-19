@@ -157,6 +157,10 @@ class MarketForecast:
     def price_of(self, item: str, day: int) -> int:
         return self.prices[self._index(day)][_PROD_INDEX[item]]
 
+    #: The tests' name for the same read (PR #61's test_market_layer calls
+    #: `.price(item, day)`); one forecast, two spellings, no second table.
+    price = price_of
+
     def price_path(self, item: str) -> tuple[int, ...]:
         return tuple(row[_PROD_INDEX[item]] for row in self.prices)
 

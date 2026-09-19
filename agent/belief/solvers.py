@@ -38,7 +38,7 @@ import numpy as np
 from scipy.optimize import linprog, minimize
 
 from agent.world.prices import price_of
-from agent.world.vocabulary import SHED_CAP
+from agent.belief.schemas import SHED_CAP
 
 
 def maximin_mixed_lp(A: np.ndarray) -> tuple[np.ndarray, float]:
