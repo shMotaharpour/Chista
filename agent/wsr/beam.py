@@ -101,30 +101,41 @@ def search(day: Day, tasks: TaskArray, *, beam: int = 64,
            hands: int | None = None, max_hands: int = MAX_HANDS) -> Result:
     """The day, searched with `beam` routes in parallel.
 
-    The pool grows from the arithmetic floor until the day fits. When even the largest pool falls
-    short the best partial route is returned with `complete=False`: what was built is reported
-    rather than discarded, so the caller can keep the part of the day that works.
+    Two numbers decide how the pool is searched, and they answer two different questions:
+
+      hands      the pool to START at. A caller who says five is saying the day will have five
+                 hands whether it needs them or not - so five and one are the same decision and
+                 the smaller pools are not worth searching. `None` starts at the arithmetic floor.
+      max_hands  the largest pool allowed. Equal to `hands`, it asks one question with no growth:
+                 "can five carry this day - yes or no". Larger, it asks "can five, and if not, what
+                 can" - and the answer reports the pool that did.
+
+    When no allowed pool carries the day, the best partial route comes back with `complete=False`:
+    what was built is reported rather than discarded, so the caller keeps the part of the day that
+    works, and the answer never claims a pool the caller did not allow.
     """
     if tasks.n == 0:
         return Result(0, [], True)
-    # An explicit pool is searched on its own: it is the caller saying how many hands the day has,
-    # not a ceiling to grow towards. Growing from the floor is only for the case where the day is
-    # free to hire, and the floor must not skip the pool it was asked about.
-    # The bound is on the WORKERS a day needs, and the units already on the field are workers -
-    # so what has to be hired is the shortfall. Without this the search starts at one hand and
-    # stops there, paying the ladder for a day the farmer could have carried alone.
-    lo = (max(0, lower_bound(day, tasks) - len(day.units))
-          if hands is None else int(hands))
-    hi = max_hands if hands is None else int(hands)
+
+    # The arithmetic floor is on the WORKERS a day needs, and the units already on the field are
+    # workers, so what has to be hired is the shortfall. Without this the search starts at one hand
+    # and stops there, paying the ladder for a day the farmer could have carried alone.
+    floor = max(0, lower_bound(day, tasks) - len(day.units))
+    start = floor if hands is None else int(hands)
+    ceiling = min(int(max_hands), MAX_HANDS)
+    if start > ceiling:
+        raise ValueError(
+            f"start pool {start} is above the ceiling {ceiling}: the caller asked for a pool it "
+            f"does not allow")
 
     partial: Result | None = None
-    for pool in range(lo, hi + 1):
+    for pool in range(start, ceiling + 1):
         result = _run(day, tasks, hands=pool, beam=beam)
         if result.complete:
             return result
         if partial is None or len(result.route) > len(partial.route):
             partial = result
-    return partial if partial is not None else Result(hi, [], False)
+    return partial if partial is not None else Result(ceiling, [], False)
 
 
 def _prefetch_table() -> np.ndarray:
