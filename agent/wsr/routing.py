@@ -404,57 +404,78 @@ def plan_day(tiles: Sequence[tuple[tuple[int, int], Sequence[str], str | None]],
     day's chains did not reach.
     """
     positions = [(int(p[0]), int(p[1])) for p in units]
+    starts = [0] * len(positions)
 
-    # Who works what is a scheduling question, so the scheduler answers it: one day per priced
-    # column, one task per op, and the solver returns the routes - which worker, in what order,
-    # at what hour. The task ids carry the column (`d<column>_`), so the columns a route covers
-    # are read back off its own schedule rather than guessed from distances.
-    days = [DayOnCell(ops, tile, entity, None) for tile, ops, entity in tiles]
-    instance = Instance.compile(
-        workers=[Worker(index=index, earliest_start=0) for index in range(len(positions))],
-        days=days)
-    solved = solve_oxa(instance, OxaConfig(min_workers=1))
-    if solved.solution is None:
-        # INFEASIBLE: the day's work does not fit the pool it was offered. The caller decides
-        # what to do with that; this function does not invent a schedule the engine would refuse.
+    def compile_for(hours_by_worker: dict[int, dict[int, list[int]]],
+                    op_hours=None) -> list[UnitRoute]:
+        """One route per (worker, column) the schedule gives that worker."""
+        out: list[UnitRoute] = []
+        for index, schedule in hours_by_worker.items():
+            for column, op_hours_list in schedule.items():
+                tile, ops, entity = tiles[column]
+                out.append(route_unit(ops, entity, positions[index], unit=index, hour=0,
+                                      target=tile, times=op_hours_list,
+                                      carried=bags[index] if index < len(bags) else None,
+                                      harvest_yields=(yields[column] if yields
+                                                      and column < len(yields) else None),
+                                      board=board, hours=hours, stock=shed))
+        return out
+
+    def solve_for(workers_starts: list[int]) -> tuple[dict[int, dict[int, list[int]]], list[int]]:
+        """Who works what, and in what order, according to the scheduler."""
+        days = [DayOnCell(ops, tile, entity, None) for tile, ops, entity in tiles]
+        instance = Instance.compile(
+            workers=[Worker(index=index, earliest_start=workers_starts[index])
+                     for index in range(len(workers_starts))],
+            days=days)
+        solved = solve_oxa(instance, OxaConfig(min_workers=1))
+        if solved.solution is None:
+            return {}, []
+        per_worker: dict[int, dict[int, list[int]]] = {}
+        for route in solved.solution.routes:
+            for task in route.tasks:
+                column = int(task.task_id.split("_", 1)[0][1:])
+                per_worker.setdefault(route.worker_index, {}).setdefault(column, []).append(
+                    int(task.exec_time))
+        return per_worker, [route.worker_index for route in solved.solution.routes]
+
+    # A hand is hired inside turn 0's market, AFTER that turn's unit actions, so it stands where
+    # the engine puts it and its first action is hour 1. Spawning from the day-start positions
+    # would put it a tile out. So: solve for the units that exist, walk their first turn, spawn.
+    schedule, _ = solve_for(starts)
+    if not schedule and new_hands:
+        # nothing to do with the units that exist; the hands still get their day
+        pass
+    settled = list(positions)
+    for route in compile_for(schedule):
+        first = route.ops[0] if route.ops else ("PASS",)
+        if first and first[0] in MOVE_DELTA:
+            dx, dy = MOVE_DELTA[first[0]]
+            settled[route.unit] = (settled[route.unit][0] + dx, settled[route.unit][1] + dy)
+
+    occupied = list(settled)
+    for _ in range(int(new_hands)):
+        positions.append(spawn_cell(occupied))
+        starts.append(1)                       # hired in turn 0's market: available from hour 1
+        occupied.append(positions[-1])
+
+    schedule, active = solve_for(starts)
+    routes = compile_for(schedule) if schedule else []
+
+    assigned: list[int | None] = [None] * len(positions)
+    for index, per_column in schedule.items():
+        if per_column:
+            assigned[index] = next(iter(per_column))
+
+    if not routes:
+        # INFEASIBLE: the day's work does not fit the pool it was offered, or the scheduler could
+        # place nothing. An all-PASS day is honest; a schedule the engine would refuse is not.
         return DayPlan(
             units=tuple((("PASS",),) * hours for _ in positions), market=(), needs=(), hires=0,
             dropped=(), unplaced=(), idle_units=len(tiles),
             assignments=tuple(None for _ in positions))
 
-    def schedule_of(worker_index: int) -> dict[int, list[int]]:
-        """What the scheduler gave this worker: per priced column, the hours of its ops.
-
-        The task ids carry the column (`d<column>_...`), so the hours are read off the route's own
-        schedule. `route_unit` then writes the turns - travel included - so an op lands on the
-        hour the scheduler decided rather than one the compiler counted.
-        """
-        route = next((r for r in solved.solution.routes if r.worker_index == worker_index), None)
-        out: dict[int, list[int]] = {}
-        if route is None:
-            return out
-        for task in route.tasks:
-            column = int(task.task_id.split("_", 1)[0][1:])
-            out.setdefault(column, []).append(int(task.exec_time))
-        return out
-
-    assigned: list[int | None] = [None] * len(positions)
-    routes: list[UnitRoute] = []
-    for index in range(len(positions)):
-        schedule = schedule_of(index)
-        if not schedule:
-            continue
-        assigned[index] = next(iter(schedule))
-        for column, op_hours in schedule.items():
-            tile, ops, entity = tiles[column]
-            routes.append(route_unit(ops, entity, positions[index], unit=index, hour=0,
-                                     target=tile, times=op_hours,
-                                     carried=bags[index] if index < len(bags) else None,
-                                     harvest_yields=(yields[column] if yields
-                                                     and column < len(yields) else None),
-                                     board=board, hours=hours, stock=shed))
-
-    existing = list(range(len(positions)))
+    existing = list(range(len(units)))
     free: list[int] = []
     for index in range(len(existing), len(positions)):
         assigned[index] = None
