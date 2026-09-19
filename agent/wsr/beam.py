@@ -37,14 +37,17 @@ class Day:
     horizon: int = TURNS_PER_DAY
 
 
-def lower_bound(day: Day, targets: int, ops_per_column: int) -> int:
+def lower_bound(day: Day, ops: int, fetches: int) -> int:
     """The fewest hands the day can possibly need, from arithmetic alone.
 
-    Three floors, and the largest wins: the work has to fit in the day, the longest chain has to
-    fit in it, and every tile has to be reached at least once. No solver's opinion is consulted -
-    a bound that comes from the solver is circular.
+    A bound that is too high is worse than useless: the search would skip a pool size that works,
+    which is exactly how a feasible day gets called infeasible. So this counts what the day must
+    contain and nothing more - the ops, and one fetch per distinct good the ops consume. The ops
+    are NOT counted twice, and a fetch is not a task: it rides along with the op that needs it.
+
+    The solver's own bound is not consulted. A bound taken from the solver is circular.
     """
-    work = targets + ops_per_column                 # ops plus the fetches they need
+    work = ops + fetches
     return max(1, -(-work // day.horizon))
 
 
@@ -63,7 +66,7 @@ def search(day: Day, chains: list[tuple[Cell, tuple[str, ...], str | None]], *,
     if n == 0:
         return 0, []
 
-    lo = lower_bound(day, n, sum(len(c[1]) for c in chains))
+    lo = lower_bound(day, n, len({g for _, ops, g in chains if g}))
     hi = max_hands if hands is None else int(hands)
     for count in range(lo, hi + 1):
         routes = _run(tasks, preds, needs_item, day, units=units, hands=count, beam=beam)
