@@ -127,6 +127,7 @@ def buy_order(item: str, *, for_seed: bool = False) -> tuple:
 
 def route_unit(ops: Sequence[str], entity: str | None, pos: tuple[int, int], *,
                unit: int = 0, hour: int = 0, hours: int = TURNS_PER_DAY,
+               shed: Mapping[str, int] | None = None,
                target: tuple[int, int] | None = None,
                carried: Mapping[str, int] | None = None,
                harvest_yields: Mapping[str, int] | None = None,
@@ -157,6 +158,14 @@ def route_unit(ops: Sequence[str], entity: str | None, pos: tuple[int, int], *,
     walked = 0
     drop_hour: int | None = None
 
+    def stocked(item: str) -> bool:
+        """Is the good already in the shed?
+
+        Supplying the shed is the secretary's job, not the day layer's, so when the good is
+        there the day asks for nothing - and a day that asks for nothing cannot be refused.
+        """
+        return int(shed.get(item, 0)) > 0 if shed else False
+
     def free() -> int:
         """Turns left, counting from `hour`."""
         return hours - (hour + len(seq))
@@ -182,7 +191,8 @@ def route_unit(ops: Sequence[str], entity: str | None, pos: tuple[int, int], *,
             # the pickup resolves before that turn's market, so the buy must land on an
             # earlier turn than the pickup
             pickup_turn = hour + len(seq) - len(back) - 1
-            needs.append(Need(hour=pickup_turn - 1, order=buy_order(item), reason=name))
+            if not stocked(item):
+                needs.append(Need(hour=pickup_turn - 1, order=buy_order(item), reason=name))
             bag[item] = 1
             at = target
         elif at != target:
@@ -195,7 +205,7 @@ def route_unit(ops: Sequence[str], entity: str | None, pos: tuple[int, int], *,
         if free() < 1:
             dropped.append(name)
             continue
-        if name == "PLANT":
+        if name == "PLANT" and not stocked(action.item.value):
             # Seeds ride in `private["seeds"]` and PLANT consumes them directly: one market
             # order and a worker on the tile, with nothing to carry. The buy still lands after
             # that turn's units, so it must be on an earlier turn than the plant.
@@ -423,7 +433,7 @@ def plan_day(tiles: Sequence[tuple[tuple[int, int], Sequence[str], str | None]],
                                      carried=bags[index] if index < len(bags) else None,
                                      harvest_yields=(yields[column] if yields
                                                      and column < len(yields) else None),
-                                     board=board, hours=hours))
+                                     board=board, hours=hours, shed=shed))
 
     existing = list(range(len(positions)))
     free: list[int] = []
