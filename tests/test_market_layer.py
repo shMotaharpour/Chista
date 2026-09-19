@@ -259,6 +259,11 @@ def _forecast_stub(prices: dict, days: int = 30, rising: bool = False,
         # `plan_sales` reads `price_of`; the test's stub spells it `.price`.
         price_of = price
 
+        def inventory_of(self, item, day):
+            # rising by 1/day from a flat 10_000: enough for the day-split
+            # drains to be 0/1 per day, which the split treats as flat
+            return 10_000
+
         @property
         def days(self):
             return _days
