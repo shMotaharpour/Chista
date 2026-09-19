@@ -127,7 +127,7 @@ def buy_order(item: str, *, for_seed: bool = False) -> tuple:
 
 def route_unit(ops: Sequence[str], entity: str | None, pos: tuple[int, int], *,
                unit: int = 0, hour: int = 0, hours: int = TURNS_PER_DAY,
-               shed: Mapping[str, int] | None = None,
+               stock: Mapping[str, int] | None = None,
                target: tuple[int, int] | None = None,
                carried: Mapping[str, int] | None = None,
                harvest_yields: Mapping[str, int] | None = None,
@@ -164,7 +164,7 @@ def route_unit(ops: Sequence[str], entity: str | None, pos: tuple[int, int], *,
         Supplying the shed is the secretary's job, not the day layer's, so when the good is
         there the day asks for nothing - and a day that asks for nothing cannot be refused.
         """
-        return int(shed.get(item, 0)) > 0 if shed else False
+        return int(stock.get(item, 0)) > 0 if stock else False
 
     def free() -> int:
         """Turns left, counting from `hour`."""
@@ -433,7 +433,7 @@ def plan_day(tiles: Sequence[tuple[tuple[int, int], Sequence[str], str | None]],
                                      carried=bags[index] if index < len(bags) else None,
                                      harvest_yields=(yields[column] if yields
                                                      and column < len(yields) else None),
-                                     board=board, hours=hours, shed=shed))
+                                     board=board, hours=hours, stock=shed))
 
     existing = list(range(len(positions)))
     free: list[int] = []
