@@ -216,10 +216,13 @@ def route_unit(ops: Sequence[str], entity: str | None, pos: tuple[int, int], *,
         if free() < 1:
             dropped.append(name)
             continue
-        if name == "PLANT" and not stocked(action.item.value):
+        if name == "PLANT":
             # Seeds ride in `private["seeds"]` and PLANT consumes them directly: one market
             # order and a worker on the tile, with nothing to carry. The buy still lands after
             # that turn's units, so it must be on an earlier turn than the plant.
+            #
+            # The shed does NOT cover this: the shed holds the nine PRODUCTS, and a seed is a
+            # different good that only ever arrives through a BUY_SEED order.
             needs.append(Need(hour=hour + len(seq) - 1,
                               order=buy_order(action.item.value, for_seed=True),
                               reason="PLANT"))
