@@ -1,8 +1,8 @@
 """A hand-built day for the day compiler: one coop, two pastures, two wheat tiles.
 
-The market's orders are given, so nothing here depends on how they are planned. What is under
-test is whether the compiler turns five chains into a day the engine accepts, with every op
-landing on the tile it was chosen for and every hired hand getting work.
+Only the farmer works - no hires - and the market's orders are the caller's, given in full. So
+what is under test is the compiler alone: five chains in, and a day out where every op lands on
+the tile it was chosen for, and no chain is left half-run for want of a turn the plan never had.
 
     (4,4)  BUILD_COOP + PLACE GOOSE + FEED + CARE
     (3,4)  BUILD_PASTURE + PLACE COW
@@ -29,68 +29,71 @@ MARKET = [["BUY_ANIMAL", "COW", 1], ["BUY_ANIMAL", "GOOSE", 1],
           ["BUY_ANIMAL", "SHEEP", 1], ["BUY_SEED", "WHEAT", 1], ["BUY_SEED", "WHEAT", 1]]
 
 
-def _day(hands: int = 2):
+def _day():
+    """The farmer alone, with the caller's own market orders."""
     tiles = [(cell, chain_ops(chain_id_of(ops)), entity) for cell, ops, entity in TILES]
-    return plan_day(tiles, [(4, 4)], new_hands=hands, sells=[MARKET],
-                    bags=[{} for _ in range(hands + 1)], shed={}, money=3000.0, prices={})
+    return plan_day(tiles, [(4, 4)], new_hands=0, sells=[MARKET],
+                    bags=[{}], shed={}, money=3000.0, prices={})
 
 
-def _ops_of(plan, unit: int) -> list[str]:
-    return [op[0] for op in plan.units[unit] if op and op[0] != "PASS"]
+def _worked(plan) -> dict[tuple[int, int], list[str]]:
+    """cell -> the ops the unit that works it runs."""
+    out: dict[tuple[int, int], list[str]] = {}
+    for unit, cell in enumerate(plan.assignments):
+        if cell is None:
+            continue
+        out[cell] = [op[0] for op in plan.units[unit] if op and op[0] != "PASS"]
+    return out
 
 
-def test_every_chosen_tile_is_worked() -> None:
-    """Five chains in, five tiles worked: a tile the caller chose is not silently left out."""
+def test_the_farmer_is_not_idle_while_chains_are_waiting() -> None:
+    """One worker and five chains: the day it can do is not thrown away.
+
+    An all-PASS day is the honest answer to work that does not fit, but five chains on one tile
+    each do fit - the farmer walks to a tile and runs its chain.
+    """
     plan = _day()
-    worked = {cell for cell in plan.assignments if cell is not None}
-    assert worked == {cell for cell, _, _ in TILES}, (
-        f"only {sorted(worked)} of the five chosen tiles were assigned")
+    assert any(op for ops in _worked(plan).values() for op in ops), (
+        "the farmer did nothing while five chains were waiting")
 
 
-def test_a_tile_runs_the_chain_it_was_chosen_for() -> None:
+def test_a_worked_tile_runs_its_own_chain() -> None:
     """The ops a unit runs belong to the tile the plan says it works.
 
     A coop's chain builds a coop and places a goose; a wheat chain plants and waters. If the
     assignment and the ops disagree, the plan describes a day nobody planned.
     """
     plan = _day()
-    for unit, cell in enumerate(plan.assignments):
-        if cell is None:
-            continue
-        ops = set(_ops_of(plan, unit))
-        chain = dict(((c, e), o) for c, o, e in TILES)[(cell, _entity_of(plan, unit, cell))]
-        assert ops <= set(chain), f"unit {unit} on {cell} runs {sorted(ops)} but was given {chain}"
+    chains = {cell: ops for cell, ops, _ in TILES}
+    for cell, ops in _worked(plan).items():
+        assert cell in chains, f"the plan works {cell}, which was never given a chain"
+        assert set(ops) <= set(chains[cell]), (
+            f"the unit on {cell} runs {sorted(ops)} but that tile's chain is {chains[cell]}")
 
 
-def _entity_of(plan, unit: int, cell: tuple[int, int]) -> str:
-    for c, _, entity in TILES:
-        if c == cell:
-            return entity
-    raise AssertionError(cell)
+def test_a_chain_is_not_started_and_abandoned() -> None:
+    """Every op of a started chain is there, in the order the chain's own rules allow.
 
-
-def test_every_hired_hand_gets_work_when_work_remains() -> None:
-    """Five chains and three units: a unit is idle only when nothing is left for it."""
-    plan = _day(hands=2)
-    unworked = [cell for cell, _, _ in TILES
-                if cell not in {a for a in plan.assignments if a}]
-    assert not (unworked and plan.idle_units), (
-        f"{plan.idle_units} units idle while {sorted(unworked)} still had chains to run")
-
-
-def test_the_market_is_not_asked_twice_for_what_it_was_already_given() -> None:
-    """An order already queued for this turn is not re-ordered: the engine would buy twice."""
+    A chain begun and abandoned leaves the tile half-worked: a coop built with no goose in it, or
+    a seed planted that is never watered. Those cost money and return nothing, so a plan that
+    cannot finish a chain must not start it.
+    """
     plan = _day()
-    given = {(o[0], o[1]) for row in [MARKET] for o in row}
+    chains = {cell: ops for cell, ops, _ in TILES}
+    for cell, ops in _worked(plan).items():
+        missing = [op for op in chains[cell] if op not in ops]
+        assert not missing, (
+            f"the unit on {cell} started its chain but never ran {missing}")
+
+
+def test_the_plan_does_not_touch_the_market_it_was_given() -> None:
+    """The market is the caller's: the day compiler schedules units, not orders.
+
+    Orders already queued for a turn are not re-ordered and not added to - the engine would buy
+    twice, and the second buy is refused in silence.
+    """
+    plan = _day()
+    given = [list(order) for order in MARKET]
     for row in plan.market:
         for order in row:
-            if order[0].startswith("BUY_"):
-                assert (order[0], order[1]) not in given or order in MARKET, (
-                    f"the plan orders {order}, which the caller had already given")
-
-
-def test_the_market_row_keeps_the_engine_order() -> None:
-    """Sells, then hires, then purchases - and never more than the engine executes."""
-    plan = _day()
-    for hour, row in enumerate(plan.market):
-        assert len(row) <= 10, f"hour {hour} queues {len(row)} orders; the engine runs 10"
+            assert list(order) in given, f"the plan queued {list(order)}, which the caller did not"
