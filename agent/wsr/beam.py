@@ -37,12 +37,20 @@ BIG = np.int16(30000)
 
 @dataclass(frozen=True)
 class Day:
-    """The chains to run today, in the planner's order, with the shed's timetable."""
+    """The chains to run today, in the planner's order, with the shed's timetable.
+
+    `hire_times` is the planner's offer: the hour each hand it will pay for may begin. A hand is
+    offered at most one start, and the times are not interchangeable - a hand hired for turn 0 acts
+    from hour 1 (F040), and one the market cannot reach until turn 5 is idle before that. The
+    engine's own day runs hour 0 to 23, so a hand hired at turn 0 has 23 turns of work in it and a
+    hand hired at turn 5 has 18.
+    """
 
     chains: tuple[tuple[Cell, tuple[str, ...], str | None], ...]
     available: dict[str, int]
     horizon: int = TURNS_PER_DAY
     units: tuple[Cell, ...] = ()            # the farmer, and any hand already on the field
+    hire_times: tuple[int, ...] = ()        # the hour each offered hand may begin
 
 
 class Result(NamedTuple):
@@ -155,27 +163,31 @@ def _run(day: Day, tasks: TaskArray, *, hands: int, beam: int) -> Result:
     """One pool size: search the day, and report how much of it the pool could carry."""
     n = tasks.n
     start_pos = _start_positions(day, hands)                 # (m, 2)
-    m = start_pos.shape[0]
     first_hand = len(day.units)                              # workers before this index are units
 
     done = np.zeros((beam, n), dtype=bool)
     when = np.zeros((beam, n), dtype=np.int16)               # the hour each done task ran
-    free = np.zeros((beam, m), dtype=np.int16)
+    # Every worker starts at its own hour: the farmer at the day's first, a hand at the hour the
+    # planner offered it. Starting them all together would hand the search turns the engine will
+    # not give, which is how a day gets called feasible that the harness then truncates.
+    start_hours = _start_hours(day, hands)
+    free = np.tile(start_hours[None, :], (beam, 1)).astype(np.int16)
     where = np.tile(start_pos[None, :, :], (beam, 1, 1))
     travel = np.zeros((beam,), dtype=np.int16)
     live = np.ones((beam,), dtype=bool)
 
     # The best state is remembered as the search goes, because the beam's last generation can be
     # empty - a route that dies at the end would otherwise erase the work it had already placed.
-    best = _snapshot(done, when, free, travel, first_hand)
+    best = _snapshot(done, when, free, travel, first_hand, start_hours)
     for _step in range(n):
         expanded = _expand(day, tasks, done, when, free, where, travel, live)
         if expanded is None:
             break
-        done, when, free, where, travel, live = _select(expanded, tasks, beam, first_hand)
+        done, when, free, where, travel, live = _select(
+            expanded, tasks, beam, first_hand, start_hours)
         if not live.any():
             break
-        here = _snapshot(done, when, free, travel, first_hand)
+        here = _snapshot(done, when, free, travel, first_hand, start_hours)
         if _better(here, best):
             best = here
 
@@ -186,10 +198,14 @@ def _run(day: Day, tasks: TaskArray, *, hands: int, beam: int) -> Result:
     return Result(hands, route, complete)
 
 
-def _snapshot(done, when, free, travel, first_hand):
-    """The best route in the beam right now, by the layered objective: work, hands, makespan, walk."""
+def _snapshot(done, when, free, travel, first_hand, start_hours):
+    """The best route in the beam right now, by the layered objective: work, hands, makespan, walk.
+
+    A hand counts as put to work when its clock has moved past the hour it began at - not when its
+    clock is merely above zero, which every hand's is from the moment the offer sets its start.
+    """
     placed = done.sum(axis=1)
-    hands_used = (free[:, first_hand:] > 0).sum(axis=1)
+    hands_used = (free[:, first_hand:] > start_hours[first_hand:]).sum(axis=1)
     makespan = free.max(axis=1)
     row = int(np.lexsort((travel, makespan, hands_used, -placed))[0])
     return int(placed[row]), when[row].copy(), done[row].copy()
@@ -210,6 +226,9 @@ def _start_positions(day: Day, hands: int) -> np.ndarray:
     The units already there keep their cells. A hired hand appears on one of the four shed doors -
     the one with the fewest units on it, ties by door order - which is the engine's rule, and the
     reason a hand's first move is not free: it starts at a door, not at the tile it must work.
+
+    Where a hand stands does not depend on when it may begin, so the position and the start hour
+    are read separately: this gives the cells, `_start_hours` the clocks.
     """
     from agent.world.rules import spawn_cell
     out = [tuple(c) for c in day.units]
@@ -217,6 +236,24 @@ def _start_positions(day: Day, hands: int) -> np.ndarray:
         cell = spawn_cell(out)
         out.append((int(cell[0]), int(cell[1])))
     return np.asarray(out, dtype=np.int16)
+
+
+def _start_hours(day: Day, hands: int) -> np.ndarray:
+    """The hour each worker may first act.
+
+    A unit already on the field acts from the day's first hour. A hand begins at the hour the
+    planner offered it, and the offer is not a formality: the engine settles hires in index order
+    and a hand hired in turn h acts from h + 1, so a hand the market cannot pay for until turn 5
+    does nothing for the first five hours of the day. An offer shorter than the pool means the
+    planner did not price that hand, and the engine's own rule for a hire in turn 0 applies.
+    """
+    hours = [0] * len(day.units)
+    for index in range(hands):
+        if index < len(day.hire_times):
+            hours.append(max(1, int(day.hire_times[index])))
+        else:
+            hours.append(1)
+    return np.asarray(hours, dtype=np.int16)
 
 
 def _expand(day: Day, tasks: TaskArray, done, when, free, where, travel, live):
@@ -267,7 +304,7 @@ def _expand(day: Day, tasks: TaskArray, done, when, free, where, travel, live):
                 done=done, when=when, free=free, where=where, travel=travel)
 
 
-def _select(expanded, tasks: TaskArray, beam: int, first_hand: int):
+def _select(expanded, tasks: TaskArray, beam: int, first_hand: int, start_hours):
     """Keep the best `beam` children, ranked BEFORE they are built.
 
     A child is a copy of its parent's whole state - what is done, when each worker is free, where
@@ -302,10 +339,13 @@ def _select(expanded, tasks: TaskArray, beam: int, first_hand: int):
     hour = flat_hour[shortlist]
     worker = expanded["worker"][rows].ravel()[shortlist]
 
+    # `hour` is when the action FINISHES. The turn it occupies is the one before that, and that
+    # turn is what the route reports - the engine numbers a day's turns 0 to 23, and the farmer
+    # acts in the first of them. The worker is free from the turn after.
     child_done = done[parent].copy()
     child_done[np.arange(parent.size), task] = True
     child_when = when[parent].copy()
-    child_when[np.arange(parent.size), task] = hour
+    child_when[np.arange(parent.size), task] = hour - 1
     child_free = free[parent].copy()
     child_free[np.arange(parent.size), worker] = hour
     child_where = where[parent].copy()
@@ -317,7 +357,7 @@ def _select(expanded, tasks: TaskArray, beam: int, first_hand: int):
     child_free, child_where = child_free[keep], child_where[keep]
     child_travel = child_travel[keep]
 
-    hands_used = (child_free[:, first_hand:] > 0).sum(axis=1)
+    hands_used = (child_free[:, first_hand:] > start_hours[first_hand:]).sum(axis=1)
     makespan = child_free.max(axis=1)
     order = np.lexsort((child_travel, makespan, hands_used))[:beam]
 
@@ -368,9 +408,9 @@ def _released(when: np.ndarray, tasks: TaskArray) -> np.ndarray:
     out = np.zeros_like(when)
     if tasks.n == 0:
         return out
-    edges = tasks.edges
-    for after, before in edges:
-        np.maximum(out[:, after], when[:, before], out=out[:, after])
+    # `when` is the turn a task OCCUPIES, so a successor's earliest start is the turn after it.
+    for after, before in tasks.edges:
+        np.maximum(out[:, after], when[:, before] + 1, out=out[:, after])
     return out
 
 
