@@ -107,7 +107,14 @@ def search(day: Day, tasks: TaskArray, *, beam: int = 64,
     """
     if tasks.n == 0:
         return Result(0, [], True)
-    lo = lower_bound(day, tasks)
+    # An explicit pool is searched on its own: it is the caller saying how many hands the day has,
+    # not a ceiling to grow towards. Growing from the floor is only for the case where the day is
+    # free to hire, and the floor must not skip the pool it was asked about.
+    # The bound is on the WORKERS a day needs, and the units already on the field are workers -
+    # so what has to be hired is the shortfall. Without this the search starts at one hand and
+    # stops there, paying the ladder for a day the farmer could have carried alone.
+    lo = (max(0, lower_bound(day, tasks) - len(day.units))
+          if hands is None else int(hands))
     hi = max_hands if hands is None else int(hands)
 
     partial: Result | None = None
