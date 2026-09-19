@@ -66,7 +66,7 @@ def _build_worker_route(
     item_to_pickups: dict[str, list[str]],
     horizon: int,
     instance: Optional[Instance] = None,
-) -> list[ScheduledTask]:
+) -> tuple[list[ScheduledTask], set[str]]:
     """Greedily fills a single worker's shift using Nearest Neighbor + Setup Costs."""
     current_t = earliest_start
     current_pos = entry_cell
@@ -89,7 +89,7 @@ def _build_worker_route(
         pending = frozenset(remaining_targets)
         tail_turns: dict[str, int] = {}
         available = [
-            tid for tid in remaining_targets 
+            tid for tid in sorted(remaining_targets)
             if all(p in done_targets or p in route_task_ids for p in target_preds[tid])
         ]
         
@@ -441,7 +441,7 @@ def _dispatch(
             break
 
         entry_cell = SHED_ACCESS[SHED_ACCESS_NAMES.index(entry_assignments[worker.index])]
-        sched_tasks = _build_worker_route(
+        sched_tasks, still_unplaced = _build_worker_route(
             worker_index=worker.index,
             earliest_start=worker.earliest_start,
             entry_cell=entry_cell,
@@ -464,7 +464,7 @@ def _dispatch(
                 start_cell=SHED_ACCESS[SHED_ACCESS_NAMES.index(entry_assignments[worker.index])],
             ))
 
-    return routes
+    return routes, remaining_targets
 
 
 def _dispatch_rounds(
