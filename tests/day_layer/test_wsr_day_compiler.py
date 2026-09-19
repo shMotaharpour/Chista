@@ -1,99 +1,109 @@
-"""A hand-built day for the day compiler: one coop, two pastures, two wheat tiles.
+"""A hand-built day for the day compiler: chains and an offer in, routes out.
 
-Only the farmer works - no hires - and the market's orders are the caller's, given in full. So
-what is under test is the compiler alone: five chains in, and a day out where every op lands on
-the tile it was chosen for, and no chain is left half-run for want of a turn the plan never had.
+No hires are on offer, so the farmer is the only worker. The market's orders are the caller's -
+two wheat seeds and two wheat - and what the compiler is told is when those goods reach the shed:
+everything at hour one. A fetch cannot happen before that, and an op whose good never arrives is
+reported rather than guessed at.
 
     (4,4)  BUILD_COOP + PLACE GOOSE + FEED + CARE
     (3,4)  BUILD_PASTURE + PLACE COW
-    (2,4)  BUILD_PASTURE + PLACE SHEEP
+    (2,4)  BUILD_PASTURE + PLACE SHEEP + FEED + CARE
     (3,2)  PLANT WHEAT + WATER
     (2,2)  PLANT WHEAT + WATER
 
-    market hour 0: BUY_ANIMAL COW, BUY_ANIMAL GOOSE, BUY_ANIMAL SHEEP, BUY_SEED WHEAT x2
+    the caller's market: BUY_SEED WHEAT x2, BUY_PRODUCT WHEAT x2
+    the offer:           nothing to hire, COW / SHEEP / GOOSE / WHEAT in the shed from hour 1
 """
 
 from __future__ import annotations
 
 from agent.tile_dp.chains import chain_id_of, chain_ops
-from agent.wsr.routing import plan_day
+from agent.wsr.routing import Offer, compile_day
 
 TILES = [
     ((4, 4), ("BUILD_COOP", "PLACE", "FEED", "CARE"), "GOOSE"),
     ((3, 4), ("BUILD_PASTURE", "PLACE"), "COW"),
-    ((2, 4), ("BUILD_PASTURE", "PLACE"), "SHEEP"),
+    ((2, 4), ("BUILD_PASTURE", "PLACE", "FEED", "CARE"), "SHEEP"),
     ((3, 2), ("PLANT", "WATER"), "WHEAT"),
     ((2, 2), ("PLANT", "WATER"), "WHEAT"),
 ]
-MARKET = [["BUY_ANIMAL", "COW", 1], ["BUY_ANIMAL", "GOOSE", 1],
-          ["BUY_ANIMAL", "SHEEP", 1], ["BUY_SEED", "WHEAT", 1], ["BUY_SEED", "WHEAT", 1]]
+MARKET = [["BUY_SEED", "WHEAT", 1], ["BUY_SEED", "WHEAT", 1],
+          ["BUY_PRODUCT", "WHEAT", 1], ["BUY_PRODUCT", "WHEAT", 1]]
+OFFER = Offer(hire_times=(), available={"COW": 1, "SHEEP": 1, "GOOSE": 1, "WHEAT": 1})
 
 
 def _day():
-    """The farmer alone, with the caller's own market orders."""
+    """The farmer alone, with the caller's offer and the caller's market."""
     tiles = [(cell, chain_ops(chain_id_of(ops)), entity) for cell, ops, entity in TILES]
-    return plan_day(tiles, [(4, 4)], new_hands=0, sells=[MARKET],
-                    bags=[{}], shed={}, money=3000.0, prices={})
+    return compile_day(tiles, [(4, 4)], offer=OFFER, hands=0, bags=[{}])
 
 
-def _worked(plan) -> dict[tuple[int, int], list[str]]:
-    """cell -> the ops the unit that works it runs."""
-    out: dict[tuple[int, int], list[str]] = {}
-    for unit, cell in enumerate(plan.assignments):
-        if cell is None:
-            continue
-        out[cell] = [op[0] for op in plan.units[unit] if op and op[0] != "PASS"]
-    return out
+def _ops_of(plan, unit: int) -> list[str]:
+    return [op[0] for op in plan.units[unit] if op and op[0] != "PASS"]
 
 
 def test_the_farmer_is_not_idle_while_chains_are_waiting() -> None:
     """One worker and five chains: the day it can do is not thrown away.
 
-    An all-PASS day is the honest answer to work that does not fit, but five chains on one tile
-    each do fit - the farmer walks to a tile and runs its chain.
+    An all-PASS day is the honest answer to work that does not fit, but a chain on one tile does
+    fit - the farmer walks to a tile and runs it.
     """
     plan = _day()
-    assert any(op for ops in _worked(plan).values() for op in ops), (
-        "the farmer did nothing while five chains were waiting")
+    assert plan.worked > 0, "the farmer did nothing while five chains were waiting"
 
 
 def test_a_worked_tile_runs_its_own_chain() -> None:
-    """The ops a unit runs belong to the tile the plan says it works.
+    """The ops a unit runs belong to the tile the plan assigns it.
 
     A coop's chain builds a coop and places a goose; a wheat chain plants and waters. If the
     assignment and the ops disagree, the plan describes a day nobody planned.
     """
     plan = _day()
-    chains = {cell: ops for cell, ops, _ in TILES}
-    for cell, ops in _worked(plan).items():
+    chains = {cell: set(ops) for cell, ops, _ in TILES}
+    for unit, cell in enumerate(plan.assignments):
+        if cell is None:
+            continue
         assert cell in chains, f"the plan works {cell}, which was never given a chain"
-        assert set(ops) <= set(chains[cell]), (
-            f"the unit on {cell} runs {sorted(ops)} but that tile's chain is {chains[cell]}")
+        ops = set(_ops_of(plan, unit))
+        assert ops <= chains[cell], (
+            f"the unit on {cell} runs {sorted(ops)} but that tile's chain is {sorted(chains[cell])}")
 
 
 def test_a_chain_is_not_started_and_abandoned() -> None:
-    """Every op of a started chain is there, in the order the chain's own rules allow.
+    """Every op of a started chain is there.
 
     A chain begun and abandoned leaves the tile half-worked: a coop built with no goose in it, or
-    a seed planted that is never watered. Those cost money and return nothing, so a plan that
-    cannot finish a chain must not start it.
+    a pasture built and never used. Those cost money and return nothing, so a plan that cannot
+    finish a chain must not start it.
     """
     plan = _day()
-    chains = {cell: ops for cell, ops, _ in TILES}
-    for cell, ops in _worked(plan).items():
+    chains = {cell: list(ops) for cell, ops, _ in TILES}
+    for unit, cell in enumerate(plan.assignments):
+        if cell is None:
+            continue
+        ops = _ops_of(plan, unit)
         missing = [op for op in chains[cell] if op not in ops]
-        assert not missing, (
-            f"the unit on {cell} started its chain but never ran {missing}")
+        assert not missing, f"the unit on {cell} started its chain but never ran {missing}"
 
 
-def test_the_plan_does_not_touch_the_market_it_was_given() -> None:
-    """The market is the caller's: the day compiler schedules units, not orders.
+def test_a_fetch_never_precedes_the_good_reaching_the_shed() -> None:
+    """The offer's timetable is the floor: nothing is picked up before it is there.
 
-    Orders already queued for a turn are not re-ordered and not added to - the engine would buy
-    twice, and the second buy is refused in silence.
+    The engine refuses a PICKUP of an empty shelf in silence, so a fetch written before its good
+    arrives is a plan that lies about its day.
     """
     plan = _day()
-    given = [list(order) for order in MARKET]
-    for row in plan.market:
-        for order in row:
-            assert list(order) in given, f"the plan queued {list(order)}, which the caller did not"
+    for route in plan.routes:
+        for hour, op in enumerate(route.ops):
+            if op and op[0] == "PICKUP":
+                item = op[1]
+                assert hour >= OFFER.available[item], (
+                    f"unit {route.unit} picks up {item} at hour {hour}, "
+                    f"before the offer says it is in the shed")
+
+
+def test_nothing_is_fetched_that_the_offer_never_promised() -> None:
+    """A good the planner never said arrives is reported, not assumed."""
+    plan = _day()
+    fetched = {op[1] for route in plan.routes for op in route.ops if op and op[0] == "PICKUP"}
+    assert fetched <= set(OFFER.available), f"the day fetched {sorted(fetched - set(OFFER.available))}"
