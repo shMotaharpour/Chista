@@ -413,7 +413,8 @@ def plan_day(tiles: Sequence[tuple[tuple[int, int], Sequence[str], str | None]],
         for index, schedule in hours_by_worker.items():
             for column, op_hours_list in schedule.items():
                 tile, ops, entity = tiles[column]
-                out.append(route_unit(ops, entity, positions[index], unit=index, hour=0,
+                out.append(route_unit(ops, entity, positions[index], unit=index,
+                                      hour=starts[index],
                                       target=tile, times=op_hours_list,
                                       carried=bags[index] if index < len(bags) else None,
                                       harvest_yields=(yields[column] if yields
