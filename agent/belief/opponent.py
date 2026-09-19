@@ -44,17 +44,57 @@ from agent.belief.tracker import FlowRecord, MarketTracker
 #: The (9,) goods order, from the world's own name for it.
 GOODS: tuple[str, ...] = PRODUCTS
 
+#: The trained artifact, loaded once. The builder
+#: (`offline_lab.build.opponent_model`) aggregates the replay store into the
+#: SAME key/bin structure, so a state seen in the corpus primes the policy
+#: before the first online observation; the agent keeps counting on top of it.
+
+
+def _load_trained() -> dict[tuple[str, int, int], np.ndarray] | None:
+    """The corpus counts as {key: (n_bins,) float array}, or None."""
+    from agent.artifact import ARTIFACT_DIR
+
+    npz = ARTIFACT_DIR / "opponent_counts.npz"
+    if not npz.exists():
+        return None
+    with np.load(npz, allow_pickle=False) as data:
+        return {(str(g), int(d), int(b)): np.asarray(c, dtype=float)
+                for g, d, b, c in zip(data["goods"], data["days"],
+                                      data["buckets"], data["counts"],
+                                      strict=True)}
+
+
+def _load_trained_qty() -> dict[tuple[str, int, int], np.ndarray] | None:
+    from agent.artifact import ARTIFACT_DIR
+
+    npz = ARTIFACT_DIR / "opponent_counts.npz"
+    if not npz.exists():
+        return None
+    with np.load(npz, allow_pickle=False) as data:
+        return {(str(g), int(d), int(b)): np.asarray(q, dtype=float)
+                for g, d, b, q in zip(data["goods"], data["days"],
+                                      data["buckets"], data["qty_sum"],
+                                      strict=True)}
+
 
 class OpponentModel:
     """Empirical action counts over the rival, Laplace-smoothed."""
 
     BINS = (1.0, 3.0, 6.0)      # sell-size bin edges
 
-    def __init__(self, alpha: float = 0.5, n_bins: int = 4) -> None:
+    def __init__(self, alpha: float = 0.5, n_bins: int = 4,
+                 pretrained: bool = True) -> None:
         self.alpha = alpha
         self.n_bins = n_bins
         self.counts: dict[tuple[str, int, int], np.ndarray] = {}
         self.qty_sum: dict[tuple[str, int, int], np.ndarray] = {}
+        if pretrained:
+            # the corpus primes the table; online observe() keeps counting on
+            # top of it (the same "+= 1", so nothing about the policy changes)
+            trained = _load_trained()
+            if trained:
+                self.counts.update(trained)
+                self.qty_sum.update(_load_trained_qty() or {})
 
     @staticmethod
     def _bucket(price: int, base: int) -> int:
