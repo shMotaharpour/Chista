@@ -115,15 +115,16 @@ ORDER_MATTERS: tuple[tuple[str, str], ...] = (
     ("PLACE", "FEED"),
     ("HARVEST", "PLANT"),
     ("HARVEST", "DIG"),
+    ("PLANT", "WATER"),
 )
 
 #: The same, but only where a crop yields once: its dose only counts inside a window and its
 #: harvest is only worth what the watering before it made. For an ongoing crop and for an
-#: animal these pairs commute, and imposing them would forbid legal days.
+#: animal these pairs commute, and imposing them would forbid legal days. `PLANT -> WATER` is
+#: NOT here: a planting day is watered after the planting whatever the crop.
 ORDER_MATTERS_ONE_SHOT: tuple[tuple[str, str], ...] = (
     ("FERTILIZE", "WATER"),
     ("WATER", "HARVEST"),
-    ("PLANT", "WATER"),
 )
 
 class Expansion(NamedTuple):
