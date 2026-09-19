@@ -152,6 +152,14 @@ def _build_worker_route(
                 continue
                 
             cost = actual_exec - current_t
+            # Staying on the tile, or on a good the worker already carries, is worth more than
+            # the wait a predecessor imposes: without this the greedy walks away from a tile it
+            # has already paid to reach, and walks back later. It ranks ahead of `cost` because
+            # `cost` is legitimately large for a task that is waiting, and a myopic key reads
+            # that as "go elsewhere" - which is the jump this fixes.
+            same_tile = task_cell == current_pos
+            shares_item = (needed_item is not None and needed_item in worker_items)
+            block = 0 if (same_tile or shares_item) else 1
             tie_breaker = -manhattan(entry_cell, task_cell)
             # A total order on the candidates: cheapest first, then the entry
             # cell's travel preference, then the MORE CONSTRAINED task (the
@@ -159,7 +167,7 @@ def _build_worker_route(
             # chain, fuzz seed 307), then the task id. The id makes the
             # winner independent of the order the candidates were visited
             # in, so the verdict is a function of the instance alone.
-            key = (cost, tie_breaker, -tail, tid)
+            key = (block, cost, tie_breaker, -tail, tid)
             if best_key is None or key < best_key:
                 best_key = key
                 best_task_id = tid
