@@ -164,7 +164,11 @@ def build(chains, *, available: dict[str, int] | None = None, horizon: int = 24)
     order: list[tuple[str, str]] = []
     column_of: dict[str, int] = {}
     for index, (cell, ops, entity) in enumerate(chains):
-        expansion = expand_chain(ops, entity=entity, cell=cell, prefix=f"d{index}_")
+        # The chain's entity is passed twice, exactly as the instance compiler does: once as the
+        # structure it builds and once as the good it places. Dropping the second leaves the
+        # animals' feed unfetched, because the fetch is derived from what the chain places.
+        expansion = expand_chain(ops, entity=entity, cell=cell, item=entity,
+                                 prefix=f"d{index}_")
         tasks.extend(expansion.tasks)
         order.extend(expansion.order)
         for task in expansion.tasks:
@@ -185,13 +189,19 @@ def build(chains, *, available: dict[str, int] | None = None, horizon: int = 24)
         if good is not None:
             earliest[i] = int(available.get(str(getattr(good, "value", good)), 0))
 
-    cells = np.asarray([t.cell if t.cell else (0, 0) for t in tasks], dtype=np.int16)
+    # A fetch carries no cell - it happens at the shed door, and the door depends on where the
+    # worker is, not on the tile the good is for. The tile numbering therefore comes from the
+    # chain the task was built for, never from the coordinates: a fetch belongs to the tile it
+    # serves, and numbering by cell would put it on a tile of its own.
+    shed_door = SHED_ACCESS[0]
+    cells = np.asarray([t.cell if t.cell else shed_door for t in tasks], dtype=np.int16)
+    columns = np.asarray([column_of[t.id] for t in tasks], dtype=np.int8)
     return TaskArray(
         ids=ids,
         actions=np.asarray([_action_code(t.action) for t in tasks], dtype=np.int8),
         items=np.asarray([_item_code(t.item) for t in tasks], dtype=np.int8),
         cells=cells,
-        columns=columns_of(cells),
+        columns=columns,
         pred=pred,
         earliest=earliest,
         latest=np.full(n, horizon, dtype=np.int8),
