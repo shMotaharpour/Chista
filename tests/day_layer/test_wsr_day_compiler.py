@@ -18,7 +18,7 @@ reported rather than guessed at.
 from __future__ import annotations
 
 from agent.tile_dp.chains import chain_id_of, chain_ops
-from agent.wsr.routing import Offer, compile_day
+from agent.wsr.routing import Offer, compile_day, feasibility
 
 TILES = [
     ((4, 4), ("BUILD_COOP", "PLACE", "FEED", "CARE"), "GOOSE"),
@@ -32,10 +32,25 @@ MARKET = [["BUY_SEED", "WHEAT", 1], ["BUY_SEED", "WHEAT", 1],
 OFFER = Offer(hire_times=(), available={"COW": 1, "SHEEP": 1, "GOOSE": 1, "WHEAT": 1})
 
 
-def _day():
-    """The farmer alone, with the caller's offer and the caller's market."""
-    tiles = [(cell, chain_ops(chain_id_of(ops)), entity) for cell, ops, entity in TILES]
-    return compile_day(tiles, [(4, 4)], offer=OFFER, hands=0, bags=[{}])
+def _tiles():
+    return [(cell, chain_ops(chain_id_of(ops)), entity) for cell, ops, entity in TILES]
+
+
+def _day(hands: int | None = None):
+    """The day, built with the hands the planner would have to offer for it to fit."""
+    needed = feasibility(_tiles(), [(4, 4)], offer=OFFER) if hands is None else hands
+    return compile_day(_tiles(), [(4, 4)], offer=OFFER, hands=needed,
+                       bags=[{} for _ in range(needed + 1)])
+
+
+def test_feasibility_says_how_many_hands_the_chains_need() -> None:
+    """The summary answer: with one farmer and five chains, the day does not fit - say so.
+
+    A planner needs this number before it hires anyone, and it must not be zero while chains
+    are waiting.
+    """
+    needed = feasibility(_tiles(), [(4, 4)], offer=OFFER)
+    assert needed > 0, "five chains on one tile need more than the farmer alone"
 
 
 def _ops_of(plan, unit: int) -> list[str]:

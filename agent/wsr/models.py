@@ -131,12 +131,15 @@ class Expansion(NamedTuple):
     """One chain, expanded into the tasks a scheduler reads.
 
     `tasks` is every op of the chain plus the PICKUP each carried op needs. `order` is the
-    (before, after) pairs the engine enforces. `same_worker` is the one worker who must do all
-    of them: a day is one cell, and the ops on a cell belong to whoever works it.
+    (before, after) pairs the engine enforces.
+
+    `groups` is one group per fetch: the PICKUP and the op that consumes it must be the same
+    worker's, because the good is in that worker's bag and nowhere else. An op that fetches
+    nothing belongs to no group - its place in the day is the order, not a worker tie.
     """
     tasks: list[MinorTask]
     order: list[tuple[str, str]]
-    same_worker: list[str]
+    groups: list[list[str]]
 
 
 def expand_chain(ops: Sequence[str], entity: Item | None = None, cell: Cell | None = None,
@@ -157,7 +160,7 @@ def expand_chain(ops: Sequence[str], entity: Item | None = None, cell: Cell | No
 
     tasks: list[MinorTask] = []
     precedence: list[tuple[str, str]] = []
-    same_worker: list[str] = []
+    groups: list[list[str]] = []
     seen: dict[str, int] = {}
     op_ids: list[tuple[str, str]] = []
 
@@ -179,7 +182,6 @@ def expand_chain(ops: Sequence[str], entity: Item | None = None, cell: Cell | No
             acquire = MinorTask(id=unique("acquire"), cell=None,
                                 action=UnitAction.PICKUP, item=carried, n=1)
             tasks.append(acquire)
-            same_worker.append(acquire.id)
             pickup = acquire.id
 
         task = MinorTask(
@@ -192,7 +194,7 @@ def expand_chain(ops: Sequence[str], entity: Item | None = None, cell: Cell | No
         tasks.append(task)
         if pickup is not None:
             precedence.append((pickup, task.id))    # carry it before you use it
-            same_worker.append(task.id)
+            groups.append([pickup, task.id])        # and the same worker carries it
         op_ids.append((name, task.id))
 
     for before, after in pairs:
@@ -205,7 +207,7 @@ def expand_chain(ops: Sequence[str], entity: Item | None = None, cell: Cell | No
                         precedence.append((task_id, later_id))
                     break
 
-    return Expansion(tasks=tasks, order=precedence, same_worker=same_worker)
+    return Expansion(tasks=tasks, order=precedence, groups=groups)
 
 
 # ============================================================================
@@ -366,8 +368,7 @@ class Instance:
                 seen_ids.add(task.id)
             minor_tasks.extend(expansion.tasks)
             precedence.extend(expansion.order)
-            if expansion.same_worker:
-                groups.append(expansion.same_worker)
+            groups.extend(expansion.groups)
 
         return cls(
             minor_tasks=minor_tasks,
