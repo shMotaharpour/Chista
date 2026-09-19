@@ -49,6 +49,8 @@ def compile_route(day: Day, tasks: TaskArray, result: Result, *,
     for turn, task_id, worker in result.route:
         by_worker.setdefault(int(worker), []).append((int(turn), task_id))
 
+    fetch_counts = _fetch_counts(tasks, result)
+
     for worker, entries in by_worker.items():
         for turn, task_id in sorted(entries):
             row = tasks.ids.index(task_id)
@@ -63,7 +65,14 @@ def compile_route(day: Day, tasks: TaskArray, result: Result, *,
                     f"schedule and the day disagree")
             for step, move in enumerate(moves):
                 ops[worker][first + step] = move
-            ops[worker][turn] = tasks.ops[row]
+            op = tasks.ops[row]
+            if fetch_counts is not None and row in fetch_counts:
+                # A merged fetch carries what its consumers need, not one apiece: one trip to the
+                # door brings the good for every task on this route that eats it. Picking up one
+                # and feeding two leaves the second feeding with an empty bag, which the engine
+                # refuses in silence.
+                op = (op[0], op[1], fetch_counts[row])
+            ops[worker][turn] = op
             at[worker] = target
             last[worker] = turn
 
@@ -77,6 +86,26 @@ def to_plan(ops: list[list[tuple]], market=None) -> dict:
     """
     return {"units": [[list(op) for op in unit] for unit in ops],
             "market": list(market or [])}
+
+
+def _fetch_counts(tasks: TaskArray, result: Result) -> dict[int, int]:
+    """How much each merged fetch has to bring: one unit per consumer that actually runs.
+
+    Counted from the route rather than from the task list, because a good whose consumers were not
+    all placed needs only what was placed - buying more than the day eats is money spent for
+    nothing.
+    """
+    placed = {task_id for _turn, task_id, _worker in result.route}
+    counts: dict[int, int] = {}
+    for good, row in enumerate(tasks.fetch_of_good):
+        if row < 0:
+            continue
+        consumers = sum(1 for i in range(tasks.n)
+                        if int(tasks.items[i]) == good and i != int(row)
+                        and tasks.ids[i] in placed)
+        if consumers:
+            counts[int(row)] = consumers
+    return counts
 
 
 def _target(tasks: TaskArray, row: int, at: tuple[int, int]) -> tuple[int, int]:
