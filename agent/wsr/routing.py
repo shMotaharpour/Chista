@@ -18,6 +18,8 @@ from typing import Iterable, Mapping, Sequence
 from kaggle_environments.envs.kaggriculture import kaggriculture as K
 
 from agent.tile_dp.chains import actions_of
+from agent.wsr.models import DayOnCell, Instance, Worker
+from agent.wsr.oxa_solver import OxaConfig, solve_oxa
 from agent.world.action_rules import CARRIES, YIELDS
 from agent.world.board import MOVE_DELTA
 from agent.world.board import manhattan
@@ -378,68 +380,56 @@ def plan_day(tiles: Sequence[tuple[tuple[int, int], Sequence[str], str | None]],
     """
     positions = [(int(p[0]), int(p[1])) for p in units]
 
-    def assign(order: list[int], free: list[int]) -> list[int | None]:
-        """Nearest-first assignment of the free tile columns to these units."""
-        out: list[int | None] = []
-        for index in order:
-            if not free:
-                out.append(None)
-                continue
-            best = min(free, key=lambda i: (manhattan(positions[index], tiles[i][0]),
-                                            tiles[i][0]))
-            free.remove(best)
-            out.append(best)
+    # Who works what is a scheduling question, so the scheduler answers it: one day per priced
+    # column, one task per op, and the solver returns the routes - which worker, in what order,
+    # at what hour. The task ids carry the column (`d<column>_`), so the columns a route covers
+    # are read back off its own schedule rather than guessed from distances.
+    days = [DayOnCell(ops, tile, entity, None) for tile, ops, entity in tiles]
+    instance = Instance.compile(
+        workers=[Worker(index=index, earliest_start=0) for index in range(len(positions))],
+        days=days)
+    solved = solve_oxa(instance, OxaConfig(min_workers=1))
+    if solved.solution is None:
+        # INFEASIBLE: the day's work does not fit the pool it was offered. The caller decides
+        # what to do with that; this function does not invent a schedule the engine would refuse.
+        return DayPlan(
+            units=tuple((("PASS",),) * hours for _ in positions), market=(), needs=(), hires=0,
+            dropped=(), unplaced=(), idle_units=len(tiles),
+            assignments=tuple(None for _ in positions))
+
+    def columns_of(worker_index: int) -> list[int]:
+        """The priced columns this worker's route covers, in the order it will work them."""
+        route = next((r for r in solved.solution.routes if r.worker_index == worker_index), None)
+        if route is None:
+            return []
+        out: list[int] = []
+        for task in route.tasks:
+            column = int(task.task_id.split("_", 1)[0][1:])
+            if column not in out:
+                out.append(column)
         return out
+
+    assigned: list[int | None] = [None] * len(positions)
+    routes: list[UnitRoute] = []
+    for index in range(len(positions)):
+        columns = columns_of(index)
+        if not columns:
+            continue
+        assigned[index] = columns[0]
+        for column in columns:
+            tile, ops, entity = tiles[column]
+            routes.append(route_unit(ops, entity, positions[index], unit=index, hour=0,
+                                     target=tile,
+                                     carried=bags[index] if index < len(bags) else None,
+                                     harvest_yields=(yields[column] if yields
+                                                     and column < len(yields) else None),
+                                     board=board, hours=hours))
 
     existing = list(range(len(positions)))
-    free = list(range(len(tiles)))
-    assigned: list[int | None] = [None] * len(positions)
-    for index, column in zip(existing, assign(existing, free)):
-        assigned[index] = column
-
-    def compile_one(index: int, column: int, start: int) -> UnitRoute:
-        tile, ops, entity = tiles[int(column)]
-        return route_unit(ops, entity, positions[index], unit=index, hour=start,
-                          target=tile,
-                          carried=bags[index] if index < len(bags) else None,
-                          harvest_yields=(yields[column] if yields
-                                          and column < len(yields) else None),
-                          board=board, hours=hours)
-
-    routes = [compile_one(i, int(assigned[i]), 0) for i in existing
-              if assigned[i] is not None]
-
-    # The engine settles a HIRE inside turn 0's market, i.e. AFTER that turn's unit actions,
-    # so the tile the farmer has just walked off is free for the hand. Spawning from the
-    # day-start positions instead puts a new hand one tile out and every one of its ops on the
-    # wrong tile, refused in silence. So: simulate turn 0, then spawn.
-    settled = [positions[i] for i in existing]
-    for route in routes:
-        first = route.ops[0] if route.ops else ("PASS",)
-        if first and first[0] in MOVE_DELTA:
-            dx, dy = MOVE_DELTA[first[0]]
-            settled[route.unit] = (settled[route.unit][0] + dx, settled[route.unit][1] + dy)
-    occupied = list(settled)
-    for _ in range(int(new_hands)):
-        positions.append(spawn_cell(occupied, board))
-        occupied.append(positions[-1])
-
-    hired = list(range(len(existing), len(positions)))
-    assigned.extend([None] * (len(positions) - len(assigned)))
-    for index, column in zip(hired, assign(hired, free)):
-        assigned[index] = column
-
-    def compile_all() -> list[UnitRoute]:
-        out: list[UnitRoute] = []
-        for index in range(len(positions)):
-            if assigned[index] is None:
-                continue
-            out.append(compile_one(index, int(assigned[index]),
-                                   0 if index < len(existing) else 1))
-        return out
-
-    routes = compile_all()
-
+    free: list[int] = []
+    for index in range(len(existing), len(positions)):
+        assigned[index] = None
+    settled = list(positions)
     def day_bill(chosen: list[UnitRoute]) -> tuple[float, float]:
         """(the market bill, and what tomorrow's seeds for the same work would cost).
 
