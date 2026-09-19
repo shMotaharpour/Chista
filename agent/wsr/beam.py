@@ -1,8 +1,8 @@
 """Beam search for the day: many routes at once, scored by a layered objective.
 
-The greedy commits to one route as it goes, so a bad early choice is paid for until the end. This
-keeps `beam` routes in parallel and prunes to the best each step: a bad choice costs one of them,
-not all of them.
+A single route, committed to as it goes, pays for a bad early choice until the end. This keeps
+`beam` routes in parallel and prunes to the best each step: a bad choice costs one of them, not all
+of them.
 
 A step adds ONE task to every route in the beam, not one turn to one worker. A route is a sequence
 of tasks and the clock follows from it, so the search never reasons about idle turns: an idle turn
@@ -26,8 +26,8 @@ from typing import NamedTuple
 
 import numpy as np
 
-from agent.world.board import MOVE_DELTA, manhattan
-from agent.world.rules import BOARD_SIZE, SHED_ACCESS, TURNS_PER_DAY
+from agent.world.board import MOVE_DELTA
+from agent.world.rules import BOARD_SIZE, TURNS_PER_DAY
 from agent.wsr.routing import walk
 from agent.wsr.tasks import DISTANCE, NO_ITEM, SHED_INDEX, TaskArray
 

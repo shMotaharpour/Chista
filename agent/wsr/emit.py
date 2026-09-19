@@ -19,8 +19,6 @@ worker stands, the same rule the search priced with.
 
 from __future__ import annotations
 
-from agent.world.board import manhattan
-from agent.world.rules import SHED_ACCESS
 from agent.wsr.beam import (Day, Result, _settled_after_first_turn, _start_hours,
                             _start_positions, first_arrival, preload_turns)
 from agent.wsr.routing import walk
@@ -117,13 +115,6 @@ def _room(task_id: str, worker: int, turn: int, needed: int, first: int) -> None
         raise ValueError(
             f"{task_id} on worker {worker} at turn {turn}: it needs {needed} turns from {first} "
             f"and only {turn - first} are free - the schedule and the day disagree")
-
-
-def _nearest_door(at: tuple[int, int]) -> tuple[int, int]:
-    """The closest shed-access tile, ties broken by the world's own order - as the search priced."""
-    return min(((int(x), int(y)) for x, y in SHED_ACCESS),
-               key=lambda tile: (manhattan(at, tile),
-                                 SHED_ACCESS.index((tile[0], tile[1]))))
 
 
 def check_route(day: Day, tasks: TaskArray, result: Result, settled=None) -> list[str]:
