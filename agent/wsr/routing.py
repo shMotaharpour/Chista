@@ -422,29 +422,33 @@ def plan_day(tiles: Sequence[tuple[tuple[int, int], Sequence[str], str | None]],
             dropped=(), unplaced=(), idle_units=len(tiles),
             assignments=tuple(None for _ in positions))
 
-    def columns_of(worker_index: int) -> list[int]:
-        """The priced columns this worker's route covers, in the order it will work them."""
+    def schedule_of(worker_index: int) -> dict[int, list[int]]:
+        """What the scheduler gave this worker: per priced column, the hours of its ops.
+
+        The task ids carry the column (`d<column>_...`), so the hours are read off the route's own
+        schedule. `route_unit` then writes the turns - travel included - so an op lands on the
+        hour the scheduler decided rather than one the compiler counted.
+        """
         route = next((r for r in solved.solution.routes if r.worker_index == worker_index), None)
+        out: dict[int, list[int]] = {}
         if route is None:
-            return []
-        out: list[int] = []
+            return out
         for task in route.tasks:
             column = int(task.task_id.split("_", 1)[0][1:])
-            if column not in out:
-                out.append(column)
+            out.setdefault(column, []).append(int(task.exec_time))
         return out
 
     assigned: list[int | None] = [None] * len(positions)
     routes: list[UnitRoute] = []
     for index in range(len(positions)):
-        columns = columns_of(index)
-        if not columns:
+        schedule = schedule_of(index)
+        if not schedule:
             continue
-        assigned[index] = columns[0]
-        for column in columns:
+        assigned[index] = next(iter(schedule))
+        for column, op_hours in schedule.items():
             tile, ops, entity = tiles[column]
             routes.append(route_unit(ops, entity, positions[index], unit=index, hour=0,
-                                     target=tile,
+                                     target=tile, times=op_hours,
                                      carried=bags[index] if index < len(bags) else None,
                                      harvest_yields=(yields[column] if yields
                                                      and column < len(yields) else None),
