@@ -61,6 +61,10 @@ class TaskArray:
     cells: np.ndarray = field(default_factory=lambda: np.zeros((0, 2), dtype=np.int16))
     columns: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int8))
     pred: np.ndarray = field(default_factory=lambda: np.zeros((0, 0), dtype=bool))
+    #: For each good, the row of the task that fetches it - or -1. There is one per good, because
+    #: a good is carried by one worker, so the fetch and everything that consumes it are one
+    #: worker's. This is what makes "who holds this good" a lookup rather than more state.
+    fetch_of_good: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int16))
     earliest: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int8))
     latest: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int8))
 
@@ -176,6 +180,7 @@ def build(chains, *, available: dict[str, int] | None = None, horizon: int = 24)
     a planting waits for its seed, and everything else may run from the first hour. Nothing is read
     from the world.
     """
+    from agent.world.model import UnitAction
     from agent.wsr.models import expand_chain
 
     available = available or {}
@@ -192,6 +197,8 @@ def build(chains, *, available: dict[str, int] | None = None, horizon: int = 24)
         order.extend(expansion.order)
         for task in expansion.tasks:
             column_of[task.id] = index
+
+    tasks, order, column_of = _merge_fetches(tasks, order, column_of)
 
     ids = [t.id for t in tasks]
     row_of = {tid: i for i, tid in enumerate(ids)}
@@ -215,16 +222,63 @@ def build(chains, *, available: dict[str, int] | None = None, horizon: int = 24)
     shed_door = SHED_ACCESS[0]
     cells = np.asarray([t.cell if t.cell else shed_door for t in tasks], dtype=np.int16)
     columns = np.asarray([column_of[t.id] for t in tasks], dtype=np.int8)
+
+    item_codes = np.asarray([_item_code(t.item) for t in tasks], dtype=np.int16)
+    n_goods = int(item_codes.max()) + 1 if n and int(item_codes.max()) >= 0 else 0
+    fetch_of_good = np.full(max(n_goods, 1), -1, dtype=np.int16)
+    for i, task in enumerate(tasks):
+        if task.action == UnitAction.PICKUP:
+            fetch_of_good[item_codes[i]] = i
     return TaskArray(
         ids=ids,
         actions=np.asarray([_action_code(t.action) for t in tasks], dtype=np.int8),
-        items=np.asarray([_item_code(t.item) for t in tasks], dtype=np.int8),
+        items=item_codes.astype(np.int8),
+        fetch_of_good=fetch_of_good,
         cells=cells,
         columns=columns,
         pred=pred,
         earliest=earliest,
         latest=np.full(n, horizon, dtype=np.int8),
     )
+
+
+def _merge_fetches(tasks, order, column_of):
+    """One trip per good, however many tasks consume it.
+
+    `expand_chain` gives every consuming op its own fetch. That suits the greedy solver, which
+    emits one PICKUP per worker per good at the end, but it is wrong as a TASK LIST: two fetches of
+    the same good on one route are one walk to the door, and the engine's PICKUP carries a count
+    for exactly this reason. Charging two turns for one trip is not a missing feature - it is a
+    turn the search loses and never gets back.
+
+    The first fetch of a good survives and every later one is folded into it, so the consumers that
+    pointed at a dropped fetch now wait on the one that carries their good.
+    """
+    from agent.world.action import Item
+    from agent.world.model import UnitAction
+
+    fetch_of: dict[int, str] = {}            # good -> the fetch that carries it
+    folded: dict[str, str] = {}              # a dropped fetch -> the one that replaces it
+    kept = []
+    for task in tasks:
+        if task.action != UnitAction.PICKUP:
+            kept.append(task)
+            continue
+        good = _item_code(task.item)
+        if good in fetch_of:
+            folded[task.id] = fetch_of[good]
+        else:
+            fetch_of[good] = task.id
+            kept.append(task)
+
+    def resolve(tid: str) -> str:
+        while tid in folded:
+            tid = folded[tid]
+        return tid
+
+    order = [(resolve(before), resolve(after)) for before, after in order]
+    column_of = {tid: col for tid, col in column_of.items() if tid not in folded}
+    return kept, list(dict.fromkeys(order)), column_of
 
 
 def _good_for(task) -> object | None:

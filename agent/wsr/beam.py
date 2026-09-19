@@ -54,10 +54,16 @@ class Day:
 
 
 class Result(NamedTuple):
-    """What the search found: the pool it used, the route, and whether the day was carried."""
+    """What the search found: the pool it used, the route, and whether the day was carried.
+
+    A route entry is `(turn, task, worker)`: the turn the task occupies, its id, and which worker
+    does it. The worker matters beyond bookkeeping - a good is carried by one worker, so the fetch
+    that brings it and every task that consumes it have to be the same worker's, and this is what
+    lets that be checked instead of assumed.
+    """
 
     pool: int
-    route: list[tuple[int, str]]
+    route: list[tuple[int, str, int]]
     complete: bool
 
 
@@ -166,7 +172,8 @@ def _run(day: Day, tasks: TaskArray, *, hands: int, beam: int) -> Result:
     first_hand = len(day.units)                              # workers before this index are units
 
     done = np.zeros((beam, n), dtype=bool)
-    when = np.zeros((beam, n), dtype=np.int16)               # the hour each done task ran
+    when = np.zeros((beam, n), dtype=np.int16)               # the turn each done task occupies
+    who = np.full((beam, n), -1, dtype=np.int16)             # and the worker that did it
     # Every worker starts at its own hour: the farmer at the day's first, a hand at the hour the
     # planner offered it. Starting them all together would hand the search turns the engine will
     # not give, which is how a day gets called feasible that the harness then truncates.
@@ -178,27 +185,27 @@ def _run(day: Day, tasks: TaskArray, *, hands: int, beam: int) -> Result:
 
     # The best state is remembered as the search goes, because the beam's last generation can be
     # empty - a route that dies at the end would otherwise erase the work it had already placed.
-    best = _snapshot(done, when, free, travel, first_hand, start_hours)
+    best = _snapshot(done, when, who, free, travel, first_hand, start_hours)
     for _step in range(n):
-        expanded = _expand(day, tasks, done, when, free, where, travel, live)
+        expanded = _expand(day, tasks, done, when, who, free, where, travel, live)
         if expanded is None:
             break
-        done, when, free, where, travel, live = _select(
+        done, when, who, free, where, travel, live = _select(
             expanded, tasks, beam, first_hand, start_hours)
         if not live.any():
             break
-        here = _snapshot(done, when, free, travel, first_hand, start_hours)
+        here = _snapshot(done, when, who, free, travel, first_hand, start_hours)
         if _better(here, best):
             best = here
 
-    placed, when_best, done_best = best
+    placed, when_best, who_best, done_best = best
     complete = placed == n
-    route = [(int(when_best[i]), tasks.ids[i])
+    route = [(int(when_best[i]), tasks.ids[i], int(who_best[i]))
              for i in np.argsort(when_best) if done_best[i]]
     return Result(hands, route, complete)
 
 
-def _snapshot(done, when, free, travel, first_hand, start_hours):
+def _snapshot(done, when, who, free, travel, first_hand, start_hours):
     """The best route in the beam right now, by the layered objective: work, hands, makespan, walk.
 
     A hand counts as put to work when its clock has moved past the hour it began at - not when its
@@ -208,13 +215,13 @@ def _snapshot(done, when, free, travel, first_hand, start_hours):
     hands_used = (free[:, first_hand:] > start_hours[first_hand:]).sum(axis=1)
     makespan = free.max(axis=1)
     row = int(np.lexsort((travel, makespan, hands_used, -placed))[0])
-    return int(placed[row]), when[row].copy(), done[row].copy()
+    return int(placed[row]), when[row].copy(), who[row].copy(), done[row].copy()
 
 
 def _better(candidate, best) -> bool:
     """Whether `candidate` beats `best`: more work first, then the earliest finish."""
-    placed, when, _ = candidate
-    best_placed, best_when, _ = best
+    placed, when = candidate[0], candidate[1]
+    best_placed, best_when = best[0], best[1]
     if placed != best_placed:
         return placed > best_placed
     return int(when.max()) < int(best_when.max())
@@ -256,7 +263,7 @@ def _start_hours(day: Day, hands: int) -> np.ndarray:
     return np.asarray(hours, dtype=np.int16)
 
 
-def _expand(day: Day, tasks: TaskArray, done, when, free, where, travel, live):
+def _expand(day: Day, tasks: TaskArray, done, when, who, free, where, travel, live):
     """One task added to every live route: the vectorised step.
 
     For each route and each task, the earliest hour any worker could finish it: walk from where
@@ -283,6 +290,14 @@ def _expand(day: Day, tasks: TaskArray, done, when, free, where, travel, live):
         via_door = door[:, :, None] + DOOR_FROM[tasks.cell_index][None, None, :]
         hop = np.where(is_fetch[None, None, :], via_door, hop)
 
+    # A good is carried by ONE worker, so a task that consumes it must be that worker's. The fetch
+    # itself may be taken by anyone - that is how the worker becomes the holder. Without this the
+    # search happily feeds a tile from a worker whose bag does not have the wheat.
+    holder = _holders(done, who, tasks)
+    owner = np.where(tasks.items >= 0, holder[:, tasks.items.clip(0)], -1)
+    anyone = (tasks.items < 0) | is_fetch
+    may = anyone[None, None, :] | (owner[:, None, :] == np.arange(m)[None, :, None])
+
     arrive = free[:, :, None] + hop                          # (b, m, n)
     released = _released(when, tasks)                        # (b, n): the predecessors' finish
     ready = tasks.ready(done)                                # (b, n): every predecessor done
@@ -296,12 +311,12 @@ def _expand(day: Day, tasks: TaskArray, done, when, free, where, travel, live):
     legal = (ready & ~done & (finish <= day.horizon).any(axis=1)
              & (start <= tasks.latest[None, None, :]).any(axis=1))
     legal = legal[:, None, :] & (finish <= day.horizon) & (start <= tasks.latest[None, None, :])
-    finish = np.where(legal, finish, BIG)
+    finish = np.where(legal & may, finish, BIG)
 
     earliest = finish.min(axis=1)                            # (b, n): the hour it can be done
     worker = finish.argmin(axis=1)                           # (b, n): and by which worker
     return dict(rows=rows, finish=finish, hop=hop, earliest=earliest, worker=worker,
-                done=done, when=when, free=free, where=where, travel=travel)
+                done=done, when=when, who=who, free=free, where=where, travel=travel)
 
 
 def _select(expanded, tasks: TaskArray, beam: int, first_hand: int, start_hours):
@@ -318,15 +333,16 @@ def _select(expanded, tasks: TaskArray, beam: int, first_hand: int, start_hours)
     """
     n = tasks.n
     rows = expanded["rows"]
-    done, when, free = expanded["done"], expanded["when"], expanded["free"]
+    done, when, who = expanded["done"], expanded["when"], expanded["who"]
+    free = expanded["free"]
     where, travel, hop = expanded["where"], expanded["travel"], expanded["hop"]
     flat_hour = expanded["earliest"][rows].ravel()           # (live * n)
 
     legal = np.flatnonzero(flat_hour < BIG)
     if legal.size == 0:
-        return (_empty_like(done, beam), _empty_like(when, beam), _empty_like(free, beam),
-                _empty_like(where, beam), np.zeros((beam,), dtype=np.int16),
-                np.zeros((beam,), dtype=bool))
+        return (_empty_like(done, beam), _empty_like(when, beam), _empty_like(who, beam),
+                _empty_like(free, beam), _empty_like(where, beam),
+                np.zeros((beam,), dtype=np.int16), np.zeros((beam,), dtype=bool))
 
     budget = min(legal.size, beam * 4)
     if legal.size > budget:
@@ -344,6 +360,8 @@ def _select(expanded, tasks: TaskArray, beam: int, first_hand: int, start_hours)
     # acts in the first of them. The worker is free from the turn after.
     child_done = done[parent].copy()
     child_done[np.arange(parent.size), task] = True
+    child_who = who[parent].copy()
+    child_who[np.arange(parent.size), task] = worker
     child_when = when[parent].copy()
     child_when[np.arange(parent.size), task] = hour - 1
     child_free = free[parent].copy()
@@ -352,10 +370,13 @@ def _select(expanded, tasks: TaskArray, beam: int, first_hand: int, start_hours)
     child_where[np.arange(parent.size), worker] = tasks.cells[task]
     child_travel = travel[parent] + hop[parent, worker, task]
 
+    # Every child array is filtered in ONE place. Filtering them in separate statements is how a
+    # new array gets left behind, and a child array out of step with the others reads another
+    # route's values - which is what happened to the worker column.
     keep = _dedupe(child_done, child_free, child_where)
-    child_done, child_when = child_done[keep], child_when[keep]
-    child_free, child_where = child_free[keep], child_where[keep]
-    child_travel = child_travel[keep]
+    child_done, child_when, child_who, child_free, child_where, child_travel = (
+        array[keep] for array in (child_done, child_when, child_who, child_free,
+                                  child_where, child_travel))
 
     hands_used = (child_free[:, first_hand:] > start_hours[first_hand:]).sum(axis=1)
     makespan = child_free.max(axis=1)
@@ -363,15 +384,17 @@ def _select(expanded, tasks: TaskArray, beam: int, first_hand: int, start_hours)
 
     out_done = _empty_like(child_done, beam)
     out_when = _empty_like(child_when, beam)
+    out_who = _empty_like(child_who, beam)
     out_free = _empty_like(child_free, beam)
     out_where = _empty_like(child_where, beam)
     out_travel = np.zeros((beam,), dtype=np.int16)
     out_live = np.zeros((beam,), dtype=bool)
     k = order.size
     out_done[:k], out_when[:k] = child_done[order], child_when[order]
+    out_who[:k] = child_who[order]
     out_free[:k], out_where[:k] = child_free[order], child_where[order]
     out_travel[:k], out_live[:k] = child_travel[order], True
-    return out_done, out_when, out_free, out_where, out_travel, out_live
+    return out_done, out_when, out_who, out_free, out_where, out_travel, out_live
 
 
 def _empty_like(array: np.ndarray, beam: int) -> np.ndarray:
@@ -417,6 +440,20 @@ def _released(when: np.ndarray, tasks: TaskArray) -> np.ndarray:
 def _flat(where: np.ndarray) -> np.ndarray:
     """Cells as distance-matrix rows: `y * size + x`."""
     return (where[:, :, 0].astype(np.int32) * BOARD_SIZE + where[:, :, 1].astype(np.int32))
+
+
+def _holders(done, who, tasks: TaskArray) -> np.ndarray:
+    """Which worker holds each good, per route - read off the fetch that carries it.
+
+    Not tracked as state: a good has exactly one fetch task, so the holder is whoever did it, and
+    deriving it keeps the two from ever disagreeing.
+    """
+    if tasks.fetch_of_good.size == 0:
+        return np.full((done.shape[0], 0), -1, dtype=np.int16)
+    index = tasks.fetch_of_good
+    safe = np.where(index >= 0, index, 0)
+    taken = done[:, safe] & (index >= 0)[None, :]
+    return np.where(taken, who[:, safe], np.int16(-1))
 
 
 def _fetch_mask(tasks: TaskArray) -> np.ndarray:
