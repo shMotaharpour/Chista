@@ -11,21 +11,24 @@ compiler is the last place a disagreement between the schedule and the day can b
 emitting a move over a turn that already holds an op would hand the engine a day the search never
 approved.
 
-A fetch is a detour through a door: the worker walks to a door, picks the good up there, and walks
-on. Which door is not a free choice - it is the nearest one to where the worker stands, the same
-rule the search priced with.
+A good a task consumes is not in the worker's bag yet the first time that worker needs it, so the
+trip is written here: out to a door, one PICKUP carrying every one of that good the worker will use
+that day, and on to the tile. Which door is not a free choice - it is the nearest one to where the
+worker stands, the same rule the search priced with.
 """
 
 from __future__ import annotations
 
 from agent.world.board import manhattan
 from agent.world.rules import SHED_ACCESS
-from agent.wsr.beam import (Day, Result, _fetch_mask, _settled_after_first_turn,
-                            _start_hours, _start_positions)
+from agent.wsr.beam import (Day, Result, _settled_after_first_turn, _start_hours,
+                            _start_positions, first_arrival, preload_turns)
 from agent.wsr.routing import walk
-from agent.wsr.tasks import TaskArray
+from agent.wsr.tasks import ITEM_CODE, TaskArray
 
 PASS = ("PASS",)
+
+ITEM_NAME = {code: item.name for item, code in ITEM_CODE.items()}
 
 
 def compile_route(day: Day, tasks: TaskArray, result: Result, *,
@@ -57,30 +60,28 @@ def compile_route(day: Day, tasks: TaskArray, result: Result, *,
     for turn, task_id, worker in result.route:
         by_worker.setdefault(int(worker), []).append((int(turn), task_id))
 
-    fetch_counts = _fetch_counts(tasks, result)
+    # The pickups: one turn each, at the door the worker starts on, carrying the whole day's use of
+    # that good. The second feeding of a day buys nothing, so it is not fetched again. Each worker's
+    # pickups begin at ITS own hour - a hand offered at hour 1 cannot pick anything up at hour 0,
+    # and giving it another worker's hour is what put a walk one turn short of its room.
+    arrival = first_arrival(tasks)
+    for worker in range(m):
+        bag = _bag(tasks, by_worker.get(worker, []))
+        first = max(int(hours[worker]), arrival)
+        for step, good in enumerate(sorted(bag)):
+            ops[worker][first + step] = ("PICKUP", ITEM_NAME[good], bag[good])
+        if bag:
+            last[worker] = first + len(bag) - 1
 
     for worker, entries in by_worker.items():
         for turn, task_id in sorted(entries):
             row = tasks.ids.index(task_id)
-            target = _target(tasks, row, at[worker])
+            target = (int(tasks.cells[row][0]), int(tasks.cells[row][1]))
             moves = walk(at[worker], target)
             first = last[worker] + 1
-            free_turns = turn - first
-            if len(moves) > free_turns:
-                raise ValueError(
-                    f"{task_id} on worker {worker} at turn {turn}: the walk from {at[worker]} to "
-                    f"{target} takes {len(moves)} turns and only {free_turns} are free - the "
-                    f"schedule and the day disagree")
-            for step, move in enumerate(moves):
-                ops[worker][first + step] = move
-            op = tasks.ops[row]
-            if fetch_counts is not None and row in fetch_counts:
-                # A merged fetch carries what its consumers need, not one apiece: one trip to the
-                # door brings the good for every task on this route that eats it. Picking up one
-                # and feeding two leaves the second feeding with an empty bag, which the engine
-                # refuses in silence.
-                op = (op[0], op[1], fetch_counts[row])
-            ops[worker][turn] = op
+            _room(task_id, worker, turn, len(moves), first)
+            _write(ops[worker], first, moves)
+            ops[worker][turn] = tasks.ops[row]
             at[worker] = target
             last[worker] = turn
 
@@ -96,31 +97,26 @@ def to_plan(ops: list[list[tuple]], market=None) -> dict:
             "market": list(market or [])}
 
 
-def _fetch_counts(tasks: TaskArray, result: Result) -> dict[int, int]:
-    """How much each merged fetch has to bring: one unit per consumer that actually runs.
-
-    Counted from the route rather than from the task list, because a good whose consumers were not
-    all placed needs only what was placed - buying more than the day eats is money spent for
-    nothing.
-    """
-    placed = {task_id for _turn, task_id, _worker in result.route}
-    counts: dict[int, int] = {}
-    for good, row in enumerate(tasks.fetch_of_good):
-        if row < 0:
-            continue
-        consumers = sum(1 for i in range(tasks.n)
-                        if int(tasks.items[i]) == good and i != int(row)
-                        and tasks.ids[i] in placed)
-        if consumers:
-            counts[int(row)] = consumers
-    return counts
+def _bag(tasks: TaskArray, entries: list[tuple[int, str]]) -> dict[int, int]:
+    """How much of each good this worker's day uses, so one trip can carry all of it."""
+    bag: dict[int, int] = {}
+    for _turn, task_id in entries:
+        good = int(tasks.items[tasks.ids.index(task_id)])
+        if good >= 0:
+            bag[good] = bag.get(good, 0) + 1
+    return bag
 
 
-def _target(tasks: TaskArray, row: int, at: tuple[int, int]) -> tuple[int, int]:
-    """Where a worker must stand to do a task: a door for a fetch, the tile for anything else."""
-    if bool(_fetch_mask(tasks)[row]):
-        return _nearest_door(at)
-    return (int(tasks.cells[row][0]), int(tasks.cells[row][1]))
+def _write(ops: list[tuple], first: int, moves: list[tuple]) -> None:
+    for step, move in enumerate(moves):
+        ops[first + step] = move
+
+
+def _room(task_id: str, worker: int, turn: int, needed: int, first: int) -> None:
+    if needed > turn - first:
+        raise ValueError(
+            f"{task_id} on worker {worker} at turn {turn}: it needs {needed} turns from {first} "
+            f"and only {turn - first} are free - the schedule and the day disagree")
 
 
 def _nearest_door(at: tuple[int, int]) -> tuple[int, int]:
@@ -141,33 +137,28 @@ def check_route(day: Day, tasks: TaskArray, result: Result, settled=None) -> lis
         settled = _settled_after_first_turn(day, tasks, result)
     starts = _start_positions(day, result.pool, settled)
     hours = _start_hours(day, result.pool)
-    fetch = _fetch_mask(tasks)
 
     turns: dict[int, list[tuple[int, str]]] = {}
     for turn, task_id, worker in result.route:
         turns.setdefault(int(worker), []).append((int(turn), task_id))
 
+    when = {task_id: int(turn) for turn, task_id, _w in result.route}
+    placed = set(when)
     for worker, entries in turns.items():
         for turn, task_id in entries:
             if not 0 <= turn < day.horizon:
                 complaints.append(f"{task_id} at turn {turn} is outside the day")
             if worker >= starts.shape[0]:
                 complaints.append(f"{task_id} names worker {worker}, who does not exist")
-            if turn < int(hours[worker]):
+            elif turn < int(hours[worker]):
                 complaints.append(f"{task_id} at turn {turn} is before worker {worker} may begin")
     for i in range(tasks.n):
         row = tasks.ids[i]
-        placed = {t for _h, t, _w in result.route}
         if row not in placed:
             continue
         for j in range(tasks.n):
-            if not tasks.pred[i, j] or tasks.ids[j] not in placed:
-                continue
-            when = {t: h for h, t, _w in result.route}
-            if when[tasks.ids[j]] >= when[row]:
+            if tasks.pred[i, j] and tasks.ids[j] in placed and when[tasks.ids[j]] >= when[row]:
                 complaints.append(f"{tasks.ids[j]} must come before {row}")
-        if fetch[i] and tasks.items[i] >= 0:
-            when = {t: h for h, t, _w in result.route}
-            if when[row] < int(tasks.earliest[i]):
-                complaints.append(f"{row} fetches at {when[row]}, before its good is in the shed")
+        if tasks.items[i] >= 0 and when[row] < int(tasks.earliest[i]):
+            complaints.append(f"{row} needs its good at {when[row]}, before it is in the shed")
     return complaints

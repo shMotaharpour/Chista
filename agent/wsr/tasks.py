@@ -65,10 +65,9 @@ class TaskArray:
     cells: np.ndarray = field(default_factory=lambda: np.zeros((0, 2), dtype=np.int16))
     columns: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int8))
     pred: np.ndarray = field(default_factory=lambda: np.zeros((0, 0), dtype=bool))
-    #: For each good, the row of the task that fetches it - or -1. There is one per good, because
-    #: a good is carried by one worker, so the fetch and everything that consumes it are one
-    #: worker's. This is what makes "who holds this good" a lookup rather than more state.
-    fetch_of_good: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int16))
+    #: No fetch column: a fetch is not a task the day schedules. `items` says what good each task
+    #: consumes, and the trip to a door is priced on the task itself - once per worker per good,
+    #: because a bag is per worker and the second feeding of a day is already in it.
     earliest: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int8))
     latest: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int8))
 
@@ -202,7 +201,15 @@ def build(chains, *, available: dict[str, int] | None = None, horizon: int = 24)
         for task in expansion.tasks:
             column_of[task.id] = index
 
-    tasks, order, column_of = _merge_fetches(tasks, order, column_of)
+    # A fetch is not a task: it is the trip a consumer makes when its good is not in the bag yet.
+    # Leaving it in the list made the beam choose it before the consumer it serves, which locked
+    # that consumer to a worker that may never go near the tile.
+    from agent.world.model import UnitAction
+
+    fetches = {t.id for t in tasks if t.action == UnitAction.PICKUP}
+    tasks = [t for t in tasks if t.id not in fetches]
+    order = [(b, a) for b, a in order if b not in fetches and a not in fetches]
+    column_of = {tid: col for tid, col in column_of.items() if tid not in fetches}
 
     ids = [t.id for t in tasks]
     row_of = {tid: i for i, tid in enumerate(ids)}
@@ -228,17 +235,11 @@ def build(chains, *, available: dict[str, int] | None = None, horizon: int = 24)
     columns = np.asarray([column_of[t.id] for t in tasks], dtype=np.int8)
 
     item_codes = np.asarray([_item_code(t.item) for t in tasks], dtype=np.int16)
-    n_goods = int(item_codes.max()) + 1 if n and int(item_codes.max()) >= 0 else 0
-    fetch_of_good = np.full(max(n_goods, 1), -1, dtype=np.int16)
-    for i, task in enumerate(tasks):
-        if task.action == UnitAction.PICKUP:
-            fetch_of_good[item_codes[i]] = i
     return TaskArray(
         ids=ids,
         ops=[_engine_op(t) for t in tasks],
         actions=np.asarray([_action_code(t.action) for t in tasks], dtype=np.int8),
         items=item_codes.astype(np.int8),
-        fetch_of_good=fetch_of_good,
         cells=cells,
         columns=columns,
         pred=pred,
@@ -317,7 +318,11 @@ def _good_for(task) -> object | None:
         return task.item
     if action == "PLANT":
         return task.crop
-    return None
+    # A task that consumes a good - PLACE, FEED, FERTILIZE - waits for the same hour, because the
+    # trip that brings the good cannot happen before the shed holds it. Without this the search
+    # prices a feeding at the turn the day opens, when the animal it feeds is still in the market.
+    item = getattr(task, "item", None)
+    return item if _item_code(item) >= 0 else None
 
 
 def _action_code(action) -> int:

@@ -182,24 +182,24 @@ def _run(day: Day, tasks: TaskArray, *, hands: int, beam: int,
     # Every worker starts at its own hour: the farmer at the day's first, a hand at the hour the
     # planner offered it. Starting them all together would hand the search turns the engine will
     # not give, which is how a day gets called feasible that the harness then truncates.
-    start_hours = _start_hours(day, hands)
-    free = np.tile(start_hours[None, :], (beam, 1)).astype(np.int16)
+    hours = start_hours(day, tasks, hands)
+    free = np.tile(hours[None, :], (beam, 1)).astype(np.int16)
     where = np.tile(start_pos[None, :, :], (beam, 1, 1))
     travel = np.zeros((beam,), dtype=np.int16)
     live = np.ones((beam,), dtype=bool)
 
     # The best state is remembered as the search goes, because the beam's last generation can be
     # empty - a route that dies at the end would otherwise erase the work it had already placed.
-    best = _snapshot(done, when, who, free, travel, first_hand, start_hours)
+    best = _snapshot(done, when, who, free, travel, first_hand, hours)
     for _step in range(n):
         expanded = _expand(day, tasks, done, when, who, free, where, travel, live)
         if expanded is None:
             break
         done, when, who, free, where, travel, live = _select(
-            expanded, tasks, beam, first_hand, start_hours)
+            expanded, tasks, beam, first_hand, hours)
         if not live.any():
             break
-        here = _snapshot(done, when, who, free, travel, first_hand, start_hours)
+        here = _snapshot(done, when, who, free, travel, first_hand, hours)
         if _better(here, best):
             best = here
 
@@ -294,12 +294,36 @@ def _settled_after_first_turn(day: Day, tasks: TaskArray, result: Result) -> lis
 
 
 def _stand_for(tasks: TaskArray, row: int, at: tuple[int, int]) -> tuple[int, int]:
-    """Where a worker must stand to do a task: a door for a fetch, the tile for anything else."""
-    if bool(_fetch_mask(tasks)[row]):
-        return min(((int(x), int(y)) for x, y in SHED_ACCESS),
-                   key=lambda tile: (manhattan(at, tile),
-                                     SHED_ACCESS.index((tile[0], tile[1]))))
+    """Where a worker must stand to do a task: the tile it works, since no task is a fetch.
+
+    The trip a consumer makes through a door is priced on the consumer and written by the compiler,
+    so a task never has a door for a destination.
+    """
     return (int(tasks.cells[row][0]), int(tasks.cells[row][1]))
+
+
+def preload_turns(tasks: TaskArray) -> int:
+    """How many pickups the day's walk is shifted by: one per distinct good a task consumes.
+
+    A worker takes what it will use while it stands on the door, so its walk out begins that many
+    turns later. Charging every worker the day's own count is a ceiling, not a guess: a worker that
+    needs fewer goods leaves the difference idle, and one that needs them all has exactly its room.
+    """
+    goods = tasks.items[tasks.items >= 0]
+    return int(np.unique(goods).size)
+
+
+def first_arrival(tasks: TaskArray) -> int:
+    """The earliest turn any good a task consumes is in the shed."""
+    goods = tasks.items >= 0
+    if not goods.any():
+        return 0
+    return int(tasks.earliest[goods].min())
+
+
+def start_hours(day: Day, tasks: TaskArray, hands: int) -> np.ndarray:
+    """The hour each worker's WALK may begin: its own hour, the goods, and the pickups before it."""
+    return np.maximum(_start_hours(day, hands), first_arrival(tasks)) + np.int16(preload_turns(tasks))
 
 
 def _start_hours(day: Day, hands: int) -> np.ndarray:
@@ -323,9 +347,14 @@ def _start_hours(day: Day, hands: int) -> np.ndarray:
 def _expand(day: Day, tasks: TaskArray, done, when, who, free, where, travel, live):
     """One task added to every live route: the vectorised step.
 
-    For each route and each task, the earliest hour any worker could finish it: walk from where
-    that worker stands, wait for the predecessors, wait for the good. The minimum over workers says
-    which worker should take it.
+    For each route and each task, the earliest hour any worker could finish it: walk from where that
+    worker stands, wait for the predecessors, wait for the good. The minimum over workers says which
+    worker should take it.
+
+    A task that consumes a good its worker does not yet hold pays for the trip: out to a door, the
+    pickup, and on to the tile. The second feeding of the same good on the same worker pays nothing
+    extra, because the good is already in that worker's bag - which is the saving a day makes when
+    it fetches once and eats twice.
     """
     n = tasks.n
     b, m = free.shape
@@ -336,30 +365,17 @@ def _expand(day: Day, tasks: TaskArray, done, when, who, free, where, travel, li
     here = _flat(where)                                      # (b, m)
     hop = DISTANCE[here[:, :, None], tasks.cell_index[None, None, :]].astype(np.int16)
 
-    # A fetch happens at a shed door, not on the tile the good is for, and the worker picks the
-    # nearest door. Every other task is worked on its own tile.
-    # A fetch is a detour through a door: out to the nearest one, then on to the tile. The tile
-    # side of that trip is a property of the tile alone, so it is looked up rather than measured,
-    # and only the worker's side is computed per step.
-    is_fetch = _fetch_mask(tasks)
-    if is_fetch.any():
-        # One door, not two minima. The worker walks to a door, picks up, and walks on to the tile
-        # - so the trip is dist(worker, door) + dist(door, tile) for the SAME door. Taking the
-        # nearest door to the worker and the nearest door to the tile separately can name two
-        # different doors, which undercuts the trip and hands the compiler a walk it cannot make.
-        to_door = DISTANCE[here[:, :, None], SHED_INDEX[None, None, :]].astype(np.int16)
-        chosen = SHED_INDEX[to_door.argmin(axis=-1)]                       # (b, m)
-        onward = DISTANCE[chosen[:, :, None], tasks.cell_index[None, None, :]].astype(np.int16)
-        via_door = to_door.min(axis=-1)[:, :, None] + onward
-        hop = np.where(is_fetch[None, None, :], via_door, hop)
-
-    # A good is carried by ONE worker, so a task that consumes it must be that worker's. The fetch
-    # itself may be taken by anyone - that is how the worker becomes the holder. Without this the
-    # search happily feeds a tile from a worker whose bag does not have the wheat.
-    holder = _holders(done, who, tasks)
-    owner = np.where(tasks.items >= 0, holder[:, tasks.items.clip(0)], -1)
-    anyone = (tasks.items < 0) | is_fetch
-    may = anyone[None, None, :] | (owner[:, None, :] == np.arange(m)[None, :, None])
+    # The trip a consumer makes when its good is not in the bag: to a door, the pickup, and on. One
+    # door, not two minima - the nearest door to the worker and the nearest to the tile can be
+    # different doors, and the compiler would then walk a trip the search never priced.
+    # The trip: one turn for the pickup, taken at the door before the day's walk. The worker does
+    # not move for it, because it is already standing where the good is when it takes it.
+    trip = np.zeros(hop.shape, dtype=bool)
+    needs = tasks.items >= 0
+    if needs.any():
+        carried = _carried(done, who, tasks, m)              # (b, m, goods)
+        has = np.where(needs[None, None, :], carried[:, :, tasks.items.clip(0)], True)
+        trip = ~has
 
     arrive = free[:, :, None] + hop                          # (b, m, n)
     released = _released(when, tasks)                        # (b, n): the predecessors' finish
@@ -367,14 +383,13 @@ def _expand(day: Day, tasks: TaskArray, done, when, who, free, where, travel, li
 
     start = np.maximum(arrive, released[:, None, :])
     start = np.maximum(start, tasks.earliest[None, None, :])
+    start = start + trip.astype(np.int16)
     finish = start + np.int16(1)
 
-    # The window and the horizon are facts about the task and the clock, not about which worker
-    # takes it, so they are broadcast across the worker axis instead of being written into it.
     legal = (ready & ~done & (finish <= day.horizon).any(axis=1)
              & (start <= tasks.latest[None, None, :]).any(axis=1))
     legal = legal[:, None, :] & (finish <= day.horizon) & (start <= tasks.latest[None, None, :])
-    finish = np.where(legal & may, finish, BIG)
+    finish = np.where(legal, finish, BIG)
 
     earliest = finish.min(axis=1)                            # (b, n): the hour it can be done
     worker = finish.argmin(axis=1)                           # (b, n): and by which worker
@@ -505,18 +520,26 @@ def _flat(where: np.ndarray) -> np.ndarray:
     return (where[:, :, 0].astype(np.int32) * BOARD_SIZE + where[:, :, 1].astype(np.int32))
 
 
-def _holders(done, who, tasks: TaskArray) -> np.ndarray:
-    """Which worker holds each good, per route - read off the fetch that carries it.
+def _carried(done, who, tasks: TaskArray, workers: int) -> np.ndarray:
+    """Whether each worker's bag holds each good, per route - (batch, workers, goods).
 
-    Not tracked as state: a good has exactly one fetch task, so the holder is whoever did it, and
-    deriving it keeps the two from ever disagreeing.
+    Derived from the route rather than tracked: a worker holds a good exactly when it has done a
+    task that consumes it, because the trip that brought it is the same worker's. Two arrays that
+    cannot disagree are worth more than one kept in step by hand.
     """
-    if tasks.fetch_of_good.size == 0:
-        return np.full((done.shape[0], 0), -1, dtype=np.int16)
-    index = tasks.fetch_of_good
-    safe = np.where(index >= 0, index, 0)
-    taken = done[:, safe] & (index >= 0)[None, :]
-    return np.where(taken, who[:, safe], np.int16(-1))
+    batch = who.shape[0]
+    goods = tasks.items
+    n_goods = int(goods.max()) + 1 if goods.size and int(goods.max()) >= 0 else 1
+    out = np.zeros((batch, workers, max(n_goods, 1)), dtype=bool)
+    rows = np.arange(batch)
+    for i in range(tasks.n):
+        good = int(goods[i])
+        if good < 0:
+            continue
+        worker = who[:, i]
+        live = done[:, i] & (worker >= 0)
+        out[rows[live], worker[live], good] = True
+    return out
 
 
 def _fetch_mask(tasks: TaskArray) -> np.ndarray:
