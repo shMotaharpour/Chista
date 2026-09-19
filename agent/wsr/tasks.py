@@ -138,3 +138,88 @@ def action_codes() -> dict[UnitAction, int]:
 
 
 SHED_INDEX = np.asarray([index_of(d) for d in SHED_ACCESS], dtype=np.int32)
+
+
+def _item_table() -> dict:
+    from agent.world.action import Animal, Crop, Product
+    return {item: i for i, item in enumerate(list(Crop) + list(Animal) + list(Product))}
+
+
+ITEM_CODE: dict = _item_table()
+
+
+def build(chains, *, available: dict[str, int] | None = None, horizon: int = 24) -> TaskArray:
+    """The planner's chains -> the arrays a beam search reads.
+
+    The tasks themselves come from `expand_chain`, the same builder the greedy solver uses, so the
+    two solvers see the same work and the same precedence - the only difference here is the shape.
+    The time columns are filled from the timetable that is handed in: a fetch waits for its good,
+    a planting waits for its seed, and everything else may run from the first hour. Nothing is read
+    from the world.
+    """
+    from agent.wsr.models import expand_chain
+
+    available = available or {}
+    tasks = []
+    order: list[tuple[str, str]] = []
+    column_of: dict[str, int] = {}
+    for index, (cell, ops, entity) in enumerate(chains):
+        expansion = expand_chain(ops, entity=entity, cell=cell, prefix=f"d{index}_")
+        tasks.extend(expansion.tasks)
+        order.extend(expansion.order)
+        for task in expansion.tasks:
+            column_of[task.id] = index
+
+    ids = [t.id for t in tasks]
+    row_of = {tid: i for i, tid in enumerate(ids)}
+    n = len(tasks)
+
+    pred = np.zeros((n, n), dtype=bool)
+    for before, after in order:
+        if before in row_of and after in row_of:
+            pred[row_of[after], row_of[before]] = True
+
+    earliest = np.zeros(n, dtype=np.int8)
+    for i, task in enumerate(tasks):
+        good = _good_for(task)
+        if good is not None:
+            earliest[i] = int(available.get(str(getattr(good, "value", good)), 0))
+
+    cells = np.asarray([t.cell if t.cell else (0, 0) for t in tasks], dtype=np.int16)
+    return TaskArray(
+        ids=ids,
+        actions=np.asarray([_action_code(t.action) for t in tasks], dtype=np.int8),
+        items=np.asarray([_item_code(t.item) for t in tasks], dtype=np.int8),
+        cells=cells,
+        columns=columns_of(cells),
+        pred=pred,
+        earliest=earliest,
+        latest=np.full(n, horizon, dtype=np.int8),
+    )
+
+
+def _good_for(task) -> object | None:
+    """What a task must already have: a fetch waits for its good, a planting waits for its seed.
+
+    A fetch and a planting are the same rule with different actors - one takes the good out of the
+    shed, the other puts the seed in the ground - so both are bounded by the hour the planner says
+    the thing is available.
+    """
+    action = str(getattr(task.action, "value", task.action))
+    if action == "PICKUP":
+        return task.item
+    if action == "PLANT":
+        return task.crop
+    return None
+
+
+def _action_code(action) -> int:
+    codes = action_codes()
+    return codes.get(action, -1) if action in codes else -1
+
+
+def _item_code(item) -> int:
+    """A good's row in the item table. `Item` is a union of enums, so the table is the three."""
+    if item is None:
+        return NO_ITEM
+    return ITEM_CODE.get(item, NO_ITEM)
