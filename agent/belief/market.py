@@ -48,7 +48,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping, Sequence
 
+import numpy as np
+
 from kaggle_environments.envs.kaggriculture import kaggriculture as K
+
+from agent.belief.schemas import SHOP_BASKET
 
 # The vocabulary and the tables all come from the engine (R002): a shop
 # table or a product list edited there must move this module with it.
@@ -211,6 +215,11 @@ def forecast(obs: Any, *, days: int = 30,
              ) -> MarketForecast:
     """Forward-simulate market inventory, then price each day start.
 
+    Vectorized form: the day's inventory walk is ONE (days+1, 9) array built
+    from cumulative drains (the cadence is deterministic, F037), the sells
+    enter as cumulative ladders (`belief/ladder.py`), and the prices are the
+    quote table indexed at the walked rows — no per-turn Python loop.
+
     `our_sells` is `{absolute_step: {item: units}}`; `residual` is the
     opponent's sell pressure in units per day (#16 owns the estimate).
     Named assumptions (all of them are on the returned object):
@@ -227,15 +236,14 @@ def forecast(obs: Any, *, days: int = 30,
     # `MarketState`, so the market has a single reader.
     from agent.belief.schemas import MarketState
     state = MarketState.from_obs(obs)
-    inv: dict[str, float] = {item: float(state.inventory[i])
-                             for i, item in enumerate(PRODUCTS)}
+    inv0 = np.asarray(state.inventory, dtype=np.float64)
     shops = [str(s) for s in
              (obs.get("town", {}).get("unlocked_shops", ()) or ())]
     shop_interval = max(1, int(_get(config, "townShopSellInterval", 4)))
     center_interval = max(1, int(_get(config, "townCenterSellInterval", 24)))
     unlock_interval = max(1, int(_get(config, "townShopUnlockInterval", 3)))
 
-    sells = our_sells or {}
+    sells = {int(k): dict(v) for k, v in (our_sells or {}).items()}
     res = {item: float(n) for item, n in (residual or {}).items()}
     mean_demand = mean_shop_demand() if unlock_policy == "mean" else {}
     virtual_shops = 0.0                 # "mean" policy: fractional instances
@@ -243,36 +251,85 @@ def forecast(obs: Any, *, days: int = 30,
     horizon = max(1, int(days))
     end = step + horizon * TURNS_PER_DAY
     first_day = step // TURNS_PER_DAY
-    rows_inv: list[tuple[float, ...]] = []
-    rows_price: list[tuple[int, ...]] = []
+    n = _PROD_INDEX
 
-    def _snapshot() -> None:
-        rows_inv.append(tuple(inv[item] for item in PRODUCTS))
-        rows_price.append(tuple(int(K.market_price(item, inv[item], params))
-                                for item in PRODUCTS))
+    # --- the (horizon, 9) drain matrix, one vectorized pass ----------------- #
+    turns = np.arange(step, end)
+    shop_ticks = (turns % shop_interval == 0).astype(np.float64)
+    center_ticks = (turns % center_interval == 0).astype(np.float64)
+    per_shop = np.zeros(len(PRODUCTS))
+    for name in shops:
+        items, mult = SHOP_BASKET[name]
+        for it in items:
+            per_shop[n[it]] += mult
+    per_center = np.zeros(len(PRODUCTS))
+    for it in TOWN_CENTER_PRODUCTS:
+        per_center[n[it]] += 1.0
+    mean_row = np.array([mean_demand.get(it, 0.0) for it in PRODUCTS])
+    # virtual shops only join AFTER their unlock day's end-of-day refresh;
+    # the count is per DAY but the demand applies PER TURN
+    unlock_day = np.zeros(horizon, dtype=np.float64)     # virtual count by day
+    if unlock_policy == "mean":
+        v = 0.0
+        for d in range(horizon):
+            day_end = (first_day + d + 1)
+            if (day_end % unlock_interval == 0
+                    and len(shops) + v < MAX_SHOP_INSTANCES):
+                v += 1.0
+            unlock_day[d] = v
+    day_of_turn = np.minimum((turns // TURNS_PER_DAY - first_day), horizon - 1
+                             ).astype(np.int64)
+    virtual_by_day = np.concatenate([[0.0], unlock_day[:-1]])   # demand starts the day after
+    virtual_per_turn = virtual_by_day[day_of_turn]              # (T,)
+    drains = (shop_ticks[:, None] * per_shop[None, :]
+              + center_ticks[:, None] * per_center[None, :]
+              + virtual_per_turn[:, None] * mean_row[None, :])   # (T, 9), per TURN
 
-    if step % TURNS_PER_DAY != 0:
-        # mid-day: row 0 is TODAY as we see it, so the day index a caller
-        # passes still means the day they are planning in
-        _snapshot()
-    for turn in range(step, end):
-        if turn % TURNS_PER_DAY == 0:
-            _snapshot()
-            for item, units in res.items():        # the opponent's day
-                _apply_sells(inv, item, units, params)
-        for item, units in (sells.get(turn) or {}).items():
-            _apply_sells(inv, item, units, params)
-        for item, n in town_deltas(shops, turn, shop_interval,
-                                   center_interval).items():
-            inv[item] -= n
-        if virtual_shops and turn % shop_interval == 0:
-            for item, n in mean_demand.items():
-                inv[item] -= n * virtual_shops
-        if (turn + 1) % TURNS_PER_DAY == 0:        # end of day: one unlock?
-            next_day = (turn + 1) // TURNS_PER_DAY
-            if (unlock_policy == "mean" and next_day % unlock_interval == 0
-                    and len(shops) + virtual_shops < MAX_SHOP_INSTANCES):
-                virtual_shops += 1.0
+    # --- our sells + the residual, as per-turn unit counts per good --------- #
+    our = np.zeros((len(turns), len(PRODUCTS)))
+    for abs_step, basket in sells.items():
+        t = int(abs_step) - step
+        if 0 <= t < len(turns):
+            for it, units in basket.items():
+                if it in n:
+                    our[t, n[it]] += float(units)
+    res_vec = np.array([res.get(it, 0.0) for it in PRODUCTS])
+    rival = np.repeat(res_vec[None, :] / TURNS_PER_DAY, len(turns), axis=0)
+
+    # --- inventory walk: cumsum of (rival + our - drain), per TURN ----------
+    # both seats' sales ADD supply (+1 per unit, engine `_commit_unit`); the
+    # town's consumption removes.
+    net = rival + our - drains
+    walk = inv0[None, :] + np.concatenate(
+        [np.zeros((1, len(PRODUCTS))), np.cumsum(net, axis=0)], axis=0)
+
+    # the forecast's rows are DAY STARTS: row d = the walk after turn 24d - 1
+    # (the engine's day-start observation), row 0 = the snapshot itself.
+    # A mid-day forecast (step % 24 != 0) spends the first partial day first:
+    # its row 0 is the snapshot, row 1 is the NEXT day start, so the walk
+    # keeps horizon * 24 + (24 - hour) turns and the sampling skips the stub.
+    stub = TURNS_PER_DAY - (step % TURNS_PER_DAY)
+    if stub == TURNS_PER_DAY:
+        stub = 0
+    else:
+        pass                                    # the stub turns run first
+    day_rows = [0]
+    if stub:
+        day_rows.append(stub)
+    day_rows.extend(range(stub + TURNS_PER_DAY, len(turns), TURNS_PER_DAY))
+    day_rows = day_rows[:horizon]           # rows are the horizon's day STARTS
+    rows_inv = []
+    rows_price = []
+    for d in range(horizon):
+        row = walk[day_rows[d]]
+        rows_inv.append(tuple(float(x) for x in row))
+        # the quote table IS the engine function (`world/prices`, parity-tested);
+        # the per-row call below keeps the engine in the loop so a patched
+        # `K.market_price` moves the prices with it (the parity guard watches).
+        rows_price.append(tuple(
+            int(K.market_price(PRODUCTS[i], float(row[i]),
+                               params if market_params is not None else None))
+            for i in range(len(PRODUCTS))))
 
     assumptions = [
         "town cadence: shops every %d turns, centre every %d turns "
