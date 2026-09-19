@@ -56,6 +56,10 @@ class TaskArray:
     """
 
     ids: list[str] = field(default_factory=list)
+    #: The engine's spelling of each task - ("PLANT", "WHEAT"), ("WATER",), ("PICKUP", "GOOSE", 1).
+    #: Built once with the arrays rather than derived per turn: it is what the compiler emits, and
+    #: a task list that cannot spell itself is not a task list.
+    ops: list[tuple] = field(default_factory=list)
     actions: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int8))
     items: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int8))
     cells: np.ndarray = field(default_factory=lambda: np.zeros((0, 2), dtype=np.int16))
@@ -231,6 +235,7 @@ def build(chains, *, available: dict[str, int] | None = None, horizon: int = 24)
             fetch_of_good[item_codes[i]] = i
     return TaskArray(
         ids=ids,
+        ops=[_engine_op(t) for t in tasks],
         actions=np.asarray([_action_code(t.action) for t in tasks], dtype=np.int8),
         items=item_codes.astype(np.int8),
         fetch_of_good=fetch_of_good,
@@ -279,6 +284,25 @@ def _merge_fetches(tasks, order, column_of):
     order = [(resolve(before), resolve(after)) for before, after in order]
     column_of = {tid: col for tid, col in column_of.items() if tid not in folded}
     return kept, list(dict.fromkeys(order)), column_of
+
+
+def _engine_op(task) -> tuple:
+    """A task as the engine spells it.
+
+    The argument of an op is the thing it names: PLANT names its crop and PLACE its species, which
+    for a chain is the chain's entity. Everything else takes no argument - the ops that consume a
+    carried good name nothing, because the good is in the bag and not in the op.
+    """
+    from agent.world.model import UnitAction
+
+    name = str(getattr(task.action, "value", task.action))
+    if name == UnitAction.PICKUP.value:
+        return (name, str(getattr(task.item, "value", task.item)), int(task.n))
+    if name == UnitAction.PLANT.value:
+        return (name, str(getattr(task.crop, "value", task.crop)))
+    if name == UnitAction.PLACE.value:
+        return (name, str(getattr(task.item, "value", task.item)))
+    return (name,)
 
 
 def _good_for(task) -> object | None:

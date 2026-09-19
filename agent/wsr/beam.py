@@ -152,17 +152,7 @@ def search(day: Day, tasks: TaskArray, *, beam: int = 64,
     return partial if partial is not None else Result(ceiling, [], False)
 
 
-def _prefetch_table() -> np.ndarray:
-    """The distance from every board cell to the nearest shed door, built once.
 
-    A fetch is a detour through a door, and the door's distance from a task's tile does not depend
-    on the state - only the worker's side of the trip does. Precomputing the tile side turns a
-    (workers, doors) reduction per step into one lookup per task.
-    """
-    return DISTANCE[:, SHED_INDEX].min(axis=1).astype(np.int16)
-
-
-DOOR_FROM: np.ndarray = _prefetch_table()
 
 
 def _run(day: Day, tasks: TaskArray, *, hands: int, beam: int) -> Result:
@@ -286,8 +276,14 @@ def _expand(day: Day, tasks: TaskArray, done, when, who, free, where, travel, li
     # and only the worker's side is computed per step.
     is_fetch = _fetch_mask(tasks)
     if is_fetch.any():
-        door = DISTANCE[here[:, :, None], SHED_INDEX[None, None, :]].min(axis=-1).astype(np.int16)
-        via_door = door[:, :, None] + DOOR_FROM[tasks.cell_index][None, None, :]
+        # One door, not two minima. The worker walks to a door, picks up, and walks on to the tile
+        # - so the trip is dist(worker, door) + dist(door, tile) for the SAME door. Taking the
+        # nearest door to the worker and the nearest door to the tile separately can name two
+        # different doors, which undercuts the trip and hands the compiler a walk it cannot make.
+        to_door = DISTANCE[here[:, :, None], SHED_INDEX[None, None, :]].astype(np.int16)
+        chosen = SHED_INDEX[to_door.argmin(axis=-1)]                       # (b, m)
+        onward = DISTANCE[chosen[:, :, None], tasks.cell_index[None, None, :]].astype(np.int16)
+        via_door = to_door.min(axis=-1)[:, :, None] + onward
         hop = np.where(is_fetch[None, None, :], via_door, hop)
 
     # A good is carried by ONE worker, so a task that consumes it must be that worker's. The fetch
