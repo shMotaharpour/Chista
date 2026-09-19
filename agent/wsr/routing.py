@@ -224,7 +224,9 @@ def route_unit(ops: Sequence[str], entity: str | None, pos: tuple[int, int], *,
                               order=buy_order(action.item.value, for_seed=True),
                               reason="PLANT"))
         if times is not None and op_index < len(times):
-            at_hour(int(times[op_index]) - 1)
+            # `at_hour` pads until the NEXT push lands on that hour, so the op's own hour is
+            # what it is given
+            at_hour(int(times[op_index]))
         push([tuple(action.as_list())])
         if name == "HARVEST":
             bagged_ops += 1
