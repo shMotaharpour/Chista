@@ -128,6 +128,7 @@ def buy_order(item: str, *, for_seed: bool = False) -> tuple:
 def route_unit(ops: Sequence[str], entity: str | None, pos: tuple[int, int], *,
                unit: int = 0, hour: int = 0, hours: int = TURNS_PER_DAY,
                stock: Mapping[str, int] | None = None,
+               times: Sequence[int] | None = None,
                target: tuple[int, int] | None = None,
                carried: Mapping[str, int] | None = None,
                harvest_yields: Mapping[str, int] | None = None,
@@ -170,6 +171,16 @@ def route_unit(ops: Sequence[str], entity: str | None, pos: tuple[int, int], *,
         """Turns left, counting from `hour`."""
         return hours - (hour + len(seq))
 
+    def at_hour(want: int) -> None:
+        """Pad with PASS so the op lands on the hour the schedule gave it.
+
+        The scheduler decided when each op happens, travel included; this function only writes
+        the turns. Without it the compiler counted hours of its own and every op landed one
+        turn early - the setup turn the scheduler allows for.
+        """
+        while hour + len(seq) < want:
+            seq.append(("PASS",))
+
     def push(steps: Iterable[tuple[str, ...]]) -> None:
         nonlocal walked
         for step in steps:
@@ -177,7 +188,7 @@ def route_unit(ops: Sequence[str], entity: str | None, pos: tuple[int, int], *,
                 walked += 1
             seq.append(step)
 
-    for action in turns:
+    for op_index, action in enumerate(turns):
         name = op_name(action)
         item = carried_item(action, entity)
         if item is not None and bag.get(item, 0) <= 0:
@@ -212,6 +223,8 @@ def route_unit(ops: Sequence[str], entity: str | None, pos: tuple[int, int], *,
             needs.append(Need(hour=hour + len(seq) - 1,
                               order=buy_order(action.item.value, for_seed=True),
                               reason="PLANT"))
+        if times is not None and op_index < len(times):
+            at_hour(int(times[op_index]) - 1)
         push([tuple(action.as_list())])
         if name == "HARVEST":
             bagged_ops += 1
