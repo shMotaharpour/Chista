@@ -57,7 +57,7 @@ def _build_worker_route(
     worker_index: int,
     earliest_start: int,
     entry_cell: Cell,
-    remaining_targets: set[str],
+    shed_times: dict, remaining_targets: set[str],
     done_targets: set[str],
     exec_times: dict[str, int],
     target_preds: dict[str, list[str]],
@@ -121,6 +121,10 @@ def _build_worker_route(
             proposed_t = current_t + setup + 1 + dist
             
             ready_t = 0
+            # A good that is not in the shed yet cannot be fetched, so the fetch's own turn is a
+            # floor under the op that needs it - the engine refuses a PICKUP of an empty shelf.
+            if needed_item is not None and needed_item not in worker_items:
+                ready_t = max(ready_t, int(shed_times.get(needed_item, 0)) + 1)
             for p in target_preds[tid]:
                 if p in route_task_ids:
                     ready_t = max(ready_t, local_exec_times[p] + setup + 1)
@@ -459,6 +463,7 @@ def _dispatch(
             worker_index=worker.index,
             earliest_start=worker.earliest_start,
             entry_cell=entry_cell,
+            shed_times=instance.available,
             remaining_targets=remaining_targets,
             done_targets=done_targets,
             exec_times=exec_times,

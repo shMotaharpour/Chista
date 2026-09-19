@@ -226,6 +226,9 @@ class Instance:
     precedence: list[tuple[str, str]] = field(default_factory=list)
     single_worker_groups: list[list[str]] = field(default_factory=list)
     warehouse_stock: dict[Item, int] = field(default_factory=dict)
+    #: item -> the hour it is in the shed. A fetch cannot happen before it, and the planner owns
+    #: the number: it knows when its orders land. An item with no entry is never available.
+    available: dict[Item, int] = field(default_factory=dict)
     workers: list[Worker] = field(default_factory=list)
     horizon: int = TURNS_PER_DAY
     clct_deadline: Optional[int] = None
@@ -344,6 +347,7 @@ class Instance:
         explicit_precedence: Optional[list[tuple[str, str]]] = None,
         explicit_single_worker_groups: Optional[list[list[str]]] = None,
         warehouse_stock: Optional[dict[Item, int]] = None,
+        available: Optional[dict[Item, int]] = None,
         horizon: int = TURNS_PER_DAY,
         clct_deadline: Optional[int] = None,
         worker_pool_size: Optional[int] = None,
@@ -376,6 +380,7 @@ class Instance:
             precedence=precedence,
             single_worker_groups=groups,
             warehouse_stock=dict(warehouse_stock or {}),
+            available=dict(available or {}),
             workers=list(workers),
             horizon=horizon,
             clct_deadline=clct_deadline,
