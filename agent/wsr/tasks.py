@@ -32,7 +32,9 @@ def distance_matrix(size: int = BOARD_SIZE) -> np.ndarray:
     ys, xs = np.meshgrid(coords, coords, indexing="ij")
     flat = np.stack([ys.ravel(), xs.ravel()], axis=1).astype(np.int16)
     delta = np.abs(flat[:, None, :] - flat[None, :, :])
-    return delta.sum(axis=-1).astype(np.int8)
+    # int16, the width the search's arithmetic runs in: the walk is gathered once per step and cast
+    # to this width every time, and a table in the answer's own width skips that pass.
+    return delta.sum(axis=-1).astype(np.int16)
 
 
 DISTANCE: np.ndarray = distance_matrix()
@@ -136,6 +138,37 @@ class TaskArray:
         return self._edge_before
 
     @property
+    def successor_groups(self) -> tuple[np.ndarray, np.ndarray]:
+        """Every task's successors, flat, with where each task's slice of it starts.
+
+        The counter that answers `ready` advances a task's successors when it is placed, so it needs
+        them gathered the other way round from `edge_groups`: grouped by the PREDECESSOR, as one flat
+        list and one start per task.
+        """
+        return self._succ_flat, self._succ_start
+
+    @property
+    def pred_count16(self) -> np.ndarray:
+        """How many predecessors each task waits for, in the width the counter is kept in."""
+        return self._pred_count
+
+    @property
+    def drop_rows(self) -> np.ndarray:
+        """Which rows are drops. A function of the list, and read once per step."""
+        return self._drop_rows
+
+    @property
+    def edge_groups(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """The edges grouped by successor: their order, where each group starts, and its successor.
+
+        `np.nonzero` walks the matrix in row order, so the edges arrive already sorted by the task
+        they point at - the grouping is a shift and a comparison, not a sort. What it buys is that
+        the answer for every successor becomes one segment reduction over the edges that reach it,
+        instead of a scatter that writes each edge on its own.
+        """
+        return self._edge_order, self._edge_starts, self._edge_targets
+
+    @property
     def pred_count(self) -> np.ndarray:
         """How many predecessors each task waits for.
 
@@ -165,6 +198,24 @@ class TaskArray:
         self._edge_after = after.astype(np.int32)
         self._edge_before = before.astype(np.int32)
         self._edges = list(zip(after.tolist(), before.tolist()))
+        self._drop_rows = np.flatnonzero(self.is_drop).astype(np.int32)
+        # The successors, grouped by the task they follow, for the counter that answers `ready`.
+        self._succ_flat = after[np.argsort(before, kind="stable")].astype(np.int32)
+        self._succ_start = np.r_[
+            0, np.cumsum(np.bincount(before, minlength=self.n))].astype(np.int32)
+        self._pred_count = self.pred.sum(axis=1).astype(np.int16)
+        # Grouped by successor, which is the order they are already in. A day whose chains have no
+        # precedence at all - one drop on its own - has no edges, and an empty group list has no
+        # first index to read.
+        self._edge_order = np.argsort(after, kind="stable").astype(np.int32)
+        grouped = after[self._edge_order]
+        if grouped.size:
+            self._edge_starts = np.flatnonzero(
+                np.r_[True, grouped[1:] != grouped[:-1]]).astype(np.int32)
+            self._edge_targets = grouped[self._edge_starts].astype(np.int32)
+        else:
+            self._edge_starts = np.zeros(0, dtype=np.int32)
+            self._edge_targets = np.zeros(0, dtype=np.int32)
 
     def ready(self, done: np.ndarray) -> np.ndarray:
         """Which tasks have all their predecessors done - one matrix product.
