@@ -1,4 +1,4 @@
-"""Rebuild the real-day fixture from the archive. Not a test - a tool, run by hand.
+"""Rebuild the real-day corpus from the archive. Not a test - a tool, run by hand.
 
 The archive is two gigabytes and lives in another repo, so the tests never read it: this writes the
 land work of a spread of days as JSON, and `test_real_days.py` checks that in. Run it with an
@@ -6,17 +6,18 @@ interpreter that has duckdb - the analyses repo's own venv has one - and point
 `KAGGLE_REPLAYS_PARQUET` somewhere else if the dumps move:
 
     KAGGLE_REPLAYS_PARQUET=/path/to/replays_parquet \\
-      python tests/day_layer/fixtures/extract_real_days.py
+      python tests/day_layer/corpus/build_real_days.py
 
-A day is the ops that landed on every tile, the hands the player paid for them, and the shed it began
-with. Movement ops are not tile work and are dropped; a hand that did nothing has a null op, which
-arrives as NaN and not as None.
+**An op is kept only if the tile it was aimed at actually changed at that hour.** `hands_steps.op` is
+what the agent ASKED for, and the engine refuses a malformed action in silence (F047) - so a
+submitted op is not a fact. One day of one dump submits water, harvest and fertilize on a tile the
+archive says was never harvested, and the tile is planted four times over the day because the agent
+kept trying. `tiles_delta` records the tiles that changed, so the two together say which asks
+happened: a unit submits one op a turn and the engine runs it on the unit's own tile, so a change at
+that tile and that hour is that op having taken effect.
 
-Three sets, so one day of one dump cannot stand for a season:
-
-  A  a day from each of many dumps        - the agents change from dump to dump
-  B  many days of one dump                - the season changes within a dump
-  C  spread over dumps and days and games - the two together, chosen by a fixed seed
+The hand hours come from `hands_steps` too - a hand hired in turn 2 acts from hour 3, not from hour 1,
+so the fixture carries when each hand really began.
 """
 import json
 import os
@@ -24,19 +25,17 @@ import pathlib
 import random
 
 import duckdb
+import pandas as pd
 
 ROOT = os.environ.get(
     "KAGGLE_REPLAYS_PARQUET",
     "/chista/Chista/kaggriculture-episodes-analyses/data/replays_parquet",
 )
-MOVES = {"NORTH", "SOUTH", "EAST", "WEST", "PASS", "PICKUP", "DROP"}
 OUT = pathlib.Path(__file__).parent / "real_days.json"
+MOVES = {"NORTH", "SOUTH", "EAST", "WEST", "PASS", "PICKUP", "DROP"}
 PER_SET = 30
 SEED = 20260920
 MID_DAY = 5
-#: The twelve the fixture started with: three games of one dump, four days each. Kept in front so
-#: the fixture is a superset of what it was, and a test that once passed cannot quietly stop being
-#: asked.
 FIRST_DUMP, FIRST_DAYS, FIRST_EPISODES = "2026-09-16", (1, 3, 6, 10), 3
 
 
@@ -45,8 +44,17 @@ def dumps() -> list[str]:
 
 
 def extract(con, dump: str, episode: int, day: int):
-    """One day's land work, or None when the dump has no such day."""
-    rows = con.sql(f"""
+    """One day's real land work, or None when the dump has no such day."""
+    changed = con.sql(f"""
+        SELECT DISTINCT x, y, step % 24 AS hour
+        FROM '{ROOT}/{dump}/tiles_delta.parquet'
+        WHERE episode_id = {episode} AND player = false AND step // 24 = {day}
+    """).df()
+    if changed.empty:
+        return None
+    happened = {(int(r.x), int(r.y), int(r.hour)) for r in changed.itertuples()}
+
+    submitted = con.sql(f"""
         SELECT step % 24 AS hour, x, y, op
         FROM '{ROOT}/{dump}/hands_steps.parquet'
         WHERE episode_id = {episode} AND player = false AND step // 24 = {day}
@@ -56,19 +64,41 @@ def extract(con, dump: str, episode: int, day: int):
         WHERE episode_id = {episode} AND player = false AND step // 24 = {day}
         ORDER BY hour
     """).df()
-    if rows.empty:
-        return None
 
-    hands = con.sql(f"""
-        SELECT max(n_hands) FROM '{ROOT}/{dump}/farm_steps.parquet'
+    chains: dict[tuple[int, int], list[str]] = {}
+    for row in submitted.itertuples():
+        if not isinstance(row.op, str) or row.op in MOVES:
+            continue
+        cell = (int(row.x), int(row.y))
+        if (cell[0], cell[1], int(row.hour)) not in happened:
+            continue                       # the engine refused it: it never happened
+        chains.setdefault(cell, []).append(row.op)
+
+    # The crop or the animal the tile ended the day with, for the layer's entity.
+    last = con.sql(f"""
+        SELECT x, y, kind, crop, animal
+        FROM '{ROOT}/{dump}/tiles_delta.parquet'
         WHERE episode_id = {episode} AND player = false AND step // 24 = {day}
-    """).fetchone()[0]
+        QUALIFY row_number() OVER (PARTITION BY x, y ORDER BY step DESC) = 1
+    """).df()
+    entity = {}
+    for row in last.itertuples():
+        if row.crop is not None and row.crop is not pd.NA:
+            entity[(int(row.x), int(row.y))] = row.crop
+        elif row.animal is not None and row.animal is not pd.NA:
+            entity[(int(row.x), int(row.y))] = row.animal
+
+    hours = [int(row[0]) for row in con.sql(f"""
+        SELECT min(step % 24) FROM '{ROOT}/{dump}/hands_steps.parquet'
+        WHERE episode_id = {episode} AND player = false AND step // 24 = {day}
+        GROUP BY unit ORDER BY unit
+    """).fetchall()]
+
     shed = con.sql(f"""
         SELECT * FROM '{ROOT}/{dump}/private_steps.parquet'
         WHERE episode_id = {episode} AND player = false
           AND step // 24 = {day} AND step % 24 = 0
     """).df()
-
     available = {}
     if not shed.empty:
         row = shed.iloc[0]
@@ -76,19 +106,17 @@ def extract(con, dump: str, episode: int, day: int):
             if column.startswith("shed_") and int(row[column]) > 0:
                 available[column[5:]] = 1
 
-    chains: dict[tuple[int, int], list[str]] = {}
-    for unit in rows.itertuples():
-        if not isinstance(unit.op, str) or unit.op in MOVES:
-            continue
-        chains.setdefault((int(unit.x), int(unit.y)), []).append(unit.op)
-
+    if not chains:
+        return None
     return {
         "dump": dump,
         "episode": int(episode),
         "day": int(day),
-        "hands": int(hands or 0),
+        "hands": len(hours),
+        "hire_times": sorted(hours),
         "available": available,
-        "chains": [[list(cell), ops] for cell, ops in sorted(chains.items())],
+        "chains": [[list(cell), ops, entity.get(cell)]
+                   for cell, ops in sorted(chains.items())],
     }
 
 
@@ -105,7 +133,7 @@ def main() -> None:
             WHERE player = false ORDER BY episode_id LIMIT {limit}
         """).fetchall()]
 
-    # 0: the original twelve.
+    # 0: the twelve the fixture started with.
     for episode in episodes_of(FIRST_DUMP, FIRST_EPISODES):
         for day in FIRST_DAYS:
             found = extract(con, FIRST_DUMP, episode, day)
