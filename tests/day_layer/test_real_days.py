@@ -1,29 +1,19 @@
 """Real days, from the archive: the same land conversion, no more hands than the game paid for.
 
 Synthetic days test what the layer was built to do; they cannot test what a season actually asks of
-it. These come from `data/replays_parquet` in `kaggriculture-episodes-analyses` - a hundred and two
-days across many dumps - and each is the game's own land work: the ops that landed on every tile, and
-the hands it paid to have them landed. The corpus is a hundred and thirty-odd kilobytes and the
-archive stays where it is; `corpus/build_real_days.py` builds it and says what an op has to satisfy to
-be counted.
+it. These come from `data/replays_parquet` in `kaggriculture-episodes-analyses`, and each is the
+game's own land work: the ops that landed on every tile, and the hands it paid to have them landed.
+`corpus/build_real_days.py` builds the corpus and says what an op has to satisfy to be counted.
 
 The two questions the archive can answer are the two that matter:
 
   the land conversion   every op the game ran on every tile is placed by the route, and nothing else
   the hands             the pool the layer chooses is no larger than the game's own count
 
-Eighty-seven days pass both. The sixteen in `KNOWN_SHORT` do not, and they are marked rather than
-excused. What is known about them is measured, and one suspect has been ruled out:
-
-  the preload   the search charges every worker the day's distinct goods as turns of pickup before
-                its walk begins. It looked like the cause and is NOT: turning the charge off changes
-                nothing, 87 of 102 either way
-  the hours     a hand hired in turn 2 acts from hour 3 and has 22 turns, not 23. The corpus carries
-                when each hand really began, and two or three of them began at hour 2
-
-Every task these days miss is plain time - none is blocked by the timetable - so what is left is that
-the model's walk or trip costs more than the game spent. That is the next thing to measure. The marks
-are strict, so closing the gap turns them into failures that say to take the marks out.
+`KNOWN_SHORT` names the days that do not, marked with a strict `xfail` so that closing the gap turns
+the mark into a failure saying to take it out. Every task those days miss is plain time - none is
+blocked by the timetable - and what has been measured and ruled out is in the commit messages, which
+is where measurements belong.
 """
 import collections
 import json
@@ -43,24 +33,17 @@ REAL_DAYS = json.loads(CORPUS.read_text())
 #: The days the preload's per-worker charge costs tasks on. Strict: if the charge is ever made exact
 #: these fail, which is the reminder to take the marks out.
 KNOWN_SHORT = {
-    ("2026-08-24", 98009264, 7),
-    ("2026-08-24", 98009264, 15),
-    ("2026-08-24", 98009264, 19),
     ("2026-08-24", 98009264, 24),
     ("2026-08-29", 102083125, 12),
-    ("2026-08-13", 92478595, 14),
     ("2026-09-01", 104478713, 15),
     ("2026-09-06", 105964064, 25),
-    ("2026-09-08", 106613414, 22),
     ("2026-08-28", 101297130, 22),
-    ("2026-08-29", 102087512, 13),
     ("2026-09-16", 109466152, 25),
     ("2026-09-01", 104478289, 15),
     # and the three the real hire hours cost: two or three of the game's hands began at hour 2, so
     # they had 22 turns and not 23 - which the corpus used to give them all.
     ("2026-08-24", 98009264, 14),
     ("2026-08-24", 98009264, 18),
-    ("2026-08-15", 93149715, 14),
 }
 
 _SHORT_REASON = (
@@ -99,13 +82,15 @@ def test_the_corpus_has_a_spread_of_days():
     assert late, "no day has a hand that began after hour 1, which is not the archive's own spread"
 
 
-@pytest.mark.parametrize("entry", REAL_DAYS,
-                         ids=[f"{e['dump']}-{e['episode']}-d{e['day']}" for e in REAL_DAYS])
+# A strict marker, not `pytest.xfail(...)`: that call stops the test and reports xfail whatever would
+# have happened, so a mark that has gone stale can never say so.
+@pytest.mark.parametrize(
+    "entry",
+    [pytest.param(e, marks=pytest.mark.xfail(strict=True, reason=_SHORT_REASON))
+     if _key(e) in KNOWN_SHORT else e for e in REAL_DAYS],
+    ids=[f"{e['dump']}-{e['episode']}-d{e['day']}" for e in REAL_DAYS])
 def test_a_real_day_is_carried_as_the_game_carried_it(entry):
     """The land conversion is the game's, and the pool is no larger than what the game paid."""
-    if _key(entry) in KNOWN_SHORT:
-        pytest.xfail(_SHORT_REASON)
-
     grid = [(tuple(cell), tuple(ops), entity) for cell, ops, entity in entry["chains"]]
     available = {good: int(hour) for good, hour in entry["available"].items()}
     tasks = T.build(grid, available=available)

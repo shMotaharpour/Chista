@@ -169,9 +169,56 @@ def _chain_depth(tasks: TaskArray) -> int:
     return int(depth.max())
 
 
+#: The widths `search` asks for when the caller does not name one, cheapest first. The beam's result
+#: is NOT monotone in its width - a wider beam keeps more variations of ONE partial plan rather than
+#: more plans - so a single width is a guess, and asking a few is worth more than any one of them.
+PORTFOLIO: tuple[int | None, ...] = (None, 16, 32, 64)
+
+
+def _best_of_portfolio(candidate: Result, best: Result) -> bool:
+    """Whether a whole route beats another: carried first, then the SMALLER POOL, then more work.
+
+    `_better_route`'s rule with the pool in front of the work, because a route that carries the day
+    with fewer hands is the better answer to the question the caller asked - the widths are the same
+    question asked differently, and they may answer with different pools.
+    """
+    if candidate.complete != best.complete:
+        return candidate.complete
+    if candidate.pool != best.pool:
+        return candidate.pool < best.pool
+    if len(candidate.route) != len(best.route):
+        return len(candidate.route) > len(best.route)
+    return _makespan(candidate) < _makespan(best)
+
+
 def search(day: Day, tasks: TaskArray, *, beam: int | None = None,
            hands: int | None = None, max_hands: int = MAX_HANDS,
            budget_s: float | None = None, warm: Result | None = None) -> Result:
+    """The day, searched at several beam widths, keeping the best answer.
+
+    A named `beam` asks for that width alone. Without one the search asks `PORTFOLIO` - the widths
+    the day's size implies and a few beside it - and returns the best of them, so the answer does not
+    depend on which single width happened to be the lucky one. `budget_s` is shared between them.
+
+    The rest of the contract is `_search_once`'s, which is where each width is searched.
+    """
+    if beam is not None:
+        return _search_once(day, tasks, beam=beam, hands=hands, max_hands=max_hands,
+                            budget_s=budget_s, warm=warm)
+
+    share = None if budget_s is None else float(budget_s) / len(PORTFOLIO)
+    best: Result | None = None
+    for width in PORTFOLIO:
+        result = _search_once(day, tasks, beam=width, hands=hands, max_hands=max_hands,
+                              budget_s=share, warm=warm)
+        if best is None or _best_of_portfolio(result, best):
+            best = result
+    return best
+
+
+def _search_once(day: Day, tasks: TaskArray, *, beam: int | None = None,
+                 hands: int | None = None, max_hands: int = MAX_HANDS,
+                 budget_s: float | None = None, warm: Result | None = None) -> Result:
     """The day, searched with `beam` routes in parallel.
 
     Two numbers decide how the pool is searched, and they answer two different questions:
