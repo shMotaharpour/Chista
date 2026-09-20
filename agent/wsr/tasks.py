@@ -332,45 +332,6 @@ def build(chains, *, available: dict[str, int] | None = None, horizon: int = 24,
     )
 
 
-def _merge_fetches(tasks, order, column_of):
-    """One trip per good, however many tasks consume it.
-
-    `expand_chain` gives every consuming op its own fetch. That suits the greedy solver, which
-    emits one PICKUP per worker per good at the end, but it is wrong as a TASK LIST: two fetches of
-    the same good on one route are one walk to the door, and the engine's PICKUP carries a count
-    for exactly this reason. Charging two turns for one trip is not a missing feature - it is a
-    turn the search loses and never gets back.
-
-    The first fetch of a good survives and every later one is folded into it, so the consumers that
-    pointed at a dropped fetch now wait on the one that carries their good.
-    """
-    from agent.world.action import Item
-    from agent.world.model import UnitAction
-
-    fetch_of: dict[int, str] = {}            # good -> the fetch that carries it
-    folded: dict[str, str] = {}              # a dropped fetch -> the one that replaces it
-    kept = []
-    for task in tasks:
-        if task.action != UnitAction.PICKUP:
-            kept.append(task)
-            continue
-        good = _item_code(task.item)
-        if good in fetch_of:
-            folded[task.id] = fetch_of[good]
-        else:
-            fetch_of[good] = task.id
-            kept.append(task)
-
-    def resolve(tid: str) -> str:
-        while tid in folded:
-            tid = folded[tid]
-        return tid
-
-    order = [(resolve(before), resolve(after)) for before, after in order]
-    column_of = {tid: col for tid, col in column_of.items() if tid not in folded}
-    return kept, list(dict.fromkeys(order)), column_of
-
-
 def _engine_op(task) -> tuple:
     """A task as the engine spells it.
 
