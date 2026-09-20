@@ -81,6 +81,25 @@ buy at hour 0 is in the shed at hour 1, and a task that consumes a good cannot r
 `{"units": [...], "market": [...]}`, which is what `agent/dispatch.py` slices. On main:
 `DayPlan` (`:296`).
 
+## 2b. The drop, and the pool
+
+**A drop is a deadline on a harvest, not a chain op.** `HARVEST` says the crop left the tile;
+whether it has to be in the shed by some hour is the sell side's decision, so it arrives as
+`build(chains, drop_by=[...])` - one entry per chain, the latest hour that chain's harvest must be
+banked, or `None` to leave it for the night. A DROP task is derived from it: its cell is the door
+it hands the bag over at, its `latest` is the deadline, and `banks` names the harvest it serves.
+A DROP empties the worker's WHOLE bag, so one drop banks every harvest since the previous one -
+which is why a drop with an empty bag is free, the mirror of the fetch. `compile_route` reads the
+drops off the route, and `DayOps.arrivals` is `(hour, item, units)` per drop, for whoever prices
+the sell side.
+
+**The pool.** `search(hands=None)` halving-searches the smallest pool that carries the day,
+between `lower_bound` and `max_hands`; `hands=` asks for the scan instead. A day whose arithmetic
+floor is above the ceiling comes back `infeasible=True` with an empty route rather than raising -
+a hundred tiles on a five-op chain needs 21 workers against a ceiling of 16, and that is an answer.
+
+---
+
 ## 3. The seam worth knowing before you wire it
 
 The market queue has two builders, and they compose rather than duplicate:
