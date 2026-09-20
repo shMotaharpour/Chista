@@ -136,6 +136,21 @@ class TaskArray:
         return self._edge_before
 
     @property
+    def successor_groups(self) -> tuple[np.ndarray, np.ndarray]:
+        """Every task's successors, flat, with where each task's slice of it starts.
+
+        The counter that answers `ready` advances a task's successors when it is placed, so it needs
+        them gathered the other way round from `edge_groups`: grouped by the PREDECESSOR, as one flat
+        list and one start per task.
+        """
+        return self._succ_flat, self._succ_start
+
+    @property
+    def pred_count16(self) -> np.ndarray:
+        """How many predecessors each task waits for, in the width the counter is kept in."""
+        return self._pred_count
+
+    @property
     def drop_rows(self) -> np.ndarray:
         """Which rows are drops. A function of the list, and read once per step."""
         return self._drop_rows
@@ -182,6 +197,11 @@ class TaskArray:
         self._edge_before = before.astype(np.int32)
         self._edges = list(zip(after.tolist(), before.tolist()))
         self._drop_rows = np.flatnonzero(self.is_drop).astype(np.int32)
+        # The successors, grouped by the task they follow, for the counter that answers `ready`.
+        self._succ_flat = after[np.argsort(before, kind="stable")].astype(np.int32)
+        self._succ_start = np.r_[
+            0, np.cumsum(np.bincount(before, minlength=self.n))].astype(np.int32)
+        self._pred_count = self.pred.sum(axis=1).astype(np.int16)
         # Grouped by successor, which is the order they are already in. A day whose chains have no
         # precedence at all - one drop on its own - has no edges, and an empty group list has no
         # first index to read.

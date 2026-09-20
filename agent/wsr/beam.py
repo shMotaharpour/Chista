@@ -320,7 +320,7 @@ def _smallest_pool(day: Day, tasks: TaskArray, width, lo: int, hi: int,
 
 
 
-def _warm_row(tasks: TaskArray, warm: Result, done, when, who, free, where, travel) -> None:
+def _warm_row(tasks: TaskArray, warm: Result, done, when, who, free, where, travel, count) -> None:
     """Write a previous route's state into the beam's first row.
 
     A route is a set of `(turn, task, worker)` and the state is what that set implies, so this is a
@@ -354,6 +354,8 @@ def _warm_row(tasks: TaskArray, warm: Result, done, when, who, free, where, trav
             walked += abs(target[0] - at[0]) + abs(target[1] - at[1])
             at = target
     travel[row] = min(walked, int(np.iinfo(np.int16).max))
+    # The counter the warmed row's own placements imply: one per edge whose predecessor it placed.
+    np.add.at(count[row], tasks.edge_after, done[row, tasks.edge_before].astype(np.int16))
 
 
 def _run(day: Day, tasks: TaskArray, *, hands: int, beam: int,
@@ -380,9 +382,12 @@ def _run(day: Day, tasks: TaskArray, *, hands: int, beam: int,
     where = np.tile(start_pos[None, :, :], (rows, 1, 1))
     travel = np.zeros((rows,), dtype=np.int16)
     live = np.ones((rows,), dtype=bool)
+    # How many of each task's predecessors are done, per route. `ready` is a comparison on this,
+    # where it used to be a (beam, n) by (n, n) product - a billion multiply-adds over a day.
+    count = np.zeros((rows, n), dtype=np.int16)
 
     if warm is not None:
-        _warm_row(tasks, warm, done, when, who, free, where, travel)
+        _warm_row(tasks, warm, done, when, who, free, where, travel, count)
 
     # The best state is remembered as the search goes, because the beam's last generation can be
     # empty - a route that dies at the end would otherwise erase the work it had already placed.
@@ -394,10 +399,10 @@ def _run(day: Day, tasks: TaskArray, *, hands: int, beam: int,
         if deadline is not None and not (_step & 7) and time.perf_counter() >= deadline:
             cut = True
             break
-        expanded = _expand(day, tasks, done, when, who, free, where, travel, live)
+        expanded = _expand(day, tasks, done, when, who, free, where, travel, live, count)
         if expanded is None:
             break
-        done, when, who, free, where, travel, live = _select(
+        done, when, who, free, where, travel, live, count = _select(
             expanded, tasks, beam, first_hand, hours)
         if not live.any():
             break
@@ -546,7 +551,7 @@ def _start_hours(day: Day, hands: int) -> np.ndarray:
     return np.asarray(hours, dtype=np.int16)
 
 
-def _expand(day: Day, tasks: TaskArray, done, when, who, free, where, travel, live):
+def _expand(day: Day, tasks: TaskArray, done, when, who, free, where, travel, live, count):
     """One task added to every live route: the vectorised step.
 
     For each route and each task, the earliest hour any worker could finish it: walk from where that
@@ -567,7 +572,7 @@ def _expand(day: Day, tasks: TaskArray, done, when, who, free, where, travel, li
     # The frontier: the tasks some live route could place next. Everything past it is illegal for
     # every route, so pricing those columns is pricing a column that is thrown away - and there are
     # few of them only in appearance: a chain's tasks are nearly all open at once on a big day.
-    ready_all = tasks.ready(done)                             # (b, n)
+    ready_all = count == tasks.pred_count16[None, :]         # (b, n)
     index = np.flatnonzero((ready_all & ~done).any(axis=0))
     if index.size == 0:
         return None
@@ -635,7 +640,7 @@ def _expand(day: Day, tasks: TaskArray, done, when, who, free, where, travel, li
     worker = finish.argmin(axis=1)                           # (b, w): and by which worker
     return dict(rows=rows, finish=finish, hop=hop, earliest=earliest, worker=worker,
                 done=done, when=when, who=who, free=free, where=where, travel=travel,
-                idle=idle, index=index)
+                idle=idle, index=index, count=count)
 
 
 def _select(expanded, tasks: TaskArray, beam: int, first_hand: int, start_hours):
@@ -652,6 +657,7 @@ def _select(expanded, tasks: TaskArray, beam: int, first_hand: int, start_hours)
     """
     index = expanded["index"]
     width = index.size
+    count = expanded["count"]
     rows = expanded["rows"]
     done, when, who = expanded["done"], expanded["when"], expanded["who"]
     free = expanded["free"]
@@ -662,7 +668,8 @@ def _select(expanded, tasks: TaskArray, beam: int, first_hand: int, start_hours)
     if legal.size == 0:
         return (_empty_like(done, beam), _empty_like(when, beam), _empty_like(who, beam),
                 _empty_like(free, beam), _empty_like(where, beam),
-                np.zeros((beam,), dtype=np.int16), np.zeros((beam,), dtype=bool))
+                np.zeros((beam,), dtype=np.int16), np.zeros((beam,), dtype=bool),
+                np.zeros((beam, tasks.n), dtype=np.int16))
 
     budget = min(legal.size, beam * 4)
     if legal.size > budget:
@@ -696,14 +703,24 @@ def _select(expanded, tasks: TaskArray, beam: int, first_hand: int, start_hours)
     child_where[np.arange(parent.size), worker] = np.where(
         idle_here[:, None], where[parent, worker], tasks.cells[task])
     child_travel = travel[parent] + hop[parent, worker, column]
+    # Placing a task advances the tasks it precedes, so the counter for those children moves by one
+    # on each edge out of it. Most tasks precede one other, so this is a few hundred additions.
+    child_count = count[parent].copy()
+    flat, start = tasks.successor_groups
+    length = (start[task + 1] - start[task]).astype(np.int32)
+    if length.sum():
+        child_row = np.repeat(np.arange(parent.size, dtype=np.int32), length)
+        offset = np.arange(length.sum(), dtype=np.int32) - np.repeat(
+            np.cumsum(length) - length, length)
+        np.add.at(child_count, (child_row, flat[np.repeat(start[task], length) + offset]), 1)
 
     # Every child array is filtered in ONE place. Filtering them in separate statements is how a
     # new array gets left behind, and a child array out of step with the others reads another
     # route's values - which is what happened to the worker column.
     keep = _dedupe(child_done, child_free, child_where)
-    child_done, child_when, child_who, child_free, child_where, child_travel = (
+    child_done, child_when, child_who, child_free, child_where, child_travel, child_count = (
         array[keep] for array in (child_done, child_when, child_who, child_free,
-                                  child_where, child_travel))
+                                  child_where, child_travel, child_count))
 
     hands_used = (child_free[:, first_hand:] > start_hours[first_hand:]).sum(axis=1)
     makespan = child_free.max(axis=1)
@@ -716,12 +733,14 @@ def _select(expanded, tasks: TaskArray, beam: int, first_hand: int, start_hours)
     out_where = _empty_like(child_where, beam)
     out_travel = np.zeros((beam,), dtype=np.int16)
     out_live = np.zeros((beam,), dtype=bool)
+    out_count = np.zeros((beam, tasks.n), dtype=np.int16)
     k = order.size
     out_done[:k], out_when[:k] = child_done[order], child_when[order]
     out_who[:k] = child_who[order]
     out_free[:k], out_where[:k] = child_free[order], child_where[order]
     out_travel[:k], out_live[:k] = child_travel[order], True
-    return out_done, out_when, out_who, out_free, out_where, out_travel, out_live
+    out_count[:k] = child_count[order]
+    return out_done, out_when, out_who, out_free, out_where, out_travel, out_live, out_count
 
 
 def _empty_like(array: np.ndarray, beam: int) -> np.ndarray:
