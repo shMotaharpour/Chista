@@ -71,6 +71,10 @@ class Result(NamedTuple):
     #: True when a deadline stopped the search before it ran out of tasks to place. A route that is
     #: neither complete nor out of time is the search's own answer: the pool could not carry it.
     out_of_time: bool = False
+    #: True when the day needs more workers than the caller allowed, so NO pool in range can carry
+    #: it. The arithmetic floor is a count of workers and the ceiling is a count of hands, and on a
+    #: hundred tiles the first passes the second - which is an answer about the day, not an error.
+    infeasible: bool = False
 
 
 def lower_bound(day: Day, tasks: TaskArray) -> int:
@@ -149,35 +153,78 @@ def search(day: Day, tasks: TaskArray, *, beam: int = 64,
     floor = max(0, lower_bound(day, tasks) - len(day.units))
     start = floor if hands is None else int(hands)
     ceiling = min(int(max_hands), MAX_HANDS)
-    if start > ceiling:
-        raise ValueError(
-            f"start pool {start} is above the ceiling {ceiling}: the caller asked for a pool it "
-            f"does not allow")
-
     deadline = None if budget_s is None else time.perf_counter() + float(budget_s)
+    if start > ceiling:
+        return Result(ceiling, [], False, infeasible=True)
+
+    if hands is None and ceiling > start:
+        return _smallest_pool(day, tasks, beam, start, ceiling, deadline)
+
     partial: Result | None = None
+    placed = -1
     for pool in range(start, ceiling + 1):
-        # The hands land on the doors that are free WHEN THEY ARE HIRED, and a unit walking off a
-        # door in the first turn changes which doors those are. So the positions are settled
-        # against the search's own first turn and the day is searched again until they agree -
-        # a fixed point, and a cheap one: the search is milliseconds and this converges in two
-        # passes or not at all.
-        settled = None
-        result = _run(day, tasks, hands=pool, beam=beam, deadline=deadline)
-        for _attempt in range(3):
-            nxt = _settled_after_first_turn(day, tasks, result)
-            if settled is not None and nxt == settled:
-                break
-            settled = nxt
-            result = _run(day, tasks, hands=pool, beam=beam, settled=settled, deadline=deadline)
+        result = _fixed_point(day, tasks, beam, pool, deadline)
         if result.complete:
             return result
-        if partial is None or len(result.route) > len(partial.route):
-            partial = result
+        if partial is None or len(result.route) > placed:
+            partial, placed = result, len(result.route)
+        elif len(result.route) <= placed:
+            # A bigger pool placed no more of the day than a smaller one, so the workers are not
+            # what the day is short of and every pool above this one is a search for nothing.
+            break
         if result.out_of_time:
             # A larger pool costs more and cannot buy back the time, so the loop stops here.
             break
     return partial if partial is not None else Result(ceiling, [], False)
+
+
+def _fixed_point(day: Day, tasks: TaskArray, beam: int, pool: int,
+                 deadline: float | None) -> Result:
+    """One pool, searched until the hands stop moving.
+
+    The hands land on the doors that are free WHEN THEY ARE HIRED, and a unit walking off a door in
+    the first turn changes which doors those are. So the positions are settled against the search's
+    own first turn and the day is searched again until they agree - a fixed point, and a cheap one:
+    it converges in two passes or not at all.
+    """
+    settled = None
+    result = _run(day, tasks, hands=pool, beam=beam, deadline=deadline)
+    for _attempt in range(3):
+        nxt = _settled_after_first_turn(day, tasks, result)
+        if settled is not None and nxt == settled:
+            break
+        settled = nxt
+        result = _run(day, tasks, hands=pool, beam=beam, settled=settled, deadline=deadline)
+    return result
+
+
+def _smallest_pool(day: Day, tasks: TaskArray, beam: int, lo: int, hi: int,
+                   deadline: float | None) -> Result:
+    """The smallest pool that carries the day, by halving.
+
+    The predicate is monotone - a bigger pool is never less able to carry a day - so halving finds
+    the smallest carrying pool in about log2 runs instead of one run per pool. It is not free: the
+    pools it tries are the LARGE ones, and a run costs more the more workers it has, so it wins when
+    the answer is large and loses when it is small. That is a measurement, not a preference, and the
+    caller can ask for the scan with `hands=` instead.
+    """
+    best: Result | None = None
+    while lo < hi:
+        mid = (lo + hi) // 2
+        result = _fixed_point(day, tasks, beam, mid, deadline)
+        if result.complete:
+            best, hi = result, mid
+        else:
+            best, lo = result, mid + 1
+        if result.out_of_time:
+            break
+    if lo == hi:
+        final = _fixed_point(day, tasks, beam, lo, deadline)
+        if final.complete or best is None:
+            return final
+        if len(final.route) > len(best.route):
+            return final
+    return best if best is not None else Result(hi, [], False)
 
 
 
