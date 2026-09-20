@@ -161,7 +161,7 @@ def _chain_depth(tasks: TaskArray) -> int:
 
 def search(day: Day, tasks: TaskArray, *, beam: int | None = None,
            hands: int | None = None, max_hands: int = MAX_HANDS,
-           budget_s: float | None = None) -> Result:
+           budget_s: float | None = None, warm: Result | None = None) -> Result:
     """The day, searched with `beam` routes in parallel.
 
     Two numbers decide how the pool is searched, and they answer two different questions:
@@ -179,6 +179,11 @@ def search(day: Day, tasks: TaskArray, *, beam: int | None = None,
 
     `beam` is the width, and None asks for the width the day's size implies (`beam_for`) - a step
     costs `beam x workers x tasks`, so a fixed width is a fixed cost only for a fixed day.
+
+    `warm` is a route from an earlier call on almost this instance, and the search starts from it
+    instead of from nothing: the first row of the beam is the state that route leaves behind, and
+    the snapshot is taken after it, so a search that finds nothing better hands it back. It applies
+    to the pool it was searched with and is ignored at the others.
 
     `budget_s` bounds the wall clock. The search keeps the best route it has found and returns it
     with `out_of_time=True` rather than running long: the cost of a question grows with the square
@@ -201,13 +206,17 @@ def search(day: Day, tasks: TaskArray, *, beam: int | None = None,
     def width(pool: int) -> int:
         return beam if beam is not None else beam_for(tasks, len(day.units) + pool)
 
+    def seed(pool: int) -> Result | None:
+        # A route is a state for the pool it was searched with: its worker indices are that pool's.
+        return warm if warm is not None and warm.pool == pool else None
+
     if hands is None and ceiling > start:
-        return _smallest_pool(day, tasks, width, start, ceiling, deadline)
+        return _smallest_pool(day, tasks, width, start, ceiling, deadline, seed)
 
     partial: Result | None = None
     placed = -1
     for pool in range(start, ceiling + 1):
-        result = _fixed_point(day, tasks, width(pool), pool, deadline)
+        result = _fixed_point(day, tasks, width(pool), pool, deadline, seed(pool))
         if result.complete:
             return result
         if partial is None or len(result.route) > placed:
@@ -223,7 +232,7 @@ def search(day: Day, tasks: TaskArray, *, beam: int | None = None,
 
 
 def _fixed_point(day: Day, tasks: TaskArray, beam: int, pool: int,
-                 deadline: float | None) -> Result:
+                 deadline: float | None, warm: Result | None = None) -> Result:
     """One pool, searched until the hands stop moving.
 
     The hands land on the doors that are free WHEN THEY ARE HIRED, and a unit walking off a door in
@@ -232,18 +241,19 @@ def _fixed_point(day: Day, tasks: TaskArray, beam: int, pool: int,
     it converges in two passes or not at all.
     """
     settled = None
-    result = _run(day, tasks, hands=pool, beam=beam, deadline=deadline)
+    result = _run(day, tasks, hands=pool, beam=beam, deadline=deadline, warm=warm)
     for _attempt in range(3):
         nxt = _settled_after_first_turn(day, tasks, result)
         if settled is not None and nxt == settled:
             break
         settled = nxt
-        result = _run(day, tasks, hands=pool, beam=beam, settled=settled, deadline=deadline)
+        result = _run(day, tasks, hands=pool, beam=beam, settled=settled, deadline=deadline,
+                      warm=warm)
     return result
 
 
 def _smallest_pool(day: Day, tasks: TaskArray, width, lo: int, hi: int,
-                   deadline: float | None) -> Result:
+                   deadline: float | None, seed) -> Result:
     """The smallest pool that carries the day, by halving.
 
     The predicate is monotone - a bigger pool is never less able to carry a day - so halving finds
@@ -255,7 +265,7 @@ def _smallest_pool(day: Day, tasks: TaskArray, width, lo: int, hi: int,
     best: Result | None = None
     while lo < hi:
         mid = (lo + hi) // 2
-        result = _fixed_point(day, tasks, width(mid), mid, deadline)
+        result = _fixed_point(day, tasks, width(mid), mid, deadline, seed(mid))
         if result.complete:
             best, hi = result, mid
         else:
@@ -263,7 +273,7 @@ def _smallest_pool(day: Day, tasks: TaskArray, width, lo: int, hi: int,
         if result.out_of_time:
             break
     if lo == hi:
-        final = _fixed_point(day, tasks, width(lo), lo, deadline)
+        final = _fixed_point(day, tasks, width(lo), lo, deadline, seed(lo))
         if final.complete or best is None:
             return final
         if len(final.route) > len(best.route):
@@ -274,8 +284,45 @@ def _smallest_pool(day: Day, tasks: TaskArray, width, lo: int, hi: int,
 
 
 
+def _warm_row(tasks: TaskArray, warm: Result, done, when, who, free, where, travel) -> None:
+    """Write a previous route's state into the beam's first row.
+
+    A route is a set of `(turn, task, worker)` and the state is what that set implies, so this is a
+    translation rather than a re-search. A task the day does not have is skipped, and so is a worker
+    the pool does not have: a caller that hands over a route from another instance gets the part of
+    it that still applies, not an error.
+    """
+    row = 0
+    column = {task_id: index for index, task_id in enumerate(tasks.ids)}
+    per_worker: dict[int, list[tuple[int, int]]] = {}
+    for turn, task_id, worker in warm.route:
+        index = column.get(task_id)
+        worker = int(worker)
+        if index is None or worker >= free.shape[1]:
+            continue
+        turn = int(turn)
+        done[row, index] = True
+        when[row, index] = turn
+        who[row, index] = worker
+        free[row, worker] = max(int(free[row, worker]), turn + 1)
+        where[row, worker] = tasks.cells[index]
+        per_worker.setdefault(worker, []).append((turn, index))
+
+    # The walk the route took, so the warmed row is not credited a travel it did not pay: the
+    # objective's last layer would otherwise prefer it to every route the search builds.
+    walked = 0
+    for worker, entries in per_worker.items():
+        at = (int(where[row, worker, 0]), int(where[row, worker, 1]))
+        for _turn, index in sorted(entries):
+            target = (int(tasks.cells[index][0]), int(tasks.cells[index][1]))
+            walked += abs(target[0] - at[0]) + abs(target[1] - at[1])
+            at = target
+    travel[row] = min(walked, int(np.iinfo(np.int16).max))
+
+
 def _run(day: Day, tasks: TaskArray, *, hands: int, beam: int,
-         settled=None, deadline: float | None = None) -> Result:
+         settled=None, deadline: float | None = None,
+         warm: Result | None = None) -> Result:
     """One pool size: search the day, and report how much of it the pool could carry."""
     n = tasks.n
     start_pos = _start_positions(day, hands, settled)         # (m, 2)
@@ -292,6 +339,9 @@ def _run(day: Day, tasks: TaskArray, *, hands: int, beam: int,
     where = np.tile(start_pos[None, :, :], (beam, 1, 1))
     travel = np.zeros((beam,), dtype=np.int16)
     live = np.ones((beam,), dtype=bool)
+
+    if warm is not None:
+        _warm_row(tasks, warm, done, when, who, free, where, travel)
 
     # The best state is remembered as the search goes, because the beam's last generation can be
     # empty - a route that dies at the end would otherwise erase the work it had already placed.
