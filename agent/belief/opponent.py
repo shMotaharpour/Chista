@@ -114,8 +114,8 @@ class OpponentModel:
         """The good's aggregate action distribution (its own prior)."""
         if self._marginal_dirty:
             agg: dict[str, np.ndarray] = {}
-            for (g, _d, _b), arr in self.counts.items():
-                a = agg.setdefault(g, np.zeros(self.n_bins))
+            for key, arr in self.counts.items():
+                a = agg.setdefault(key[0], np.zeros(self.n_bins))
                 a += np.asarray(arr, dtype=float)
             self._marginals = agg
             self._marginal_dirty = False
