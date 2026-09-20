@@ -57,7 +57,7 @@ def _compiled(ops, banked: bool = True):
     """
     chains = [(TILE, chain_ops(chain_id_of(ops)), "WHEAT")]
     tasks = T.build(chains, available=AVAILABLE, drop_by=[DROP_BY if banked else None])
-    day = B.Day(chains=tuple(chains), available=AVAILABLE, units=((4, 4),), hire_times=())
+    day = B.Day(chains=tuple(chains), available=AVAILABLE, hire_times=())
     result = B.search(day, tasks, beam=64, hands=0, max_hands=0)
     assert result.complete, f"the search could not carry {ops}: {len(result.route)}/{tasks.n}"
     assert not check_route(day, tasks, result), f"the route for {ops} breaks an engine rule"

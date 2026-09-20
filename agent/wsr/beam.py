@@ -51,6 +51,10 @@ def beam_for(tasks: TaskArray, workers: int) -> int:
 
 BIG = np.int16(30000)
 
+#: Where the farmer stands when a day begins. Every day, without exception: the engine resets the
+#: field to the farmer on the shed's corner door and clears the hands, so this is not an input.
+FARMER_START: Cell = (4, 4)
+
 
 @dataclass(frozen=True)
 class Day:
@@ -66,8 +70,18 @@ class Day:
     chains: tuple[tuple[Cell, tuple[str, ...], str | None], ...]
     available: dict[str, int]
     horizon: int = TURNS_PER_DAY
-    units: tuple[Cell, ...] = ()            # the farmer, and any hand already on the field
     hire_times: tuple[int, ...] = ()        # the hour each offered hand may begin
+
+    @property
+    def units(self) -> tuple[Cell, ...]:
+        """The units on the field when the day starts: the farmer, and nobody else.
+
+        Not a field, because it is not a choice. The engine resets every day to the farmer on the
+        shed's corner door with no hands, so the planner has nothing to say here - and a hand it
+        offers is settled by the engine at the hour of the offer (F040), on the door the spawn rule
+        picks, which the search works out for each route it tries.
+        """
+        return (FARMER_START,)
 
 
 class Result(NamedTuple):
@@ -85,6 +99,16 @@ class Result(NamedTuple):
     #: True when a deadline stopped the search before it ran out of tasks to place. A route that is
     #: neither complete nor out of time is the search's own answer: the pool could not carry it.
     out_of_time: bool = False
+
+    @property
+    def can_improve(self) -> bool:
+        """Whether another slice of budget would plausibly find more.
+
+        The deadline is the only thing that leaves work on the table: a day too big for any pool
+        has no better route to find however long the search runs, and a day that was carried has
+        nothing left to place. So a caller deciding between grinding and moving on reads this.
+        """
+        return self.out_of_time
     #: True when the day needs more workers than the caller allowed, so NO pool in range can carry
     #: it. The arithmetic floor is a count of workers and the ceiling is a count of hands, and on a
     #: hundred tiles the first passes the second - which is an answer about the day, not an error.
