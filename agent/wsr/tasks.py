@@ -32,7 +32,9 @@ def distance_matrix(size: int = BOARD_SIZE) -> np.ndarray:
     ys, xs = np.meshgrid(coords, coords, indexing="ij")
     flat = np.stack([ys.ravel(), xs.ravel()], axis=1).astype(np.int16)
     delta = np.abs(flat[:, None, :] - flat[None, :, :])
-    return delta.sum(axis=-1).astype(np.int8)
+    # int16, the width the search's arithmetic runs in: the walk is gathered once per step and cast
+    # to this width every time, and a table in the answer's own width skips that pass.
+    return delta.sum(axis=-1).astype(np.int16)
 
 
 DISTANCE: np.ndarray = distance_matrix()

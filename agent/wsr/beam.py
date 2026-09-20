@@ -583,7 +583,8 @@ def _expand(day: Day, tasks: TaskArray, done, when, who, free, where, travel, li
     # that way is 1.7x faster on its own - but it is five passes over the same (b, m, w) shape
     # against one, and end to end that made a hundred tiles 15 per cent SLOWER. The table is one
     # dimension more than the arithmetic needs and one pass less than the machine wants.
-    hop = DISTANCE[here[:, :, None], tasks.cell_index[index][None, None, :]].astype(np.int16)
+    # No cast: the table is int16, the width the arithmetic runs in, so the gather is the answer.
+    hop = DISTANCE[here[:, :, None], tasks.cell_index[index][None, None, :]]
 
     # The trip a consumer makes when its good is not in the bag: to a door, the pickup, and on. One
     # door, not two minima - the nearest door to the worker and the nearest to the tile can be
@@ -769,7 +770,9 @@ def _dedupe(done: np.ndarray, free: np.ndarray, where: np.ndarray) -> np.ndarray
     first: dict[bytes, int] = {}
     for index, row in enumerate(signature):
         first.setdefault(row.tobytes(), index)
-    return np.sort(np.fromiter(first.values(), dtype=np.int64, count=len(first)))
+    # No sort: a dictionary keeps insertion order and the rows are walked in order, so the first
+    # occurrence of each distinct row is already in increasing order.
+    return np.fromiter(first.values(), dtype=np.int64, count=len(first))
 
 
 def _last_drop(done, when, who, drop_rows: np.ndarray, workers: int) -> np.ndarray:
