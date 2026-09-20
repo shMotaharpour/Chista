@@ -41,6 +41,35 @@ the engine (R002) and called on the forecast inventory exactly as
 then `_town_consume` (shops, centre, `_refresh_prices`). So the forecast
 consumes from the current turn onwards and samples one price per day at
 hour 0 — the price a sale at the start of that day faces.
+
+## How an agent uses this module (the 60-second read)
+
+You are a layer that needs to know what a sale is worth. Three calls:
+
+1. `forecast(obs, days=N)` — the market walk: `fc.prices[d]` is the (9,)
+   quote at the START of season day `first_day + d`; `fc.inventory_of(g, d)`
+   is the inventory behind it; `fc.assumptions` names every assumption the
+   walk made (read it before trusting the numbers).
+2. `hourly_prices(fc)` — the SAME walk sampled per hour: row `(d, h)` is
+   the quote a SELL at hour h of day `first_day + d` actually sees (after
+   that turn's market, before its town consumption; past hours of the
+   current day repeat the snapshot). This is what a slot-level decision —
+   which hour to sell in, against the rival's queue — reads.
+3. `hourly_prices` + `agent.belief.ladder.sell_coins` — the ladder over the
+   hourly path: the coins of selling n units AT hour h (the walk already
+   carries the price impact of your own earlier units, passed via
+   `our_sells={step: {item: qty}}`).
+
+The rival's future sells are NOT modelled by default (`residual=None`):
+the price path is then biased toward HIGHER prices, on purpose and named.
+Pass `residual={"WHEAT": 2.0}` (units/day) when you have an estimate —
+`agent.belief.opponent.OpponentModel` (corpus-primed) produces one.
+
+Worked example (engine-verified): day-1 observation, PASS policies, a rival
+selling 10 WHEAT per day — `hourly_prices` day 0 reads
+`26 26 26 26 26 25 25 24 24 ... 23 23 ...`: each 4-hour shop tick plus the
+rival's drip pushes the quote one rung down, and day 1 holds 23. Sell at
+hour 4, not hour 23 — the 3 coins a unit difference is the ladder.
 """
 
 from __future__ import annotations
@@ -378,23 +407,29 @@ def hourly_prices(fc: MarketForecast, days: int | None = None,
     stub = TURNS_PER_DAY - (step % TURNS_PER_DAY)
     if stub == TURNS_PER_DAY:
         stub = 0
-    # hour h of day 0 = walk row h; the walk's row j is the inventory after
-    # turn `step + j - 1`... define: row 0 IS the snapshot (turn not yet
-    # played), row j >= 1 is after turn (step + j - 1). Hour h's quote (the
-    # price a SELL at hour h sees) = the walk row after the stub's turn and
-    # h-1 further turns — i.e. walk[stub + h] for day 0's hours 0..23 where
-    # hour 0's own row is the snapshot. Concretely:
-    rows = [0] + [stub + h for h in range(1, TURNS_PER_DAY)]
-    per_day = TURNS_PER_DAY
-    out = np.zeros((horizon * per_day, len(wanted)), dtype=np.int64)
-    for d in range(horizon):
-        for h in range(per_day):
-            r = rows[h] + (d * per_day if d else 0)
-            r = min(r, walk.shape[0] - 1)
-            inv = walk[r]
-            out[d * per_day + h] = [
-                K.market_price(PRODUCTS[i], float(inv[i]))
-                for i in ix]
+    # Row indexing. The walk's row j is the inventory after turn (step+j-1);
+    # row 0 is the snapshot ("now", mid-day). Hour h of the CURRENT day:
+    #   - h < hour  : already played — the table shows the snapshot (the walk
+    #                 has no earlier rows; history is not re-quoted);
+    #   - h >= hour : the quote a SELL at that hour sees = the walk row after
+    #                 the turns up to it = row (h - hour) — hour `hour`'s own
+    #                 quote is the snapshot (its market has not run yet).
+    # Later days start at walk row (stub + 24d) + (h) as before.
+    hour_now = step % TURNS_PER_DAY
+    rows = [0] * TURNS_PER_DAY                       # day 0, past hours
+    for h in range(hour_now, TURNS_PER_DAY):
+        rows[h] = h - hour_now                       # 0 = the snapshot itself
+    # day d >= 1: its hour-0 quote is the walk row after the whole previous
+    # day = row (stub + 24d - hour_now)... in walk terms the turn at absolute
+    # step (first_day + d)*24 - 1 sits at row (first_day + d)*24 - step:
+    for d in range(1, horizon):
+        base = (fc.first_day + d) * TURNS_PER_DAY - step
+        rows.extend([base + h for h in range(TURNS_PER_DAY)])
+    rows = rows[:horizon * TURNS_PER_DAY]
+    out = np.zeros((horizon * TURNS_PER_DAY, len(wanted)), dtype=np.int64)
+    for i, r in enumerate(rows):
+        inv = walk[min(r, walk.shape[0] - 1)]
+        out[i] = [K.market_price(PRODUCTS[i2], float(inv[i2])) for i2 in ix]
     return out
 
 
