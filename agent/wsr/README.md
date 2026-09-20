@@ -93,6 +93,17 @@ which is why a drop with an empty bag is free, the mirror of the fetch. `compile
 drops off the route, and `DayOps.arrivals` is `(hour, item, units)` per drop, for whoever prices
 the sell side.
 
+**The budget, the warm start, and the answer.** `search(..., budget_s=)` stops at the deadline and
+returns the best route it has, `out_of_time=True`. `search(..., warm=<a previous Result>)` starts the
+beam from that route, so a caller that re-asks after a small change repairs instead of restarting -
+it applies at the pool the route was searched with. `Result.can_improve` is that deadline flag under
+the name of the decision: False means no budget would find more, so spend the turns elsewhere.
+
+**The day's input is the planner's, and only the planner's.** `Day(chains, available, hire_times)` -
+no units: the engine resets every day to the farmer on the shed's corner door with no hands, so where
+the units stand is not a decision the planner has. The hands' own positions are the search's per
+route, from the spawn rule and where the units before them walked.
+
 **The pool.** `search(hands=None)` halving-searches the smallest pool that carries the day,
 between `lower_bound` and `max_hands`; `hands=` asks for the scan instead. A day whose arithmetic
 floor is above the ceiling comes back `infeasible=True` with an empty route rather than raising -
