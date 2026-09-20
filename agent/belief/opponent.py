@@ -4,9 +4,19 @@ Three separate things, kept apart on purpose:
 
 * **The rival's action model.** `N[state, action] += 1` over their observed
   actions, Laplace-smoothed — estimation, not hidden-state learning, because the
-  tracker already gives us their volumes. The state key is (good, day, price
-  bucket) and the action is a sell-size bin. For the seven one-way goods a buy
-  cannot exist, so the action space is one-dimensional and the counts converge
+  tracker already gives us their volumes. The SHIPPED artifact's state key is
+  PER-GOOD: (good, demand bucket, price bucket) for the six goods with a
+  variable shop demand (CARROT, TOMATO, STRAWBERRY, MILK, EGG, WOOL — their
+  behaviour tracks which shops are open), and (good, day, price bucket) for
+  WHEAT, MELON, FERTILIZER. The reason is what each dimension carries:
+  MELON has no shop buyer at all (its only buyer is the centre, 1/day flat),
+  FERTILIZER no shop buyer and no centre either, and WHEAT's demand is so
+  wide a day dimension tracks its calendar; the six demand-keyed goods lose
+  nothing by dropping the day (their shops' unlock schedule is near-uniform)
+  and gain the demand signal — measured, the per-good scheme beat the
+  global key 1.2714 -> 1.2104 log loss with FEWER states (337 vs 943).
+  The action is a sell-size bin. For the seven one-way goods a buy cannot
+  exist, so the action space is one-dimensional and the counts converge
   fast; WHEAT and FERTILIZER carry one extra bin for a net buy.
 
 * **The demand forecast.** Already-open shops are *facts* (a shop never closes),

@@ -15,6 +15,24 @@ key just split the data again. The mixed scheme keys
     the rest (WHEAT, MELON, FERTILIZER):
         (good, day, price_bucket)                — the shipped key
 
+WHY the split is exactly this (the demand dimension carries information
+only where the good has a VARIABLE shop demand):
+
+* MELON has NO shop buyer at all — it is absent from every SHOPS basket
+  (kaggriculture.py:103-112); its only buyer is the town centre, 1 unit
+  per day, flat all season (:114, :745-747). Its demand bucket would be a
+  constant, so the dimension carries zero information for it. MELON keeps
+  the DAY because its harvest calendar is day-driven (first_yield_day 10,
+  max_yield_day 12) — players' MELON supply appears and disappears on a
+  schedule.
+* FERTILIZER likewise has no shop buyer AND is exempt from the centre
+  (:114); its demand bucket is a constant zero. It also keeps no day:
+  measured, dropping the day IMPROVED it slightly (1.111 -> 1.104).
+* The other six goods sit in 1-4 shop baskets each — their demand bucket
+  moves across the season as shops unlock, and that is exactly the signal
+  the eval rewarded (aggregate 1.2714 -> 1.2104; 6/9 goods better, the
+  demand-keyed ones losing 0.07-0.23 log loss each).
+
 and scores 1.2104 aggregate over the shipped 1.2714, beating it on 6/9
 goods (the demand-sensitive ones lose 0.07-0.23 log loss each) while the
 three plain-key goods stay at their shipped scores up to the tiny
