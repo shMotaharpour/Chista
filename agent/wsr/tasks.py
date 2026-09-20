@@ -123,8 +123,17 @@ class TaskArray:
         The matrix is the shape a broadcast wants, but the graph itself is a handful of edges per
         task, and walking them costs the number of edges instead of their square.
         """
-        after, before = np.nonzero(self.pred)
-        return list(zip(after.tolist(), before.tolist()))
+        return self._edges
+
+    @property
+    def edge_after(self) -> np.ndarray:
+        """The successors of every edge, as an array - the shape a scatter wants."""
+        return self._edge_after
+
+    @property
+    def edge_before(self) -> np.ndarray:
+        """The predecessors of every edge, as an array."""
+        return self._edge_before
 
     @property
     def pred_count(self) -> np.ndarray:
@@ -149,6 +158,13 @@ class TaskArray:
         # The transposed product, cast once. `ready` runs once per step and rebuilding this on
         # every call would cost more than the product it feeds.
         self._pred_f32 = self.pred.T.astype(np.float32)
+        # The edges, read once. They are a function of the graph, and the walk that needs them runs
+        # once per step: `np.nonzero` over the whole matrix on every call was a third of the time
+        # that walk took, for the same answer every time.
+        after, before = np.nonzero(self.pred)
+        self._edge_after = after.astype(np.int32)
+        self._edge_before = before.astype(np.int32)
+        self._edges = list(zip(after.tolist(), before.tolist()))
 
     def ready(self, done: np.ndarray) -> np.ndarray:
         """Which tasks have all their predecessors done - one matrix product.

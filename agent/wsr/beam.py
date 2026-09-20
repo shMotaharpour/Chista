@@ -656,8 +656,11 @@ def _released(when: np.ndarray, tasks: TaskArray) -> np.ndarray:
     if tasks.n == 0:
         return out
     # `when` is the turn a task OCCUPIES, so a successor's earliest start is the turn after it.
-    for after, before in tasks.edges:
-        np.maximum(out[:, after], when[:, before] + 1, out=out[:, after])
+    # One scatter over the whole edge list, not a loop over it: a task may have several
+    # predecessors, so the answer for a successor is the LARGEST of their finishes - which is what
+    # `maximum.at` scatters, and what the loop did one edge at a time.
+    rows = np.arange(when.shape[0], dtype=np.int32)[:, None]
+    np.maximum.at(out, (rows, tasks.edge_after[None, :]), when[:, tasks.edge_before] + 1)
     return out
 
 
