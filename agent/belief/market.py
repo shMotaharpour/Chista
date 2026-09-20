@@ -140,6 +140,10 @@ class MarketForecast:
     first_day: int                # the season day row 0 belongs to
     inventory: tuple[tuple[int, ...], ...]
     prices: tuple[tuple[int, ...], ...]
+    #: the per-turn walk behind the day rows — what `hourly_prices` samples.
+    #: (T+1, 9) inventories; row 0 is the snapshot, row j after turn j-1.
+    walk_inventory: np.ndarray = field(default_factory=lambda: np.zeros((1, 1)))
+    walk_step: int = 0
     unlock_policy: str = "mean"
     residual: Mapping[str, float] = field(default_factory=dict)
     assumptions: tuple[str, ...] = ()
@@ -343,8 +347,55 @@ def forecast(obs: Any, *, days: int = 30,
     return MarketForecast(start_step=step, horizon_days=horizon,
                           first_day=first_day,
                           inventory=tuple(rows_inv), prices=tuple(rows_price),
+                          walk_inventory=walk, walk_step=step,
                           unlock_policy=unlock_policy, residual=dict(res),
                           assumptions=tuple(assumptions))
+
+
+def hourly_prices(fc: MarketForecast, days: int | None = None,
+                  items: Iterable[str] | None = None,
+                  ) -> np.ndarray:
+    """The market's value PER HOUR: (days*24, 9) quotes in PRODUCTS order.
+
+    The day-start table is what a day-granular plan prices on; a slot-level
+    decision (which hour of the day to sell in, against the rival's queue)
+    needs the same walk sampled every turn. The walk itself is already
+    per-turn — this is a sampling choice, not a second simulation.
+
+    Row `(d, h)` = day `first_day + d`, hour `h`, quoted at the inventory
+    the walk holds after that turn's market and before that turn's town
+    consumption — the inventory a SELL in that turn is actually quoted at
+    (engine turn order: units, market, town). Row 0 is the observation's
+    own snapshot; a mid-day forecast starts with its stub and the remaining
+    hours of that day follow, so the table's length stays days*24.
+    """
+    walk = np.asarray(fc.walk_inventory, dtype=np.float64)
+    step = int(fc.walk_step)
+    horizon = fc.horizon_days if days is None else max(1, int(days))
+    wanted = (PRODUCTS if items is None else tuple(items))
+    ix = [_PROD_INDEX[g] for g in wanted]
+
+    stub = TURNS_PER_DAY - (step % TURNS_PER_DAY)
+    if stub == TURNS_PER_DAY:
+        stub = 0
+    # hour h of day 0 = walk row h; the walk's row j is the inventory after
+    # turn `step + j - 1`... define: row 0 IS the snapshot (turn not yet
+    # played), row j >= 1 is after turn (step + j - 1). Hour h's quote (the
+    # price a SELL at hour h sees) = the walk row after the stub's turn and
+    # h-1 further turns — i.e. walk[stub + h] for day 0's hours 0..23 where
+    # hour 0's own row is the snapshot. Concretely:
+    rows = [0] + [stub + h for h in range(1, TURNS_PER_DAY)]
+    per_day = TURNS_PER_DAY
+    out = np.zeros((horizon * per_day, len(wanted)), dtype=np.int64)
+    for d in range(horizon):
+        for h in range(per_day):
+            r = rows[h] + (d * per_day if d else 0)
+            r = min(r, walk.shape[0] - 1)
+            inv = walk[r]
+            out[d * per_day + h] = [
+                K.market_price(PRODUCTS[i], float(inv[i]))
+                for i in ix]
+    return out
 
 
 def price_paths(fc: MarketForecast, days: int | None = None,
