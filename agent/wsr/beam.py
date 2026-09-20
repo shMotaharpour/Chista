@@ -548,7 +548,10 @@ def _carried(done, who, tasks: TaskArray, workers: int) -> np.ndarray:
     cannot disagree are worth more than one kept in step by hand.
     """
     batch = who.shape[0]
-    goods = tasks.items
+    # A bag holds a good when the worker did a task that NEEDED it - the trip that brought it - or
+    # one that YIELDED it, because a harvest puts the crop in the bag it is carried in. No task
+    # does both, so one column answers for every row.
+    goods = np.where(tasks.yields >= 0, tasks.yields, tasks.items)
     n_goods = max(int(goods.max()) + 1, 1) if goods.size else 1
     flat = np.zeros(batch * workers * n_goods, dtype=bool)
     consuming = np.flatnonzero(goods >= 0)

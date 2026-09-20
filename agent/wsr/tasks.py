@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from agent.world.action_rules import CARRIES
 from agent.world.model import UnitAction
 from agent.world.rules import BOARD_SIZE, SHED_ACCESS
 
@@ -61,7 +62,16 @@ class TaskArray:
     #: a task list that cannot spell itself is not a task list.
     ops: list[tuple] = field(default_factory=list)
     actions: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int8))
+    #: What each task must have in its worker's bag - the world's own `CARRIES` plus PLACE, which
+    #: carries the animal. NO_ITEM for everything else. This is what a trip to a shed door is for.
     items: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int8))
+    #: What each task puts in the bag - the world's own `YIELDS`. A HARVEST yields the crop, a
+    #: COLLECT_FERTILIZER yields fertilizer, and neither is a good the task needs: the same op can
+    #: appear in both columns for no op, and reading one as the other is a day that waits for what
+    #: it is about to produce.
+    yields: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int8))
+    #: How many units `yields` puts in the bag - a harvest's `yield_units`, read off the tile.
+    yield_n: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int8))
     cells: np.ndarray = field(default_factory=lambda: np.zeros((0, 2), dtype=np.int16))
     columns: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int8))
     pred: np.ndarray = field(default_factory=lambda: np.zeros((0, 0), dtype=bool))
@@ -244,11 +254,28 @@ def build(chains, *, available: dict[str, int] | None = None, horizon: int = 24)
     columns = np.asarray([column_of[t.id] for t in tasks], dtype=np.int8)
 
     item_codes = np.asarray([_item_code(t.item) for t in tasks], dtype=np.int16)
+    # Two columns, from the world layer's two tables rather than from one guess. A PICKUP would be
+    # the fourth kind of need and there are none left: a fetch is the trip a consumer makes.
+    need_codes = np.full(n, NO_ITEM, dtype=np.int16)
+    yield_codes = np.full(n, NO_ITEM, dtype=np.int16)
+    yield_units = np.zeros(n, dtype=np.int16)
+    for i, task in enumerate(tasks):
+        name = str(getattr(task.action, "value", task.action))
+        if name in NEED_OPS:
+            need_codes[i] = item_codes[i]
+        elif name == "HARVEST":
+            yield_codes[i] = item_codes[i]              # the crop the tile hands over
+            yield_units[i] = int(getattr(task, "n", 1) or 1)
+        elif name == "COLLECT_FERTILIZER":
+            yield_codes[i] = _item_code("FERTILIZER")
+            yield_units[i] = 1
     return TaskArray(
         ids=ids,
         ops=[_engine_op(t) for t in tasks],
         actions=np.asarray([_action_code(t.action) for t in tasks], dtype=np.int8),
-        items=item_codes.astype(np.int8),
+        items=need_codes.astype(np.int8),
+        yields=yield_codes.astype(np.int8),
+        yield_n=yield_units.astype(np.int8),
         cells=cells,
         columns=columns,
         pred=pred,
@@ -315,6 +342,10 @@ def _engine_op(task) -> tuple:
     return (name,)
 
 
+#: The ops that must have a good in the worker's bag, from the world's own table plus PLACE.
+NEED_OPS: frozenset[str] = frozenset(CARRIES) | {"PLACE"}
+
+
 def _good_for(task) -> object | None:
     """What a task must already have: a fetch waits for its good, a planting waits for its seed.
 
@@ -323,13 +354,16 @@ def _good_for(task) -> object | None:
     the thing is available.
     """
     action = str(getattr(task.action, "value", task.action))
-    if action == "PICKUP":
-        return task.item
     if action == "PLANT":
         return task.crop
     # A task that consumes a good - PLACE, FEED, FERTILIZE - waits for the same hour, because the
     # trip that brings the good cannot happen before the shed holds it. Without this the search
     # prices a feeding at the turn the day opens, when the animal it feeds is still in the market.
+    #
+    # A HARVEST is NOT here. Its item is what it yields, and waiting for the crop to be in the shed
+    # before the tile can be harvested is the wait that never ends.
+    if action not in NEED_OPS:
+        return None
     item = getattr(task, "item", None)
     return item if _item_code(item) >= 0 else None
 

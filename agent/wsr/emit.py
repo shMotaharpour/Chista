@@ -19,19 +19,38 @@ worker stands, the same rule the search priced with.
 
 from __future__ import annotations
 
+from typing import NamedTuple
+
 from agent.wsr.beam import (Day, Result, _settled_after_first_turn, _start_hours,
                             _start_positions, first_arrival, preload_turns)
-from agent.wsr.routing import walk
+from agent.wsr.routing import nearest_shed, walk
 from agent.wsr.tasks import ITEM_CODE, TaskArray
 
 PASS = ("PASS",)
+
+
+class DayOps(NamedTuple):
+    """The compiled day: the ops per worker, and what its drops bank.
+
+    `arrivals` is `(hour, item, units)` per drop. A SELL can only reach the shed, so this is what
+    the day's market may actually sell today; what no drop carried waits for tonight.
+    """
+
+    units: list[list[tuple]]
+    arrivals: tuple[tuple[int, str, int], ...] = ()
 
 ITEM_NAME = {code: item.name for item, code in ITEM_CODE.items()}
 
 
 def compile_route(day: Day, tasks: TaskArray, result: Result, *,
-                  horizon: int | None = None, settled=None) -> list[list[tuple]]:
+                  horizon: int | None = None, settled=None,
+                  drop: bool = True, room: int | None = None) -> DayOps:
     """A route -> one op list per worker, `horizon` turns long and PASS-padded.
+
+    `drop` writes the trip that carries what the day grew to the shed, and `room` is how much of the
+    shed is free: the engine takes what fits and leaves the rest in the bag, so an arrival past the
+    room is a unit that does not reach the market. `room=None` means the caller did not say, and the
+    arrivals are then what the bags hold rather than what the shed took.
 
     The list is indexed by turn, so `ops[worker][hour]` is what that worker does at that hour -
     which is the shape the dispatcher slices.
@@ -83,15 +102,39 @@ def compile_route(day: Day, tasks: TaskArray, result: Result, *,
             at[worker] = target
             last[worker] = turn
 
-    return ops
+    # The drop: one per worker, at the end of its route, only if the turns are there. The worker
+    # ends the day on the door it dropped at, which is where the night leaves it anyway.
+    arrivals: list[tuple[int, str, int]] = []
+    if drop:
+        for worker in range(m):
+            bagged = _yielded(tasks, by_worker.get(worker, []))
+            if not bagged:
+                continue
+            door = nearest_shed(at[worker])
+            trip = walk(at[worker], door)
+            first = last[worker] + 1
+            if first + len(trip) + 1 > horizon:
+                continue
+            _write(ops[worker], first, trip)
+            turn = first + len(trip)
+            ops[worker][turn] = ("DROP",)
+            for good, units in sorted(bagged.items()):
+                take = units if room is None else min(units, room)
+                if take > 0:
+                    arrivals.append((turn, ITEM_NAME[good], take))
+                    room = None if room is None else room - take
+            at[worker] = door
+            last[worker] = turn
+
+    return DayOps(units=ops, arrivals=tuple(arrivals))
 
 
-def to_plan(ops: list[list[tuple]], market=None) -> dict:
+def to_plan(day_ops: DayOps, market=None) -> dict:
     """The compiler's output in the shape the dispatcher slices.
 
     `units[0]` is the farmer and the rest the hands in order, which is the engine's own order.
     """
-    return {"units": [[list(op) for op in unit] for unit in ops],
+    return {"units": [[list(op) for op in unit] for unit in day_ops.units],
             "market": list(market or [])}
 
 
@@ -103,6 +146,17 @@ def _bag(tasks: TaskArray, entries: list[tuple[int, str]]) -> dict[int, int]:
         if good >= 0:
             bag[good] = bag.get(good, 0) + 1
     return bag
+
+
+def _yielded(tasks: TaskArray, entries: list[tuple[int, str]]) -> dict[int, int]:
+    """How much of each good this worker's day puts in its bag, so one trip can carry it."""
+    out: dict[int, int] = {}
+    for _turn, task_id in entries:
+        row = tasks.ids.index(task_id)
+        good = int(tasks.yields[row])
+        if good >= 0:
+            out[good] = out.get(good, 0) + int(tasks.yield_n[row])
+    return out
 
 
 def _write(ops: list[tuple], first: int, moves: list[tuple]) -> None:

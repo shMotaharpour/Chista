@@ -6,8 +6,8 @@ distance a day was priced at and the moves it is written with can never be two d
 
 from __future__ import annotations
 
-from agent.world.board import MOVE_DELTA
-from agent.world.rules import BOARD_SIZE
+from agent.world.board import MOVE_DELTA, manhattan
+from agent.world.rules import BOARD_SIZE, SHED_ACCESS
 
 Cell = tuple[int, int]
 
@@ -32,3 +32,13 @@ def walk(start: Cell, goal: Cell, board: int = BOARD_SIZE) -> list[tuple[str, ..
     if not (0 <= x < board and 0 <= y < board):
         raise ValueError(f"walk({start}, {goal}) leaves the board")
     return out
+
+
+def nearest_shed(pos: Cell, board: int = BOARD_SIZE) -> Cell:
+    """The closest shed-access tile, ties broken by the world's own order.
+
+    The drop trip goes here, and it is one rule rather than a per-call minimum: taking the nearest
+    door to the worker and the nearest door to the tile separately can name two different doors.
+    """
+    tiles = tuple((int(x), int(y)) for x, y in SHED_ACCESS)
+    return min(tiles, key=lambda t: (manhattan(pos, t), tiles.index(t)))
