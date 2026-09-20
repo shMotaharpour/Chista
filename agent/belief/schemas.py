@@ -194,7 +194,13 @@ class OrderBook:
 
 
 def good_index(good: str) -> int:
-    return G_IX[good]
+    """A good's PRODUCTS index — the same mapping `belief.ladder` uses.
+
+    Two spellings existed while the ladder was being written; the ladder's
+    `good_index` is this function re-exported, so there is one mapping.
+    """
+    from agent.belief.ladder import good_index as _ladder_index
+    return _ladder_index(good)
 
 
 def empty_state(turn: Turn = 0) -> MarketState:

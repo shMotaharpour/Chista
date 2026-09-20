@@ -22,10 +22,9 @@ from typing import Any
 
 import numpy as np
 
-from agent.world.model import DUAL, PRODUCTS
+from agent.world.model import PRODUCTS
 from agent.belief.schemas import (DaySchedule, G_IX, MAX_ORDERS, MarketState,
-                                  OrderBook, SELL_ONLY, SellIntent, SHED_CAP,
-                                  field_of)
+                                  OrderBook, SellIntent, SHED_CAP, field_of)
 
 #: The (9,) goods order, from the world's own name for it.
 GOODS: tuple[str, ...] = PRODUCTS
