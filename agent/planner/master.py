@@ -131,6 +131,7 @@ from agent.planner.inputs import dual_stand_in
 from agent.world.model import (ANIMALS, CROPS, N_RESOURCE, RESOURCE_ID,
                                RES_LABOR)
 from agent.tile_dp.contractor import PricedBoard
+from agent.world.rules import ANIMAL_RULES, CROP_RULES
 
 LABOR_ID = RESOURCE_ID[RES_LABOR]
 FERT_ID = RESOURCE_ID["FERTILIZER"]
@@ -139,20 +140,44 @@ WHEAT_ID = RESOURCE_ID["WHEAT"]
 # The coupling rows: farm-internal resources one tile's plan competes
 # for. Row r of the LP is resource column COUPLING_IDS[r] of the
 # per-day cost vectors — no second vocabulary to drift (R005).
+# ONE quantity row, because hours are the only thing the farm cannot buy.
+# FERTILIZER (F006/F023) and WHEAT (F017/F018) were rows here and are not any
+# more, for the same reason the seeds and animals went: they are purchasable,
+# their stock on a day-0 board is zero, and a `≤ 0` row on a purchasable input
+# is not scarcity — it is a wrong model that forbids the plan outright. Their
+# price reaches the tiles through the quote, and their scarcity through the
+# cash row. What a plan of theirs is worth is the objective's business.
 COUPLING_IDS: tuple[int, ...] = (
     LABOR_ID,                                    # F039/F040
-    FERT_ID,                                     # F006/F023
-    WHEAT_ID,                                    # F017/F018
-    RESOURCE_ID["SEED_WHEAT"],                   # F001: one purse
-    RESOURCE_ID["SEED_CARROT"],
-    RESOURCE_ID["SEED_TOMATO"],
-    RESOURCE_ID["SEED_STRAWBERRY"],
-    RESOURCE_ID["SEED_MELON"],
-    RESOURCE_ID["ANIMAL_GOOSE"],                 # F016: one purse
-    RESOURCE_ID["ANIMAL_COW"],
-    RESOURCE_ID["ANIMAL_SHEEP"],
 )
 N_COUPLING = len(COUPLING_IDS)
+
+# The five rows #12's brief names, and `columns.py:ROW_NAMES` expects:
+#   labour · cash_out · wheat_net · fert_net · stored
+# Three of them are the quantity rows above. `cash_out` is the row below.
+# `stored` is still absent and still honest about it: a column carries no
+# SELL decision, so what it leaves in the shed overnight is not derivable
+# from it. TODO(#79): the day layer's arrivals are the state it was
+# waiting for, but the column has to carry the sell side first.
+#
+# Eight rows were here that the brief never listed: one per seed and one
+# per animal, each bounded by the stock in the purse. They are the reason
+# the master could not price a board. Seeds and animals are PURCHASABLE
+# (F001, F016) and on day 0 the purse holds none of them, so every such
+# row read `≤ 0` and every column that plants or places violated it — the
+# LP was left with the idle column, objective 0, and the duals on those
+# rows diverged (measured: 2.44e3 per hour after 8 rounds). A purchasable
+# input is not scarce in QUANTITY, it is scarce in MONEY, and the row it
+# belongs in is the cash row. Its quote already reaches the tiles through
+# `w_floor` below.
+PURCHASE_IDS: tuple[int, ...] = (
+    RESOURCE_ID["SEED_WHEAT"], RESOURCE_ID["SEED_CARROT"],
+    RESOURCE_ID["SEED_TOMATO"], RESOURCE_ID["SEED_STRAWBERRY"],
+    RESOURCE_ID["SEED_MELON"],
+    RESOURCE_ID["ANIMAL_GOOSE"], RESOURCE_ID["ANIMAL_COW"],
+    RESOURCE_ID["ANIMAL_SHEEP"],
+    WHEAT_ID, FERT_ID,
+)
 
 # Market-priced produce: what the farm sells (priced INTO the objective
 # at the observation's quotes — exogenous to the tiles, F033/F035).
@@ -219,6 +244,13 @@ class CouplingSupply:
     animal_stock: np.ndarray      # (3,) int, ANIMAL_IDS order
     fert_stock: float
     wheat_feed_stock: float
+    #: Coins on hand at the start of the horizon. The cash row's day-0
+    #: right-hand side; later days add the revenue the plan banks.
+    money: float = 0.0
+    #: What one unit of each PURCHASE_IDS input costs, same order. Seeds
+    #: and animals are engine tables; WHEAT and FERTILIZER are the
+    #: observation's own quotes, because those two the market sells back.
+    quotes: np.ndarray = None     # (len(PURCHASE_IDS),) float
 
 
 @dataclass
@@ -236,17 +268,42 @@ class MasterResult:
     fallback_reason: str = ""
     p_source: str = ""            # where the product price path came from
     history: list = field(default_factory=list)   # per-round max dual move
+    cash_duals: np.ndarray = None  # (days,) shadow price of a coin per day
 
 
-def published_duals(w_coupling: np.ndarray, days: int) -> np.ndarray:
+def published_duals(w_coupling: np.ndarray, days: int,
+                    cash_dual: np.ndarray | None = None,
+                    quotes: np.ndarray | None = None) -> np.ndarray:
     """`(days, N_COUPLING)` duals -> the `(days, N_RESOURCE)` wage matrix
     the contractor consumes: duals on their resource columns, zeros
     elsewhere (market-priced products are NOT input-priced to tiles —
-    their value sits in the objective, not in w)."""
+    their value sits in the objective, not in w).
+
+    A purchasable input has no quantity row, so without `quotes` it would
+    reach the tiles at zero and every chain would look free. Its price is
+    its quote, raised by the cash row's dual:
+
+        w[d, r] = quote_r · (1 + y_cash[d])
+
+    `y_cash[d]` is the shadow price of a coin on day `d` — what the plan's
+    objective would gain from one more. When the purse is slack it is 0 and
+    the input costs its quote; when the purse binds, every seed and every
+    animal gets dearer in proportion, and the tiles re-plan onto chains that
+    need fewer of them. This is the term that tells identical tiles apart:
+    a quantity row is one number for all of them and can only move WHAT the
+    identical answer is, never that it is identical.
+    """
     out = np.zeros((days, N_RESOURCE), dtype=np.float64)
     for r, rid in enumerate(COUPLING_IDS):
         out[:, rid] = w_coupling[:, r]
-    return out
+    if quotes is not None:
+        scale = 1.0 + (np.zeros(days) if cash_dual is None
+                       else np.asarray(cash_dual, dtype=np.float64)[:days])
+        for i, rid in enumerate(PURCHASE_IDS):
+            # WHEAT and FERTILIZER are both a quantity row and purchasable:
+            # the dearer of the two prices is the one a tile faces.
+            out[:, rid] = np.maximum(out[:, rid], float(quotes[i]) * scale)
+    return np.maximum(out, 0.0)
 
 
 def supply_from_obs(obs) -> CouplingSupply:
@@ -271,15 +328,25 @@ def supply_from_obs(obs) -> CouplingSupply:
                           dtype=np.int64)
     animal_stock = np.array([int(shed.get(a, 0)) for a in ANIMALS],
                             dtype=np.int64)
+    prices = (obs.get("market", {}) or {}).get("prices", {}) or {}
+    quotes = np.array(
+        [float(CROP_RULES[c]["seed"]) for c in CROPS]
+        + [float(ANIMAL_RULES[a]["cost"]) for a in ANIMALS]
+        + [float(prices.get("WHEAT", 0.0)), float(prices.get("FERTILIZER", 0.0))],
+        dtype=np.float64)
     return CouplingSupply(hours=hours, seed_stock=seed_stock,
                           animal_stock=animal_stock,
                           fert_stock=float(shed.get("FERTILIZER", 0)),
-                          wheat_feed_stock=float(shed.get("WHEAT", 0)))
+                          wheat_feed_stock=float(shed.get("WHEAT", 0)),
+                          money=float(farm.get("money", 0.0)),
+                          quotes=quotes)
 
 
 def _solve_lp(cost: np.ndarray, revenue: np.ndarray, supply: CouplingSupply,
-              days: int, n_tiles: int) -> tuple[np.ndarray, np.ndarray, float]:
-    """One restricted-master solve -> (lam, duals (days, N_C), objective).
+              days: int, n_tiles: int, spend: np.ndarray | None = None,
+              earn: np.ndarray | None = None
+              ) -> tuple[np.ndarray, np.ndarray, np.ndarray, float]:
+    """One restricted-master solve -> (lam, duals (days, N_C), cash duals, objective).
 
     `cost` (n_cols, days, N_COUPLING) INCLUDING the trailing idle column;
     `revenue` (n_cols,); `n_tiles` is the convexity right-hand side — the
@@ -287,26 +354,39 @@ def _solve_lp(cost: np.ndarray, revenue: np.ndarray, supply: CouplingSupply,
     column, not a tile). Raises RuntimeError on solver failure OR on an
     absent scipy (the guarded import, module top) — the caller decides
     fallback.
+
+    `spend` (n_cols, days) is what each column pays the market for its
+    purchasable inputs on each day, and `earn` (n_cols, days) what it
+    banks. Together they are the CASH ROW, one per day — #12's `cash_out`,
+    which the brief listed and nothing ever built:
+
+        Σ_k λ_k · spend_k[d]  −  Σ_{d' < d} Σ_k λ_k · earn_k[d']  ≤  money
+
+    Revenue is banked a day BEFORE it may be spent. Measured rather than
+    assumed (#12 asks for exactly this): a market order placed at hour h
+    changes the money the agent sees at hour h+1 of the SAME day, so at
+    day granularity the conservative shift by one day is safe under any
+    intra-day ordering, and an LP row cannot express intra-day ordering.
     """
     if not HAS_SCIPY:
         raise RuntimeError("master LP failed: scipy is not available")
     n_cols = cost.shape[0]
-    # rows: N_COUPLING·days ≤-constraints (r outer, d inner), one convexity.
+    # rows: N_COUPLING·days ≤-constraints (r outer, d inner), then `days`
+    # cash rows, then one convexity equality.
     A_ub = cost.transpose(0, 2, 1).reshape(n_cols, -1).T          # (rows, cols)
     b_ub = np.empty(A_ub.shape[0])
     for r, rid in enumerate(COUPLING_IDS):
         lo, hi = r * days, (r + 1) * days
-        if rid == LABOR_ID:
-            b_ub[lo:hi] = supply.hours[:days]
-        elif rid == FERT_ID:
-            b_ub[lo:hi] = supply.fert_stock / days
-        elif rid == WHEAT_ID:
-            b_ub[lo:hi] = supply.wheat_feed_stock / days
-        elif rid in SEED_IDS:
-            b_ub[lo:hi] = supply.seed_stock[SEED_IDS.index(rid)] / days
-        else:
-            b_ub[lo:hi] = (supply.animal_stock[ANIMAL_IDS.index(rid)]
-                           / days)
+        b_ub[lo:hi] = supply.hours[:days]        # LABOR_ID, the only row
+
+    if spend is not None:
+        # Row d: what is spent by day d, less what was banked before it.
+        cash = np.zeros((days, n_cols), dtype=np.float64)
+        for d in range(days):
+            cash[d] = spend[:, d] - (earn[:, :d].sum(axis=1) if d else 0.0)
+        A_ub = np.vstack([A_ub, cash])
+        b_ub = np.concatenate([b_ub, np.full(days, float(supply.money))])
+
     res = linprog(-revenue, A_ub=A_ub, b_ub=b_ub,
                   A_eq=np.ones((1, n_cols)), b_eq=np.array([float(n_tiles)]),
                   bounds=[(0.0, None)] * n_cols, method="highs")
@@ -315,9 +395,28 @@ def _solve_lp(cost: np.ndarray, revenue: np.ndarray, supply: CouplingSupply,
     # HiGHS ≤-marginals are negative in min form; duals = −marginals,
     # clamped onto R006's orthant before anything sees them.
     y = np.maximum(-np.asarray(res.ineqlin.marginals), 0.0)
-    return np.asarray(res.x), y.reshape(N_COUPLING, days).T, -float(res.fun)
+    quantity, cash_y = y[:N_COUPLING * days], y[N_COUPLING * days:]
+    if cash_y.size != days:
+        cash_y = np.zeros(days)
+    return (np.asarray(res.x), quantity.reshape(N_COUPLING, days).T,
+            cash_y, -float(res.fun))
 
 
+def column_cash(board: PricedBoard, supply: CouplingSupply, days: int
+                ) -> tuple[np.ndarray, np.ndarray]:
+    """What each priced column spends and earns, per day.
+
+    `spend` is the column's purchasable inputs at their quotes. The stock
+    already in the purse is NOT netted off here: it is one endowment shared
+    by every tile, and a per-column subtraction would hand the same seed to
+    all of them. Ignoring it prices the plan slightly high, which is the
+    safe direction — a plan that fits with the stock ignored fits with it.
+
+    `earn` is the column's produce at the market's own quotes, per day.
+    """
+    cost = board.per_day_cost[:, :days, PURCHASE_IDS].astype(np.float64)
+    spend = (cost * supply.quotes[None, None, :]).sum(axis=2)
+    return spend, np.zeros_like(spend)
 def _validate_cost(cost: np.ndarray) -> None:
     """Reject columns whose coupling cost is negative anywhere.
 
@@ -439,7 +538,9 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
             poll()
         # (re)price the board at the current duals — columns follow prices
         try:
-            board = contractor.price(p, published_duals(w_cur, days), owned)
+            board = contractor.price(
+                p, published_duals(w_cur, days, result.cash_duals,
+                                   supply.quotes), owned)
         except Exception as exc:                # noqa: BLE001 - degraded, not dead
             if not priced_any:
                 return _fallback(f"contractor failed: "
@@ -454,7 +555,10 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
         _validate_cost(cost)
         produce_mkt = board.per_day_produce[:, :, list(MARKET_IDS)] \
             .astype(np.float64)
-        revenue = (produce_mkt * p_mkt[None, :, :]).sum(axis=(1, 2))
+        per_day_revenue = (produce_mkt * p_mkt[None, :, :]).sum(axis=2)
+        revenue = per_day_revenue.sum(axis=1)
+        spend, _ = column_cash(board, supply, days)
+        earn = per_day_revenue
         # the idle column (see _idle_column): tiles fall back to it
         n_tiles = cost.shape[0]
         # ONE column, not a copy of the tensor: `np.zeros_like(cost)` doubles the
@@ -465,9 +569,16 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
         idle = np.zeros((1,) + cost.shape[1:], dtype=cost.dtype)
         cost = np.vstack([cost, idle])
         revenue = np.append(revenue, 0.0)
+        # The idle column spends nothing and banks nothing — without these
+        # rows the cash matrix is one column short of the objective and
+        # linprog refuses the problem (the same shape bug the idle column's
+        # own docstring records for the cost tensor).
+        spend = np.vstack([spend, np.zeros((1, days))])
+        earn = np.vstack([earn, np.zeros((1, days))])
 
         try:
-            lam, y, obj = _solve_lp(cost, revenue, supply, days, n_tiles)
+            lam, y, cash_y, obj = _solve_lp(cost, revenue, supply, days,
+                                            n_tiles, spend, earn)
         except RuntimeError as exc:
             if result.rounds == 0:
                 return _fallback(str(exc)[:200])
@@ -487,6 +598,17 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
         # may raise the input's price above it but never undercut it.
         w_cur = np.maximum((1.0 - ALPHA) * w_cur + ALPHA * y, 0.0)
         w_cur = np.maximum(w_cur, w_floor)
+        # The cash row's dual is the shadow price of a coin: how much the
+        # objective would rise given one more. A purchasable input costs a
+        # coin, so a scarce purse makes every seed and every animal dearer
+        # to a tile by exactly that factor — and THAT is what tells 25
+        # identical tiles apart. A quantity row cannot: it is the same
+        # number for all of them, so it moves what the identical answer is
+        # and never that it is identical.
+        cash_now = np.maximum(cash_y, 0.0)
+        cash_lag = (cash_now if result.cash_duals is None
+                    else (1.0 - ALPHA) * result.cash_duals + ALPHA * cash_now)
+        result.cash_duals = cash_lag
         result.duals = w_cur
         result.lam = lam
         result.objective = obj
@@ -497,7 +619,7 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
             break                               # the budget decides
 
     result.converged = converged
-    result.w = published_duals(w_cur, days)
+    result.w = published_duals(w_cur, days, result.cash_duals, supply.quotes)
     return result
 
 
@@ -516,7 +638,7 @@ def _shipped_graph():
 def _owned_states(runtime, obs) -> list[int]:
     """The graph state ids of the tiles we own, via #32's decode."""
     from agent.obs import decode_world
-    from agent.planner.inputs import load_contractor, unit_state_ids
+    from agent.obs import LOCKED_KEY
     # The graph is cast once per PROCESS, here. It used to be cached on the
     # runtime object (`runtime._replan_resources`), which is why `equilibrate`
     # needed a rung to be handed one at all - a coordinator that writes to the
@@ -525,5 +647,11 @@ def _owned_states(runtime, obs) -> list[int]:
     graph = _shipped_graph()
     view = decode_world(obs, at_day_start=True,
                         graph_keys=frozenset(graph.key_index))
-    ids = unit_state_ids(view, graph)
-    return [s for s in ids if s is not None]
+    # Every tile we own, NOT the tile each worker stands on. This read
+    # `unit_state_ids(view, graph)` while its docstring said "the tiles we
+    # own": on a day-0 board that is one farmer, so the master priced ONE
+    # column against 25 owned tiles, the convexity row read `Σλ = 1`, and
+    # the idle column took all of it. A LOCKED tile is not ours (F042).
+    keys = np.asarray(view.me.keys).reshape(-1)
+    return [int(graph.key_index[int(k)]) for k in keys
+            if int(k) != LOCKED_KEY and int(k) in graph.key_index]
