@@ -150,6 +150,41 @@ def lower_bound(day: Day, tasks: TaskArray) -> int:
     return max(1, by_work, by_chain)
 
 
+def walking_tour(tasks: TaskArray) -> int:
+    """A nearest-first walk from the shed over every tile the day works.
+
+    What a hand ends up doing: it comes out of the shed, works the nearest tile it still has, and
+    carries on. An upper bound on the walking rather than a floor - a route that plans ahead walks
+    less - so it is used to start the search and never to bound it.
+    """
+    if tasks.n == 0:
+        return 0
+    remaining = [tuple(int(v) for v in cell) for cell in np.unique(tasks.cells, axis=0)]
+    here = FARMER_START
+    walked = 0
+    while remaining:
+        nearest = min(remaining, key=lambda cell: abs(here[0] - cell[0]) + abs(here[1] - cell[1]))
+        walked += abs(here[0] - nearest[0]) + abs(here[1] - nearest[1])
+        here = nearest
+        remaining.remove(nearest)
+    return walked
+
+
+def predicted_pool(day: Day, tasks: TaskArray) -> int:
+    """The pool a day of this shape usually needs: the work and the walking to reach it.
+
+    A guess with a floor under it, not a bound. `lower_bound` says what the day cannot need less
+    than; this says where the answer usually is, and the search starts here and grows.
+    """
+    if tasks.n == 0:
+        return 0
+    goods = len({int(i) for i in tasks.items if int(i) != NO_ITEM})
+    turns = day.horizon + sum(day.horizon - int(hour) for hour in day.hire_times)
+    if turns <= 0:
+        return 0
+    return max(1, -(-(tasks.n + goods + walking_tour(tasks)) // turns))
+
+
 def _chain_depth(tasks: TaskArray) -> int:
     """The longest precedence chain, in tasks - the critical path through the day's work.
 
@@ -208,7 +243,13 @@ def search(day: Day, tasks: TaskArray, *, beam: int | None = None,
     # workers, so what has to be hired is the shortfall. Without this the search starts at one hand
     # and stops there, paying the ladder for a day the farmer could have carried alone.
     floor = max(0, lower_bound(day, tasks) - len(day.units))
-    start = floor if hands is None else int(hands)
+    if hands is None:
+        # A guess above the floor and a hand low. `predicted_pool` counts the walking, which the
+        # floor cannot, so it is usually near the answer; being a guess, it is taken low, and the
+        # halving grows from it.
+        start = max(floor, predicted_pool(day, tasks) - len(day.units) - 1)
+    else:
+        start = int(hands)
     ceiling = min(int(max_hands), MAX_HANDS)
     deadline = None if budget_s is None else time.perf_counter() + float(budget_s)
     if start > ceiling:
