@@ -175,11 +175,17 @@ def predicted_pool(day: Day, tasks: TaskArray) -> int:
 
     A guess with a floor under it, not a bound. `lower_bound` says what the day cannot need less
     than; this says where the answer usually is, and the search starts here and grows.
+
+    The divisor is the turns ONE hand has - the slowest one, so the guess is not optimistic - and not
+    the day's total turns. That sum asks how many hands a perfect division of the work would need,
+    which is the same question as the work divided by the day and answers one hand for a day that
+    needs fifteen.
     """
     if tasks.n == 0:
         return 0
     goods = len({int(i) for i in tasks.items if int(i) != NO_ITEM})
-    turns = day.horizon + sum(day.horizon - int(hour) for hour in day.hire_times)
+    starts = [int(hour) for hour in day.hire_times] or [1]
+    turns = day.horizon - max(starts)
     if turns <= 0:
         return 0
     return max(1, -(-(tasks.n + goods + walking_tour(tasks)) // turns))
