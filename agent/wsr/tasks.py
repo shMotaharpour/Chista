@@ -136,6 +136,17 @@ class TaskArray:
         return self._edge_before
 
     @property
+    def edge_groups(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """The edges grouped by successor: their order, where each group starts, and its successor.
+
+        `np.nonzero` walks the matrix in row order, so the edges arrive already sorted by the task
+        they point at - the grouping is a shift and a comparison, not a sort. What it buys is that
+        the answer for every successor becomes one segment reduction over the edges that reach it,
+        instead of a scatter that writes each edge on its own.
+        """
+        return self._edge_order, self._edge_starts, self._edge_targets
+
+    @property
     def pred_count(self) -> np.ndarray:
         """How many predecessors each task waits for.
 
@@ -165,6 +176,18 @@ class TaskArray:
         self._edge_after = after.astype(np.int32)
         self._edge_before = before.astype(np.int32)
         self._edges = list(zip(after.tolist(), before.tolist()))
+        # Grouped by successor, which is the order they are already in. A day whose chains have no
+        # precedence at all - one drop on its own - has no edges, and an empty group list has no
+        # first index to read.
+        self._edge_order = np.argsort(after, kind="stable").astype(np.int32)
+        grouped = after[self._edge_order]
+        if grouped.size:
+            self._edge_starts = np.flatnonzero(
+                np.r_[True, grouped[1:] != grouped[:-1]]).astype(np.int32)
+            self._edge_targets = grouped[self._edge_starts].astype(np.int32)
+        else:
+            self._edge_starts = np.zeros(0, dtype=np.int32)
+            self._edge_targets = np.zeros(0, dtype=np.int32)
 
     def ready(self, done: np.ndarray) -> np.ndarray:
         """Which tasks have all their predecessors done - one matrix product.

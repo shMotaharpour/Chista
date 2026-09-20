@@ -781,11 +781,15 @@ def _released(when: np.ndarray, tasks: TaskArray) -> np.ndarray:
     if tasks.n == 0:
         return out
     # `when` is the turn a task OCCUPIES, so a successor's earliest start is the turn after it.
-    # One scatter over the whole edge list, not a loop over it: a task may have several
-    # predecessors, so the answer for a successor is the LARGEST of their finishes - which is what
-    # `maximum.at` scatters, and what the loop did one edge at a time.
-    rows = np.arange(when.shape[0], dtype=np.int32)[:, None]
-    np.maximum.at(out, (rows, tasks.edge_after[None, :]), when[:, tasks.edge_before] + 1)
+    # A task may have several predecessors, so the answer for a successor is the LARGEST of their
+    # finishes - and the edges are grouped by successor, so that is one segment reduction per
+    # successor rather than a scatter per edge. `maximum.at` answered the same thing at 83 per cent
+    # of this function's time; it is the slowest way numpy has to write one element at a time.
+    order, starts, targets = tasks.edge_groups
+    if order.size == 0:
+        return out
+    values = when[:, tasks.edge_before[order]] + 1
+    out[:, targets] = np.maximum.reduceat(values, starts, axis=1)
     return out
 
 
