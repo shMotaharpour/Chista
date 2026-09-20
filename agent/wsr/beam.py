@@ -596,7 +596,7 @@ def _expand(day: Day, tasks: TaskArray, done, when, who, free, where, travel, li
     # so that drop hands over nothing: no trip, no turn, and nobody moves. This is what lets one
     # drop bank several harvests instead of one apiece.
     idle = np.zeros(hop.shape, dtype=bool)
-    drop_rows = np.flatnonzero(tasks.is_drop)
+    drop_rows = tasks.drop_rows
     if drop_rows.size:
         # Which of the day's drops are on the frontier, and where they sit in the beam's width.
         local = np.searchsorted(index, drop_rows)

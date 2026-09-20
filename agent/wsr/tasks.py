@@ -136,6 +136,11 @@ class TaskArray:
         return self._edge_before
 
     @property
+    def drop_rows(self) -> np.ndarray:
+        """Which rows are drops. A function of the list, and read once per step."""
+        return self._drop_rows
+
+    @property
     def edge_groups(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """The edges grouped by successor: their order, where each group starts, and its successor.
 
@@ -176,6 +181,7 @@ class TaskArray:
         self._edge_after = after.astype(np.int32)
         self._edge_before = before.astype(np.int32)
         self._edges = list(zip(after.tolist(), before.tolist()))
+        self._drop_rows = np.flatnonzero(self.is_drop).astype(np.int32)
         # Grouped by successor, which is the order they are already in. A day whose chains have no
         # precedence at all - one drop on its own - has no edges, and an empty group list has no
         # first index to read.
