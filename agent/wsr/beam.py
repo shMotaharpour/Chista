@@ -449,8 +449,17 @@ def _expand(day: Day, tasks: TaskArray, done, when, who, free, where, travel, li
     if rows.size == 0:
         return None
 
+    # The frontier: the tasks some live route could place next. Everything past it is illegal for
+    # every route, so pricing those columns is pricing a column that is thrown away - and there are
+    # few of them only in appearance: a chain's tasks are nearly all open at once on a big day.
+    ready_all = tasks.ready(done)                             # (b, n)
+    index = np.flatnonzero((ready_all & ~done).any(axis=0))
+    if index.size == 0:
+        return None
+    width = index.size
+
     here = _flat(where)                                      # (b, m)
-    hop = DISTANCE[here[:, :, None], tasks.cell_index[None, None, :]].astype(np.int16)
+    hop = DISTANCE[here[:, :, None], tasks.cell_index[index][None, None, :]].astype(np.int16)
 
     # The trip a consumer makes when its good is not in the bag: to a door, the pickup, and on. One
     # door, not two minima - the nearest door to the worker and the nearest to the tile can be
@@ -458,45 +467,56 @@ def _expand(day: Day, tasks: TaskArray, done, when, who, free, where, travel, li
     # The trip: one turn for the pickup, taken at the door before the day's walk. The worker does
     # not move for it, because it is already standing where the good is when it takes it.
     trip = np.zeros(hop.shape, dtype=bool)
-    needs = tasks.items >= 0
+    needs = tasks.items[index] >= 0
     if needs.any():
         carried = _carried(done, who, tasks, m)              # (b, m, goods)
-        has = np.where(needs[None, None, :], carried[:, :, tasks.items.clip(0)], True)
+        has = np.where(needs[None, None, :], carried[:, :, tasks.items[index].clip(0)], True)
         trip = ~has
 
     # The drops. A worker that has already dropped since the harvest a drop banks has an empty bag,
     # so that drop hands over nothing: no trip, no turn, and nobody moves. This is what lets one
     # drop bank several harvests instead of one apiece.
-    idle = np.zeros_like(hop, dtype=bool)
+    idle = np.zeros(hop.shape, dtype=bool)
     drop_rows = np.flatnonzero(tasks.is_drop)
     if drop_rows.size:
-        last_drop = _last_drop(done, when, who, drop_rows, m)        # (b, m)
-        held = when[:, tasks.banks[drop_rows].clip(0)]               # (b, k) each harvest's turn
-        idle[:, :, drop_rows] = last_drop[:, :, None] > held[:, None, :]
+        # Which of the day's drops are on the frontier, and where they sit in the beam's width.
+        local = np.searchsorted(index, drop_rows)
+        inside = (local < width) & (index[np.minimum(local, width - 1)] == drop_rows)
+        if inside.any():
+            last_drop = _last_drop(done, when, who, drop_rows, m)        # (b, m)
+            held = when[:, tasks.banks[drop_rows].clip(0)]               # (b, d) each harvest's turn
+            idle[:, :, local[inside]] = (
+                last_drop[:, :, None] > held[:, None, :])[:, :, inside]
 
-    arrive = free[:, :, None] + hop                          # (b, m, n)
-    released = _released(when, tasks)                        # (b, n): the predecessors' finish
-    ready = tasks.ready(done)                                # (b, n): every predecessor done
+    arrive = free[:, :, None] + hop                          # (b, m, w)
+    released = _released(when, tasks)[:, index]              # (b, w): the predecessors' finish
+    ready = ready_all[:, index]                              # (b, w): every predecessor done
+    earliest_here = tasks.earliest[index]
+    latest_here = tasks.latest[index]
 
     start = np.maximum(arrive, released[:, None, :])
-    start = np.maximum(start, tasks.earliest[None, None, :])
+    start = np.maximum(start, earliest_here[None, None, :])
     start = start + trip.astype(np.int16)
     finish = start + np.int16(1)
     # An idle drop is finished the moment its worker is free - it costs nothing and takes no turn -
     # and it is written at turn -1, which is the compiler's signal that there is no op to emit.
     finish = np.where(idle, np.maximum(free[:, :, None], released[:, None, :]), finish)
-    finish = np.maximum(finish, np.where(idle, np.int16(0), tasks.earliest[None, None, :]))
+    finish = np.maximum(finish, np.where(idle, np.int16(0), earliest_here[None, None, :]))
 
-    legal = (ready & ~done & (finish <= day.horizon).any(axis=1)
-             & (start <= tasks.latest[None, None, :]).any(axis=1))
-    legal = legal[:, None, :] & (finish <= day.horizon) & (start <= tasks.latest[None, None, :])
+    in_time = finish <= day.horizon
+    before_latest = start <= latest_here[None, None, :]
+    legal = (ready & ~done[:, index] & in_time.any(axis=1) & before_latest.any(axis=1))
+    legal = legal[:, None, :] & in_time & before_latest
     finish = np.where(legal, finish, BIG)
 
-    earliest = finish.min(axis=1)                            # (b, n): the hour it can be done
-    worker = finish.argmin(axis=1)                           # (b, n): and by which worker
+    # On the frontier's own width, not the day's: the selection maps the column it picked back
+    # through `index`, so nothing is ever spread to the full list and the step never pays for the
+    # columns it did not price.
+    earliest = finish.min(axis=1)                            # (b, w): the hour it can be done
+    worker = finish.argmin(axis=1)                           # (b, w): and by which worker
     return dict(rows=rows, finish=finish, hop=hop, earliest=earliest, worker=worker,
                 done=done, when=when, who=who, free=free, where=where, travel=travel,
-                idle=idle)
+                idle=idle, index=index)
 
 
 def _select(expanded, tasks: TaskArray, beam: int, first_hand: int, start_hours):
@@ -511,12 +531,13 @@ def _select(expanded, tasks: TaskArray, beam: int, first_hand: int, start_hours)
     The shortlist is a few times the beam wide, not the whole field: the dedupe and the layered
     sort need a choice, but they do not need every task of every live route.
     """
-    n = tasks.n
+    index = expanded["index"]
+    width = index.size
     rows = expanded["rows"]
     done, when, who = expanded["done"], expanded["when"], expanded["who"]
     free = expanded["free"]
     where, travel, hop = expanded["where"], expanded["travel"], expanded["hop"]
-    flat_hour = expanded["earliest"][rows].ravel()           # (live * n)
+    flat_hour = expanded["earliest"][rows].ravel()           # (live * width)
 
     legal = np.flatnonzero(flat_hour < BIG)
     if legal.size == 0:
@@ -530,8 +551,11 @@ def _select(expanded, tasks: TaskArray, beam: int, first_hand: int, start_hours)
     else:
         shortlist = legal
 
-    parent = np.repeat(rows, n)[shortlist]
-    task = shortlist % n
+    parent = np.repeat(rows, width)[shortlist]
+    column = shortlist % width
+    # The frontier's column, mapped back to the day's own index - which is what the state and the
+    # task's cell are written by.
+    task = index[column]
     hour = flat_hour[shortlist]
     worker = expanded["worker"][rows].ravel()[shortlist]
 
@@ -542,7 +566,7 @@ def _select(expanded, tasks: TaskArray, beam: int, first_hand: int, start_hours)
     child_done[np.arange(parent.size), task] = True
     # A drop with an empty bag has no turn of its own: it is written at -1, and the worker neither
     # moves nor loses the hour.
-    idle_here = expanded["idle"][parent, worker, task]
+    idle_here = expanded["idle"][parent, worker, column]
     child_who = who[parent].copy()
     child_who[np.arange(parent.size), task] = worker
     child_when = when[parent].copy()
@@ -552,7 +576,7 @@ def _select(expanded, tasks: TaskArray, beam: int, first_hand: int, start_hours)
     child_where = where[parent].copy()
     child_where[np.arange(parent.size), worker] = np.where(
         idle_here[:, None], where[parent, worker], tasks.cells[task])
-    child_travel = travel[parent] + hop[parent, worker, task]
+    child_travel = travel[parent] + hop[parent, worker, column]
 
     # Every child array is filtered in ONE place. Filtering them in separate statements is how a
     # new array gets left behind, and a child array out of step with the others reads another
