@@ -204,6 +204,15 @@ class Manager:
         self.probes.append(probe)
         if probe.fits:
             self.hi = wage
+        elif probe.reason in ("budget", "unstable"):
+            # Not an answer about the wage: the search ran out of time, or came
+            # back with a route the compiler could not take. Moving the bracket
+            # on either would record "this wage does not fit" when what happened
+            # is "we did not finish looking" - and the bracket would then depend
+            # on machine load, which is how the same code and the same seeded
+            # season scored 1,706, 2,656 and 2,958. The same wage is asked again
+            # next turn, and the warm start makes the repeat nearly free.
+            pass
         else:
             self.lo = max(self.lo, wage)
         return probe
