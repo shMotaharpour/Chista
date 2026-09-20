@@ -72,6 +72,10 @@ class TaskArray:
     yields: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int8))
     #: How many units `yields` puts in the bag - a harvest's `yield_units`, read off the tile.
     yield_n: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int8))
+    #: For a DROP, the harvest it banks - and -1 for every other row. A drop hands over the whole
+    #: bag, so what it banks is decided by which harvests happened since the drop before it; this
+    #: column is what lets the search see that a second drop with nothing new in the bag is free.
+    banks: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int16))
     cells: np.ndarray = field(default_factory=lambda: np.zeros((0, 2), dtype=np.int16))
     columns: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int8))
     pred: np.ndarray = field(default_factory=lambda: np.zeros((0, 0), dtype=bool))
@@ -95,6 +99,11 @@ class TaskArray:
     @property
     def n(self) -> int:
         return len(self.ids)
+
+    @property
+    def is_drop(self) -> np.ndarray:
+        """The rows that hand the bag over."""
+        return self.actions == ACTION_CODE[UnitAction.DROP]
 
     @property
     def cell_index(self) -> np.ndarray:
@@ -182,6 +191,9 @@ def action_codes() -> dict[UnitAction, int]:
     return {a: i for i, a in enumerate(UnitAction)}
 
 
+ACTION_CODE: dict[UnitAction, int] = action_codes()
+
+
 SHED_INDEX = np.asarray([index_of(d) for d in SHED_ACCESS], dtype=np.int32)
 
 
@@ -193,7 +205,8 @@ def _item_table() -> dict:
 ITEM_CODE: dict = _item_table()
 
 
-def build(chains, *, available: dict[str, int] | None = None, horizon: int = 24) -> TaskArray:
+def build(chains, *, available: dict[str, int] | None = None, horizon: int = 24,
+          drop_by=None) -> TaskArray:
     """The planner's chains -> the arrays a beam search reads.
 
     The tasks themselves come from `expand_chain`, the same builder the greedy solver uses, so the
@@ -203,9 +216,13 @@ def build(chains, *, available: dict[str, int] | None = None, horizon: int = 24)
     from the world.
     """
     from agent.world.model import UnitAction
-    from agent.wsr.models import expand_chain
+    from agent.wsr.models import MinorTask, expand_chain
+    from agent.wsr.routing import nearest_shed
 
     available = available or {}
+    #: One deadline per chain, aligned with `chains`: the latest hour that chain's harvest must be in
+    #: the shed, or None to leave it for the night. A DROP is derived from it, never declared.
+    drop_by = list(drop_by) if drop_by is not None else []
     tasks = []
     order: list[tuple[str, str]] = []
     column_of: dict[str, int] = {}
@@ -230,6 +247,26 @@ def build(chains, *, available: dict[str, int] | None = None, horizon: int = 24)
     order = [(b, a) for b, a in order if b not in fetches and a not in fetches]
     column_of = {tid: col for tid, col in column_of.items() if tid not in fetches}
 
+    # A DROP is derived: a harvest the caller wants banked gets a drop of its own, and the drop's
+    # cell is the door it hands the bag over at - so the walk to it is priced by the same rule as
+    # any other task and nothing in the search has to know what a drop is.
+    deadline_of: dict[str, int] = {}
+    banks_of: dict[str, str] = {}
+    for index in range(len(chains)):
+        deadline = drop_by[index] if index < len(drop_by) else None
+        if deadline is None:
+            continue
+        cell = chains[index][0]
+        for task in list(tasks):
+            if column_of.get(task.id) != index or task.action != UnitAction.HARVEST:
+                continue
+            drop_id = f"{task.id}_drop"
+            tasks.append(MinorTask(id=drop_id, cell=nearest_shed(cell), action=UnitAction.DROP))
+            order.append((task.id, drop_id))              # bank it after you take it
+            column_of[drop_id] = index
+            deadline_of[drop_id] = int(deadline)
+            banks_of[drop_id] = task.id
+
     ids = [t.id for t in tasks]
     row_of = {tid: i for i, tid in enumerate(ids)}
     n = len(tasks)
@@ -244,6 +281,16 @@ def build(chains, *, available: dict[str, int] | None = None, horizon: int = 24)
         good = _good_for(task)
         if good is not None:
             earliest[i] = int(available.get(str(getattr(good, "value", good)), 0))
+
+    # The drop's deadline is the caller's, and it is the only bound on it: a drop that cannot land
+    # by then is a sale the day cannot make, and the search is told so rather than discovering it.
+    latest = np.full(n, horizon, dtype=np.int8)
+    banks = np.full(n, -1, dtype=np.int16)
+    for i, task in enumerate(tasks):
+        if task.id in deadline_of:
+            latest[i] = min(int(deadline_of[task.id]), horizon)
+        if task.id in banks_of:
+            banks[i] = row_of[banks_of[task.id]]
 
     # A fetch carries no cell - it happens at the shed door, and the door depends on where the
     # worker is, not on the tile the good is for. The tile numbering therefore comes from the
@@ -280,7 +327,8 @@ def build(chains, *, available: dict[str, int] | None = None, horizon: int = 24)
         columns=columns,
         pred=pred,
         earliest=earliest,
-        latest=np.full(n, horizon, dtype=np.int8),
+        latest=latest,
+        banks=banks,
     )
 
 

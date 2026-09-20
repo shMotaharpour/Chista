@@ -397,6 +397,16 @@ def _expand(day: Day, tasks: TaskArray, done, when, who, free, where, travel, li
         has = np.where(needs[None, None, :], carried[:, :, tasks.items.clip(0)], True)
         trip = ~has
 
+    # The drops. A worker that has already dropped since the harvest a drop banks has an empty bag,
+    # so that drop hands over nothing: no trip, no turn, and nobody moves. This is what lets one
+    # drop bank several harvests instead of one apiece.
+    idle = np.zeros_like(hop, dtype=bool)
+    drop_rows = np.flatnonzero(tasks.is_drop)
+    if drop_rows.size:
+        last_drop = _last_drop(done, when, who, drop_rows, m)        # (b, m)
+        held = when[:, tasks.banks[drop_rows].clip(0)]               # (b, k) each harvest's turn
+        idle[:, :, drop_rows] = last_drop[:, :, None] > held[:, None, :]
+
     arrive = free[:, :, None] + hop                          # (b, m, n)
     released = _released(when, tasks)                        # (b, n): the predecessors' finish
     ready = tasks.ready(done)                                # (b, n): every predecessor done
@@ -405,6 +415,10 @@ def _expand(day: Day, tasks: TaskArray, done, when, who, free, where, travel, li
     start = np.maximum(start, tasks.earliest[None, None, :])
     start = start + trip.astype(np.int16)
     finish = start + np.int16(1)
+    # An idle drop is finished the moment its worker is free - it costs nothing and takes no turn -
+    # and it is written at turn -1, which is the compiler's signal that there is no op to emit.
+    finish = np.where(idle, np.maximum(free[:, :, None], released[:, None, :]), finish)
+    finish = np.maximum(finish, np.where(idle, np.int16(0), tasks.earliest[None, None, :]))
 
     legal = (ready & ~done & (finish <= day.horizon).any(axis=1)
              & (start <= tasks.latest[None, None, :]).any(axis=1))
@@ -414,7 +428,8 @@ def _expand(day: Day, tasks: TaskArray, done, when, who, free, where, travel, li
     earliest = finish.min(axis=1)                            # (b, n): the hour it can be done
     worker = finish.argmin(axis=1)                           # (b, n): and by which worker
     return dict(rows=rows, finish=finish, hop=hop, earliest=earliest, worker=worker,
-                done=done, when=when, who=who, free=free, where=where, travel=travel)
+                done=done, when=when, who=who, free=free, where=where, travel=travel,
+                idle=idle)
 
 
 def _select(expanded, tasks: TaskArray, beam: int, first_hand: int, start_hours):
@@ -458,14 +473,18 @@ def _select(expanded, tasks: TaskArray, beam: int, first_hand: int, start_hours)
     # acts in the first of them. The worker is free from the turn after.
     child_done = done[parent].copy()
     child_done[np.arange(parent.size), task] = True
+    # A drop with an empty bag has no turn of its own: it is written at -1, and the worker neither
+    # moves nor loses the hour.
+    idle_here = expanded["idle"][parent, worker, task]
     child_who = who[parent].copy()
     child_who[np.arange(parent.size), task] = worker
     child_when = when[parent].copy()
-    child_when[np.arange(parent.size), task] = hour - 1
+    child_when[np.arange(parent.size), task] = np.where(idle_here, -1, hour - 1)
     child_free = free[parent].copy()
-    child_free[np.arange(parent.size), worker] = hour
+    child_free[np.arange(parent.size), worker] = np.where(idle_here, free[parent, worker], hour)
     child_where = where[parent].copy()
-    child_where[np.arange(parent.size), worker] = tasks.cells[task]
+    child_where[np.arange(parent.size), worker] = np.where(
+        idle_here[:, None], where[parent, worker], tasks.cells[task])
     child_travel = travel[parent] + hop[parent, worker, task]
 
     # Every child array is filtered in ONE place. Filtering them in separate statements is how a
@@ -516,6 +535,22 @@ def _dedupe(done: np.ndarray, free: np.ndarray, where: np.ndarray) -> np.ndarray
                            where.view(np.uint8).reshape(done.shape[0], -1)])
     _, first = np.unique(signature, axis=0, return_index=True)
     return np.sort(first)
+
+
+def _last_drop(done, when, who, drop_rows: np.ndarray, workers: int) -> np.ndarray:
+    """The turn each worker last dropped at, per route - the bag is empty after it.
+
+    Scattered rather than derived from a matrix: the drops are a handful of rows against the day's
+    hundreds, so this is the one place where walking them beats an array the size of the list.
+    """
+    batch = who.shape[0]
+    out = np.full((batch, workers), -1, dtype=np.int16)
+    worker = who[:, drop_rows]
+    live = done[:, drop_rows] & (worker >= 0)
+    if live.any():
+        rows = np.broadcast_to(np.arange(batch)[:, None], live.shape)
+        np.maximum.at(out, (rows[live], worker[live]), when[:, drop_rows][live])
+    return out
 
 
 def _released(when: np.ndarray, tasks: TaskArray) -> np.ndarray:

@@ -43,14 +43,12 @@ ITEM_NAME = {code: item.name for item, code in ITEM_CODE.items()}
 
 
 def compile_route(day: Day, tasks: TaskArray, result: Result, *,
-                  horizon: int | None = None, settled=None,
-                  drop: bool = True, room: int | None = None) -> DayOps:
+                  horizon: int | None = None, settled=None) -> DayOps:
     """A route -> one op list per worker, `horizon` turns long and PASS-padded.
 
-    `drop` writes the trip that carries what the day grew to the shed, and `room` is how much of the
-    shed is free: the engine takes what fits and leaves the rest in the bag, so an arrival past the
-    room is a unit that does not reach the market. `room=None` means the caller did not say, and the
-    arrivals are then what the bags hold rather than what the shed took.
+    `drop` writes the trip that carries what the day grew to the shed. The DROP empties the whole
+    bag and hands it over; what the shed then keeps is the shed's decision, and none of this layer's
+    business - so the arrivals are what the bags held, not what the shed made of them.
 
     The list is indexed by turn, so `ops[worker][hour]` is what that worker does at that hour -
     which is the shape the dispatcher slices.
@@ -92,6 +90,10 @@ def compile_route(day: Day, tasks: TaskArray, result: Result, *,
 
     for worker, entries in by_worker.items():
         for turn, task_id in sorted(entries):
+            if turn < 0:
+                # A drop with an empty bag: the bag was already handed over, so there is no op to
+                # write and no turn to spend. The route carries it so the day is complete.
+                continue
             row = tasks.ids.index(task_id)
             target = (int(tasks.cells[row][0]), int(tasks.cells[row][1]))
             moves = walk(at[worker], target)
@@ -102,29 +104,21 @@ def compile_route(day: Day, tasks: TaskArray, result: Result, *,
             at[worker] = target
             last[worker] = turn
 
-    # The drop: one per worker, at the end of its route, only if the turns are there. The worker
-    # ends the day on the door it dropped at, which is where the night leaves it anyway.
+    # What each drop banks: the goods the worker's harvests have put in its bag since the drop
+    # before it. Read off the route rather than recomputed, because the engine's DROP empties the
+    # whole bag - so the batch is a property of the order, not of any one harvest.
     arrivals: list[tuple[int, str, int]] = []
-    if drop:
-        for worker in range(m):
-            bagged = _yielded(tasks, by_worker.get(worker, []))
-            if not bagged:
-                continue
-            door = nearest_shed(at[worker])
-            trip = walk(at[worker], door)
-            first = last[worker] + 1
-            if first + len(trip) + 1 > horizon:
-                continue
-            _write(ops[worker], first, trip)
-            turn = first + len(trip)
-            ops[worker][turn] = ("DROP",)
-            for good, units in sorted(bagged.items()):
-                take = units if room is None else min(units, room)
-                if take > 0:
-                    arrivals.append((turn, ITEM_NAME[good], take))
-                    room = None if room is None else room - take
-            at[worker] = door
-            last[worker] = turn
+    for worker, entries in by_worker.items():
+        bagged: dict[int, int] = {}
+        for turn, task_id in sorted(entries):
+            row = tasks.ids.index(task_id)
+            good = int(tasks.yields[row])
+            if good >= 0:
+                bagged[good] = bagged.get(good, 0) + int(tasks.yield_n[row])
+            elif turn >= 0 and bool(tasks.is_drop[row]):
+                for item, units in sorted(bagged.items()):
+                    arrivals.append((int(turn), ITEM_NAME[item], units))
+                bagged.clear()
 
     return DayOps(units=ops, arrivals=tuple(arrivals))
 
@@ -146,17 +140,6 @@ def _bag(tasks: TaskArray, entries: list[tuple[int, str]]) -> dict[int, int]:
         if good >= 0:
             bag[good] = bag.get(good, 0) + 1
     return bag
-
-
-def _yielded(tasks: TaskArray, entries: list[tuple[int, str]]) -> dict[int, int]:
-    """How much of each good this worker's day puts in its bag, so one trip can carry it."""
-    out: dict[int, int] = {}
-    for _turn, task_id in entries:
-        row = tasks.ids.index(task_id)
-        good = int(tasks.yields[row])
-        if good >= 0:
-            out[good] = out.get(good, 0) + int(tasks.yield_n[row])
-    return out
 
 
 def _write(ops: list[tuple], first: int, moves: list[tuple]) -> None:
@@ -187,10 +170,14 @@ def check_route(day: Day, tasks: TaskArray, result: Result, settled=None) -> lis
     for turn, task_id, worker in result.route:
         turns.setdefault(int(worker), []).append((int(turn), task_id))
 
-    when = {task_id: int(turn) for turn, task_id, _w in result.route}
-    placed = set(when)
+    # A drop with an empty bag is written at turn -1: it is done, it has no turn, and asking it to
+    # precede anything would be asking a turn that does not exist.
+    when = {task_id: int(turn) for turn, task_id, _w in result.route if int(turn) >= 0}
+    placed = {t for t, _i, _w in result.route}
     for worker, entries in turns.items():
         for turn, task_id in entries:
+            if turn < 0:
+                continue                    # an idle drop: done, with no turn of its own
             if not 0 <= turn < day.horizon:
                 complaints.append(f"{task_id} at turn {turn} is outside the day")
             if worker >= starts.shape[0]:
@@ -202,7 +189,9 @@ def check_route(day: Day, tasks: TaskArray, result: Result, settled=None) -> lis
         if row not in placed:
             continue
         for j in range(tasks.n):
-            if tasks.pred[i, j] and tasks.ids[j] in placed and when[tasks.ids[j]] >= when[row]:
+            if not tasks.pred[i, j] or tasks.ids[j] not in when or row not in when:
+                continue
+            if when[tasks.ids[j]] >= when[row]:
                 complaints.append(f"{tasks.ids[j]} must come before {row}")
         if tasks.items[i] >= 0 and when[row] < int(tasks.earliest[i]):
             complaints.append(f"{row} needs its good at {when[row]}, before it is in the shed")

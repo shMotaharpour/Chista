@@ -43,24 +43,33 @@ SEEDS = 1
 DAYS = {0: ("PLANT", "WATER"), 1: ("WATER",), 2: ("HARVEST",)}
 
 
-def _compiled(ops, drop: bool = True):
-    """One day's chain, searched and compiled - the day layer's own path."""
+#: The latest hour the harvest day must have its wheat in the shed. Before the night's own pour,
+#: so an arrival there is the day's drop and not the engine's end-of-day one.
+DROP_BY = 20
+
+
+def _compiled(ops, banked: bool = True):
+    """One day's chain, searched and compiled - the day layer's own path.
+
+    `banked` is the whole of the drop's input: a deadline on the harvest, or nothing at all. The
+    chain is the same either way, because whether a harvest is dropped is not the chain's business.
+    """
     chains = [(TILE, chain_ops(chain_id_of(ops)), "WHEAT")]
-    tasks = T.build(chains, available=AVAILABLE)
+    tasks = T.build(chains, available=AVAILABLE, drop_by=[DROP_BY if banked else None])
     day = B.Day(chains=tuple(chains), available=AVAILABLE, units=((4, 4),), hire_times=())
     result = B.search(day, tasks, beam=64, hands=0, max_hands=0)
     assert result.complete, f"the search could not carry {ops}: {len(result.route)}/{tasks.n}"
     assert not check_route(day, tasks, result), f"the route for {ops} breaks an engine rule"
-    return tasks, compile_route(day, tasks, result, drop=drop)
+    return tasks, compile_route(day, tasks, result)
 
 
-def _replay(drop: bool) -> tuple[list[tuple[int, int]], tuple]:
+def _replay(banked: bool) -> tuple[list[tuple[int, int]], tuple]:
     """Play the three days against the harness; return the shed per (day, hour) and the arrivals."""
     from offline_lab.kaggle_env import new_environment
 
     plans, arrivals = {}, ()
     for day_no, ops in DAYS.items():
-        tasks, day_ops = _compiled(ops, drop=drop)
+        tasks, day_ops = _compiled(ops, banked=banked)
         if day_no == 2:
             arrivals = day_ops.arrivals
         plans[day_no] = to_plan(day_ops)
@@ -85,8 +94,8 @@ def _replay(drop: bool) -> tuple[list[tuple[int, int]], tuple]:
 @pytest.fixture(scope="module")
 def played():
     """The three days compiled twice - with the drop and without it - and both replayed."""
-    with_drop = _replay(drop=True)
-    without = _replay(drop=False)
+    with_drop = _replay(banked=True)
+    without = _replay(banked=False)
     return with_drop, without
 
 
@@ -96,7 +105,7 @@ def test_the_harvest_day_writes_the_trip_and_names_what_it_banks(played) -> None
     assert arrivals, "the harvest day banked nothing, so a sell could reach nothing"
     for hour, item, units in arrivals:
         assert item == "WHEAT" and units >= 1, f"the arrival names {item!r} x{units}"
-        assert hour < 23, f"the drop landed at hour {hour}, which is the night's own drop"
+        assert hour <= DROP_BY, f"the drop landed at hour {hour}, past its deadline {DROP_BY}"
 
 
 def test_the_wheat_is_in_the_shed_at_the_drop_hour(played) -> None:
@@ -118,5 +127,5 @@ def test_without_the_drop_the_wheat_is_still_in_the_bag_at_hour_23(played) -> No
     _with_drop, (kept, _arrivals) = played
     by_hour = dict(kept)
     assert by_hour[48 + 23] == 0, (
-        f"a day compiled with drop=False still had {by_hour[48 + 23]} wheat in the shed at the "
+        f"a day with no deadline still had {by_hour[48 + 23]} wheat in the shed at the "
         f"harvest day's hour 23")
