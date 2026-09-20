@@ -539,6 +539,10 @@ def _expand(day: Day, tasks: TaskArray, done, when, who, free, where, travel, li
     width = index.size
 
     here = _flat(where)                                      # (b, m)
+    # One gather, not two 1-D differences: Manhattan distance separates exactly, and computing it
+    # that way is 1.7x faster on its own - but it is five passes over the same (b, m, w) shape
+    # against one, and end to end that made a hundred tiles 15 per cent SLOWER. The table is one
+    # dimension more than the arithmetic needs and one pass less than the machine wants.
     hop = DISTANCE[here[:, :, None], tasks.cell_index[index][None, None, :]].astype(np.int16)
 
     # The trip a consumer makes when its good is not in the bag: to a door, the pickup, and on. One
