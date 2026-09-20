@@ -13,17 +13,17 @@ The two questions the archive can answer are the two that matter:
   the hands             the pool the layer chooses is no larger than the game's own count
 
 Eighty-seven days pass both. The sixteen in `KNOWN_SHORT` do not, and they are marked rather than
-excused. Two things cost them turns, and neither is a bug in the layer:
+excused. What is known about them is measured, and one suspect has been ruled out:
 
   the preload   the search charges every worker the day's distinct goods as turns of pickup before
-                its walk begins - a safe ceiling and not a measurement, so one or two turns against
-                each worker and eleven or twenty-two on a busy day
+                its walk begins. It looked like the cause and is NOT: turning the charge off changes
+                nothing, 87 of 102 either way
   the hours     a hand hired in turn 2 acts from hour 3 and has 22 turns, not 23. The corpus carries
                 when each hand really began, and two or three of them began at hour 2
 
-None of the missing tasks is blocked by the timetable - they are all plain time. The marks are
-strict, so making the preload exact, or finding the turns elsewhere, turns them into failures that
-say to take the marks out.
+Every task these days miss is plain time - none is blocked by the timetable - so what is left is that
+the model's walk or trip costs more than the game spent. That is the next thing to measure. The marks
+are strict, so closing the gap turns them into failures that say to take the marks out.
 """
 import collections
 import json
@@ -64,9 +64,10 @@ KNOWN_SHORT = {
 }
 
 _SHORT_REASON = (
-    "the search charges every worker the day's distinct goods as pickup turns before its walk - a "
-    "safe ceiling and not a measurement - and the hands began when the game began them, two or three "
-    "of them at hour 2. Both are turns the day does not have; see the module docstring"
+    "the model's turn cost is higher than the game's on these days and the cause is not yet found. "
+    "The preload's per-worker charge was the suspect and is NOT it: turning it off changes nothing "
+    "(87 of 102 either way). The missing tasks are all plain time - none is blocked by the timetable "
+    "- so something in the walk or the trip model costs more than the game spent"
 )
 
 
