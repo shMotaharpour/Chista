@@ -1,18 +1,15 @@
-"""The ported WRS solvers, run under Chista's one-command convention.
+"""The day layer, run under Chista's one-command convention.
 
 Run:  .venv/bin/python -m tests.test_day
 
-`day/` carries the routing and workforce solvers ported from
-ChistaWRS (issue #14): `oxa_solver` is the RUNTIME one — pure Python,
-no third-party imports — and `cpsat_solver` is the OFFLINE exact
-oracle, which imports `ortools` and therefore must never enter the
-submission's import closure. `tests/test_layering.py` enforces that.
+`wsr/` turns the planner's chains into the ops a worker-day is made of: a chain
+becomes a task array, a beam search decides which worker does what and when, and
+the compiler writes the ops. The suite in `tests/day_layer/` replays whole days
+against the real harness, because the engine refuses a bad op in silence.
 
-Their own suite is pytest-shaped and stays that way (it is a faithful
-port, not a rewrite — see `docs/F052_wrs-solvers-ported.md`). This
-module is the adapter so `tests/` remains one command per module: it
-drives pytest and re-reports in the PASS/FAIL form every other module
-here uses.
+That suite is pytest-shaped. This module is the adapter so `tests/` remains one
+command per module: it drives pytest and re-reports in the PASS/FAIL form every
+other module here uses.
 """
 from __future__ import annotations
 

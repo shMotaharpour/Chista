@@ -65,11 +65,12 @@ mechanical — it depends on what grows on the tile:
   earlier; a harvest needs a `DROP` to reach the shed before it can be sold. None of
   that is in the chain.
 
-So the conversion is: **one chain → one tile-day, wrapped by the compiler into one
-unit-day**. The compiler (`day/routing.py`) owns travel, shed trips, pickups,
-drops, hour assignment and the market queue; the DP owns which chain runs on which
-tile; the WSR's value types are the scheduling half of the same day, and their
-expansion is `compile_chain`.
+So the conversion is: **one chain → one tile-day, and a search over the day's tiles
+→ one day for the whole farm**. `wsr/` holds it: `models.py` expands a chain into
+the tasks it is made of, `tasks.py` turns the day's chains into the arrays the
+search reads, `beam.py` decides which worker does what and when, and `emit.py`
+writes the ops the engine reads. The search owns travel, the shed trips and the
+hour assignment; the DP owns which chain runs on which tile.
 
 ---
 
@@ -107,7 +108,7 @@ MarketState = {
 | `belief/` | the one belief: the market, the rival, the demand, the shed projection and the sell plan, and the schemas | decide actions, read the board |
 | `tile_dp/` | the chain registry, the per-tile DP | know units, travel, or the market queue |
 | `planner/` | the season: what to grow, when to sell, hire, buy, expand | emit engine actions |
-| `day/` | the day: routing, carries, drops, the per-turn market queue, and the WSR schedulers (`oxa_solver` — **our** algorithm, copied into this repo and running inside the turn) | re-price what the master or the belief priced; touch the market |
+| `wsr/` | the day: a chain per tile expanded into the tasks it is made of, a beam search that decides which worker does what and when, and the ops the engine reads | re-price what the master or the belief priced; touch the market |
 | `agent/` | the spine: decode, dispatch, deadline, fallback | plan |
 
 `secretary/` is gone: its market and shed halves are `belief/`, its routing and
@@ -127,13 +128,13 @@ right, it goes to `main` in one PR. No piecemeal merges. Steps:
 2. The compiler imports `compile_chain`; the duplicated expansions are deleted.
    *(Done: `agent/replan.py` lost `chain_turns`/`project_day`.)*
 3. The packages move: market and shed to `belief/`, routing and scheduling to
-   `day/`, `secretary/` deleted. *(Done.)*
+   `wsr/`, `secretary/` deleted. *(Done.)*
 4. The WSR's enums are deleted; the scheduling layer uses the named views, and its
-   seven task types are **keys into a chain table** (`day/models.py::MAJOR_CHAINS`),
-   expanded by the model's own `CARRIES`/`PLACING_OPS`. *(Done.)* One exception,
-   named rather than hidden: `wet_harvst_plnt` is the registry's rotation
-   `WATER-HARVEST-DIG-PLANT-WATER`, and the four-op form it keeps is what F057's
-   measured tables were taken on — re-basing it is a re-measure, not a rename.
+   task types are **keys into a chain table**, expanded by the model's own
+   `CARRIES`/`PLACING_OPS`. *(Done.)* One exception, named rather than hidden:
+   `wet_harvst_plnt` is the registry's rotation
+   `WATER-HARVEST-DIG-PLANT-WATER`, and the four-op form it keeps is deliberate —
+   re-basing it is a re-measure, not a rename.
 5. `belief/market.py::forecast` is seeded from `MarketState` (one reader), and the
    market tests are the acceptance. *(Done.)*
 6. The DP's op sets are computed views of `world/model.py`, and `PLACE_ANIMAL` is
