@@ -135,7 +135,9 @@ def plan_sales(stock: Mapping[str, int], forecast, *, day: int, hour: int = 0,
                harvest_expected: int = 0,
                money: float = 0.0, cash_needed: float = 0.0,
                end_day: int = SEASON_DAYS - 1,
-               capacity: int = SHED_CAPACITY) -> tuple[Sale, ...]:
+               capacity: int = SHED_CAPACITY,
+               hour_plan: dict[str, dict[int, int]] | None = None,
+               ) -> tuple[Sale, ...]:
     """How much of which item to sell on which turn, and why.
 
     Order of the rules is the priority order, and the shed guard is first
@@ -187,6 +189,11 @@ def plan_sales(stock: Mapping[str, int], forecast, *, day: int, hour: int = 0,
 
     take: dict[str, int] = {}
     reasons: dict[str, str] = {}
+    # the slot circuit's hourly plan per good: {item: {hour: units}} —
+    # plan_sales itself fills nothing; a caller that ran the circuit passes
+    # its plan here, and items WITHOUT a plan fall back to the uniform
+    # `_spread`.
+    _hour_plan: dict[str, dict[int, int]] = dict(hour_plan or {})
 
     def _release(item: str, units: int, reason: str) -> None:
         units = min(int(units), held[item] - take.get(item, 0))
@@ -291,10 +298,23 @@ def plan_sales(stock: Mapping[str, int], forecast, *, day: int, hour: int = 0,
         units = take[item]
         if units <= 0:
             continue
-        chunks = _spread(units, len(hours))
-        for offset, chunk in enumerate(chunks):
-            sales.append(Sale(hour=hours[offset], item=item, units=chunk,
-                              reason=reasons[item]))
+        per_hour = _hour_plan.get(item)
+        if per_hour is None:
+            chunks = _spread(units, len(hours))   # the uniform fallback
+            for offset, chunk in enumerate(chunks):
+                sales.append(Sale(hour=hours[offset], item=item, units=chunk,
+                                  reason=reasons[item]))
+        else:
+            # the slot circuit's plan: one order per hour with units, zeros
+            # dropped; the guard's own hours (its release may be smaller)
+            # are respected by construction (the circuit schedules into the
+            # remaining hours of the day)
+            for h in sorted(per_hour):
+                u = int(per_hour[h])
+                if u <= 0 or h not in hours:
+                    continue
+                sales.append(Sale(hour=h, item=item, units=u,
+                                  reason=reasons[item]))
     return tuple(sorted(sales, key=lambda s: (s.hour, s.item)))
 
 
