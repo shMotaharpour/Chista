@@ -209,10 +209,10 @@ def build(chains, *, available: dict[str, int] | None = None, horizon: int = 24,
           drop_by=None) -> TaskArray:
     """The planner's chains -> the arrays a beam search reads.
 
-    The tasks themselves come from `expand_chain`, the same builder the greedy solver uses, so the
-    two solvers see the same work and the same precedence - the only difference here is the shape.
-    The time columns are filled from the timetable that is handed in: a fetch waits for its good,
-    a planting waits for its seed, and everything else may run from the first hour. Nothing is read
+    The tasks themselves come from `expand_chain`, which is the layer's own expansion of the chain
+    the caller hands over - the registry's id is the caller's business, not this one's. The time
+    columns are filled from the timetable that is handed in: a consumer waits for its good, a
+    planting waits for its seed, and everything else may run from the first hour. Nothing is read
     from the world.
     """
     from agent.world.model import UnitAction
