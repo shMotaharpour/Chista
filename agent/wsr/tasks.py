@@ -126,6 +126,11 @@ class TaskArray:
         """
         return (hour >= self.earliest) & (hour <= self.latest)
 
+    def __post_init__(self) -> None:
+        # The transposed product, cast once. `ready` runs once per step and rebuilding this on
+        # every call would cost more than the product it feeds.
+        self._pred_f32 = self.pred.T.astype(np.float32)
+
     def ready(self, done: np.ndarray) -> np.ndarray:
         """Which tasks have all their predecessors done - one matrix product.
 
@@ -133,8 +138,12 @@ class TaskArray:
         The matrix is transposed because `pred[i, j]` means j precedes i, so reading task i's row
         means asking for column i of the product - `done @ pred` would count the tasks i precedes,
         which is the opposite question and reads as satisfied the moment any descendant is done.
+
+        Float32, not int8: numpy has no BLAS kernel for int8 and runs this product in its own loop,
+        which is most of the cost of a step on a hundred tiles. A count fits a float32's 24-bit
+        mantissa exactly, so this is the same comparison, not an approximation of it.
         """
-        return (done.astype(np.int8) @ self.pred.T.astype(np.int8)) == self.pred_count
+        return (done.astype(np.float32) @ self._pred_f32) == self.pred_count
 
     def done_by_column(self, done: np.ndarray) -> np.ndarray:
         """How many of each column's tasks are done, per state - for the tile-block preference."""

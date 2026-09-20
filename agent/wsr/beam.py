@@ -21,6 +21,7 @@ Every quantity below is an array with the beam on axis zero.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from typing import NamedTuple
 
@@ -67,6 +68,9 @@ class Result(NamedTuple):
     pool: int
     route: list[tuple[int, str, int]]
     complete: bool
+    #: True when a deadline stopped the search before it ran out of tasks to place. A route that is
+    #: neither complete nor out of time is the search's own answer: the pool could not carry it.
+    out_of_time: bool = False
 
 
 def lower_bound(day: Day, tasks: TaskArray) -> int:
@@ -114,7 +118,8 @@ def _chain_depth(tasks: TaskArray) -> int:
 
 
 def search(day: Day, tasks: TaskArray, *, beam: int = 64,
-           hands: int | None = None, max_hands: int = MAX_HANDS) -> Result:
+           hands: int | None = None, max_hands: int = MAX_HANDS,
+           budget_s: float | None = None) -> Result:
     """The day, searched with `beam` routes in parallel.
 
     Two numbers decide how the pool is searched, and they answer two different questions:
@@ -129,6 +134,11 @@ def search(day: Day, tasks: TaskArray, *, beam: int = 64,
     When no allowed pool carries the day, the best partial route comes back with `complete=False`:
     what was built is reported rather than discarded, so the caller keeps the part of the day that
     works, and the answer never claims a pool the caller did not allow.
+
+    `budget_s` bounds the wall clock. The search keeps the best route it has found and returns it
+    with `out_of_time=True` rather than running long: the cost of a question grows with the square
+    of the day and with every pool the loop tries, so a deadline is the only promise that survives
+    a hundred tiles.
     """
     if tasks.n == 0:
         return Result(0, [], True)
@@ -144,6 +154,7 @@ def search(day: Day, tasks: TaskArray, *, beam: int = 64,
             f"start pool {start} is above the ceiling {ceiling}: the caller asked for a pool it "
             f"does not allow")
 
+    deadline = None if budget_s is None else time.perf_counter() + float(budget_s)
     partial: Result | None = None
     for pool in range(start, ceiling + 1):
         # The hands land on the doors that are free WHEN THEY ARE HIRED, and a unit walking off a
@@ -152,17 +163,20 @@ def search(day: Day, tasks: TaskArray, *, beam: int = 64,
         # a fixed point, and a cheap one: the search is milliseconds and this converges in two
         # passes or not at all.
         settled = None
-        result = _run(day, tasks, hands=pool, beam=beam)
+        result = _run(day, tasks, hands=pool, beam=beam, deadline=deadline)
         for _attempt in range(3):
             nxt = _settled_after_first_turn(day, tasks, result)
             if settled is not None and nxt == settled:
                 break
             settled = nxt
-            result = _run(day, tasks, hands=pool, beam=beam, settled=settled)
+            result = _run(day, tasks, hands=pool, beam=beam, settled=settled, deadline=deadline)
         if result.complete:
             return result
         if partial is None or len(result.route) > len(partial.route):
             partial = result
+        if result.out_of_time:
+            # A larger pool costs more and cannot buy back the time, so the loop stops here.
+            break
     return partial if partial is not None else Result(ceiling, [], False)
 
 
@@ -170,7 +184,7 @@ def search(day: Day, tasks: TaskArray, *, beam: int = 64,
 
 
 def _run(day: Day, tasks: TaskArray, *, hands: int, beam: int,
-         settled=None) -> Result:
+         settled=None, deadline: float | None = None) -> Result:
     """One pool size: search the day, and report how much of it the pool could carry."""
     n = tasks.n
     start_pos = _start_positions(day, hands, settled)         # (m, 2)
@@ -191,7 +205,13 @@ def _run(day: Day, tasks: TaskArray, *, hands: int, beam: int,
     # The best state is remembered as the search goes, because the beam's last generation can be
     # empty - a route that dies at the end would otherwise erase the work it had already placed.
     best = _snapshot(done, when, who, free, travel, first_hand, hours)
+    cut = False
     for _step in range(n):
+        # Every eighth step: a step is a fixed amount of work, so the check cannot pay for itself
+        # more often than that, and eight steps is far below the resolution a turn budget needs.
+        if deadline is not None and not (_step & 7) and time.perf_counter() >= deadline:
+            cut = True
+            break
         expanded = _expand(day, tasks, done, when, who, free, where, travel, live)
         if expanded is None:
             break
@@ -207,7 +227,7 @@ def _run(day: Day, tasks: TaskArray, *, hands: int, beam: int,
     complete = placed == n
     route = [(int(when_best[i]), tasks.ids[i], int(who_best[i]))
              for i in np.argsort(when_best) if done_best[i]]
-    return Result(hands, route, complete)
+    return Result(hands, route, complete, out_of_time=cut)
 
 
 def _snapshot(done, when, who, free, travel, first_hand, start_hours):
@@ -529,17 +549,20 @@ def _carried(done, who, tasks: TaskArray, workers: int) -> np.ndarray:
     """
     batch = who.shape[0]
     goods = tasks.items
-    n_goods = int(goods.max()) + 1 if goods.size and int(goods.max()) >= 0 else 1
-    out = np.zeros((batch, workers, max(n_goods, 1)), dtype=bool)
-    rows = np.arange(batch)
-    for i in range(tasks.n):
-        good = int(goods[i])
-        if good < 0:
-            continue
-        worker = who[:, i]
-        live = done[:, i] & (worker >= 0)
-        out[rows[live], worker[live], good] = True
-    return out
+    n_goods = max(int(goods.max()) + 1, 1) if goods.size else 1
+    flat = np.zeros(batch * workers * n_goods, dtype=bool)
+    consuming = np.flatnonzero(goods >= 0)
+    if consuming.size == 0:
+        return flat.reshape(batch, workers, n_goods)
+    # One scatter for the whole batch: (route, worker, good) -> a cell of the bag. Duplicates are
+    # harmless - the cell is a boolean and every write sets it the same way.
+    worker = who[:, consuming]
+    live = done[:, consuming] & (worker >= 0)
+    if live.any():
+        rows = np.arange(batch)[:, None]
+        index = ((rows * workers) + np.where(live, worker, 0)) * n_goods + goods[consuming]
+        flat[index[live]] = True
+    return flat.reshape(batch, workers, n_goods)
 
 
 def _fetch_mask(tasks: TaskArray) -> np.ndarray:
