@@ -35,6 +35,7 @@ from typing import Any
 import numpy as np
 
 from agent.world.model import PRODUCTS
+from agent.world.rules import TURNS_PER_DAY
 from agent.world.prices import MARKET_PARAMS, price_of, price_vec
 from agent.belief.schemas import (CENTER_INTERVAL, CENTER_PRODUCTS, DUAL, G_IX,
                                   MAX_ORDERS, SHOP_BASKET, SHOP_INTERVAL,
@@ -179,6 +180,29 @@ class OpponentModel:
         counts = self.counts.get(key, np.zeros(self.n_bins))
         mean_qty = np.where(counts > 0, qs / np.maximum(counts, 1.0), 0.0)
         return float(p @ mean_qty)
+
+    def expected_sell_day(self, obs: Any) -> dict[str, float]:
+        """The rival's expected sell volume PER DAY for every good, from the
+        observation alone — the `residual` forecast() consumes.
+
+        Per good: the model's expected per-turn volume at the observed
+        price, weighted by the state's sell probability, summed over the
+        day's 24 turns (the same turn shape the forecast's walk applies it
+        in). This is step 1 of #65: the wire between the trained model and
+        the price path.
+        """
+        market = field_of(obs, "market", {}) or {}
+        raw_inv = dict(field_of(market, "inventory", {}) or {})
+        out: dict[str, float] = {}
+        day_start = int(field_of(obs, "step", 0))
+        for g in GOODS:
+            inv = float(raw_inv.get(g, 0))
+            price = int(field_of(market, "prices", {}) and
+                        dict(field_of(market, "prices", {})).get(g, 0)
+                        or price_of(g, inv))
+            per_turn = self.expected_sell(g, day_start, price)
+            out[g] = float(per_turn * TURNS_PER_DAY)
+        return out
 
 
 def basket_matrix() -> np.ndarray:
