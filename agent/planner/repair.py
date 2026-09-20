@@ -33,7 +33,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Iterable
 
-from kaggle_environments.envs.kaggriculture import kaggriculture as K
+from agent.world.rules import (ANIMAL_RULES, CROP_RULES, LAND_PRICES,
+                               hire_cost)
 
 from agent.dispatch import MAX_MARKET_ORDERS
 
@@ -134,8 +135,8 @@ def land_step_price(obs: Any, land_bought: int = 0) -> int | None:
     if len(farms) > player:
         owned = len(farms[player].get("unlocked_quadrants", []))
     index = max(0, owned) - 1 + int(land_bought)   # NW is owned from the start
-    if 0 <= index < len(K.LAND_PRICES):
-        return int(K.LAND_PRICES[index])
+    if 0 <= index < len(LAND_PRICES):
+        return int(LAND_PRICES[index])
     return None
 
 
@@ -155,12 +156,12 @@ def order_cost(order: Iterable[str], obs: Any, hires_today: int,
     kind = op[0]
     if kind == "BUY_SEED" and len(op) >= 3:
         crop = op[1]
-        if crop in K.CROPS:
-            return float(K.CROPS[crop]["seed"]) * int(op[2])
+        if crop in CROP_RULES:
+            return float(CROP_RULES[crop]["seed"]) * int(op[2])
     elif kind == "BUY_ANIMAL" and len(op) >= 3:
         species = op[1]
-        if species in K.ANIMALS:
-            return float(K.ANIMALS[species]["cost"]) * int(op[2])
+        if species in ANIMAL_RULES:
+            return float(ANIMAL_RULES[species]["cost"]) * int(op[2])
     elif kind == "BUY_PRODUCT" and len(op) >= 3:
         price = _prices(obs).get(op[1])
         if price is not None:
@@ -170,7 +171,7 @@ def order_cost(order: Iterable[str], obs: Any, hires_today: int,
         if price is not None:
             return float(price)
     elif kind == "HIRE":
-        return float(K._hire_cost(int(hires_today)))
+        return float(hire_cost(int(hires_today)))
     return None
 
 

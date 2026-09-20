@@ -127,8 +127,9 @@ except ImportError:                     # scipy is optional at import time
     linprog = None
     HAS_SCIPY = False
 
-from agent.replan import dual_stand_in
-from agent.world.model import N_RESOURCE, RESOURCE_ID, RES_LABOR
+from agent.planner.inputs import dual_stand_in
+from agent.world.model import (ANIMALS, CROPS, N_RESOURCE, RESOURCE_ID,
+                               RES_LABOR)
 from agent.tile_dp.contractor import PricedBoard
 
 LABOR_ID = RESOURCE_ID[RES_LABOR]
@@ -256,7 +257,6 @@ def supply_from_obs(obs) -> CouplingSupply:
     `private` fields the decode reads; animals per species from the
     shed (BUY_ANIMAL deposits there, `_commit_unit`).
     """
-    from kaggle_environments.envs.kaggriculture import kaggriculture as K
     farms = obs.get("farms", []) if isinstance(obs, dict) else []
     player = int(obs.get("player", 0)) if isinstance(obs, dict) else 0
     farm = farms[player] if len(farms) > player else {}
@@ -267,9 +267,9 @@ def supply_from_obs(obs) -> CouplingSupply:
     hands = len(farm.get("hands", []) or [])
     gross = 24.0 * (1 + hands) - hands          # F040
     hours = np.full(30, gross * (1.0 - HOURS_OVERHEAD))
-    seed_stock = np.array([int(seeds.get(c, 0)) for c in K.CROPS],
+    seed_stock = np.array([int(seeds.get(c, 0)) for c in CROPS],
                           dtype=np.int64)
-    animal_stock = np.array([int(shed.get(a, 0)) for a in K.ANIMALS],
+    animal_stock = np.array([int(shed.get(a, 0)) for a in ANIMALS],
                             dtype=np.int64)
     return CouplingSupply(hours=hours, seed_stock=seed_stock,
                           animal_stock=animal_stock,
@@ -501,17 +501,28 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
     return result
 
 
+_GRAPH = None
+
+
+def _shipped_graph():
+    """The shipped tile graph, loaded once per process and never rebuilt."""
+    global _GRAPH
+    if _GRAPH is None:
+        from agent.planner.inputs import load_contractor
+        _GRAPH = load_contractor().graph
+    return _GRAPH
+
+
 def _owned_states(runtime, obs) -> list[int]:
     """The graph state ids of the tiles we own, via #32's decode."""
     from agent.obs import decode_world
-    from agent.replan import load_contractor, unit_state_ids
-    cached = getattr(runtime, "_replan_resources", None)
-    if cached is None:
-        loaded = load_contractor()
-        graph, _ = loaded.graph, loaded
-        runtime._replan_resources = (loaded.graph, loaded)
-    else:
-        graph = cached[0]
+    from agent.planner.inputs import load_contractor, unit_state_ids
+    # The graph is cast once per PROCESS, here. It used to be cached on the
+    # runtime object (`runtime._replan_resources`), which is why `equilibrate`
+    # needed a rung to be handed one at all - a coordinator that writes to the
+    # thing that calls it is not a coordinator. `runtime` stays in the
+    # signature for the deadline `poll` and nothing else.
+    graph = _shipped_graph()
     view = decode_world(obs, at_day_start=True,
                         graph_keys=frozenset(graph.key_index))
     ids = unit_state_ids(view, graph)

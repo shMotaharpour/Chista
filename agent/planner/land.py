@@ -24,7 +24,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable
 
-from kaggle_environments.envs.kaggriculture import kaggriculture as K
+from agent.world.rules import LAND_PRICES
 
 # F029: 30 days in a season.
 DAYS = 30
@@ -54,8 +54,8 @@ def prefix_cost(quadrants: int) -> int:
     """
     if quadrants < 1:
         raise ValueError("a farm always owns NW (F042)")
-    steps = min(quadrants - 1, len(K.LAND_PRICES))
-    return int(sum(K.LAND_PRICES[:steps]))
+    steps = min(quadrants - 1, len(LAND_PRICES))
+    return int(sum(LAND_PRICES[:steps]))
 
 
 def candidates(days: int = DAYS, grid: int = 2) -> list[Candidate]:
@@ -66,7 +66,7 @@ def candidates(days: int = DAYS, grid: int = 2) -> list[Candidate]:
     ownership (#12) turns once a real solve has been timed.
     """
     out = [Candidate(quadrants=1, day=None, cost=0)]
-    for quadrants in range(2, len(K.LAND_PRICES) + 2):
+    for quadrants in range(2, len(LAND_PRICES) + 2):
         for day in range(0, days, max(1, grid)):
             out.append(Candidate(quadrants=quadrants, day=day,
                                  cost=prefix_cost(quadrants)))
@@ -141,7 +141,7 @@ class LandPlanner:
 
     def next_step_cost(self, quadrants: int) -> int:
         """The price of the next prefix step, or 0 when the prefix is complete."""
-        if quadrants >= len(K.LAND_PRICES) + 1:
+        if quadrants >= len(LAND_PRICES) + 1:
             return 0
         return prefix_cost(quadrants + 1) - prefix_cost(quadrants)
 
@@ -154,7 +154,7 @@ class LandPlanner:
         """
         if self.evaluations >= self.max_evaluations:
             return None
-        if quadrants >= len(K.LAND_PRICES) + 1:
+        if quadrants >= len(LAND_PRICES) + 1:
             return None
         if day != 0 and cash < self.next_step_cost(quadrants):
             return None
