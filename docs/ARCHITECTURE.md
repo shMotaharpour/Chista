@@ -1,144 +1,166 @@
-# Chista — the system's shape, its one vocabulary, and its one belief
+# Chista — the agent's shape
 
-**Revision 2 (2026-09-17).** The single place that defines what the parts are, what
-they may read, and what the words mean. Where this document and a module disagree,
-the engine and this document win; the module is the bug.
+**Revision 3 (2026-09-20).** What each part owns, and how the manager thinks across
+24 turns instead of one. Where this document and a module disagree, the engine and
+this document win; the module is the bug.
 
-It exists because three vocabularies grew for one world — the engine's action
-strings, the tile DP's chain ops, and the WSR day's enums — and every
-consumer paid: the DP's market ops looked incomplete, `PLACE` existed twice, the
-day's `PRODUCT_ITEMS` lacked every crop, and one chain was expanded twice
-(`tile_dp/graph.py::_exec_chain` at build time, `day/models.py::expand_major_task`
-at runtime).
+Nothing here is marked done. Revision 2 marked six migration steps `(Done.)` while
+`world/model.py` was missing nine of the fourteen names it declared. Status lives in
+the suite and the arena, not in this file.
 
 ---
 
-## 1. The canonical vocabulary — `world/model.py`
+## 1. The parts
 
-Engine-derived (R002), imported by every layer:
+Three are owned elsewhere and this document only states what the manager asks of
+them. Two are the manager's own.
 
-| name | what it is | count |
+| part | owns | the manager asks it |
 |---|---|---|
-| `GOODS` / `PRODUCTS` | what the market trades and the farm sells | 9 |
-| `CROPS` / `ANIMALS` | the five crops, the three species | 5 / 3 |
-| `RESOURCES` | what the farm buys or consumes: labour, fertiliser, wheat, the five seeds, the three animals | 11 |
-| `DUAL` | wheat and fertiliser — a resource **and** a product | 2 |
-| `VECTOR` | the DP graph's columns = resources + products, in the stored order | 18 |
-| `ACTIONS` | every action string the engine's handlers accept, **extracted from their source** | 24 |
-| `WORKER_OPS` | what a unit spends a turn on | 10 |
-| `MARKET_ACTIONS` | the market's own vocabulary: `SELL`, `BUY_SEED/PRODUCT/ANIMAL`, `HIRE`, `BUY_LAND` | 6 |
-| `CHAIN_OPS` | what a DP chain may name: `WORKER_OPS` + the three `BUY_*` it needs + `NO_ACT` | 14 |
+| `tile_dp/` | one tile, one horizon, at given prices: which chain, worth what | `best(state, w) -> chain per tile, value per tile` |
+| `wsr/` | the day of the workers: feasible? how many hands? what did not fit? | `fit(tiles, state, budget_ms, warm) -> Fit` |
+| `belief/` | what the market and the rival will do; what a good is worth ahead | `values(state) -> forward value per good` |
+| **`manager/`** | **the decision** — it calls the three and settles the day | — |
+| `runtime.py` | one turn in, one action out; the day's clock; the budget | — |
 
-Rules:
+`world/` holds the vocabulary and the engine's rules, read-only. `obs.py` decodes.
+`dispatch.py` slices a committed plan by hour.
 
-1. **Names are the engine's.** Crops and animal products are *products*, never
-   resources; seeds, animals, labour, fertiliser and wheat are resources.
-2. **The market is not the farm's business.** `WORKER_OPS ∩ MARKET_ACTIONS = ∅`. A
-   chain may name a `BUY_*` because it prices that input; the contractor and the
-   WSR never touch the market. The only place that supplies market inputs for a
-   tile is the test harness that exercises it.
-3. **One expansion.** `world/model.py::compile_chain` turns a chain into engine
-   actions (`BUILD` → the structure the entity needs, `PLACE` → the animal,
-   `NO_ACT` → `PASS`). Nothing else expands a chain.
-4. **An op outside the vocabulary is never emitted** — the engine ignores it in
-   silence (F047).
+### What the manager needs back
 
-Legacy, to be deleted (see §5): `day/models.py`'s `Item`, `MinorActionType`,
-`CellType`, `expand_major_task`; the DP's `PLACE_ANIMAL` alias.
+Two fields are new and both exist for §3. They are the only thing this document
+asks the wsr agent to add:
 
----
-
-## 2. The DP and the WSR: one chain per tile, one day per unit
-
-A DP chain is the day of **one tile**: its worker ops in order. A WSR major task is
-the day of **one unit**. They are not the same object, and the conversion is not
-mechanical — it depends on what grows on the tile:
-
-- **One-shot crops**: the engine's window rules force the order. Fertilise, then
-  water, then harvest; a harvest before `first_yield_day` is refused, and a
-  fertiliser dose only counts inside its three-day window. The chain's op order is
-  therefore a *constraint*, not a preference.
-- **Ongoing crops and animals**: no such order. Water and feed are daily acts, and
-  the tile accumulates yield; the chain's ops commute.
-- **Collective work the tile cannot see.** A fertiliser or feed op needs the good in
-  the unit's bag, which means a shed trip, a `PICKUP`, and a `BUY_*` one turn
-  earlier; a harvest needs a `DROP` to reach the shed before it can be sold. None of
-  that is in the chain.
-
-So the conversion is: **one chain → one tile-day, and a search over the day's tiles
-→ one day for the whole farm**. `wsr/` holds it: `models.py` expands a chain into
-the tasks it is made of, `tasks.py` turns the day's chains into the arrays the
-search reads, `beam.py` decides which worker does what and when, and `emit.py`
-writes the ops the engine reads. The search owns travel, the shed trips and the
-hour assignment; the DP owns which chain runs on which tile.
-
----
-
-## 3. One belief for the whole system
-
-`belief/` is the only reader of the market and the rival. Everything else asks it.
-
-```python
-MarketState = {
-  step, day, hour,
-  inventory: (9,) int,          # the market's stock, from the observation
-  prices:    (9,) int,          # K.market_price at that inventory (parity-tested)
-  drain:     {mean: (9,), sd: (9,), horizon: int},   # closed form, no sampling
-  rival:     {sales: (9,) per turn, shed_estimate: (9,), slot_order: inferred},
-  shed:      {room: int, guard_margin: int},
-}
+```
+Fit: ok, hands, hours_short, plan, can_improve
+         ^^^^^^^^^^^        ^^^^^^^^^^^
+         feeds the price     says whether another
+         loop (§2)           budget slice would help
 ```
 
-- **Only `belief/` reads the market.** `day/market.py::forecast` and
-  `day/opponent.py` become views of `MarketState`, or are deleted where they
-  duplicate it.
-- **Consumers**: the master prices revenue at `prices` and internal scarcity at its
-  own duals; the compiler schedules sells at `drain`; the runtime publishes timing.
-- **Not owned**: movement, hours, land, animal chains, the order book's optimiser.
-- **R004/R005**: every field names its source — the observation, an engine
-  function, or a measurement in `bench/`.
+`fit()` takes `budget_ms` and an optional `warm` plan. Without those two, a day
+cannot be thought about in slices, and §3 does not work.
 
 ---
 
-## 4. Ownership
+## 2. The manager
 
-| layer | owns | must not |
-|---|---|---|
-| `world/` | the vocabulary (`model.py`), the town (`vocabulary.py`), the engine binding, config | hold policy |
-| `belief/` | the one belief: the market, the rival, the demand, the shed projection and the sell plan, and the schemas | decide actions, read the board |
-| `tile_dp/` | the chain registry, the per-tile DP | know units, travel, or the market queue |
-| `planner/` | the season: what to grow, when to sell, hire, buy, expand | emit engine actions |
-| `wsr/` | the day: a chain per tile expanded into the tasks it is made of, a beam search that decides which worker does what and when, and the ops the engine reads | re-price what the master or the belief priced; touch the market |
-| `agent/` | the spine: decode, dispatch, deadline, fallback | plan |
+The one feedback loop in the system. Everything else is a straight line.
 
-`secretary/` is gone: its market and shed halves are `belief/`, its routing and
-scheduling halves are `day/`.
+```python
+def settle(state):
+    v = belief.values(state)            # forward value: the objective
+    w = scarcity_prices(state)          # internal: hours, fertiliser, cash
+    for _ in range(ROUNDS):
+        tiles = tile_dp.best(state, v, w)
+        fit   = wsr.fit(tiles, state)
+        cash  = orders.afford(tiles, fit, state)
+        if fit.ok and cash.ok:
+            break
+        w = raise_prices(w, fit.hours_short, cash.short)
+    return assemble(tiles, fit, cash)
+```
+
+Three things this does that nothing does today:
+
+1. **`hours_short` goes somewhere.** wsr says "three hours short"; the price of an
+   hour rises; the DP answers with shorter chains. The tile is not dropped — it is
+   re-planned. (The alternative, dropping the cheapest tile, is greedy and loses to
+   this whenever one expensive tile costs more travel than two cheap ones.)
+2. **Money is checked before the plan, not after.** Today `planner/repair.py` walks
+   a finished plan and discards what the purse cannot pay.
+3. **Value comes from ahead, scarcity from today.** `belief` says what a unit of
+   wheat is worth over the horizon; the manager says what an hour is worth this
+   morning. One layer doing both is what made the old master price everything at
+   today's quote and never look wrong.
+
+`orders` is the order book: the ten slots, buys and sells together. Splitting them
+is what let the day plan's sells be silently discarded by a second builder.
 
 ---
 
-## 5. Migration — one branch, then one PR
+## 3. Twenty-four turns, not one
 
-All world changes land on **one branch** (`world/definition`); when the world is
-right, it goes to `main` in one PR. No piecemeal merges. Steps:
+`actTimeout 1` is per turn and the first second is free — F058 measured a 3 s burn
+charged 2.04 s. Hours 1–23 currently replay a committed plan in microseconds, so
+**23 free seconds a day are thrown away**, about 690 across a season.
 
-1. `world/model.py` — names, the resource/product split, the market/worker split,
-   the compile table, and the named views (`Good`, `Crop`, `Species`, `Resource`,
-   `Product`, `Vector`, `Action`, `WorkerOp`, `MarketAction`, `ChainOp`). Guards:
-   `tests/test_model.py`. *(Done.)*
-2. The compiler imports `compile_chain`; the duplicated expansions are deleted.
-   *(Done: `agent/replan.py` lost `chain_turns`/`project_day`.)*
-3. The packages move: market and shed to `belief/`, routing and scheduling to
-   `wsr/`, `secretary/` deleted. *(Done.)*
-4. The WSR's enums are deleted; the scheduling layer uses the named views, and its
-   task types are **keys into a chain table**, expanded by the model's own
-   `CARRIES`/`PLACING_OPS`. *(Done.)* One exception, named rather than hidden:
-   `wet_harvst_plnt` is the registry's rotation
-   `WATER-HARVEST-DIG-PLANT-WATER`, and the four-op form it keeps is deliberate —
-   re-basing it is a re-measure, not a rename.
-5. `belief/market.py::forecast` is seeded from `MarketState` (one reader), and the
-   market tests are the acceptance. *(Done.)*
-6. The DP's op sets are computed views of `world/model.py`, and `PLACE_ANIMAL` is
-   retired with the graph rebuild. *(Done.)*
+The manager is therefore not a function. It is resumable:
 
-Each step ends with the full suite green, and the name ratchet in `tests/test_model.py`
-counts what is left to move.
+```python
+class Manager:
+    def observe(self, state)     # the real board arrived
+    def step(self, budget_ms)    # advance; return when the budget is gone
+    def best(self)               # the best plan so far, always available
+```
+
+`runtime.py` calls `step()` every turn with what is left of the second, and `best()`
+at hour 0. The manager keeps its own place; the runtime keeps the clock. Neither
+knows the other's job.
+
+**What it works on during the day.** Tomorrow's board, predicted — and the
+prediction needs no simulator. The DP graph already carries the night: `edge_next`
+is the tile's state after the committed chain and the night that follows it. Money
+and the shed are arithmetic. The market is `belief`'s.
+
+What cannot be predicted is the rival and the weed draw (F045: one stream across
+both farms, so tonight depends on what the rival planted). So this is **speculative
+work with a warm start, never a finished plan**:
+
+- hours 1–23: refine tomorrow's plan on the predicted board, keeping the best `k`;
+- hour 0: the real board arrives. Validate each of the `k` against it — a walk, not
+  a search. Take the first that holds. If none does, the best of them is still the
+  warm start for one short round.
+
+The worst case is that the warm start is discarded, which is where we are today.
+
+**Caching is the same mechanism.** `wsr`'s instance is `(cell, n_ops, carries)` per
+tile plus the hand count — `TaskArray` reads `cells`, `actions`, `items`, `pred` and
+never a chain id or a crop name, so a three-op wheat tile and a three-op tomato tile
+are one instance. The geometry never changes, so a solved instance is reusable
+across days and seeds. Exact hits will be rare; the cache's job is to return the
+**nearest** solved instance as the warm start, not the answer. Whether "nearest" is
+a usable idea is unmeasured, and the measurement comes before the cache.
+
+---
+
+## 4. Config
+
+One rule:
+
+> **Config holds numbers. It never holds a value that selects a code path.**
+
+`beam_width`, `rounds`, `guard_margin` are config. `use_master` is not — that is
+`CHISTA_REPLAN` in a new coat, and five of those switches hid for four days the fact
+that nothing was wired.
+
+`agent/config.py` carries the reference dataclass and every default. It is committed.
+`agent/artifact/config.json` overrides it and is gitignored, so **the defaults alone
+must be a shippable agent** — a submission runs without that file, and a value that
+only exists locally means the grader plays a different agent than the one measured.
+
+---
+
+## 5. No fallback ladder
+
+Failure must be visible. A four-rung ladder answered every turn with `greedy` while
+`agent/replan.py` could not even import, and the agent looked like it worked: it
+scored **2,840 against a PASS opponent whose 3,000 it never beat** — worse than
+doing nothing.
+
+The entry point keeps the never-raise contract because an uncaught exception ends
+the season (F058: seat 1 stopped at step 503 and was never called again). It returns
+PASS and **records that it failed**. It does not quietly play a worse policy.
+
+---
+
+## 6. What is deleted
+
+`replan.py` · `market_layer.py` · `greedy.py` · `main_replan.py` ·
+`main_market_spread.py` · `main_market_dump.py` · `CHISTA_REPLAN` · `CHISTA_MARKET` ·
+`CHISTA_MASTER` · `CHISTA_MARKET_FORECAST` · `CHISTA_TRACE` · the fallback ladder.
+
+`planner/` dissolves: `master.py` becomes the manager's `scarcity_prices`,
+`columns.py` and `land.py` move under the manager where something calls them, and
+`repair.py`'s checks move into the order book where they run before the plan rather
+than after it.
