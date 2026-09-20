@@ -62,6 +62,13 @@ class Config:
     #: has been found that fits.
     wage_first: float = 2.0
     wage_growth: float = 4.0
+    #: How many inconclusive probes one wage may have before it counts as not
+    #: fitting. A probe the deadline cut is not an answer, so it must not move
+    #: the bracket - but a wage that can never be answered inside a turn must
+    #: not hold the bisection for the whole day either, or the farm stands
+    #: still. Counted in PROBES and not in milliseconds, so the bracket the
+    #: manager walks is the same one whatever the machine is doing.
+    probe_retries: int = 3
 
     # --- the day's workforce ----------------------------------------------
     #: The largest hand pool the manager will pay for. wsr caps at 16.

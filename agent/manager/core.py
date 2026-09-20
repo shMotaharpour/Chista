@@ -204,7 +204,7 @@ class Manager:
         self.probes.append(probe)
         if probe.fits:
             self.hi = wage
-        elif probe.reason in ("budget", "unstable"):
+        elif probe.reason in ("budget", "unstable") and self._retries(wage) < self.cfg.probe_retries:
             # Not an answer about the wage: the search ran out of time, or came
             # back with a route the compiler could not take. Moving the bracket
             # on either would record "this wage does not fit" when what happened
@@ -212,10 +212,24 @@ class Manager:
             # on machine load, which is how the same code and the same seeded
             # season scored 1,706, 2,656 and 2,958. The same wage is asked again
             # next turn, and the warm start makes the repeat nearly free.
+            #
+            # Only so often, though. On a hundred-tile board no probe finishes
+            # inside a turn, and a bracket that never moves leaves `best()` on
+            # the idle plan for the whole day - measured, a season of 436
+            # against a PASS opponent's 3,000. After `probe_retries` the wage
+            # counts as not fitting: the search has had four looks at it with a
+            # warm start between them, and a day it still cannot carry is a day
+            # it cannot carry. The limit is a COUNT, so the wages the manager
+            # walks do not depend on how busy the machine was.
             pass
         else:
             self.lo = max(self.lo, wage)
         return probe
+
+    def _retries(self, wage: float) -> int:
+        """Inconclusive probes already spent on this wage."""
+        return sum(1 for p in self.probes[:-1]
+                   if p.wage == wage and p.reason in ("budget", "unstable"))
 
     def _probe(self, wage: float, budget_s: float) -> Probe:
         """Price the board at this wage, and find out whether the day is real."""
@@ -260,16 +274,16 @@ class Manager:
                         hands=result.pool, bill=bill, hours=hours)
 
         # The route has to be compiled against the SAME hand positions it was
-        # searched with, and `search` does not hand them back: the fixed point
-        # settles them internally and returns only the route. So they are
-        # re-derived here, and then the route is checked against them before it
-        # is compiled - because when the search was cut by its deadline the two
-        # can disagree, and `compile_route` answers that disagreement by
-        # raising in the agent's hot path. Measured: one season in four, 24
-        # raises in a day ("d17_water on worker 1 at turn 3: it needs 3 turns
-        # from 1 and only 2 are free"). A route we cannot compile is a day that
-        # did not fit, which is an answer the bisection already knows how to use.
-        settled = B._settled_after_first_turn(day, tasks, result)
+        # searched with. `Result.settled` carries them (#73), and it is always
+        # a tuple - None in the compiler means something else entirely, which
+        # is how the farmer landed on the wrong tile. Before #74 a caller had
+        # to re-derive them, and when a deadline cut the fixed point short the
+        # two disagreed and `compile_route` raised in the agent's hot path -
+        # one season in four, 24 raises in the day it happened. The check stays
+        # anyway: a route we cannot compile is a day that did not fit, which is
+        # an answer the bisection already knows how to use, and it is cheaper
+        # to find that out here than to lose the turn to an exception.
+        settled = result.settled
         problems = check_route(day, tasks, result, settled)
         if problems:
             return done(False, "unstable", placed=len(result.route),
