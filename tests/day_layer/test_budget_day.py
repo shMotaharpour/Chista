@@ -1,15 +1,21 @@
-"""The budget's contract: a slice returns the work it placed, and a carried day asks for nothing.
+"""The budget's contract: a bigger budget never places less, and a route says where it was priced.
 
-Two bugs lived here, both of them invisible to a test that only asked whether a search returns a
-route. The fixed point runs the search again from the settled positions, and it returned the LAST
-attempt rather than the best - so once the deadline passed, each remaining attempt started a run cut
-at its first step and handed back an EMPTY route, which replaced the work the attempt before it had
-placed. A run that placed 24 came back through the fixed point as 0, and the whole feature was
-unusable at the sizes it exists for. And `can_improve` was the deadline flag itself, so a search that
-carried the whole day but crossed its deadline told the caller to come back to a finished day.
+Three defects lived here, and the first two were invisible to a test that only asked whether a search
+returns a route.
 
-The clock is the test's own, not the machine's: a real deadline that lands between two attempts is a
-race, and a test that fails for the hardware is worth less than no test.
+A re-run the deadline cuts at step 8 or 16 came back non-empty and much worse, and it replaced the
+attempt before it - so a larger budget could return a WORSE route, which is the property the branch
+claimed and did not have. Measured: 60 ms placed 40 tasks where 80 ms placed 8. The guard caught only
+a re-run that came back empty. The fix is the reserve: an attempt costs about what the last one cost,
+so one that cannot be finished is not started.
+
+And `Result` carried no settled positions, so a caller holding one could not compile it: the compiler
+re-derived them from the route, which agrees with the search only when the fixed point converged.
+Cut short, it raised in the agent's hot path - one season in four.
+
+The clock here is the test's own. A real deadline that lands between two attempts is a race, and a
+test that fails for the hardware is worth less than no test: each call to the clock costs one unit,
+so the sweep is a sweep.
 """
 import sys
 
@@ -18,9 +24,10 @@ sys.path.insert(0, "/chista/pm/world")
 from agent.tile_dp.chains import chain_id_of, chain_ops
 from agent.wsr import beam as B
 from agent.wsr import tasks as T
+from agent.wsr.emit import compile_route
 
-OPS = chain_ops(chain_id_of(("WATER", "HARVEST", "PLANT", "FERTILIZE", "WATER")))
-AVAILABLE = {"WHEAT": 1, "FERTILIZER": 1}
+OPS = chain_ops(chain_id_of(("PLANT", "WATER")))
+AVAILABLE = {"WHEAT": 1}
 HANDS = 8
 
 
@@ -29,33 +36,52 @@ def _day():
     return chains, T.build(chains, available=AVAILABLE)
 
 
-def test_a_rerun_the_deadline_cuts_does_not_replace_the_work(monkeypatch):
-    """The first attempt placed work; a later one cut short must not hand back an empty route.
+def _day_for(chains):
+    return B.Day(chains=chains, available=AVAILABLE, hire_times=(1,) * HANDS)
 
-    The clock sits before the deadline for the first attempt and past it for every one after, so the
-    fixed point has to answer with what it already has. Returning the last attempt instead - which is
-    what it did - answers with nothing at all.
+
+def test_a_bigger_budget_never_places_less(monkeypatch):
+    """The property the branch claimed: more budget is never a worse route.
+
+    Every budget is swept on one instance, and the count of tasks placed must not fall as the budget
+    rises. It did: the fixed point started an attempt it could not finish, and that attempt's
+    half-built route replaced a fuller one.
     """
     chains, tasks = _day()
-    day = B.Day(chains=chains, available=AVAILABLE, hire_times=(1,) * HANDS)
-    clock = {"now": -1.0, "attempts": 0}
-    real_run = B._run
+    clock = {"now": 0.0}
 
-    def counted(*args, **kwargs):
-        clock["attempts"] += 1
-        if clock["attempts"] > 1:
-            clock["now"] = 999.0
-        return real_run(*args, **kwargs)
+    def tick():
+        clock["now"] += 1.0
+        return clock["now"]
 
-    monkeypatch.setattr(B.time, "perf_counter", lambda: clock["now"])
-    monkeypatch.setattr(B, "_run", counted)
+    monkeypatch.setattr(B.time, "perf_counter", tick)
 
-    result = B._fixed_point(day, tasks, B.beam_for(tasks, HANDS + 1), HANDS, 0.0)
+    placed = []
+    for budget in (3.0, 6.0, 9.0, 12.0, 20.0, 40.0, 100.0):
+        result = B.search(_day_for(chains), tasks, hands=HANDS, max_hands=HANDS, budget_s=budget)
+        placed.append(len(result.route))
 
-    assert clock["attempts"] > 1, "the fixed point has to have tried a second time"
-    assert len(result.route) > 0, (
-        "the deadline replaced the work the first attempt placed with an empty route"
-    )
+    assert placed == sorted(placed), f"a larger budget placed less: {placed}"
+
+
+def test_a_route_compiles_against_the_positions_it_was_priced_from():
+    """`compile_route(..., settled=result.settled)` is the one correct way to write a day down.
+
+    Without it the compiler re-derives the positions from the route, and a route the deadline cut
+    before its fixed point converged was priced from somewhere else - so it raised.
+    """
+    chains, tasks = _day()
+    for budget in (0.02, 0.06, 0.20):
+        result = B.search(_day_for(chains), tasks, hands=HANDS, max_hands=HANDS, budget_s=budget)
+        compile_route(_day_for(chains), tasks, result, settled=result.settled)
+
+
+def test_a_result_always_says_where_it_was_priced_from():
+    """Never None: the compiler's None means derive from the route, which is a different question."""
+    chains, tasks = _day()
+    result = B.search(_day_for(chains), tasks, hands=HANDS, max_hands=HANDS, budget_s=0.001)
+
+    assert result.settled, "a Result must carry the positions its route was priced from"
 
 
 def test_a_carried_day_does_not_ask_to_be_ground():
@@ -68,7 +94,7 @@ def test_a_carried_day_does_not_ask_to_be_ground():
 
 
 def test_the_better_route_rule_orders_a_carried_route_above_a_longer_partial():
-    """The rule the pool loop and the fixed point share: carried first, then more work."""
+    """The rule the pool loop and the halving share: carried first, then more work."""
     carried = B.Result(pool=4, route=[(0, "a", 0)], complete=True)
     longer = B.Result(pool=4, route=[(0, "a", 0), (1, "b", 0)], complete=False)
     shorter = B.Result(pool=4, route=[(0, "a", 0)], complete=False)

@@ -99,6 +99,14 @@ class Result(NamedTuple):
     #: True when a deadline stopped the search before it ran out of tasks to place. A route that is
     #: neither complete nor out of time is the search's own answer: the pool could not carry it.
     out_of_time: bool = False
+    #: Where the hands are spawned from, as the search priced them: the cells the units already on
+    #: the field occupy when the first turn is over. A route is consistent with THESE and no others -
+    #: a unit that walks off its door in turn zero moves every hand after it - so
+    #: `compile_route(day, tasks, result, settled=result.settled)` is the one correct way to write
+    #: the day down. Always a tuple, never None: a search cut before its fixed point converged priced
+    #: the day from where the units stand at the start, and None in the compiler means something
+    #: else entirely - derive the positions from the route, which agrees only when it did converge.
+    settled: tuple[Cell, ...] = ()
 
     @property
     def can_improve(self) -> bool:
@@ -263,29 +271,28 @@ def _fixed_point(day: Day, tasks: TaskArray, beam: int, pool: int,
     it converges in two passes or not at all.
     """
     settled = None
+    started = time.perf_counter()
     result = _run(day, tasks, hands=pool, beam=beam, deadline=deadline, warm=warm)
-    best = result
+    spent = time.perf_counter() - started
     for _attempt in range(3):
-        if deadline is not None and time.perf_counter() >= deadline:
-            # Another attempt would be cut at its first step and hand back an EMPTY route, which
-            # would replace the work this one placed. The deadline is the caller's answer, not a
-            # reason to throw the answer away.
+        # An attempt costs about what the last one cost, so one that starts with less than that left
+        # comes back cut short - non-empty, much worse, and it would REPLACE the work the attempt
+        # before it placed. That is not a best-of to be patched up afterwards: only the last attempt
+        # is consistent with the positions it priced from, and the compiler re-derives those from the
+        # route, so an earlier attempt kept on merit hands back a route priced from positions the day
+        # does not have. The reserve is what keeps every returned route both consistent and the most
+        # complete one the budget could buy.
+        if deadline is not None and time.perf_counter() + spent >= deadline:
             break
         nxt = _settled_after_first_turn(day, tasks, result)
         if settled is not None and nxt == settled:
             break
         settled = nxt
-        nxt_result = _run(day, tasks, hands=pool, beam=beam, settled=settled, deadline=deadline,
-                          warm=warm)
-        if len(nxt_result.route) == 0 and len(best.route) > 0:
-            # A re-run the deadline cut at its first step has nothing, and it must not REPLACE the
-            # work the attempt before it placed. The attempts are not interchangeable, though, so
-            # this is not a best-of: only the last one is consistent with the positions it priced
-            # from, which is what the compiler re-derives from the route. Keeping an earlier attempt
-            # on merit hands back a route priced from positions the day does not have.
-            break
-        best = nxt_result
-    return best
+        started = time.perf_counter()
+        result = _run(day, tasks, hands=pool, beam=beam, settled=settled, deadline=deadline,
+                      warm=warm)
+        spent = time.perf_counter() - started
+    return result
 
 
 def _smallest_pool(day: Day, tasks: TaskArray, width, lo: int, hi: int,
@@ -414,7 +421,11 @@ def _run(day: Day, tasks: TaskArray, *, hands: int, beam: int,
     complete = placed == n
     route = [(int(when_best[i]), tasks.ids[i], int(who_best[i]))
              for i in np.argsort(when_best) if done_best[i]]
-    return Result(hands, route, complete, out_of_time=cut)
+    # The positions the day was priced from, always concrete: a search that never reached its fixed
+    # point priced it from where the units stand when the day begins, and that is what the hands'
+    # doors are counted from.
+    return Result(hands, route, complete, out_of_time=cut,
+                  settled=tuple(day.units) if settled is None else tuple(settled))
 
 
 def _snapshot(done, when, who, free, travel, first_hand, start_hours):
