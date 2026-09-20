@@ -2,12 +2,12 @@
   "name": "opponent_counts",
   "kind": "opponent_counts",
   "file": "opponent_counts.npz",
-  "contract": "N[good, day, price_bucket, action] sell-size counts over both seats of the store's SELL/BUY_PRODUCT orders; bins = OpponentModel.BINS + net-buy tail",
+  "contract": "mixed per-good keys: (good, demand_bucket, price_bucket) for CARROT/TOMATO/STRAWBERRY/MILK/EGG/WOOL \u2014 (good, day, price_bucket) for WHEAT/MELON/FERTILIZER; days col = demand bucket 0..3 or season day",
   "engine": "a2278746",
   "registry": null,
   "stats": {
-    "states": 943,
-    "observations": 24874155,
+    "states": 337,
+    "observations": 17810859,
     "train_dates": 40,
     "holdout_dates": 7,
     "holdout": [
@@ -21,6 +21,6 @@
     ],
     "bins": 4
   },
-  "source": "offline_lab.build.opponent_model:build",
-  "created_utc": "2026-09-19T21:16:42Z"
+  "source": "offline_lab.build.opponent_pergood_eval:build",
+  "created_utc": "2026-09-20T20:26:14Z"
 }

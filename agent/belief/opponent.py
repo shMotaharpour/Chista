@@ -4,9 +4,19 @@ Three separate things, kept apart on purpose:
 
 * **The rival's action model.** `N[state, action] += 1` over their observed
   actions, Laplace-smoothed — estimation, not hidden-state learning, because the
-  tracker already gives us their volumes. The state key is (good, day, price
-  bucket) and the action is a sell-size bin. For the seven one-way goods a buy
-  cannot exist, so the action space is one-dimensional and the counts converge
+  tracker already gives us their volumes. The SHIPPED artifact's state key is
+  PER-GOOD: (good, demand bucket, price bucket) for the six goods with a
+  variable shop demand (CARROT, TOMATO, STRAWBERRY, MILK, EGG, WOOL — their
+  behaviour tracks which shops are open), and (good, day, price bucket) for
+  WHEAT, MELON, FERTILIZER. The reason is what each dimension carries:
+  MELON has no shop buyer at all (its only buyer is the centre, 1/day flat),
+  FERTILIZER no shop buyer and no centre either, and WHEAT's demand is so
+  wide a day dimension tracks its calendar; the six demand-keyed goods lose
+  nothing by dropping the day (their shops' unlock schedule is near-uniform)
+  and gain the demand signal — measured, the per-good scheme beat the
+  global key 1.2714 -> 1.2104 log loss with FEWER states (337 vs 943).
+  The action is a sell-size bin. For the seven one-way goods a buy cannot
+  exist, so the action space is one-dimensional and the counts converge
   fast; WHEAT and FERTILIZER carry one extra bin for a net buy.
 
 * **The demand forecast.** Already-open shops are *facts* (a shop never closes),
@@ -35,6 +45,7 @@ from typing import Any
 import numpy as np
 
 from agent.world.model import PRODUCTS
+from agent.world.rules import TURNS_PER_DAY
 from agent.world.prices import MARKET_PARAMS, price_of, price_vec
 from agent.belief.schemas import (CENTER_INTERVAL, CENTER_PRODUCTS, DUAL, G_IX,
                                   MAX_ORDERS, SHOP_BASKET, SHOP_INTERVAL,
@@ -113,8 +124,8 @@ class OpponentModel:
         """The good's aggregate action distribution (its own prior)."""
         if self._marginal_dirty:
             agg: dict[str, np.ndarray] = {}
-            for (g, _d, _b), arr in self.counts.items():
-                a = agg.setdefault(g, np.zeros(self.n_bins))
+            for key, arr in self.counts.items():
+                a = agg.setdefault(key[0], np.zeros(self.n_bins))
                 a += np.asarray(arr, dtype=float)
             self._marginals = agg
             self._marginal_dirty = False
@@ -179,6 +190,29 @@ class OpponentModel:
         counts = self.counts.get(key, np.zeros(self.n_bins))
         mean_qty = np.where(counts > 0, qs / np.maximum(counts, 1.0), 0.0)
         return float(p @ mean_qty)
+
+    def expected_sell_day(self, obs: Any) -> dict[str, float]:
+        """The rival's expected sell volume PER DAY for every good, from the
+        observation alone — the `residual` forecast() consumes.
+
+        Per good: the model's expected per-turn volume at the observed
+        price, weighted by the state's sell probability, summed over the
+        day's 24 turns (the same turn shape the forecast's walk applies it
+        in). This is step 1 of #65: the wire between the trained model and
+        the price path.
+        """
+        market = field_of(obs, "market", {}) or {}
+        raw_inv = dict(field_of(market, "inventory", {}) or {})
+        out: dict[str, float] = {}
+        day_start = int(field_of(obs, "step", 0))
+        for g in GOODS:
+            inv = float(raw_inv.get(g, 0))
+            price = int(field_of(market, "prices", {}) and
+                        dict(field_of(market, "prices", {})).get(g, 0)
+                        or price_of(g, inv))
+            per_turn = self.expected_sell(g, day_start, price)
+            out[g] = float(per_turn * TURNS_PER_DAY)
+        return out
 
 
 def basket_matrix() -> np.ndarray:
