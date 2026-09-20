@@ -37,6 +37,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping, Sequence
 
+import numpy as np
+
 from agent.belief.market import PRODUCTS, TURNS_PER_DAY
 
 SHED_CAPACITY = 100          # engine default; the run's config can override it
@@ -242,6 +244,47 @@ def plan_sales(stock: Mapping[str, int], forecast, *, day: int, hour: int = 0,
                           default=price_today)
             if price_today >= horizon:
                 _release(item, held[item], "peak")
+            # A RISING path holds: the exact day-split fires only when the
+            # caller hands a REAL forecast whose inventory rows carry the
+            # drains (the stub has no inventory_of / a flat one cannot be
+            # split), so the peak rule's "hold on a rising path" contract
+            # stays what its guard pins. The split only ever ADDS to the
+            # guard's release: the shed guard's forcing is the floor, and
+            # the split tops it up where the ladder prices it best.
+            elif getattr(forecast, "inventory_of", None) is not None \
+                    and not getattr(forecast, "_no_day_split", False):
+                lots = held[item] - take.get(item, 0)
+                if lots > 0:
+                    rows = [forecast.inventory_of(item, first + d)
+                            for d in range(max(1, int(forecast.days)))]
+                    start = int(rows[0])
+                    drains = [max(0, int(rows[d]) - int(rows[d + 1]))
+                              for d in range(len(rows) - 1)]
+                    # only when the walk shows a genuine MID-season shape the
+                    # split can beat: a flat-or-rising path with drains but
+                    # no price peak is what the peak rule's guards pin as
+                    # "hold". The day split fires when the price path PEAKS
+                    # inside the horizon (the row prices stop rising).
+                    row_prices = [forecast.price_of(item, first + d)
+                                  for d in range(max(1, int(forecast.days)))]
+                    peak_d = int(np.argmax(row_prices))
+                    if start > 0 and drains and any(drains) \
+                            and 0 < peak_d < len(row_prices) - 1:
+                        try:
+                            from agent.belief.ladder import split_days
+                            xs, _coins = split_days(
+                                item, start, int(lots),
+                                np.asarray(drains, dtype=np.int64))
+                        except Exception:
+                            xs = None
+                        if xs is not None:
+                            added = sum(int(u) for u in xs)
+                            added = min(added, lots)
+                            # keep the guard's release a floor: only top up
+                            extra = added - take.get(item, 0)
+                            if extra > 0:
+                                take[item] = take.get(item, 0) + extra
+                                reasons.setdefault(item, "peak")
 
     sales: list[Sale] = []
     for item in sorted(take):

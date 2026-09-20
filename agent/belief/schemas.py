@@ -19,7 +19,40 @@ from typing import Any
 
 import numpy as np
 
-from agent.world.vocabulary import G_IX, GOODS, MAX_ORDERS, SHED_CAP   # noqa: F401  (re-export)
+from agent.world.model import DUAL, PRODUCTS
+from agent.world.rules import (CENTER_SELL_INTERVAL_TURNS, MAX_MARKET_ORDERS_PER_TURN,
+                               SHED_CAPACITY, SHOPS, SHOP_SELL_INTERVAL_TURNS,
+                               SHOP_UNLOCK_INTERVAL_DAYS, TOWN_CENTER_PRODUCTS)
+
+# --- belief's one surface over the world's names ----------------------------- #
+# world/model.py and world/rules.py own the definitions; this block derives the
+# (9,)-product view belief tracks in, once, each rule citing its engine line.
+# Nothing here retypes a world table: goods, duals and shops are world's objects.
+
+#: name -> index into PRODUCTS. The (9,) arrays every belief structure carries
+#: are indexed in this order (model.py derives the same pattern for the 18
+#: columns as RESOURCE_ID).
+G_IX: dict[str, int] = {p: i for i, p in enumerate(PRODUCTS)}
+
+#: The goods the market will never quote a BUY_PRODUCT for (:598): everything
+#: but the two duals.
+SELL_ONLY: tuple[str, ...] = tuple(g for g in PRODUCTS if g not in DUAL)
+
+SHED_CAP: int = SHED_CAPACITY                          # rules.py:26 (:553,867)
+MAX_ORDERS: int = MAX_MARKET_ORDERS_PER_TURN           # rules.py:25 (:551,560)
+SHOP_INTERVAL: int = SHOP_SELL_INTERVAL_TURNS          # rules.py:150 (:733)
+CENTER_INTERVAL: int = CENTER_SELL_INTERVAL_TURNS      # rules.py:151 (:734,745)
+UNLOCK_INTERVAL: int = SHOP_UNLOCK_INTERVAL_DAYS       # rules.py:149 (:886)
+CENTER_PRODUCTS: tuple[str, ...] = TOWN_CENTER_PRODUCTS  # rules.py:146
+
+#: One shop instance's basket per consumption event: its products, x2 when the
+#: shop sells a single product (kaggriculture.py:740-743).
+SHOP_BASKET: dict[str, tuple[tuple[str, ...], int]] = {
+    name: (items, 2 if len(items) == 1 else 1) for name, items in SHOPS.items()}
+
+#: The unlock draw is `rng.choice(sorted(SHOPS))` (:891), so a type prior lives
+#: in sorted order.
+SHOP_TYPES: tuple[str, ...] = tuple(sorted(SHOPS))
 
 Turn = int                     # global turn index, 0..718 (F048)
 Window = tuple[int, int]       # [earliest_turn, latest_turn]
@@ -59,11 +92,10 @@ class MarketState:
         """
         from agent.belief.opponent import drain_forecast
         from agent.world.prices import price_table
-        from agent.world.vocabulary import GOODS
 
         market = obs.get("market", {}) if isinstance(obs, dict) else {}
         raw = market.get("inventory", {}) or {}
-        inventory = np.array([int(raw.get(g, 0)) for g in GOODS], dtype=float)
+        inventory = np.array([int(raw.get(g, 0)) for g in PRODUCTS], dtype=float)
         mean, sd = drain_forecast(obs, 1)
         private = obs.get("private", {}) if isinstance(obs, dict) else {}
         shed = sum(int(v) for v in (private.get("shed", {}) or {}).values())
@@ -72,8 +104,8 @@ class MarketState:
             inventory=inventory, prices=np.asarray(price_table(inventory), dtype=float),
             drain_mean=np.asarray(mean, dtype=float),
             drain_sd=np.asarray(sd, dtype=float),
-            rival_sales=np.zeros(len(GOODS)), rival_stock=np.zeros(len(GOODS)),
-            rival_bag=np.zeros(len(GOODS)), shed_room=int(SHED_CAP) - shed)
+            rival_sales=np.zeros(len(PRODUCTS)), rival_stock=np.zeros(len(PRODUCTS)),
+            rival_bag=np.zeros(len(PRODUCTS)), shed_room=int(SHED_CAP) - shed)
 
 
 # --- what the season planner asks for --------------------------------------- #
@@ -162,19 +194,25 @@ class OrderBook:
 
 
 def good_index(good: str) -> int:
-    return G_IX[good]
+    """A good's PRODUCTS index — the same mapping `belief.ladder` uses.
+
+    Two spellings existed while the ladder was being written; the ladder's
+    `good_index` is this function re-exported, so there is one mapping.
+    """
+    from agent.belief.ladder import good_index as _ladder_index
+    return _ladder_index(good)
 
 
 def empty_state(turn: Turn = 0) -> MarketState:
     """A neutral `MarketState`, for stubs and for the first turn."""
     return MarketState(
         turn=turn,
-        inventory=np.full(len(GOODS), float(0)),
-        prices=np.zeros(len(GOODS), dtype=np.int64),
-        drain_mean=np.zeros(len(GOODS)),
-        drain_sd=np.zeros(len(GOODS)),
-        rival_sales=np.zeros(len(GOODS)),
-        rival_stock=np.zeros(len(GOODS)),
-        rival_bag=np.zeros(len(GOODS)),
+        inventory=np.full(len(PRODUCTS), float(0)),
+        prices=np.zeros(len(PRODUCTS), dtype=np.int64),
+        drain_mean=np.zeros(len(PRODUCTS)),
+        drain_sd=np.zeros(len(PRODUCTS)),
+        rival_sales=np.zeros(len(PRODUCTS)),
+        rival_stock=np.zeros(len(PRODUCTS)),
+        rival_bag=np.zeros(len(PRODUCTS)),
         shed_room=SHED_CAP,
     )

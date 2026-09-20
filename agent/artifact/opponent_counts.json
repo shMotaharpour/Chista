@@ -1,0 +1,26 @@
+{
+  "name": "opponent_counts",
+  "kind": "opponent_counts",
+  "file": "opponent_counts.npz",
+  "contract": "N[good, day, price_bucket, action] sell-size counts over both seats of the store's SELL/BUY_PRODUCT orders; bins = OpponentModel.BINS + net-buy tail",
+  "engine": "a2278746",
+  "registry": null,
+  "stats": {
+    "states": 943,
+    "observations": 24874155,
+    "train_dates": 40,
+    "holdout_dates": 7,
+    "holdout": [
+      "2026-09-10",
+      "2026-09-11",
+      "2026-09-12",
+      "2026-09-13",
+      "2026-09-14",
+      "2026-09-15",
+      "2026-09-16"
+    ],
+    "bins": 4
+  },
+  "source": "offline_lab.build.opponent_model:build",
+  "created_utc": "2026-09-19T21:16:42Z"
+}
