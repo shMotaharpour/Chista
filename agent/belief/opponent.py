@@ -78,9 +78,19 @@ def _load_trained_qty() -> dict[tuple[str, int, int], np.ndarray] | None:
 
 
 class OpponentModel:
-    """Empirical action counts over the rival, Laplace-smoothed."""
+    """Empirical action counts over the rival, Laplace-smoothed.
+
+    Smoothing is HIERARCHICAL: a state's distribution is shrunk toward its
+    good's marginal distribution with weight `w(state) = shrink * topup`,
+    where `topup` caps how many pseudo-counts the prior can contribute
+    (states with few observations lean on the good's aggregate; states with
+    thousands barely move). The corpus-primed table makes the marginals
+    real; the shrinkage is what keeps the 100-count states from reading a
+    day-specific fluke as a law.
+    """
 
     BINS = (1.0, 3.0, 6.0)      # sell-size bin edges
+    SHRINK_TOPUP: float = 50.0  # pseudo-counts the good's prior can add
 
     def __init__(self, alpha: float = 0.5, n_bins: int = 4,
                  pretrained: bool = True) -> None:
@@ -88,6 +98,8 @@ class OpponentModel:
         self.n_bins = n_bins
         self.counts: dict[tuple[str, int, int], np.ndarray] = {}
         self.qty_sum: dict[tuple[str, int, int], np.ndarray] = {}
+        self._marginals: dict[str, np.ndarray] = {}
+        self._marginal_dirty = True
         if pretrained:
             # the corpus primes the table; online observe() keeps counting on
             # top of it (the same "+= 1", so nothing about the policy changes)
@@ -95,6 +107,21 @@ class OpponentModel:
             if trained:
                 self.counts.update(trained)
                 self.qty_sum.update(_load_trained_qty() or {})
+            self._marginal_dirty = True
+
+    def good_marginal(self, good: str) -> np.ndarray:
+        """The good's aggregate action distribution (its own prior)."""
+        if self._marginal_dirty:
+            agg: dict[str, np.ndarray] = {}
+            for (g, _d, _b), arr in self.counts.items():
+                a = agg.setdefault(g, np.zeros(self.n_bins))
+                a += np.asarray(arr, dtype=float)
+            self._marginals = agg
+            self._marginal_dirty = False
+        m = self._marginals.get(good)
+        if m is None:
+            return np.array([1.0] + [0.0] * (self.n_bins - 1))
+        return m / m.sum()
 
     @staticmethod
     def _bucket(price: int, base: int) -> int:
@@ -122,13 +149,26 @@ class OpponentModel:
             qs[b] += q
             if g in DUAL and rec.rival_buys[i] > 0:
                 arr[-1] += 1.0            # the residual went negative: a net buy
+        self._marginal_dirty = True
 
     def policy(self, good: str, step: int, price: int) -> np.ndarray:
-        """Action distribution for a state, smoothed; unseen states hold."""
+        """Action distribution for a state, hierarchically smoothed.
+
+        `(counts + alpha + w * marginal) / (n + k*alpha + w)` with
+        `w = SHRINK_TOPUP * n / (n + SHRINK_TOPUP)`: a 10-observation state
+        gets ~8 pseudo-counts from its good's aggregate, a 5000-observation
+        state gets 49 — the empirical state dominates where it has data,
+        the good's own prior carries it where it does not. Unseen states
+        read the good's marginal directly.
+        """
         arr = self.counts.get(self._key(good, step, price))
+        marg = self.good_marginal(good)
         if arr is None:
-            return np.array([1.0] + [0.0] * (self.n_bins - 1))
-        p = arr + self.alpha
+            return marg
+        n = float(np.sum(arr))
+        w = self.SHRINK_TOPUP * n / (n + self.SHRINK_TOPUP)
+        p = (np.asarray(arr, dtype=float) + self.alpha
+             + w * marg)
         return p / p.sum()
 
     def expected_sell(self, good: str, step: int, price: int) -> float:

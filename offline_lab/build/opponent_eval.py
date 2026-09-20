@@ -86,14 +86,16 @@ def _state_action_rows(dates: list[str]) -> tuple[np.ndarray, np.ndarray, np.nda
 
 
 def _policy_matrix(model: OpponentModel, keys) -> np.ndarray:
+    """The model's OWN policy per state (hierarchical smoothing applied).
+
+    The key's price bucket is mapped back to a representative price
+    (`base * (1 + bucket/3)`), the same mapping `_bucket` quantizes.
+    """
+    from agent.world.prices import MARKET_PARAMS
     out = np.zeros((len(keys), model.n_bins))
-    for i, k in enumerate(keys):
-        arr = model.counts.get(k)
-        if arr is None:
-            out[i] = [1.0] + [0.0] * (model.n_bins - 1)
-            continue
-        p = np.asarray(arr) + model.alpha
-        out[i] = p / p.sum()
+    for i, (good, day, bucket) in enumerate(keys):
+        price = int(round((1.0 + bucket / 3.0) * MARKET_PARAMS[good]["base"]))
+        out[i] = model.policy(good, day * 24, price)
     return out
 
 
