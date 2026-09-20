@@ -35,6 +35,20 @@ from agent.wsr.tasks import DISTANCE, NO_ITEM, SHED_INDEX, TaskArray
 Cell = tuple[int, int]
 MAX_HANDS = 16
 
+#: What one step of the search is allowed to cost, as `beam x workers x tasks`. A step's arrays are
+#: that product wide, so a fixed width makes a hundred tiles cost fifty times a quadrant. This is the
+#: product a 16-wide beam has on a 200-task day with 16 workers - a shape measured to lose nothing
+#: against 64 on any of the objective's four layers.
+STEP_WORK = 16 * 16 * 200
+#: The measured ends of the useful range: below 8 a day starts losing tasks (4 placed 47 of 50 where
+#: 8 placed all of them), and above 32 nothing improved on any layer.
+MIN_BEAM, MAX_BEAM = 8, 64
+
+
+def beam_for(tasks: TaskArray, workers: int) -> int:
+    """The width to search a day of this size with this many workers."""
+    return int(min(MAX_BEAM, max(MIN_BEAM, STEP_WORK / max(1, workers * tasks.n))))
+
 BIG = np.int16(30000)
 
 
@@ -121,7 +135,7 @@ def _chain_depth(tasks: TaskArray) -> int:
     return int(depth.max())
 
 
-def search(day: Day, tasks: TaskArray, *, beam: int = 64,
+def search(day: Day, tasks: TaskArray, *, beam: int | None = None,
            hands: int | None = None, max_hands: int = MAX_HANDS,
            budget_s: float | None = None) -> Result:
     """The day, searched with `beam` routes in parallel.
@@ -138,6 +152,9 @@ def search(day: Day, tasks: TaskArray, *, beam: int = 64,
     When no allowed pool carries the day, the best partial route comes back with `complete=False`:
     what was built is reported rather than discarded, so the caller keeps the part of the day that
     works, and the answer never claims a pool the caller did not allow.
+
+    `beam` is the width, and None asks for the width the day's size implies (`beam_for`) - a step
+    costs `beam x workers x tasks`, so a fixed width is a fixed cost only for a fixed day.
 
     `budget_s` bounds the wall clock. The search keeps the best route it has found and returns it
     with `out_of_time=True` rather than running long: the cost of a question grows with the square
@@ -157,13 +174,16 @@ def search(day: Day, tasks: TaskArray, *, beam: int = 64,
     if start > ceiling:
         return Result(ceiling, [], False, infeasible=True)
 
+    def width(pool: int) -> int:
+        return beam if beam is not None else beam_for(tasks, len(day.units) + pool)
+
     if hands is None and ceiling > start:
-        return _smallest_pool(day, tasks, beam, start, ceiling, deadline)
+        return _smallest_pool(day, tasks, width, start, ceiling, deadline)
 
     partial: Result | None = None
     placed = -1
     for pool in range(start, ceiling + 1):
-        result = _fixed_point(day, tasks, beam, pool, deadline)
+        result = _fixed_point(day, tasks, width(pool), pool, deadline)
         if result.complete:
             return result
         if partial is None or len(result.route) > placed:
@@ -198,7 +218,7 @@ def _fixed_point(day: Day, tasks: TaskArray, beam: int, pool: int,
     return result
 
 
-def _smallest_pool(day: Day, tasks: TaskArray, beam: int, lo: int, hi: int,
+def _smallest_pool(day: Day, tasks: TaskArray, width, lo: int, hi: int,
                    deadline: float | None) -> Result:
     """The smallest pool that carries the day, by halving.
 
@@ -211,7 +231,7 @@ def _smallest_pool(day: Day, tasks: TaskArray, beam: int, lo: int, hi: int,
     best: Result | None = None
     while lo < hi:
         mid = (lo + hi) // 2
-        result = _fixed_point(day, tasks, beam, mid, deadline)
+        result = _fixed_point(day, tasks, width(mid), mid, deadline)
         if result.complete:
             best, hi = result, mid
         else:
@@ -219,7 +239,7 @@ def _smallest_pool(day: Day, tasks: TaskArray, beam: int, lo: int, hi: int,
         if result.out_of_time:
             break
     if lo == hi:
-        final = _fixed_point(day, tasks, beam, lo, deadline)
+        final = _fixed_point(day, tasks, width(lo), lo, deadline)
         if final.complete or best is None:
             return final
         if len(final.route) > len(best.route):
