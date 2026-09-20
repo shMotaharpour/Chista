@@ -46,7 +46,7 @@ def _day():
     chains = [(cell, ops, crop) for cell, _ops, crop in TILES]
     tasks = T.build(chains, available=AVAILABLE)
     day = B.Day(chains=tuple(chains), available=AVAILABLE,
-                units=((4, 4),), hire_times=(1,) * HANDS)
+                hire_times=(1,) * HANDS)
     return day, tasks, chains
 
 
