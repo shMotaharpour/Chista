@@ -31,15 +31,32 @@ them. Two are the manager's own.
 Two fields are new and both exist for §3. They are the only thing this document
 asks the wsr agent to add:
 
-```
-Fit: ok, hands, hours_short, plan, can_improve
-         ^^^^^^^^^^^        ^^^^^^^^^^^
-         feeds the price     says whether another
-         loop (§2)           budget slice would help
+The manager sends `beam.Day` and nothing else — no price, no value, no money, no
+market:
+
+```python
+Day(chains     = ((cell, chain_ops, entity), ...),   # the DP's winner per tile
+    available  = {good: hour},                       # when each good is in the shed
+    units      = (cell, ...),                        # farmer, and hands already out
+    hire_times = (hour, ...))                        # the manager's offer
 ```
 
-`fit()` takes `budget_ms` and an optional `warm` plan. Without those two, a day
-cannot be thought about in slices, and §3 does not work.
+`hire_times` is where money meets labour and it is the manager's call, not wsr's: a
+hand hired for turn 0 acts from hour 1 (F040), and one the purse cannot reach until
+turn 5 has 18 turns in it, not 23.
+
+What comes back today is `Result(pool, route, complete)`. `complete=False` says the
+day did not fit but not **by how much**, so the manager can only learn "no", never
+how far to move the price of an hour. Two additions close that, and they are the
+only thing this document asks of the wsr agent:
+
+```python
+search(day, tasks, beam=..., budget_ms=..., warm=...) -> Result
+Result(pool, route, complete, hours_short, can_improve)
+```
+
+`hours_short` feeds the price loop (§2). `budget_ms` and `warm` are what make a day
+thinkable in slices; without them §3 does not work.
 
 ---
 
@@ -134,10 +151,11 @@ One rule:
 `CHISTA_REPLAN` in a new coat, and five of those switches hid for four days the fact
 that nothing was wired.
 
-`agent/config.py` carries the reference dataclass and every default. It is committed.
-`agent/artifact/config.json` overrides it and is gitignored, so **the defaults alone
-must be a shippable agent** — a submission runs without that file, and a value that
-only exists locally means the grader plays a different agent than the one measured.
+`agent/config.py` carries the reference dataclass and every default; it is committed.
+`agent/artifact/config.json` is the tuned one and **ships beside the agent**, so the
+grader plays what was measured. It is gitignored only while the numbers are moving;
+once they settle it is committed like anything else. The defaults therefore have to
+be *present and legal*, not optimal — they are what a fresh checkout runs with.
 
 ---
 
