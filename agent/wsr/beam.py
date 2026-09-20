@@ -181,9 +181,10 @@ def search(day: Day, tasks: TaskArray, *, beam: int | None = None,
     costs `beam x workers x tasks`, so a fixed width is a fixed cost only for a fixed day.
 
     `warm` is a route from an earlier call on almost this instance, and the search starts from it
-    instead of from nothing: the first row of the beam is the state that route leaves behind, and
-    the snapshot is taken after it, so a search that finds nothing better hands it back. It applies
-    to the pool it was searched with and is ignored at the others.
+    instead of from nothing: a row ON TOP of the beam holds the state that route leaves behind, and
+    the snapshot is taken after it, so a search that finds nothing better hands the route back. The
+    row is extra, so a seed that no longer fits the day costs the beam nothing. It applies to the
+    pool the route was searched with and is ignored at the others.
 
     `budget_s` bounds the wall clock. The search keeps the best route it has found and returns it
     with `out_of_time=True` rather than running long: the cost of a question grows with the square
@@ -328,17 +329,22 @@ def _run(day: Day, tasks: TaskArray, *, hands: int, beam: int,
     start_pos = _start_positions(day, hands, settled)         # (m, 2)
     first_hand = len(day.units)                              # workers before this index are units
 
-    done = np.zeros((beam, n), dtype=bool)
-    when = np.zeros((beam, n), dtype=np.int16)               # the turn each done task occupies
-    who = np.full((beam, n), -1, dtype=np.int16)             # and the worker that did it
+    # The warmed route gets a row of its own ON TOP of the beam, so a caller handing over a route
+    # that no longer fits the day costs the search nothing: the beam below it is as wide as it would
+    # have been. The selection still keeps `beam` rows, so from the second generation on the seed
+    # competes for a slot like any other route.
+    rows = beam + (1 if warm is not None else 0)
+    done = np.zeros((rows, n), dtype=bool)
+    when = np.zeros((rows, n), dtype=np.int16)               # the turn each done task occupies
+    who = np.full((rows, n), -1, dtype=np.int16)             # and the worker that did it
     # Every worker starts at its own hour: the farmer at the day's first, a hand at the hour the
     # planner offered it. Starting them all together would hand the search turns the engine will
     # not give, which is how a day gets called feasible that the harness then truncates.
     hours = start_hours(day, tasks, hands)
-    free = np.tile(hours[None, :], (beam, 1)).astype(np.int16)
-    where = np.tile(start_pos[None, :, :], (beam, 1, 1))
-    travel = np.zeros((beam,), dtype=np.int16)
-    live = np.ones((beam,), dtype=bool)
+    free = np.tile(hours[None, :], (rows, 1)).astype(np.int16)
+    where = np.tile(start_pos[None, :, :], (rows, 1, 1))
+    travel = np.zeros((rows,), dtype=np.int16)
+    live = np.ones((rows,), dtype=bool)
 
     if warm is not None:
         _warm_row(tasks, warm, done, when, who, free, where, travel)
