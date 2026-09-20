@@ -99,6 +99,14 @@ class Result(NamedTuple):
     #: True when a deadline stopped the search before it ran out of tasks to place. A route that is
     #: neither complete nor out of time is the search's own answer: the pool could not carry it.
     out_of_time: bool = False
+    #: Where the hands are spawned from, as the search priced them: the cells the units already on
+    #: the field occupy when the first turn is over. A route is consistent with THESE and no others -
+    #: a unit that walks off its door in turn zero moves every hand after it - so
+    #: `compile_route(day, tasks, result, settled=result.settled)` is the one correct way to write
+    #: the day down. Always a tuple, never None: a search cut before its fixed point converged priced
+    #: the day from where the units stand at the start, and None in the compiler means something
+    #: else entirely - derive the positions from the route, which agrees only when it did converge.
+    settled: tuple[Cell, ...] = ()
 
     @property
     def can_improve(self) -> bool:
@@ -263,29 +271,28 @@ def _fixed_point(day: Day, tasks: TaskArray, beam: int, pool: int,
     it converges in two passes or not at all.
     """
     settled = None
+    started = time.perf_counter()
     result = _run(day, tasks, hands=pool, beam=beam, deadline=deadline, warm=warm)
-    best = result
+    spent = time.perf_counter() - started
     for _attempt in range(3):
-        if deadline is not None and time.perf_counter() >= deadline:
-            # Another attempt would be cut at its first step and hand back an EMPTY route, which
-            # would replace the work this one placed. The deadline is the caller's answer, not a
-            # reason to throw the answer away.
+        # An attempt costs about what the last one cost, so one that starts with less than that left
+        # comes back cut short - non-empty, much worse, and it would REPLACE the work the attempt
+        # before it placed. That is not a best-of to be patched up afterwards: only the last attempt
+        # is consistent with the positions it priced from, and the compiler re-derives those from the
+        # route, so an earlier attempt kept on merit hands back a route priced from positions the day
+        # does not have. The reserve is what keeps every returned route both consistent and the most
+        # complete one the budget could buy.
+        if deadline is not None and time.perf_counter() + spent >= deadline:
             break
         nxt = _settled_after_first_turn(day, tasks, result)
         if settled is not None and nxt == settled:
             break
         settled = nxt
-        nxt_result = _run(day, tasks, hands=pool, beam=beam, settled=settled, deadline=deadline,
-                          warm=warm)
-        if len(nxt_result.route) == 0 and len(best.route) > 0:
-            # A re-run the deadline cut at its first step has nothing, and it must not REPLACE the
-            # work the attempt before it placed. The attempts are not interchangeable, though, so
-            # this is not a best-of: only the last one is consistent with the positions it priced
-            # from, which is what the compiler re-derives from the route. Keeping an earlier attempt
-            # on merit hands back a route priced from positions the day does not have.
-            break
-        best = nxt_result
-    return best
+        started = time.perf_counter()
+        result = _run(day, tasks, hands=pool, beam=beam, settled=settled, deadline=deadline,
+                      warm=warm)
+        spent = time.perf_counter() - started
+    return result
 
 
 def _smallest_pool(day: Day, tasks: TaskArray, width, lo: int, hi: int,
@@ -320,7 +327,7 @@ def _smallest_pool(day: Day, tasks: TaskArray, width, lo: int, hi: int,
 
 
 
-def _warm_row(tasks: TaskArray, warm: Result, done, when, who, free, where, travel) -> None:
+def _warm_row(tasks: TaskArray, warm: Result, done, when, who, free, where, travel, count) -> None:
     """Write a previous route's state into the beam's first row.
 
     A route is a set of `(turn, task, worker)` and the state is what that set implies, so this is a
@@ -354,6 +361,8 @@ def _warm_row(tasks: TaskArray, warm: Result, done, when, who, free, where, trav
             walked += abs(target[0] - at[0]) + abs(target[1] - at[1])
             at = target
     travel[row] = min(walked, int(np.iinfo(np.int16).max))
+    # The counter the warmed row's own placements imply: one per edge whose predecessor it placed.
+    np.add.at(count[row], tasks.edge_after, done[row, tasks.edge_before].astype(np.int16))
 
 
 def _run(day: Day, tasks: TaskArray, *, hands: int, beam: int,
@@ -380,9 +389,12 @@ def _run(day: Day, tasks: TaskArray, *, hands: int, beam: int,
     where = np.tile(start_pos[None, :, :], (rows, 1, 1))
     travel = np.zeros((rows,), dtype=np.int16)
     live = np.ones((rows,), dtype=bool)
+    # How many of each task's predecessors are done, per route. `ready` is a comparison on this,
+    # where it used to be a (beam, n) by (n, n) product - a billion multiply-adds over a day.
+    count = np.zeros((rows, n), dtype=np.int16)
 
     if warm is not None:
-        _warm_row(tasks, warm, done, when, who, free, where, travel)
+        _warm_row(tasks, warm, done, when, who, free, where, travel, count)
 
     # The best state is remembered as the search goes, because the beam's last generation can be
     # empty - a route that dies at the end would otherwise erase the work it had already placed.
@@ -394,10 +406,10 @@ def _run(day: Day, tasks: TaskArray, *, hands: int, beam: int,
         if deadline is not None and not (_step & 7) and time.perf_counter() >= deadline:
             cut = True
             break
-        expanded = _expand(day, tasks, done, when, who, free, where, travel, live)
+        expanded = _expand(day, tasks, done, when, who, free, where, travel, live, count)
         if expanded is None:
             break
-        done, when, who, free, where, travel, live = _select(
+        done, when, who, free, where, travel, live, count = _select(
             expanded, tasks, beam, first_hand, hours)
         if not live.any():
             break
@@ -409,7 +421,11 @@ def _run(day: Day, tasks: TaskArray, *, hands: int, beam: int,
     complete = placed == n
     route = [(int(when_best[i]), tasks.ids[i], int(who_best[i]))
              for i in np.argsort(when_best) if done_best[i]]
-    return Result(hands, route, complete, out_of_time=cut)
+    # The positions the day was priced from, always concrete: a search that never reached its fixed
+    # point priced it from where the units stand when the day begins, and that is what the hands'
+    # doors are counted from.
+    return Result(hands, route, complete, out_of_time=cut,
+                  settled=tuple(day.units) if settled is None else tuple(settled))
 
 
 def _snapshot(done, when, who, free, travel, first_hand, start_hours):
@@ -546,7 +562,7 @@ def _start_hours(day: Day, hands: int) -> np.ndarray:
     return np.asarray(hours, dtype=np.int16)
 
 
-def _expand(day: Day, tasks: TaskArray, done, when, who, free, where, travel, live):
+def _expand(day: Day, tasks: TaskArray, done, when, who, free, where, travel, live, count):
     """One task added to every live route: the vectorised step.
 
     For each route and each task, the earliest hour any worker could finish it: walk from where that
@@ -567,7 +583,7 @@ def _expand(day: Day, tasks: TaskArray, done, when, who, free, where, travel, li
     # The frontier: the tasks some live route could place next. Everything past it is illegal for
     # every route, so pricing those columns is pricing a column that is thrown away - and there are
     # few of them only in appearance: a chain's tasks are nearly all open at once on a big day.
-    ready_all = tasks.ready(done)                             # (b, n)
+    ready_all = count == tasks.pred_count16[None, :]         # (b, n)
     index = np.flatnonzero((ready_all & ~done).any(axis=0))
     if index.size == 0:
         return None
@@ -578,7 +594,8 @@ def _expand(day: Day, tasks: TaskArray, done, when, who, free, where, travel, li
     # that way is 1.7x faster on its own - but it is five passes over the same (b, m, w) shape
     # against one, and end to end that made a hundred tiles 15 per cent SLOWER. The table is one
     # dimension more than the arithmetic needs and one pass less than the machine wants.
-    hop = DISTANCE[here[:, :, None], tasks.cell_index[index][None, None, :]].astype(np.int16)
+    # No cast: the table is int16, the width the arithmetic runs in, so the gather is the answer.
+    hop = DISTANCE[here[:, :, None], tasks.cell_index[index][None, None, :]]
 
     # The trip a consumer makes when its good is not in the bag: to a door, the pickup, and on. One
     # door, not two minima - the nearest door to the worker and the nearest to the tile can be
@@ -596,7 +613,7 @@ def _expand(day: Day, tasks: TaskArray, done, when, who, free, where, travel, li
     # so that drop hands over nothing: no trip, no turn, and nobody moves. This is what lets one
     # drop bank several harvests instead of one apiece.
     idle = np.zeros(hop.shape, dtype=bool)
-    drop_rows = np.flatnonzero(tasks.is_drop)
+    drop_rows = tasks.drop_rows
     if drop_rows.size:
         # Which of the day's drops are on the frontier, and where they sit in the beam's width.
         local = np.searchsorted(index, drop_rows)
@@ -635,7 +652,7 @@ def _expand(day: Day, tasks: TaskArray, done, when, who, free, where, travel, li
     worker = finish.argmin(axis=1)                           # (b, w): and by which worker
     return dict(rows=rows, finish=finish, hop=hop, earliest=earliest, worker=worker,
                 done=done, when=when, who=who, free=free, where=where, travel=travel,
-                idle=idle, index=index)
+                idle=idle, index=index, count=count)
 
 
 def _select(expanded, tasks: TaskArray, beam: int, first_hand: int, start_hours):
@@ -652,6 +669,7 @@ def _select(expanded, tasks: TaskArray, beam: int, first_hand: int, start_hours)
     """
     index = expanded["index"]
     width = index.size
+    count = expanded["count"]
     rows = expanded["rows"]
     done, when, who = expanded["done"], expanded["when"], expanded["who"]
     free = expanded["free"]
@@ -662,9 +680,14 @@ def _select(expanded, tasks: TaskArray, beam: int, first_hand: int, start_hours)
     if legal.size == 0:
         return (_empty_like(done, beam), _empty_like(when, beam), _empty_like(who, beam),
                 _empty_like(free, beam), _empty_like(where, beam),
-                np.zeros((beam,), dtype=np.int16), np.zeros((beam,), dtype=bool))
+                np.zeros((beam,), dtype=np.int16), np.zeros((beam,), dtype=bool),
+                np.zeros((beam, tasks.n), dtype=np.int16))
 
-    budget = min(legal.size, beam * 4)
+    # The shortlist is a few percent of the field - `beam x tasks` candidates - and among candidates
+    # whose finish hour ties, which of them it keeps was arbitrary. Too narrow, and the states that
+    # would carry the day are cut before the ranking ever sees them: at `beam * 4` a width of 50
+    # placed 86 of a real day's 93 tasks, and at `beam * 16` it placed 93.
+    budget = min(legal.size, beam * 16)
     if legal.size > budget:
         shortlist = legal[np.argpartition(flat_hour[legal], budget - 1)[:budget]]
     else:
@@ -696,18 +719,33 @@ def _select(expanded, tasks: TaskArray, beam: int, first_hand: int, start_hours)
     child_where[np.arange(parent.size), worker] = np.where(
         idle_here[:, None], where[parent, worker], tasks.cells[task])
     child_travel = travel[parent] + hop[parent, worker, column]
+    # Placing a task advances the tasks it precedes, so the counter for those children moves by one
+    # on each edge out of it. Most tasks precede one other, so this is a few hundred additions.
+    child_count = count[parent].copy()
+    flat, start = tasks.successor_groups
+    length = (start[task + 1] - start[task]).astype(np.int32)
+    if length.sum():
+        child_row = np.repeat(np.arange(parent.size, dtype=np.int32), length)
+        offset = np.arange(length.sum(), dtype=np.int32) - np.repeat(
+            np.cumsum(length) - length, length)
+        np.add.at(child_count, (child_row, flat[np.repeat(start[task], length) + offset]), 1)
 
     # Every child array is filtered in ONE place. Filtering them in separate statements is how a
     # new array gets left behind, and a child array out of step with the others reads another
     # route's values - which is what happened to the worker column.
     keep = _dedupe(child_done, child_free, child_where)
-    child_done, child_when, child_who, child_free, child_where, child_travel = (
+    child_done, child_when, child_who, child_free, child_where, child_travel, child_count = (
         array[keep] for array in (child_done, child_when, child_who, child_free,
-                                  child_where, child_travel))
+                                  child_where, child_travel, child_count))
 
+    # The tasks this state has already made impossible: unplaced, with a latest hour that has gone
+    # by the earliest any worker is free. A route that lost one cannot carry the day, so this leads
+    # the ranking - without it the beam keeps the states that look best now and drops the ones that
+    # will finish.
+    dead = ((tasks.latest[None, :] < child_free.min(axis=1)[:, None]) & ~child_done).sum(axis=1)
     hands_used = (child_free[:, first_hand:] > start_hours[first_hand:]).sum(axis=1)
     makespan = child_free.max(axis=1)
-    order = np.lexsort((child_travel, makespan, hands_used))[:beam]
+    order = np.lexsort((child_travel, makespan, hands_used, dead))[:beam]
 
     out_done = _empty_like(child_done, beam)
     out_when = _empty_like(child_when, beam)
@@ -716,12 +754,14 @@ def _select(expanded, tasks: TaskArray, beam: int, first_hand: int, start_hours)
     out_where = _empty_like(child_where, beam)
     out_travel = np.zeros((beam,), dtype=np.int16)
     out_live = np.zeros((beam,), dtype=bool)
+    out_count = np.zeros((beam, tasks.n), dtype=np.int16)
     k = order.size
     out_done[:k], out_when[:k] = child_done[order], child_when[order]
     out_who[:k] = child_who[order]
     out_free[:k], out_where[:k] = child_free[order], child_where[order]
     out_travel[:k], out_live[:k] = child_travel[order], True
-    return out_done, out_when, out_who, out_free, out_where, out_travel, out_live
+    out_count[:k] = child_count[order]
+    return out_done, out_when, out_who, out_free, out_where, out_travel, out_live, out_count
 
 
 def _empty_like(array: np.ndarray, beam: int) -> np.ndarray:
@@ -743,8 +783,16 @@ def _dedupe(done: np.ndarray, free: np.ndarray, where: np.ndarray) -> np.ndarray
     signature = np.hstack([np.packbits(done, axis=1),
                            free.view(np.uint8).reshape(done.shape[0], -1),
                            where.view(np.uint8).reshape(done.shape[0], -1)])
-    _, first = np.unique(signature, axis=0, return_index=True)
-    return np.sort(first)
+    # A dictionary over the rows' bytes, not : the two answer the same
+    # thing, and the unique sorts a 2-D array of void rows - 1.667 ms a call at a beam of 256, which
+    # was 81.8 per cent of the selection and about half the whole search. The rows are few, so
+    # walking them in Python costs 0.069 ms for the same answer, twenty-four times less.
+    first: dict[bytes, int] = {}
+    for index, row in enumerate(signature):
+        first.setdefault(row.tobytes(), index)
+    # No sort: a dictionary keeps insertion order and the rows are walked in order, so the first
+    # occurrence of each distinct row is already in increasing order.
+    return np.fromiter(first.values(), dtype=np.int64, count=len(first))
 
 
 def _last_drop(done, when, who, drop_rows: np.ndarray, workers: int) -> np.ndarray:
@@ -775,11 +823,15 @@ def _released(when: np.ndarray, tasks: TaskArray) -> np.ndarray:
     if tasks.n == 0:
         return out
     # `when` is the turn a task OCCUPIES, so a successor's earliest start is the turn after it.
-    # One scatter over the whole edge list, not a loop over it: a task may have several
-    # predecessors, so the answer for a successor is the LARGEST of their finishes - which is what
-    # `maximum.at` scatters, and what the loop did one edge at a time.
-    rows = np.arange(when.shape[0], dtype=np.int32)[:, None]
-    np.maximum.at(out, (rows, tasks.edge_after[None, :]), when[:, tasks.edge_before] + 1)
+    # A task may have several predecessors, so the answer for a successor is the LARGEST of their
+    # finishes - and the edges are grouped by successor, so that is one segment reduction per
+    # successor rather than a scatter per edge. `maximum.at` answered the same thing at 83 per cent
+    # of this function's time; it is the slowest way numpy has to write one element at a time.
+    order, starts, targets = tasks.edge_groups
+    if order.size == 0:
+        return out
+    values = when[:, tasks.edge_before[order]] + 1
+    out[:, targets] = np.maximum.reduceat(values, starts, axis=1)
     return out
 
 

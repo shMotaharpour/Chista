@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from typing import NamedTuple, Optional, Sequence
 
 from agent.world.action import Action, Item, item_of
-from agent.world.action_rules import CARRIES
+from agent.world.action_rules import CARRIES, YIELDS
 from agent.world.model import MOVES, PRODUCTS, UnitAction
 from agent.world.rules import ANIMAL_STRUCTURE, CROP_RULES
 
@@ -109,6 +109,12 @@ def expand_chain(ops: Sequence[str], entity: Item | None = None, cell: Cell | No
         suffix = "" if seen[name] == 1 else str(seen[name])
         return f"{prefix}{name}{suffix}"
 
+    #: What the chain itself has put in the worker's bag so far. A good that is already there needs
+    #: no trip: `HARVEST` then `FEED` is a worker eating what it just picked, not a walk to the shed
+    #: and back - and the archive says that is how the game's units worked, six to ten PICKUPs a day
+    #: against fourteen or fifteen COLLECT_FERTILIZER and eleven to twenty-six HARVEST.
+    bag: set[Item] = set()
+
     for op in ops:
         name = f"BUILD_{ANIMAL_STRUCTURE[item]}" if op == "BUILD" else op
         carried = CARRIES.get(name)
@@ -118,11 +124,12 @@ def expand_chain(ops: Sequence[str], entity: Item | None = None, cell: Cell | No
             carried = item
 
         pickup: Optional[str] = None
-        if carried is not None:
+        if carried is not None and carried not in bag:
             acquire = MinorTask(id=unique("acquire"), cell=None,
                                 action=UnitAction.PICKUP, item=carried, n=1)
             tasks.append(acquire)
             pickup = acquire.id
+            bag.add(carried)
 
         task = MinorTask(
             id=unique(name.lower()),
@@ -132,6 +139,11 @@ def expand_chain(ops: Sequence[str], entity: Item | None = None, cell: Cell | No
             n=harvested_n if name == "HARVEST" else 1,
             crop=entity if name == "PLANT" else None)
         tasks.append(task)
+        # And this op may have put something in the bag for the ops after it.
+        if name == "HARVEST" and entity is not None:
+            bag.add(entity)
+        elif YIELDS.get(name) not in (None, "the tile's yield_units", "the shed"):
+            bag.add(item_of(YIELDS[name]))
         if pickup is not None:
             precedence.append((pickup, task.id))    # carry it before you use it
             groups.append([pickup, task.id])        # and the same worker carries it
