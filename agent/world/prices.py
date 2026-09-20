@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import math
 
+import numpy as np
+
 from agent.world.model import PRODUCTS
 from agent.world.rules import SHOPS, TOWN_CENTER_PRODUCTS
 
@@ -78,6 +80,24 @@ def price(item: str, inventory: float) -> int:
 def prices(inventory: dict[str, int]) -> dict[str, int]:
     """Every product's price at one market inventory."""
     return {item: price(item, inventory[item]) for item in PRODUCTS}
+
+
+def price_of(item: str, inventory: float) -> int:
+    """Scalar alias of `price`, for call sites that hold the item name."""
+    return price(item, inventory)
+
+
+def price_table(inventory: np.ndarray) -> np.ndarray:
+    """The (9,) quote vector at one (9,) inventory, in PRODUCTS order."""
+    return np.array([price(item, float(x))
+                     for item, x in zip(PRODUCTS, inventory, strict=True)],
+                    dtype=np.int64)
+
+
+def price_vec(item: str, inventories: np.ndarray) -> np.ndarray:
+    """`price(item, x)` over a vector of inventories, one product at a time."""
+    return np.array([price(item, float(x)) for x in np.asarray(inventories).ravel()],
+                    dtype=np.int64)
 
 
 #: How an order is quoted, kaggriculture.py:596-605. Both players are quoted from the

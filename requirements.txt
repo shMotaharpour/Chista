@@ -22,6 +22,7 @@ numpy>=1.26
 pandas>=2.0
 matplotlib>=3.8
 seaborn>=0.13
+duckdb>=1.5          # the replay store's query engine (offline builders only)
 
 # Tests: `tests/day_layer/` is a faithful pytest-shaped port (F052) and
 # `tests/test_day.py` drives it, so pytest is part of the test path.

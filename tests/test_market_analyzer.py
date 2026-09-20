@@ -23,8 +23,11 @@ from __future__ import annotations
 import numpy as np
 
 from kaggle_environments.envs.kaggriculture import kaggriculture as K
-from agent.world.prices import price, prices
-from agent.world.vocabulary import DUAL, G_IX, GOODS, SHOP_BASKET, SHOP_TYPES, SHED_CAP
+
+from agent.belief.schemas import (DUAL, G_IX, SHED_CAP, SHOP_BASKET,
+                                  SHOP_TYPES)
+from agent.world.model import PRODUCTS as GOODS
+from agent.world.prices import price, price_vec
 
 from bench.bench_market_analyzer import (center_drain_probe, run_episode,
                                          slot_inference_experiment)
@@ -46,7 +49,7 @@ GRID = np.concatenate([np.arange(0, 60, 1.0), np.arange(100, 12000, 17.0)])
 def test_price_parity() -> None:
     """The vectorised curve IS the engine's curve, at every inventory."""
     for g in GOODS:
-        mine = prices(g, GRID)
+        mine = price_vec(g, GRID)
         theirs = np.array([K.market_price(g, float(i)) for i in GRID])
         assert np.array_equal(mine, theirs), f"{g}: vectorised price differs from the engine"
 
