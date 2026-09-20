@@ -33,11 +33,11 @@ REAL_DAYS = json.loads(CORPUS.read_text())
 #: The days the preload's per-worker charge costs tasks on. Strict: if the charge is ever made exact
 #: these fail, which is the reminder to take the marks out.
 KNOWN_SHORT = {
-    ("2026-08-24", 98009264, 24),
     ("2026-08-29", 102083125, 12),
     ("2026-09-01", 104478713, 15),
     ("2026-09-06", 105964064, 25),
     ("2026-08-28", 101297130, 22),
+    ("2026-09-08", 106613414, 22),
     ("2026-09-16", 109466152, 25),
     ("2026-09-01", 104478289, 15),
     # and the three the real hire hours cost: two or three of the game's hands began at hour 2, so

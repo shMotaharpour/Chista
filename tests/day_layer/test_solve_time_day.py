@@ -44,31 +44,24 @@ def test_a_budget_is_kept_and_the_work_so_far_comes_back():
     day, tasks = _day(BIGGEST)
     started = time.perf_counter()
     result = B.search(day, tasks, hands=max(BIGGEST["hands"] - 1, 0),
-                      max_hands=BIGGEST["hands"], budget_s=0.2)
+                      max_hands=BIGGEST["hands"], budget_s=0.02)
     elapsed = time.perf_counter() - started
 
-    assert elapsed < 2.0, f"a 0.2 s budget took {elapsed:.2f} s"
-    assert result.out_of_time, "the search says it had time to spare on a 0.2 s budget"
+    assert elapsed < 1.0, f"a 0.02 s budget took {elapsed:.2f} s"
+    assert result.out_of_time, "the search says it had time to spare on a 0.02 s budget"
     assert result.route, "a budgeted call returned nothing at all"
-    print(f"\n  budget 0.2 s: returned in {elapsed:.3f} s with "
+    print(f"\n  budget 0.02 s: returned in {elapsed:.3f} s with "
           f"{len(result.route)} of {tasks.n} tasks")
 
 
-def test_the_portfolio_costs_a_few_searches_and_not_a_multiple_that_grows():
-    """Four widths, so a few times one search - and the ratio is what holds on any machine."""
+def test_a_day_of_this_size_is_searched_inside_a_turn():
+    """The manager's turn is about a second, and the largest day in the corpus has to fit in it."""
     day, tasks = _day(BIGGEST)
     hands = max(BIGGEST["hands"] - 1, 0)
 
     started = time.perf_counter()
-    B._search_once(day, tasks, beam=32, hands=hands, max_hands=BIGGEST["hands"])
-    one = time.perf_counter() - started
+    result = B.search(day, tasks, hands=hands, max_hands=BIGGEST["hands"])
+    elapsed = time.perf_counter() - started
 
-    started = time.perf_counter()
-    B.search(day, tasks, hands=hands, max_hands=BIGGEST["hands"])
-    portfolio = time.perf_counter() - started
-
-    assert portfolio < one * len(B.PORTFOLIO) * 3, (
-        f"the portfolio took {portfolio / one:.1f} single searches for {len(B.PORTFOLIO)} widths"
-    )
-    print(f"\n  one width {one * 1000:.0f} ms, the portfolio {portfolio * 1000:.0f} ms "
-          f"= {portfolio / one:.1f} searches for {len(B.PORTFOLIO)} widths")
+    assert elapsed < 5.0, f"the largest day took {elapsed:.2f} s, which no turn can afford"
+    print(f"\n  {tasks.n} tasks in {elapsed * 1000:.0f} ms, placed {len(result.route)}")

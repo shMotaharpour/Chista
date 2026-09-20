@@ -169,56 +169,9 @@ def _chain_depth(tasks: TaskArray) -> int:
     return int(depth.max())
 
 
-#: The widths `search` asks for when the caller does not name one, cheapest first. The beam's result
-#: is NOT monotone in its width - a wider beam keeps more variations of ONE partial plan rather than
-#: more plans - so a single width is a guess, and asking a few is worth more than any one of them.
-PORTFOLIO: tuple[int | None, ...] = (None, 16, 32, 64)
-
-
-def _best_of_portfolio(candidate: Result, best: Result) -> bool:
-    """Whether a whole route beats another: carried first, then the SMALLER POOL, then more work.
-
-    `_better_route`'s rule with the pool in front of the work, because a route that carries the day
-    with fewer hands is the better answer to the question the caller asked - the widths are the same
-    question asked differently, and they may answer with different pools.
-    """
-    if candidate.complete != best.complete:
-        return candidate.complete
-    if candidate.pool != best.pool:
-        return candidate.pool < best.pool
-    if len(candidate.route) != len(best.route):
-        return len(candidate.route) > len(best.route)
-    return _makespan(candidate) < _makespan(best)
-
-
 def search(day: Day, tasks: TaskArray, *, beam: int | None = None,
            hands: int | None = None, max_hands: int = MAX_HANDS,
            budget_s: float | None = None, warm: Result | None = None) -> Result:
-    """The day, searched at several beam widths, keeping the best answer.
-
-    A named `beam` asks for that width alone. Without one the search asks `PORTFOLIO` - the widths
-    the day's size implies and a few beside it - and returns the best of them, so the answer does not
-    depend on which single width happened to be the lucky one. `budget_s` is shared between them.
-
-    The rest of the contract is `_search_once`'s, which is where each width is searched.
-    """
-    if beam is not None:
-        return _search_once(day, tasks, beam=beam, hands=hands, max_hands=max_hands,
-                            budget_s=budget_s, warm=warm)
-
-    share = None if budget_s is None else float(budget_s) / len(PORTFOLIO)
-    best: Result | None = None
-    for width in PORTFOLIO:
-        result = _search_once(day, tasks, beam=width, hands=hands, max_hands=max_hands,
-                              budget_s=share, warm=warm)
-        if best is None or _best_of_portfolio(result, best):
-            best = result
-    return best
-
-
-def _search_once(day: Day, tasks: TaskArray, *, beam: int | None = None,
-                 hands: int | None = None, max_hands: int = MAX_HANDS,
-                 budget_s: float | None = None, warm: Result | None = None) -> Result:
     """The day, searched with `beam` routes in parallel.
 
     Two numbers decide how the pool is searched, and they answer two different questions:
@@ -730,7 +683,11 @@ def _select(expanded, tasks: TaskArray, beam: int, first_hand: int, start_hours)
                 np.zeros((beam,), dtype=np.int16), np.zeros((beam,), dtype=bool),
                 np.zeros((beam, tasks.n), dtype=np.int16))
 
-    budget = min(legal.size, beam * 4)
+    # The shortlist is a few percent of the field - `beam x tasks` candidates - and among candidates
+    # whose finish hour ties, which of them it keeps was arbitrary. Too narrow, and the states that
+    # would carry the day are cut before the ranking ever sees them: at `beam * 4` a width of 50
+    # placed 86 of a real day's 93 tasks, and at `beam * 16` it placed 93.
+    budget = min(legal.size, beam * 16)
     if legal.size > budget:
         shortlist = legal[np.argpartition(flat_hour[legal], budget - 1)[:budget]]
     else:
@@ -781,9 +738,14 @@ def _select(expanded, tasks: TaskArray, beam: int, first_hand: int, start_hours)
         array[keep] for array in (child_done, child_when, child_who, child_free,
                                   child_where, child_travel, child_count))
 
+    # The tasks this state has already made impossible: unplaced, with a latest hour that has gone
+    # by the earliest any worker is free. A route that lost one cannot carry the day, so this leads
+    # the ranking - without it the beam keeps the states that look best now and drops the ones that
+    # will finish.
+    dead = ((tasks.latest[None, :] < child_free.min(axis=1)[:, None]) & ~child_done).sum(axis=1)
     hands_used = (child_free[:, first_hand:] > start_hours[first_hand:]).sum(axis=1)
     makespan = child_free.max(axis=1)
-    order = np.lexsort((child_travel, makespan, hands_used))[:beam]
+    order = np.lexsort((child_travel, makespan, hands_used, dead))[:beam]
 
     out_done = _empty_like(child_done, beam)
     out_when = _empty_like(child_when, beam)
