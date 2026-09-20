@@ -27,7 +27,7 @@ from typing import NamedTuple
 
 import numpy as np
 
-from agent.world.board import MOVE_DELTA
+from agent.world.board import MOVE_DELTA, SPAWN
 from agent.world.rules import BOARD_SIZE, TURNS_PER_DAY
 from agent.wsr.routing import walk
 from agent.wsr.tasks import DISTANCE, NO_ITEM, SHED_INDEX, TaskArray
@@ -51,9 +51,9 @@ def beam_for(tasks: TaskArray, workers: int) -> int:
 
 BIG = np.int16(30000)
 
-#: Where the farmer stands when a day begins. Every day, without exception: the engine resets the
-#: field to the farmer on the shed's corner door and clears the hands, so this is not an input.
-FARMER_START: Cell = (4, 4)
+#: Where the farmer stands when a day begins - the shed's first door, which is where the engine
+#: respawns it every night. Not an input: the day resets to the farmer there with no hands at all.
+FARMER_START: Cell = SPAWN
 
 
 @dataclass(frozen=True)
@@ -102,13 +102,15 @@ class Result(NamedTuple):
 
     @property
     def can_improve(self) -> bool:
-        """Whether another slice of budget would plausibly find more.
+        """Whether another slice of budget would plausibly find more WORK.
 
-        The deadline is the only thing that leaves work on the table: a day too big for any pool
-        has no better route to find however long the search runs, and a day that was carried has
-        nothing left to place. So a caller deciding between grinding and moving on reads this.
+        Work is what the flag is about: a day that was carried has nothing left to place, and a day
+        too big for any pool has no better route however long the search runs. Only a route that is
+        both incomplete and cut short has more to find. `out_of_time` stays the raw fact - a route
+        can be complete and still have crossed its deadline - because a caller that wants to polish a
+        carried day's makespan is asking a different question than this one.
         """
-        return self.out_of_time
+        return self.out_of_time and not self.complete
     #: True when the day needs more workers than the caller allowed, so NO pool in range can carry
     #: it. The arithmetic floor is a count of workers and the ceiling is a count of hands, and on a
     #: hundred tiles the first passes the second - which is an answer about the day, not an error.
@@ -220,7 +222,7 @@ def search(day: Day, tasks: TaskArray, *, beam: int | None = None,
         result = _fixed_point(day, tasks, width(pool), pool, deadline, seed(pool))
         if result.complete:
             return result
-        if partial is None or len(result.route) > placed:
+        if partial is None or _better_route(result, partial):
             partial, placed = result, len(result.route)
         elif len(result.route) <= placed:
             # A bigger pool placed no more of the day than a smaller one, so the workers are not
@@ -230,6 +232,25 @@ def search(day: Day, tasks: TaskArray, *, beam: int | None = None,
             # A larger pool costs more and cannot buy back the time, so the loop stops here.
             break
     return partial if partial is not None else Result(ceiling, [], False)
+
+
+def _makespan(result: Result) -> int:
+    """The turn a route stops at. A drop with an empty bag is written at -1, so it is not one."""
+    return max((int(turn) for turn, _task, _worker in result.route if turn >= 0), default=-1) + 1
+
+
+def _better_route(candidate: Result, best: Result) -> bool:
+    """Whether a whole route beats another: carried first, then more work, then the earlier stop.
+
+    The rule the pool loop and the fixed point share. A route that carries the day beats one that
+    does not, whatever it placed - and among routes that carry it or fail it alike, the one that
+    placed more wins, and the one that stopped earlier wins the tie.
+    """
+    if candidate.complete != best.complete:
+        return candidate.complete
+    if len(candidate.route) != len(best.route):
+        return len(candidate.route) > len(best.route)
+    return _makespan(candidate) < _makespan(best)
 
 
 def _fixed_point(day: Day, tasks: TaskArray, beam: int, pool: int,
@@ -243,14 +264,28 @@ def _fixed_point(day: Day, tasks: TaskArray, beam: int, pool: int,
     """
     settled = None
     result = _run(day, tasks, hands=pool, beam=beam, deadline=deadline, warm=warm)
+    best = result
     for _attempt in range(3):
+        if deadline is not None and time.perf_counter() >= deadline:
+            # Another attempt would be cut at its first step and hand back an EMPTY route, which
+            # would replace the work this one placed. The deadline is the caller's answer, not a
+            # reason to throw the answer away.
+            break
         nxt = _settled_after_first_turn(day, tasks, result)
         if settled is not None and nxt == settled:
             break
         settled = nxt
-        result = _run(day, tasks, hands=pool, beam=beam, settled=settled, deadline=deadline,
-                      warm=warm)
-    return result
+        nxt_result = _run(day, tasks, hands=pool, beam=beam, settled=settled, deadline=deadline,
+                          warm=warm)
+        if len(nxt_result.route) == 0 and len(best.route) > 0:
+            # A re-run the deadline cut at its first step has nothing, and it must not REPLACE the
+            # work the attempt before it placed. The attempts are not interchangeable, though, so
+            # this is not a best-of: only the last one is consistent with the positions it priced
+            # from, which is what the compiler re-derives from the route. Keeping an earlier attempt
+            # on merit hands back a route priced from positions the day does not have.
+            break
+        best = nxt_result
+    return best
 
 
 def _smallest_pool(day: Day, tasks: TaskArray, width, lo: int, hi: int,
@@ -277,7 +312,7 @@ def _smallest_pool(day: Day, tasks: TaskArray, width, lo: int, hi: int,
         final = _fixed_point(day, tasks, width(lo), lo, deadline, seed(lo))
         if final.complete or best is None:
             return final
-        if len(final.route) > len(best.route):
+        if _better_route(final, best):
             return final
     return best if best is not None else Result(hi, [], False)
 
