@@ -19,19 +19,36 @@ worker stands, the same rule the search priced with.
 
 from __future__ import annotations
 
+from typing import NamedTuple
+
 from agent.wsr.beam import (Day, Result, _settled_after_first_turn, _start_hours,
                             _start_positions, first_arrival, preload_turns)
-from agent.wsr.routing import walk
+from agent.wsr.routing import nearest_shed, walk
 from agent.wsr.tasks import ITEM_CODE, TaskArray
 
 PASS = ("PASS",)
+
+
+class DayOps(NamedTuple):
+    """The compiled day: the ops per worker, and what its drops bank.
+
+    `arrivals` is `(hour, item, units)` per drop. A SELL can only reach the shed, so this is what
+    the day's market may actually sell today; what no drop carried waits for tonight.
+    """
+
+    units: list[list[tuple]]
+    arrivals: tuple[tuple[int, str, int], ...] = ()
 
 ITEM_NAME = {code: item.name for item, code in ITEM_CODE.items()}
 
 
 def compile_route(day: Day, tasks: TaskArray, result: Result, *,
-                  horizon: int | None = None, settled=None) -> list[list[tuple]]:
+                  horizon: int | None = None, settled=None) -> DayOps:
     """A route -> one op list per worker, `horizon` turns long and PASS-padded.
+
+    `drop` writes the trip that carries what the day grew to the shed. The DROP empties the whole
+    bag and hands it over; what the shed then keeps is the shed's decision, and none of this layer's
+    business - so the arrivals are what the bags held, not what the shed made of them.
 
     The list is indexed by turn, so `ops[worker][hour]` is what that worker does at that hour -
     which is the shape the dispatcher slices.
@@ -73,6 +90,10 @@ def compile_route(day: Day, tasks: TaskArray, result: Result, *,
 
     for worker, entries in by_worker.items():
         for turn, task_id in sorted(entries):
+            if turn < 0:
+                # A drop with an empty bag: the bag was already handed over, so there is no op to
+                # write and no turn to spend. The route carries it so the day is complete.
+                continue
             row = tasks.ids.index(task_id)
             target = (int(tasks.cells[row][0]), int(tasks.cells[row][1]))
             moves = walk(at[worker], target)
@@ -83,15 +104,31 @@ def compile_route(day: Day, tasks: TaskArray, result: Result, *,
             at[worker] = target
             last[worker] = turn
 
-    return ops
+    # What each drop banks: the goods the worker's harvests have put in its bag since the drop
+    # before it. Read off the route rather than recomputed, because the engine's DROP empties the
+    # whole bag - so the batch is a property of the order, not of any one harvest.
+    arrivals: list[tuple[int, str, int]] = []
+    for worker, entries in by_worker.items():
+        bagged: dict[int, int] = {}
+        for turn, task_id in sorted(entries):
+            row = tasks.ids.index(task_id)
+            good = int(tasks.yields[row])
+            if good >= 0:
+                bagged[good] = bagged.get(good, 0) + int(tasks.yield_n[row])
+            elif turn >= 0 and bool(tasks.is_drop[row]):
+                for item, units in sorted(bagged.items()):
+                    arrivals.append((int(turn), ITEM_NAME[item], units))
+                bagged.clear()
+
+    return DayOps(units=ops, arrivals=tuple(arrivals))
 
 
-def to_plan(ops: list[list[tuple]], market=None) -> dict:
+def to_plan(day_ops: DayOps, market=None) -> dict:
     """The compiler's output in the shape the dispatcher slices.
 
     `units[0]` is the farmer and the rest the hands in order, which is the engine's own order.
     """
-    return {"units": [[list(op) for op in unit] for unit in ops],
+    return {"units": [[list(op) for op in unit] for unit in day_ops.units],
             "market": list(market or [])}
 
 
@@ -133,10 +170,14 @@ def check_route(day: Day, tasks: TaskArray, result: Result, settled=None) -> lis
     for turn, task_id, worker in result.route:
         turns.setdefault(int(worker), []).append((int(turn), task_id))
 
-    when = {task_id: int(turn) for turn, task_id, _w in result.route}
-    placed = set(when)
+    # A drop with an empty bag is written at turn -1: it is done, it has no turn, and asking it to
+    # precede anything would be asking a turn that does not exist.
+    when = {task_id: int(turn) for turn, task_id, _w in result.route if int(turn) >= 0}
+    placed = {t for t, _i, _w in result.route}
     for worker, entries in turns.items():
         for turn, task_id in entries:
+            if turn < 0:
+                continue                    # an idle drop: done, with no turn of its own
             if not 0 <= turn < day.horizon:
                 complaints.append(f"{task_id} at turn {turn} is outside the day")
             if worker >= starts.shape[0]:
@@ -148,7 +189,9 @@ def check_route(day: Day, tasks: TaskArray, result: Result, settled=None) -> lis
         if row not in placed:
             continue
         for j in range(tasks.n):
-            if tasks.pred[i, j] and tasks.ids[j] in placed and when[tasks.ids[j]] >= when[row]:
+            if not tasks.pred[i, j] or tasks.ids[j] not in when or row not in when:
+                continue
+            if when[tasks.ids[j]] >= when[row]:
                 complaints.append(f"{tasks.ids[j]} must come before {row}")
         if tasks.items[i] >= 0 and when[row] < int(tasks.earliest[i]):
             complaints.append(f"{row} needs its good at {when[row]}, before it is in the shed")

@@ -61,25 +61,82 @@ One `Need` per buy: `(order, latest_hour)` where the order is `("BUY_SEED", crop
 row per turn, in the engine's own settle order. On main: `merge_market` (`:333`),
 `hire_cost` (`:328`).
 
-**(c) The day itself** — this layer, and the only part that is new:
+**(c) The day itself** — this layer, and the only part that is new. The whole contract is two
+calls and two objects:
 
 ```python
-tasks  = T.build(chains, available=available)                 # chains -> arrays
-day    = B.Day(chains=chains, available=available,
-               units=positions, hire_times=hire_times)
-result = B.search(day, tasks, beam=64, hands=?, max_hands=?)
-ops    = compile_route(day, tasks, result)                    # -> ops per worker
+chains = [(cell, chain_ops, entity), ...]        # the DP's winner per tile, in the caller's order
+tasks  = T.build(chains, available=available, drop_by=drop_by)
+day    = B.Day(chains=chains, available=available, hire_times=hire_times)
+result = B.search(day, tasks, beam=None, hands=None, max_hands=MAX_HANDS,
+                  budget_s=None, warm=None)
+ops    = compile_route(day, tasks, result)       # -> DayOps
 ```
 
-`chains` is `[(cell, chain_ops, entity), ...]`, one per priced tile — the same `tiles`
-`agent/replan.py:262` already builds. `available` is the hour each good is in the shed: a
-buy at hour 0 is in the shed at hour 1, and a task that consumes a good cannot run before it.
-`hire_times` is the hour each hand may begin, and a hand hired in turn 0 acts from hour 1
-(F040).
+The input:
+
+| name | what it is |
+|---|---|
+| `chains` | one `(cell, chain_ops, entity)` per priced tile — the same `tiles` `agent/replan.py:262` builds. `chain_ops` is the expanded chain; this layer never reads the DP's registry. |
+| `available` | the hour each good is in the shed. A buy at hour 0 is in the shed at hour 1, and a task that consumes a good cannot run before it. |
+| `hire_times` | the hour each offered hand may begin. A hand hired in turn 0 acts from hour 1 (F040). |
+| `drop_by` | one entry per chain: the latest hour that chain's harvest must be banked, or `None` to leave it for the night. |
+| `beam` | the width. `None` asks for the width the day's size implies, `beam_for(tasks, workers)` — a step costs `beam × workers × tasks`, so a fixed width is a fixed cost only for a fixed day. |
+| `hands` | the pool to start at; `None` starts at the arithmetic floor. |
+| `max_hands` | the largest pool allowed. Equal to `hands` it asks one yes-or-no question. |
+| `budget_s` | the wall clock. The best route so far comes back with `out_of_time=True`. |
+| `warm` | a `Result` from an earlier call on almost this instance; the search starts from its state, in a row on top of the beam. |
+
+The output:
+
+| name | what it is |
+|---|---|
+| `Result.pool` | the hands the answer was searched with |
+| `Result.route` | `[(turn, task_id, worker), ...]` — the turn each task occupies, its id, its worker |
+| `Result.complete` | whether that pool carried the whole day |
+| `Result.out_of_time` | a deadline stopped it before it ran out of work to place |
+| `Result.infeasible` | the arithmetic floor is above the ceiling, so no allowed pool can carry it |
+| `Result.can_improve` | whether more budget would plausibly find more — the deadline flag under the name of the decision |
+| `DayOps.units` | the ops per worker, indexed by turn, PASS-padded |
+| `DayOps.arrivals` | `(hour, item, units)` per drop — what the day's market may actually sell today |
+
+`lower_bound(day, tasks)` is public if the caller wants the arithmetic floor itself. When no
+allowed pool carries the day the best partial route comes back with `complete=False`, so the
+caller keeps the part of the day that works rather than getting nothing.
 
 **(d) The assembly** — `DayPlan(units, market, needs, hires, ...)` with `as_plan()` returning
 `{"units": [...], "market": [...]}`, which is what `agent/dispatch.py` slices. On main:
 `DayPlan` (`:296`).
+
+## 2b. The drop, and the pool
+
+**A drop is a deadline on a harvest, not a chain op.** `HARVEST` says the crop left the tile;
+whether it has to be in the shed by some hour is the sell side's decision, so it arrives as
+`build(chains, drop_by=[...])` - one entry per chain, the latest hour that chain's harvest must be
+banked, or `None` to leave it for the night. A DROP task is derived from it: its cell is the door
+it hands the bag over at, its `latest` is the deadline, and `banks` names the harvest it serves.
+A DROP empties the worker's WHOLE bag, so one drop banks every harvest since the previous one -
+which is why a drop with an empty bag is free, the mirror of the fetch. `compile_route` reads the
+drops off the route, and `DayOps.arrivals` is `(hour, item, units)` per drop, for whoever prices
+the sell side.
+
+**The budget, the warm start, and the answer.** `search(..., budget_s=)` stops at the deadline and
+returns the best route it has, `out_of_time=True`. `search(..., warm=<a previous Result>)` starts the
+beam from that route, so a caller that re-asks after a small change repairs instead of restarting -
+it applies at the pool the route was searched with. `Result.can_improve` is that deadline flag under
+the name of the decision: False means no budget would find more, so spend the turns elsewhere.
+
+**The day's input is the planner's, and only the planner's.** `Day(chains, available, hire_times)` -
+no units: the engine resets every day to the farmer on the shed's corner door with no hands, so where
+the units stand is not a decision the planner has. The hands' own positions are the search's per
+route, from the spawn rule and where the units before them walked.
+
+**The pool.** `search(hands=None)` halving-searches the smallest pool that carries the day,
+between `lower_bound` and `max_hands`; `hands=` asks for the scan instead. A day whose arithmetic
+floor is above the ceiling comes back `infeasible=True` with an empty route rather than raising -
+a hundred tiles on a five-op chain needs 21 workers against a ceiling of 16, and that is an answer.
+
+---
 
 ## 3. The seam worth knowing before you wire it
 

@@ -21,12 +21,13 @@ Every quantity below is an array with the beam on axis zero.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from typing import NamedTuple
 
 import numpy as np
 
-from agent.world.board import MOVE_DELTA
+from agent.world.board import MOVE_DELTA, SPAWN
 from agent.world.rules import BOARD_SIZE, TURNS_PER_DAY
 from agent.wsr.routing import walk
 from agent.wsr.tasks import DISTANCE, NO_ITEM, SHED_INDEX, TaskArray
@@ -34,7 +35,25 @@ from agent.wsr.tasks import DISTANCE, NO_ITEM, SHED_INDEX, TaskArray
 Cell = tuple[int, int]
 MAX_HANDS = 16
 
+#: What one step of the search is allowed to cost, as `beam x workers x tasks`. A step's arrays are
+#: that product wide, so a fixed width makes a hundred tiles cost fifty times a quadrant. This is the
+#: product a 16-wide beam has on a 200-task day with 16 workers - a shape measured to lose nothing
+#: against 64 on any of the objective's four layers.
+STEP_WORK = 16 * 16 * 200
+#: The measured ends of the useful range: below 8 a day starts losing tasks (4 placed 47 of 50 where
+#: 8 placed all of them), and above 32 nothing improved on any layer.
+MIN_BEAM, MAX_BEAM = 8, 64
+
+
+def beam_for(tasks: TaskArray, workers: int) -> int:
+    """The width to search a day of this size with this many workers."""
+    return int(min(MAX_BEAM, max(MIN_BEAM, STEP_WORK / max(1, workers * tasks.n))))
+
 BIG = np.int16(30000)
+
+#: Where the farmer stands when a day begins - the shed's first door, which is where the engine
+#: respawns it every night. Not an input: the day resets to the farmer there with no hands at all.
+FARMER_START: Cell = SPAWN
 
 
 @dataclass(frozen=True)
@@ -51,8 +70,18 @@ class Day:
     chains: tuple[tuple[Cell, tuple[str, ...], str | None], ...]
     available: dict[str, int]
     horizon: int = TURNS_PER_DAY
-    units: tuple[Cell, ...] = ()            # the farmer, and any hand already on the field
     hire_times: tuple[int, ...] = ()        # the hour each offered hand may begin
+
+    @property
+    def units(self) -> tuple[Cell, ...]:
+        """The units on the field when the day starts: the farmer, and nobody else.
+
+        Not a field, because it is not a choice. The engine resets every day to the farmer on the
+        shed's corner door with no hands, so the planner has nothing to say here - and a hand it
+        offers is settled by the engine at the hour of the offer (F040), on the door the spawn rule
+        picks, which the search works out for each route it tries.
+        """
+        return (FARMER_START,)
 
 
 class Result(NamedTuple):
@@ -67,6 +96,25 @@ class Result(NamedTuple):
     pool: int
     route: list[tuple[int, str, int]]
     complete: bool
+    #: True when a deadline stopped the search before it ran out of tasks to place. A route that is
+    #: neither complete nor out of time is the search's own answer: the pool could not carry it.
+    out_of_time: bool = False
+
+    @property
+    def can_improve(self) -> bool:
+        """Whether another slice of budget would plausibly find more WORK.
+
+        Work is what the flag is about: a day that was carried has nothing left to place, and a day
+        too big for any pool has no better route however long the search runs. Only a route that is
+        both incomplete and cut short has more to find. `out_of_time` stays the raw fact - a route
+        can be complete and still have crossed its deadline - because a caller that wants to polish a
+        carried day's makespan is asking a different question than this one.
+        """
+        return self.out_of_time and not self.complete
+    #: True when the day needs more workers than the caller allowed, so NO pool in range can carry
+    #: it. The arithmetic floor is a count of workers and the ceiling is a count of hands, and on a
+    #: hundred tiles the first passes the second - which is an answer about the day, not an error.
+    infeasible: bool = False
 
 
 def lower_bound(day: Day, tasks: TaskArray) -> int:
@@ -113,8 +161,9 @@ def _chain_depth(tasks: TaskArray) -> int:
     return int(depth.max())
 
 
-def search(day: Day, tasks: TaskArray, *, beam: int = 64,
-           hands: int | None = None, max_hands: int = MAX_HANDS) -> Result:
+def search(day: Day, tasks: TaskArray, *, beam: int | None = None,
+           hands: int | None = None, max_hands: int = MAX_HANDS,
+           budget_s: float | None = None, warm: Result | None = None) -> Result:
     """The day, searched with `beam` routes in parallel.
 
     Two numbers decide how the pool is searched, and they answer two different questions:
@@ -129,6 +178,20 @@ def search(day: Day, tasks: TaskArray, *, beam: int = 64,
     When no allowed pool carries the day, the best partial route comes back with `complete=False`:
     what was built is reported rather than discarded, so the caller keeps the part of the day that
     works, and the answer never claims a pool the caller did not allow.
+
+    `beam` is the width, and None asks for the width the day's size implies (`beam_for`) - a step
+    costs `beam x workers x tasks`, so a fixed width is a fixed cost only for a fixed day.
+
+    `warm` is a route from an earlier call on almost this instance, and the search starts from it
+    instead of from nothing: a row ON TOP of the beam holds the state that route leaves behind, and
+    the snapshot is taken after it, so a search that finds nothing better hands the route back. The
+    row is extra, so a seed that no longer fits the day costs the beam nothing. It applies to the
+    pool the route was searched with and is ignored at the others.
+
+    `budget_s` bounds the wall clock. The search keeps the best route it has found and returns it
+    with `out_of_time=True` rather than running long: the cost of a question grows with the square
+    of the day and with every pool the loop tries, so a deadline is the only promise that survives
+    a hundred tiles.
     """
     if tasks.n == 0:
         return Result(0, [], True)
@@ -139,59 +202,198 @@ def search(day: Day, tasks: TaskArray, *, beam: int = 64,
     floor = max(0, lower_bound(day, tasks) - len(day.units))
     start = floor if hands is None else int(hands)
     ceiling = min(int(max_hands), MAX_HANDS)
+    deadline = None if budget_s is None else time.perf_counter() + float(budget_s)
     if start > ceiling:
-        raise ValueError(
-            f"start pool {start} is above the ceiling {ceiling}: the caller asked for a pool it "
-            f"does not allow")
+        return Result(ceiling, [], False, infeasible=True)
+
+    def width(pool: int) -> int:
+        return beam if beam is not None else beam_for(tasks, len(day.units) + pool)
+
+    def seed(pool: int) -> Result | None:
+        # A route is a state for the pool it was searched with: its worker indices are that pool's.
+        return warm if warm is not None and warm.pool == pool else None
+
+    if hands is None and ceiling > start:
+        return _smallest_pool(day, tasks, width, start, ceiling, deadline, seed)
 
     partial: Result | None = None
+    placed = -1
     for pool in range(start, ceiling + 1):
-        # The hands land on the doors that are free WHEN THEY ARE HIRED, and a unit walking off a
-        # door in the first turn changes which doors those are. So the positions are settled
-        # against the search's own first turn and the day is searched again until they agree -
-        # a fixed point, and a cheap one: the search is milliseconds and this converges in two
-        # passes or not at all.
-        settled = None
-        result = _run(day, tasks, hands=pool, beam=beam)
-        for _attempt in range(3):
-            nxt = _settled_after_first_turn(day, tasks, result)
-            if settled is not None and nxt == settled:
-                break
-            settled = nxt
-            result = _run(day, tasks, hands=pool, beam=beam, settled=settled)
+        result = _fixed_point(day, tasks, width(pool), pool, deadline, seed(pool))
         if result.complete:
             return result
-        if partial is None or len(result.route) > len(partial.route):
-            partial = result
+        if partial is None or _better_route(result, partial):
+            partial, placed = result, len(result.route)
+        elif len(result.route) <= placed:
+            # A bigger pool placed no more of the day than a smaller one, so the workers are not
+            # what the day is short of and every pool above this one is a search for nothing.
+            break
+        if result.out_of_time:
+            # A larger pool costs more and cannot buy back the time, so the loop stops here.
+            break
     return partial if partial is not None else Result(ceiling, [], False)
 
 
+def _makespan(result: Result) -> int:
+    """The turn a route stops at. A drop with an empty bag is written at -1, so it is not one."""
+    return max((int(turn) for turn, _task, _worker in result.route if turn >= 0), default=-1) + 1
 
+
+def _better_route(candidate: Result, best: Result) -> bool:
+    """Whether a whole route beats another: carried first, then more work, then the earlier stop.
+
+    The rule the pool loop and the fixed point share. A route that carries the day beats one that
+    does not, whatever it placed - and among routes that carry it or fail it alike, the one that
+    placed more wins, and the one that stopped earlier wins the tie.
+    """
+    if candidate.complete != best.complete:
+        return candidate.complete
+    if len(candidate.route) != len(best.route):
+        return len(candidate.route) > len(best.route)
+    return _makespan(candidate) < _makespan(best)
+
+
+def _fixed_point(day: Day, tasks: TaskArray, beam: int, pool: int,
+                 deadline: float | None, warm: Result | None = None) -> Result:
+    """One pool, searched until the hands stop moving.
+
+    The hands land on the doors that are free WHEN THEY ARE HIRED, and a unit walking off a door in
+    the first turn changes which doors those are. So the positions are settled against the search's
+    own first turn and the day is searched again until they agree - a fixed point, and a cheap one:
+    it converges in two passes or not at all.
+    """
+    settled = None
+    result = _run(day, tasks, hands=pool, beam=beam, deadline=deadline, warm=warm)
+    best = result
+    for _attempt in range(3):
+        if deadline is not None and time.perf_counter() >= deadline:
+            # Another attempt would be cut at its first step and hand back an EMPTY route, which
+            # would replace the work this one placed. The deadline is the caller's answer, not a
+            # reason to throw the answer away.
+            break
+        nxt = _settled_after_first_turn(day, tasks, result)
+        if settled is not None and nxt == settled:
+            break
+        settled = nxt
+        nxt_result = _run(day, tasks, hands=pool, beam=beam, settled=settled, deadline=deadline,
+                          warm=warm)
+        if len(nxt_result.route) == 0 and len(best.route) > 0:
+            # A re-run the deadline cut at its first step has nothing, and it must not REPLACE the
+            # work the attempt before it placed. The attempts are not interchangeable, though, so
+            # this is not a best-of: only the last one is consistent with the positions it priced
+            # from, which is what the compiler re-derives from the route. Keeping an earlier attempt
+            # on merit hands back a route priced from positions the day does not have.
+            break
+        best = nxt_result
+    return best
+
+
+def _smallest_pool(day: Day, tasks: TaskArray, width, lo: int, hi: int,
+                   deadline: float | None, seed) -> Result:
+    """The smallest pool that carries the day, by halving.
+
+    The predicate is monotone - a bigger pool is never less able to carry a day - so halving finds
+    the smallest carrying pool in about log2 runs instead of one run per pool. It is not free: the
+    pools it tries are the LARGE ones, and a run costs more the more workers it has, so it wins when
+    the answer is large and loses when it is small. That is a measurement, not a preference, and the
+    caller can ask for the scan with `hands=` instead.
+    """
+    best: Result | None = None
+    while lo < hi:
+        mid = (lo + hi) // 2
+        result = _fixed_point(day, tasks, width(mid), mid, deadline, seed(mid))
+        if result.complete:
+            best, hi = result, mid
+        else:
+            best, lo = result, mid + 1
+        if result.out_of_time:
+            break
+    if lo == hi:
+        final = _fixed_point(day, tasks, width(lo), lo, deadline, seed(lo))
+        if final.complete or best is None:
+            return final
+        if _better_route(final, best):
+            return final
+    return best if best is not None else Result(hi, [], False)
+
+
+
+
+
+def _warm_row(tasks: TaskArray, warm: Result, done, when, who, free, where, travel) -> None:
+    """Write a previous route's state into the beam's first row.
+
+    A route is a set of `(turn, task, worker)` and the state is what that set implies, so this is a
+    translation rather than a re-search. A task the day does not have is skipped, and so is a worker
+    the pool does not have: a caller that hands over a route from another instance gets the part of
+    it that still applies, not an error.
+    """
+    row = 0
+    column = {task_id: index for index, task_id in enumerate(tasks.ids)}
+    per_worker: dict[int, list[tuple[int, int]]] = {}
+    for turn, task_id, worker in warm.route:
+        index = column.get(task_id)
+        worker = int(worker)
+        if index is None or worker >= free.shape[1]:
+            continue
+        turn = int(turn)
+        done[row, index] = True
+        when[row, index] = turn
+        who[row, index] = worker
+        free[row, worker] = max(int(free[row, worker]), turn + 1)
+        where[row, worker] = tasks.cells[index]
+        per_worker.setdefault(worker, []).append((turn, index))
+
+    # The walk the route took, so the warmed row is not credited a travel it did not pay: the
+    # objective's last layer would otherwise prefer it to every route the search builds.
+    walked = 0
+    for worker, entries in per_worker.items():
+        at = (int(where[row, worker, 0]), int(where[row, worker, 1]))
+        for _turn, index in sorted(entries):
+            target = (int(tasks.cells[index][0]), int(tasks.cells[index][1]))
+            walked += abs(target[0] - at[0]) + abs(target[1] - at[1])
+            at = target
+    travel[row] = min(walked, int(np.iinfo(np.int16).max))
 
 
 def _run(day: Day, tasks: TaskArray, *, hands: int, beam: int,
-         settled=None) -> Result:
+         settled=None, deadline: float | None = None,
+         warm: Result | None = None) -> Result:
     """One pool size: search the day, and report how much of it the pool could carry."""
     n = tasks.n
     start_pos = _start_positions(day, hands, settled)         # (m, 2)
     first_hand = len(day.units)                              # workers before this index are units
 
-    done = np.zeros((beam, n), dtype=bool)
-    when = np.zeros((beam, n), dtype=np.int16)               # the turn each done task occupies
-    who = np.full((beam, n), -1, dtype=np.int16)             # and the worker that did it
+    # The warmed route gets a row of its own ON TOP of the beam, so a caller handing over a route
+    # that no longer fits the day costs the search nothing: the beam below it is as wide as it would
+    # have been. The selection still keeps `beam` rows, so from the second generation on the seed
+    # competes for a slot like any other route.
+    rows = beam + (1 if warm is not None else 0)
+    done = np.zeros((rows, n), dtype=bool)
+    when = np.zeros((rows, n), dtype=np.int16)               # the turn each done task occupies
+    who = np.full((rows, n), -1, dtype=np.int16)             # and the worker that did it
     # Every worker starts at its own hour: the farmer at the day's first, a hand at the hour the
     # planner offered it. Starting them all together would hand the search turns the engine will
     # not give, which is how a day gets called feasible that the harness then truncates.
     hours = start_hours(day, tasks, hands)
-    free = np.tile(hours[None, :], (beam, 1)).astype(np.int16)
-    where = np.tile(start_pos[None, :, :], (beam, 1, 1))
-    travel = np.zeros((beam,), dtype=np.int16)
-    live = np.ones((beam,), dtype=bool)
+    free = np.tile(hours[None, :], (rows, 1)).astype(np.int16)
+    where = np.tile(start_pos[None, :, :], (rows, 1, 1))
+    travel = np.zeros((rows,), dtype=np.int16)
+    live = np.ones((rows,), dtype=bool)
+
+    if warm is not None:
+        _warm_row(tasks, warm, done, when, who, free, where, travel)
 
     # The best state is remembered as the search goes, because the beam's last generation can be
     # empty - a route that dies at the end would otherwise erase the work it had already placed.
     best = _snapshot(done, when, who, free, travel, first_hand, hours)
+    cut = False
     for _step in range(n):
+        # Every eighth step: a step is a fixed amount of work, so the check cannot pay for itself
+        # more often than that, and eight steps is far below the resolution a turn budget needs.
+        if deadline is not None and not (_step & 7) and time.perf_counter() >= deadline:
+            cut = True
+            break
         expanded = _expand(day, tasks, done, when, who, free, where, travel, live)
         if expanded is None:
             break
@@ -207,7 +409,7 @@ def _run(day: Day, tasks: TaskArray, *, hands: int, beam: int,
     complete = placed == n
     route = [(int(when_best[i]), tasks.ids[i], int(who_best[i]))
              for i in np.argsort(when_best) if done_best[i]]
-    return Result(hands, route, complete)
+    return Result(hands, route, complete, out_of_time=cut)
 
 
 def _snapshot(done, when, who, free, travel, first_hand, start_hours):
@@ -362,8 +564,21 @@ def _expand(day: Day, tasks: TaskArray, done, when, who, free, where, travel, li
     if rows.size == 0:
         return None
 
+    # The frontier: the tasks some live route could place next. Everything past it is illegal for
+    # every route, so pricing those columns is pricing a column that is thrown away - and there are
+    # few of them only in appearance: a chain's tasks are nearly all open at once on a big day.
+    ready_all = tasks.ready(done)                             # (b, n)
+    index = np.flatnonzero((ready_all & ~done).any(axis=0))
+    if index.size == 0:
+        return None
+    width = index.size
+
     here = _flat(where)                                      # (b, m)
-    hop = DISTANCE[here[:, :, None], tasks.cell_index[None, None, :]].astype(np.int16)
+    # One gather, not two 1-D differences: Manhattan distance separates exactly, and computing it
+    # that way is 1.7x faster on its own - but it is five passes over the same (b, m, w) shape
+    # against one, and end to end that made a hundred tiles 15 per cent SLOWER. The table is one
+    # dimension more than the arithmetic needs and one pass less than the machine wants.
+    hop = DISTANCE[here[:, :, None], tasks.cell_index[index][None, None, :]].astype(np.int16)
 
     # The trip a consumer makes when its good is not in the bag: to a door, the pickup, and on. One
     # door, not two minima - the nearest door to the worker and the nearest to the tile can be
@@ -371,30 +586,56 @@ def _expand(day: Day, tasks: TaskArray, done, when, who, free, where, travel, li
     # The trip: one turn for the pickup, taken at the door before the day's walk. The worker does
     # not move for it, because it is already standing where the good is when it takes it.
     trip = np.zeros(hop.shape, dtype=bool)
-    needs = tasks.items >= 0
+    needs = tasks.items[index] >= 0
     if needs.any():
         carried = _carried(done, who, tasks, m)              # (b, m, goods)
-        has = np.where(needs[None, None, :], carried[:, :, tasks.items.clip(0)], True)
+        has = np.where(needs[None, None, :], carried[:, :, tasks.items[index].clip(0)], True)
         trip = ~has
 
-    arrive = free[:, :, None] + hop                          # (b, m, n)
-    released = _released(when, tasks)                        # (b, n): the predecessors' finish
-    ready = tasks.ready(done)                                # (b, n): every predecessor done
+    # The drops. A worker that has already dropped since the harvest a drop banks has an empty bag,
+    # so that drop hands over nothing: no trip, no turn, and nobody moves. This is what lets one
+    # drop bank several harvests instead of one apiece.
+    idle = np.zeros(hop.shape, dtype=bool)
+    drop_rows = np.flatnonzero(tasks.is_drop)
+    if drop_rows.size:
+        # Which of the day's drops are on the frontier, and where they sit in the beam's width.
+        local = np.searchsorted(index, drop_rows)
+        inside = (local < width) & (index[np.minimum(local, width - 1)] == drop_rows)
+        if inside.any():
+            last_drop = _last_drop(done, when, who, drop_rows, m)        # (b, m)
+            held = when[:, tasks.banks[drop_rows].clip(0)]               # (b, d) each harvest's turn
+            idle[:, :, local[inside]] = (
+                last_drop[:, :, None] > held[:, None, :])[:, :, inside]
+
+    arrive = free[:, :, None] + hop                          # (b, m, w)
+    released = _released(when, tasks)[:, index]              # (b, w): the predecessors' finish
+    ready = ready_all[:, index]                              # (b, w): every predecessor done
+    earliest_here = tasks.earliest[index]
+    latest_here = tasks.latest[index]
 
     start = np.maximum(arrive, released[:, None, :])
-    start = np.maximum(start, tasks.earliest[None, None, :])
+    start = np.maximum(start, earliest_here[None, None, :])
     start = start + trip.astype(np.int16)
     finish = start + np.int16(1)
+    # An idle drop is finished the moment its worker is free - it costs nothing and takes no turn -
+    # and it is written at turn -1, which is the compiler's signal that there is no op to emit.
+    finish = np.where(idle, np.maximum(free[:, :, None], released[:, None, :]), finish)
+    finish = np.maximum(finish, np.where(idle, np.int16(0), earliest_here[None, None, :]))
 
-    legal = (ready & ~done & (finish <= day.horizon).any(axis=1)
-             & (start <= tasks.latest[None, None, :]).any(axis=1))
-    legal = legal[:, None, :] & (finish <= day.horizon) & (start <= tasks.latest[None, None, :])
+    in_time = finish <= day.horizon
+    before_latest = start <= latest_here[None, None, :]
+    legal = (ready & ~done[:, index] & in_time.any(axis=1) & before_latest.any(axis=1))
+    legal = legal[:, None, :] & in_time & before_latest
     finish = np.where(legal, finish, BIG)
 
-    earliest = finish.min(axis=1)                            # (b, n): the hour it can be done
-    worker = finish.argmin(axis=1)                           # (b, n): and by which worker
+    # On the frontier's own width, not the day's: the selection maps the column it picked back
+    # through `index`, so nothing is ever spread to the full list and the step never pays for the
+    # columns it did not price.
+    earliest = finish.min(axis=1)                            # (b, w): the hour it can be done
+    worker = finish.argmin(axis=1)                           # (b, w): and by which worker
     return dict(rows=rows, finish=finish, hop=hop, earliest=earliest, worker=worker,
-                done=done, when=when, who=who, free=free, where=where, travel=travel)
+                done=done, when=when, who=who, free=free, where=where, travel=travel,
+                idle=idle, index=index)
 
 
 def _select(expanded, tasks: TaskArray, beam: int, first_hand: int, start_hours):
@@ -409,12 +650,13 @@ def _select(expanded, tasks: TaskArray, beam: int, first_hand: int, start_hours)
     The shortlist is a few times the beam wide, not the whole field: the dedupe and the layered
     sort need a choice, but they do not need every task of every live route.
     """
-    n = tasks.n
+    index = expanded["index"]
+    width = index.size
     rows = expanded["rows"]
     done, when, who = expanded["done"], expanded["when"], expanded["who"]
     free = expanded["free"]
     where, travel, hop = expanded["where"], expanded["travel"], expanded["hop"]
-    flat_hour = expanded["earliest"][rows].ravel()           # (live * n)
+    flat_hour = expanded["earliest"][rows].ravel()           # (live * width)
 
     legal = np.flatnonzero(flat_hour < BIG)
     if legal.size == 0:
@@ -428,8 +670,11 @@ def _select(expanded, tasks: TaskArray, beam: int, first_hand: int, start_hours)
     else:
         shortlist = legal
 
-    parent = np.repeat(rows, n)[shortlist]
-    task = shortlist % n
+    parent = np.repeat(rows, width)[shortlist]
+    column = shortlist % width
+    # The frontier's column, mapped back to the day's own index - which is what the state and the
+    # task's cell are written by.
+    task = index[column]
     hour = flat_hour[shortlist]
     worker = expanded["worker"][rows].ravel()[shortlist]
 
@@ -438,15 +683,19 @@ def _select(expanded, tasks: TaskArray, beam: int, first_hand: int, start_hours)
     # acts in the first of them. The worker is free from the turn after.
     child_done = done[parent].copy()
     child_done[np.arange(parent.size), task] = True
+    # A drop with an empty bag has no turn of its own: it is written at -1, and the worker neither
+    # moves nor loses the hour.
+    idle_here = expanded["idle"][parent, worker, column]
     child_who = who[parent].copy()
     child_who[np.arange(parent.size), task] = worker
     child_when = when[parent].copy()
-    child_when[np.arange(parent.size), task] = hour - 1
+    child_when[np.arange(parent.size), task] = np.where(idle_here, -1, hour - 1)
     child_free = free[parent].copy()
-    child_free[np.arange(parent.size), worker] = hour
+    child_free[np.arange(parent.size), worker] = np.where(idle_here, free[parent, worker], hour)
     child_where = where[parent].copy()
-    child_where[np.arange(parent.size), worker] = tasks.cells[task]
-    child_travel = travel[parent] + hop[parent, worker, task]
+    child_where[np.arange(parent.size), worker] = np.where(
+        idle_here[:, None], where[parent, worker], tasks.cells[task])
+    child_travel = travel[parent] + hop[parent, worker, column]
 
     # Every child array is filtered in ONE place. Filtering them in separate statements is how a
     # new array gets left behind, and a child array out of step with the others reads another
@@ -498,6 +747,22 @@ def _dedupe(done: np.ndarray, free: np.ndarray, where: np.ndarray) -> np.ndarray
     return np.sort(first)
 
 
+def _last_drop(done, when, who, drop_rows: np.ndarray, workers: int) -> np.ndarray:
+    """The turn each worker last dropped at, per route - the bag is empty after it.
+
+    Scattered rather than derived from a matrix: the drops are a handful of rows against the day's
+    hundreds, so this is the one place where walking them beats an array the size of the list.
+    """
+    batch = who.shape[0]
+    out = np.full((batch, workers), -1, dtype=np.int16)
+    worker = who[:, drop_rows]
+    live = done[:, drop_rows] & (worker >= 0)
+    if live.any():
+        rows = np.broadcast_to(np.arange(batch)[:, None], live.shape)
+        np.maximum.at(out, (rows[live], worker[live]), when[:, drop_rows][live])
+    return out
+
+
 def _released(when: np.ndarray, tasks: TaskArray) -> np.ndarray:
     """When each task's predecessors finish, per route.
 
@@ -510,8 +775,11 @@ def _released(when: np.ndarray, tasks: TaskArray) -> np.ndarray:
     if tasks.n == 0:
         return out
     # `when` is the turn a task OCCUPIES, so a successor's earliest start is the turn after it.
-    for after, before in tasks.edges:
-        np.maximum(out[:, after], when[:, before] + 1, out=out[:, after])
+    # One scatter over the whole edge list, not a loop over it: a task may have several
+    # predecessors, so the answer for a successor is the LARGEST of their finishes - which is what
+    # `maximum.at` scatters, and what the loop did one edge at a time.
+    rows = np.arange(when.shape[0], dtype=np.int32)[:, None]
+    np.maximum.at(out, (rows, tasks.edge_after[None, :]), when[:, tasks.edge_before] + 1)
     return out
 
 
@@ -528,18 +796,24 @@ def _carried(done, who, tasks: TaskArray, workers: int) -> np.ndarray:
     cannot disagree are worth more than one kept in step by hand.
     """
     batch = who.shape[0]
-    goods = tasks.items
-    n_goods = int(goods.max()) + 1 if goods.size and int(goods.max()) >= 0 else 1
-    out = np.zeros((batch, workers, max(n_goods, 1)), dtype=bool)
-    rows = np.arange(batch)
-    for i in range(tasks.n):
-        good = int(goods[i])
-        if good < 0:
-            continue
-        worker = who[:, i]
-        live = done[:, i] & (worker >= 0)
-        out[rows[live], worker[live], good] = True
-    return out
+    # A bag holds a good when the worker did a task that NEEDED it - the trip that brought it - or
+    # one that YIELDED it, because a harvest puts the crop in the bag it is carried in. No task
+    # does both, so one column answers for every row.
+    goods = np.where(tasks.yields >= 0, tasks.yields, tasks.items)
+    n_goods = max(int(goods.max()) + 1, 1) if goods.size else 1
+    flat = np.zeros(batch * workers * n_goods, dtype=bool)
+    consuming = np.flatnonzero(goods >= 0)
+    if consuming.size == 0:
+        return flat.reshape(batch, workers, n_goods)
+    # One scatter for the whole batch: (route, worker, good) -> a cell of the bag. Duplicates are
+    # harmless - the cell is a boolean and every write sets it the same way.
+    worker = who[:, consuming]
+    live = done[:, consuming] & (worker >= 0)
+    if live.any():
+        rows = np.arange(batch)[:, None]
+        index = ((rows * workers) + np.where(live, worker, 0)) * n_goods + goods[consuming]
+        flat[index[live]] = True
+    return flat.reshape(batch, workers, n_goods)
 
 
 def _fetch_mask(tasks: TaskArray) -> np.ndarray:

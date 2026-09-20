@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from agent.world.action_rules import CARRIES
 from agent.world.model import UnitAction
 from agent.world.rules import BOARD_SIZE, SHED_ACCESS
 
@@ -61,7 +62,20 @@ class TaskArray:
     #: a task list that cannot spell itself is not a task list.
     ops: list[tuple] = field(default_factory=list)
     actions: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int8))
+    #: What each task must have in its worker's bag - the world's own `CARRIES` plus PLACE, which
+    #: carries the animal. NO_ITEM for everything else. This is what a trip to a shed door is for.
     items: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int8))
+    #: What each task puts in the bag - the world's own `YIELDS`. A HARVEST yields the crop, a
+    #: COLLECT_FERTILIZER yields fertilizer, and neither is a good the task needs: the same op can
+    #: appear in both columns for no op, and reading one as the other is a day that waits for what
+    #: it is about to produce.
+    yields: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int8))
+    #: How many units `yields` puts in the bag - a harvest's `yield_units`, read off the tile.
+    yield_n: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int8))
+    #: For a DROP, the harvest it banks - and -1 for every other row. A drop hands over the whole
+    #: bag, so what it banks is decided by which harvests happened since the drop before it; this
+    #: column is what lets the search see that a second drop with nothing new in the bag is free.
+    banks: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int16))
     cells: np.ndarray = field(default_factory=lambda: np.zeros((0, 2), dtype=np.int16))
     columns: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int8))
     pred: np.ndarray = field(default_factory=lambda: np.zeros((0, 0), dtype=bool))
@@ -87,6 +101,11 @@ class TaskArray:
         return len(self.ids)
 
     @property
+    def is_drop(self) -> np.ndarray:
+        """The rows that hand the bag over."""
+        return self.actions == ACTION_CODE[UnitAction.DROP]
+
+    @property
     def cell_index(self) -> np.ndarray:
         """The distance-matrix row of each task's tile."""
         return (self.cells[:, 0].astype(np.int32) * BOARD_SIZE
@@ -104,8 +123,17 @@ class TaskArray:
         The matrix is the shape a broadcast wants, but the graph itself is a handful of edges per
         task, and walking them costs the number of edges instead of their square.
         """
-        after, before = np.nonzero(self.pred)
-        return list(zip(after.tolist(), before.tolist()))
+        return self._edges
+
+    @property
+    def edge_after(self) -> np.ndarray:
+        """The successors of every edge, as an array - the shape a scatter wants."""
+        return self._edge_after
+
+    @property
+    def edge_before(self) -> np.ndarray:
+        """The predecessors of every edge, as an array."""
+        return self._edge_before
 
     @property
     def pred_count(self) -> np.ndarray:
@@ -126,6 +154,18 @@ class TaskArray:
         """
         return (hour >= self.earliest) & (hour <= self.latest)
 
+    def __post_init__(self) -> None:
+        # The transposed product, cast once. `ready` runs once per step and rebuilding this on
+        # every call would cost more than the product it feeds.
+        self._pred_f32 = self.pred.T.astype(np.float32)
+        # The edges, read once. They are a function of the graph, and the walk that needs them runs
+        # once per step: `np.nonzero` over the whole matrix on every call was a third of the time
+        # that walk took, for the same answer every time.
+        after, before = np.nonzero(self.pred)
+        self._edge_after = after.astype(np.int32)
+        self._edge_before = before.astype(np.int32)
+        self._edges = list(zip(after.tolist(), before.tolist()))
+
     def ready(self, done: np.ndarray) -> np.ndarray:
         """Which tasks have all their predecessors done - one matrix product.
 
@@ -133,8 +173,12 @@ class TaskArray:
         The matrix is transposed because `pred[i, j]` means j precedes i, so reading task i's row
         means asking for column i of the product - `done @ pred` would count the tasks i precedes,
         which is the opposite question and reads as satisfied the moment any descendant is done.
+
+        Float32, not int8: numpy has no BLAS kernel for int8 and runs this product in its own loop,
+        which is most of the cost of a step on a hundred tiles. A count fits a float32's 24-bit
+        mantissa exactly, so this is the same comparison, not an approximation of it.
         """
-        return (done.astype(np.int8) @ self.pred.T.astype(np.int8)) == self.pred_count
+        return (done.astype(np.float32) @ self._pred_f32) == self.pred_count
 
     def done_by_column(self, done: np.ndarray) -> np.ndarray:
         """How many of each column's tasks are done, per state - for the tile-block preference."""
@@ -163,6 +207,9 @@ def action_codes() -> dict[UnitAction, int]:
     return {a: i for i, a in enumerate(UnitAction)}
 
 
+ACTION_CODE: dict[UnitAction, int] = action_codes()
+
+
 SHED_INDEX = np.asarray([index_of(d) for d in SHED_ACCESS], dtype=np.int32)
 
 
@@ -174,19 +221,24 @@ def _item_table() -> dict:
 ITEM_CODE: dict = _item_table()
 
 
-def build(chains, *, available: dict[str, int] | None = None, horizon: int = 24) -> TaskArray:
+def build(chains, *, available: dict[str, int] | None = None, horizon: int = 24,
+          drop_by=None) -> TaskArray:
     """The planner's chains -> the arrays a beam search reads.
 
-    The tasks themselves come from `expand_chain`, the same builder the greedy solver uses, so the
-    two solvers see the same work and the same precedence - the only difference here is the shape.
-    The time columns are filled from the timetable that is handed in: a fetch waits for its good,
-    a planting waits for its seed, and everything else may run from the first hour. Nothing is read
+    The tasks themselves come from `expand_chain`, which is the layer's own expansion of the chain
+    the caller hands over - the registry's id is the caller's business, not this one's. The time
+    columns are filled from the timetable that is handed in: a consumer waits for its good, a
+    planting waits for its seed, and everything else may run from the first hour. Nothing is read
     from the world.
     """
     from agent.world.model import UnitAction
-    from agent.wsr.models import expand_chain
+    from agent.wsr.models import MinorTask, expand_chain
+    from agent.wsr.routing import nearest_shed
 
     available = available or {}
+    #: One deadline per chain, aligned with `chains`: the latest hour that chain's harvest must be in
+    #: the shed, or None to leave it for the night. A DROP is derived from it, never declared.
+    drop_by = list(drop_by) if drop_by is not None else []
     tasks = []
     order: list[tuple[str, str]] = []
     column_of: dict[str, int] = {}
@@ -211,6 +263,26 @@ def build(chains, *, available: dict[str, int] | None = None, horizon: int = 24)
     order = [(b, a) for b, a in order if b not in fetches and a not in fetches]
     column_of = {tid: col for tid, col in column_of.items() if tid not in fetches}
 
+    # A DROP is derived: a harvest the caller wants banked gets a drop of its own, and the drop's
+    # cell is the door it hands the bag over at - so the walk to it is priced by the same rule as
+    # any other task and nothing in the search has to know what a drop is.
+    deadline_of: dict[str, int] = {}
+    banks_of: dict[str, str] = {}
+    for index in range(len(chains)):
+        deadline = drop_by[index] if index < len(drop_by) else None
+        if deadline is None:
+            continue
+        cell = chains[index][0]
+        for task in list(tasks):
+            if column_of.get(task.id) != index or task.action != UnitAction.HARVEST:
+                continue
+            drop_id = f"{task.id}_drop"
+            tasks.append(MinorTask(id=drop_id, cell=nearest_shed(cell), action=UnitAction.DROP))
+            order.append((task.id, drop_id))              # bank it after you take it
+            column_of[drop_id] = index
+            deadline_of[drop_id] = int(deadline)
+            banks_of[drop_id] = task.id
+
     ids = [t.id for t in tasks]
     row_of = {tid: i for i, tid in enumerate(ids)}
     n = len(tasks)
@@ -226,6 +298,16 @@ def build(chains, *, available: dict[str, int] | None = None, horizon: int = 24)
         if good is not None:
             earliest[i] = int(available.get(str(getattr(good, "value", good)), 0))
 
+    # The drop's deadline is the caller's, and it is the only bound on it: a drop that cannot land
+    # by then is a sale the day cannot make, and the search is told so rather than discovering it.
+    latest = np.full(n, horizon, dtype=np.int8)
+    banks = np.full(n, -1, dtype=np.int16)
+    for i, task in enumerate(tasks):
+        if task.id in deadline_of:
+            latest[i] = min(int(deadline_of[task.id]), horizon)
+        if task.id in banks_of:
+            banks[i] = row_of[banks_of[task.id]]
+
     # A fetch carries no cell - it happens at the shed door, and the door depends on where the
     # worker is, not on the tile the good is for. The tile numbering therefore comes from the
     # chain the task was built for, never from the coordinates: a fetch belongs to the tile it
@@ -235,56 +317,35 @@ def build(chains, *, available: dict[str, int] | None = None, horizon: int = 24)
     columns = np.asarray([column_of[t.id] for t in tasks], dtype=np.int8)
 
     item_codes = np.asarray([_item_code(t.item) for t in tasks], dtype=np.int16)
+    # Two columns, from the world layer's two tables rather than from one guess. A PICKUP would be
+    # the fourth kind of need and there are none left: a fetch is the trip a consumer makes.
+    need_codes = np.full(n, NO_ITEM, dtype=np.int16)
+    yield_codes = np.full(n, NO_ITEM, dtype=np.int16)
+    yield_units = np.zeros(n, dtype=np.int16)
+    for i, task in enumerate(tasks):
+        name = str(getattr(task.action, "value", task.action))
+        if name in NEED_OPS:
+            need_codes[i] = item_codes[i]
+        elif name == "HARVEST":
+            yield_codes[i] = item_codes[i]              # the crop the tile hands over
+            yield_units[i] = int(getattr(task, "n", 1) or 1)
+        elif name == "COLLECT_FERTILIZER":
+            yield_codes[i] = _item_code("FERTILIZER")
+            yield_units[i] = 1
     return TaskArray(
         ids=ids,
         ops=[_engine_op(t) for t in tasks],
         actions=np.asarray([_action_code(t.action) for t in tasks], dtype=np.int8),
-        items=item_codes.astype(np.int8),
+        items=need_codes.astype(np.int8),
+        yields=yield_codes.astype(np.int8),
+        yield_n=yield_units.astype(np.int8),
         cells=cells,
         columns=columns,
         pred=pred,
         earliest=earliest,
-        latest=np.full(n, horizon, dtype=np.int8),
+        latest=latest,
+        banks=banks,
     )
-
-
-def _merge_fetches(tasks, order, column_of):
-    """One trip per good, however many tasks consume it.
-
-    `expand_chain` gives every consuming op its own fetch. That suits the greedy solver, which
-    emits one PICKUP per worker per good at the end, but it is wrong as a TASK LIST: two fetches of
-    the same good on one route are one walk to the door, and the engine's PICKUP carries a count
-    for exactly this reason. Charging two turns for one trip is not a missing feature - it is a
-    turn the search loses and never gets back.
-
-    The first fetch of a good survives and every later one is folded into it, so the consumers that
-    pointed at a dropped fetch now wait on the one that carries their good.
-    """
-    from agent.world.action import Item
-    from agent.world.model import UnitAction
-
-    fetch_of: dict[int, str] = {}            # good -> the fetch that carries it
-    folded: dict[str, str] = {}              # a dropped fetch -> the one that replaces it
-    kept = []
-    for task in tasks:
-        if task.action != UnitAction.PICKUP:
-            kept.append(task)
-            continue
-        good = _item_code(task.item)
-        if good in fetch_of:
-            folded[task.id] = fetch_of[good]
-        else:
-            fetch_of[good] = task.id
-            kept.append(task)
-
-    def resolve(tid: str) -> str:
-        while tid in folded:
-            tid = folded[tid]
-        return tid
-
-    order = [(resolve(before), resolve(after)) for before, after in order]
-    column_of = {tid: col for tid, col in column_of.items() if tid not in folded}
-    return kept, list(dict.fromkeys(order)), column_of
 
 
 def _engine_op(task) -> tuple:
@@ -306,6 +367,10 @@ def _engine_op(task) -> tuple:
     return (name,)
 
 
+#: The ops that must have a good in the worker's bag, from the world's own table plus PLACE.
+NEED_OPS: frozenset[str] = frozenset(CARRIES) | {"PLACE"}
+
+
 def _good_for(task) -> object | None:
     """What a task must already have: a fetch waits for its good, a planting waits for its seed.
 
@@ -314,13 +379,16 @@ def _good_for(task) -> object | None:
     the thing is available.
     """
     action = str(getattr(task.action, "value", task.action))
-    if action == "PICKUP":
-        return task.item
     if action == "PLANT":
         return task.crop
     # A task that consumes a good - PLACE, FEED, FERTILIZE - waits for the same hour, because the
     # trip that brings the good cannot happen before the shed holds it. Without this the search
     # prices a feeding at the turn the day opens, when the animal it feeds is still in the market.
+    #
+    # A HARVEST is NOT here. Its item is what it yields, and waiting for the crop to be in the shed
+    # before the tile can be harvested is the wait that never ends.
+    if action not in NEED_OPS:
+        return None
     item = getattr(task, "item", None)
     return item if _item_code(item) >= 0 else None
 
