@@ -13,8 +13,8 @@ import numpy as np
 
 from offline_lab.fast_sim import FastSim
 from agent.belief.opponent import OpponentModel
-from agent.belief.slot_circuit import (_candidate_schedules, _revenue,
-                                       plan_day_slots)
+from agent.belief.slot_circuit import (_candidate_schedules, _drain_per_hour,
+                                       _revenue, plan_day_slots)
 from agent.world.model import PRODUCTS
 
 PASS = {"farmer": ["PASS"], "hands": [], "market": []}
@@ -83,6 +83,39 @@ def test_the_schedule_respects_the_remaining_hours() -> None:
     sched, _rev = plan_day_slots("WHEAT", 20, obs, model)
     assert sched[:18].sum() == 0, sched
     assert abs(sched.sum() - 20) < 1e-6, sched
+
+
+def test_the_candidate_family_is_not_flat() -> None:
+    """The 6 candidates must disagree on revenue somewhere.
+
+    A circuit whose candidates all price identically is not choosing
+    anything — the argmax would be noise. Against a HEAVY rival (90 units
+    front/spread/back of WHEAT) the shapes must spread by > 1%: the drain
+    is small, so dumping beats spreading, and the rival's front-load makes
+    the back shapes worse still.
+    """
+    obs = _sim_to(0, 5)
+    model = OpponentModel(pretrained=True)
+    g = "WHEAT"
+    inv = float(obs["market"]["inventory"][g])
+    drain = _drain_per_hour(obs)
+    heavy_front = np.zeros(24); heavy_front[:8] = 90 / 8
+    heavy_spread = np.full(24, 90 / 24)
+    heavy_back = np.zeros(24); heavy_back[-8:] = 90 / 8
+    scenarios = [(heavy_front, 0.32), (heavy_spread, 0.32), (heavy_back, 0.32),
+                 (np.zeros(24), 0.04)]
+    cands = _candidate_schedules(120)
+    labels = ["dump", "even", "front", "back", "mid", "drip"]
+    exp = []
+    for i in range(len(cands)):
+        sched = np.zeros(24)
+        sched[0:] = cands[i]
+        exp.append(sum(wt * _revenue(g, inv, sched, theirs, drain)
+                       for theirs, wt in scenarios))
+    spread = (max(exp) - min(exp)) / max(exp) * 100
+    assert spread > 1.0, (
+        f"the candidate family is flat ({spread:.2f}% spread): the argmax "
+        "is noise, so the circuit is not choosing anything")
 
 
 def main() -> int:
