@@ -76,20 +76,24 @@ def _day():
 
 
 def _replay(plan, orders):
-    """Run the compiled day against the harness and return the board it left behind."""
-    from offline_lab.kaggle_env import new_environment
+    """Run the compiled day against the engine and return the board it left behind.
 
-    def agent(obs):
-        hour, day_no = int(obs["hour"]), int(obs["day"])
-        if day_no != 0:
-            return {"farmer": ["PASS"], "hands": [], "market": []}
-        action = dispatch_plan(plan, obs)
-        action["market"] = orders if hour == 0 else []
-        return action
+    `FastSim` wraps the same interpreter the harness drives (R003), so the board is the engine's own
+    verdict - without the harness's schema validation, which is what makes spending a day to reach a
+    later state affordable. The other seat passes: this day is the farm's own.
+    """
+    from offline_lab.fast_sim import FastSim
 
-    env = new_environment({"episodeSteps": 25})
-    env.run([agent, "random"])
-    return env.steps[-1][0]["observation"]["farms"][0]["tiles"]
+    sim = FastSim({"episodeSteps": 25})
+    sim.reset()
+    while not sim.done:
+        obs = sim.observations()[0]
+        if int(obs["day"]) != 0:
+            break
+        action = dict(dispatch_plan(plan, obs))
+        action["market"] = orders if int(obs["hour"]) == 0 else []
+        sim.step([action, {"farmer": ["PASS"], "hands": [], "market": []}])
+    return sim.observations()[0]["farms"][0]["tiles"]
 
 
 def _board(tiles):

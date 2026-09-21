@@ -32,7 +32,6 @@ from agent.tile_dp.chains import chain_id_of, chain_ops
 from agent.wsr import beam as B
 from agent.wsr import tasks as T
 from agent.wsr.emit import compile_route, to_plan
-from offline_lab.kaggle_env import new_environment
 
 OUT = pathlib.Path(__file__).parent / "mixed_second_day.json"
 HANDS = 4
@@ -45,6 +44,8 @@ spec.loader.exec_module(M)
 
 def day_one_board() -> dict:
     """The mixed day played on day 0, and the board the engine holds at day 1 hour 0."""
+    from offline_lab.fast_sim import FastSim
+
     chains = [(cell, chain_ops(chain_id_of(ops)), entity) for cell, ops, entity in M.TILES]
     tasks = T.build(chains, available=M.AVAILABLE)
     day = B.Day(chains=tuple(chains), available=M.AVAILABLE, hire_times=(1,) * HANDS)
@@ -53,18 +54,19 @@ def day_one_board() -> dict:
     plan = to_plan(compile_route(day, tasks, result))
     orders = [order for order in M.ORDERS if order[0] != "HIRE"] + [["HIRE"]] * HANDS
 
-    def agent(obs):
+    sim = FastSim({"episodeSteps": 25})
+    sim.reset()
+    while not sim.done:
+        obs = sim.observations()[0]
         if int(obs["day"]) != 0:
-            return {"farmer": ["PASS"], "hands": [], "market": []}
-        action = dispatch_plan(plan, obs)
+            break
+        action = dict(dispatch_plan(plan, obs))
         action["market"] = orders if int(obs["hour"]) == 0 else []
-        return action
+        sim.step([action, {"farmer": ["PASS"], "hands": [], "market": []}])
 
-    env = new_environment({"episodeSteps": 25, "seed": 0})
-    env.run([agent, "random"])
-    last = env.steps[-1][0]["observation"]
+    last = sim.observations()[0]
     assert int(last["day"]) == 1 and int(last["hour"]) == 0, (
-        f"the episode ended at day {last['day']} hour {last['hour']}, not day 1 hour 0")
+        f"the day ended at day {last['day']} hour {last['hour']}, not day 1 hour 0")
     return last
 
 

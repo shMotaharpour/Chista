@@ -16,11 +16,16 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from agent.world.action_rules import CARRIES
+from agent.world.action_rules import CARRIES, YIELDS
 from agent.world.model import UnitAction
 from agent.world.rules import BOARD_SIZE, SHED_ACCESS
 
 NO_ITEM = -1
+
+#: The ops that put a good in a worker's bag off a TILE - what a drop has to bank. The world's own
+#: `YIELDS` is the source; PICKUP is in that table too, but what it takes is already in the shed, so
+#: a day that picked up and dropped would be walking in a circle.
+BANKS_A_DROP: tuple[str, ...] = tuple(op for op in YIELDS if op != "PICKUP")
 
 
 def distance_matrix(size: int = BOARD_SIZE) -> np.ndarray:
@@ -427,9 +432,12 @@ def build(chains, *, available: dict[str, int] | None = None, horizon: int = 24,
     order = [(b, a) for b, a in order if b not in fetches and a not in fetches]
     column_of = {tid: col for tid, col in column_of.items() if tid not in fetches}
 
-    # A DROP is derived: a harvest the caller wants banked gets a drop of its own, and the drop's
+    # A DROP is derived: a good the worker took off a tile gets a drop of its own, and the drop's
     # cell is the door it hands the bag over at - so the walk to it is priced by the same rule as
-    # any other task and nothing in the search has to know what a drop is.
+    # any other task and nothing in the search has to know what a drop is. The ops that put a good in
+    # a worker's bag are the world's own `YIELDS`; PICKUP is in that table too, but what it takes is
+    # already in the shed, so it needs no walk back. The bag is the worker's, so a drop banks what its
+    # own worker took: the order edge below is the whole of the precedence a drop needs.
     deadline_of: dict[str, int] = {}
     banks_of: dict[str, str] = {}
     for index in range(len(chains)):
@@ -438,7 +446,7 @@ def build(chains, *, available: dict[str, int] | None = None, horizon: int = 24,
             continue
         cell = chains[index][0]
         for task in list(tasks):
-            if column_of.get(task.id) != index or task.action != UnitAction.HARVEST:
+            if column_of.get(task.id) != index or task.action.value not in BANKS_A_DROP:
                 continue
             drop_id = f"{task.id}_drop"
             tasks.append(MinorTask(id=drop_id, cell=nearest_shed(cell), action=UnitAction.DROP))
