@@ -212,8 +212,15 @@ class OpponentModel:
                            ) -> tuple[np.ndarray, np.ndarray]:
         """counts/qty_sum summed over the activity axis for one plain state.
 
-        The old (pre-activity) artifact *was* this marginal, so a caller
-        without a bucket reads exactly what main's table answered.
+        This is the same CONSTRUCTION the pre-activity table was — the
+        bucket rows summed away — but not the same NUMBERS: the shipped
+        artifact was rebuilt on a wider corpus (337 keys / 17.8 M counts
+        before, 943 plain keys / 24.9 M after), and only 17 of the 281
+        keys the two share agree. So a caller without a bucket reads a
+        plain state again, in the shape the old table had, at this
+        corpus's values — WHEAT day 1 answers 2.52 where the old table
+        said 3.96, day 10 answers 4.51 against 6.92. Behaviour-preserving
+        in kind, not in quantity.
         """
         acc = np.zeros(self.n_bins)
         acc_q = np.zeros(self.n_bins)
@@ -236,7 +243,9 @@ class OpponentModel:
         hold, which is what makes a PASS rival predictable (measured:
         1,230 phantom units over 10 days without it, 0 with it). Without
         a bucket the plain state is the ACTIVITY MARGINAL — all bucket
-        rows summed — the same answer the pre-activity artifact gave.
+        rows summed — which is how the pre-activity table was built, over
+        this artifact's own (rebuilt, wider) corpus rather than that one's
+        numbers. See `_activity_marginal`.
         """
         if activity is not None:
             key = self._key_activity(good, step, price, activity)
