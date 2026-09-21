@@ -365,22 +365,25 @@ def _fixed_point(day: Day, tasks: TaskArray, beam: int, pool: int,
     ceiling stops moving, the pass is repeated with the route's own bags: priced with exactly the
     pickups it makes, or not returned at all.
 
-    The most complete consistent route of the passes is the answer. Charging the day's whole
-    distinct-good count to every worker is the fallback (a ceiling on any worker's bag, so it always
-    compiles), and it is what the first pass prices with when nothing is known about the route yet.
+    The answer is the day-wide charge's own day, improved only by a route that compiles and beats it
+    by the search's own ordering (`_better_route` - carried first, then more work, then the earlier
+    stop). The conservative pass is therefore always in hand: a deadline can cut a later pass short,
+    and a half-built attempt must never replace the fuller day the first pass found.
     """
     conservative = _settle(day, tasks, beam, pool, deadline, warm)
+    if conservative.complete:
+        # The day-wide charge already carries the day, so the tightening pass has nothing to win on
+        # completeness - and it costs a search per pass, which on a real day is the budget the caller
+        # gave (F046). The day-wide charge is a ceiling, so the day it found is the day.
+        return conservative
+    best: Result = conservative
     charge = bags_of(day, tasks, conservative)
-    best: Result | None = None
-    best_key = (0, 0)
     tightened = False
     for _attempt in range(CHARGE_PASSES + 1):
         candidate = _settle(day, tasks, beam, pool, deadline, warm, charge=charge)
+        if _consistent(day, tasks, candidate) and _better_route(candidate, best):
+            best = candidate
         bags = bags_of(day, tasks, candidate)
-        if _consistent(day, tasks, candidate):
-            key = (len(candidate.route), int(bags == charge))
-            if key > best_key:
-                best, best_key = candidate, key
         grown = [max(charged, bag) for charged, bag in zip(charge, bags)]
         if grown != charge:
             charge = grown
@@ -389,9 +392,7 @@ def _fixed_point(day: Day, tasks: TaskArray, beam: int, pool: int,
             break
         tightened = True
         charge = bags
-    if best is not None:
-        return best
-    return conservative
+    return best
 
 
 def _consistent(day: Day, tasks: TaskArray, result: Result) -> bool:
