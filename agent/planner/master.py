@@ -567,6 +567,7 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
                 cls=c, cost=hours, spend=spend[i], earn=earn[i],
                 revenue=float(earn[i].sum()),
                 chains=tuple(board.plans[i]) if i < len(board.plans) else (),
+                entities=_entities(board, i, days),
                 key=colgen.column_key(board, i, days)))
             # The value is recomputed from the COLUMN, not taken from the DP:
             # the DP never saw the travel term, so `tile_values` is the value
@@ -655,6 +656,15 @@ def to_mixes(result: "MasterResult", days: int) -> dict[int, "object"]:
                                  plans=tuple(e[0] for e in entries),
                                  lam=tuple(e[1] for e in entries))
     return mixes
+
+
+def _entities(board, tile: int, days: int) -> tuple:
+    """What each day's chosen edge constructs on this tile, by name."""
+    from agent.tile_dp.chains import entity_of_code
+    if board.per_day_entity is None or tile >= board.per_day_entity.shape[0]:
+        return ()
+    return tuple(entity_of_code(int(code))
+                 for code in board.per_day_entity[tile, :days])
 
 
 def _owned_distances(obs, steps: np.ndarray) -> list[int]:

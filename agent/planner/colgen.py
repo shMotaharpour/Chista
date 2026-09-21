@@ -60,6 +60,11 @@ class Column:
     earn: np.ndarray              # (days,) coins banked
     revenue: float                # total, at the published product prices
     chains: tuple = ()            # (day, state, chain_id) — for columns.py
+    #: What each day's chosen edge CONSTRUCTS, by name: the crop a PLANT sows,
+    #: the animal a PLACE puts down, None for a day that builds nothing. wsr
+    #: needs it — a chain of ops without the entity plants nothing in
+    #: particular — and the chain id does not carry it.
+    entities: tuple = ()
     key: tuple = ()               # dedupe signature
 
 
