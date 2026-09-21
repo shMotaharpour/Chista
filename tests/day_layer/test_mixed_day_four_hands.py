@@ -5,15 +5,14 @@ the rest of the quadrant, every item in the shed from hour one - with four hands
 five. One hand is the difference between a day the search carries and a day it does not, so this is
 where the pool's answer is pinned.
 
-What is asserted is the answer the layer gives when the pool is short:
+What is asserted is the answer the layer gives when the pool is short, and that the part it does
+hand back is the part it priced:
 
     four hands do not carry the day, and the search says so: a partial route, `complete=False`
     the shortfall is the POOL and not the clock: not `out_of_time`, not `can_improve`, not `infeasible`
     five hands carry the same day, so the hand the caller withheld is what the day was short of
     the partial route is still a legal route, which is what the caller is handed
-
-One thing does not hold yet, and it is marked rather than hidden: the partial route, compiled and
-replayed, is not the day it was priced as. The mark's reason names what was measured.
+    the partial route replays as the day it was priced as - on the engine's own counters
 """
 
 from __future__ import annotations
@@ -37,15 +36,6 @@ from tests.day_layer.test_mixed_day import (ANIMAL_TILES, AVAILABLE, ORDERS as F
 HANDS = 4
 #: The same market, with the hands the caller is willing to pay for.
 ORDERS = [order for order in FIVE_HAND_ORDERS if order[0] != "HIRE"] + [["HIRE"]] * HANDS
-
-_SETTLED_REASON = (
-    "the compiled day is not the day the search priced. `compile_route` writes a worker's first "
-    "walk at its earliest free turn, so a first task with slack moves the worker in turn 0, while "
-    "`_settled_after_first_turn` counts a turn-0 move only when the walk exactly fills the gap. On "
-    "this day the farmer's first task is one tile away and six turns out, so the compiler writes "
-    "WEST at turn 0 and the model has the farmer still on (4, 4) - which moves every hand's door by "
-    "one, and the board comes back with the animals unplaced and most of the wheat bare"
-)
 
 
 def _day(hands: int = HANDS):
@@ -113,15 +103,14 @@ def test_the_partial_route_is_still_a_legal_route(short) -> None:
     assert not complaints, f"the partial route breaks a rule the engine enforces: {complaints}"
 
 
-# A strict marker, not `pytest.xfail(...)`: that call reports xfail whatever would have happened, so
-# a mark that has gone stale can never say so. This one fails loudly when the day is fixed.
-@pytest.mark.xfail(strict=True, reason=_SETTLED_REASON)
 def test_the_partial_route_replays_as_the_day_it_was_priced_as(short) -> None:
     """The day the caller keeps is the day the search priced - asserted on the engine's counters.
 
     The plantings the route planned have to land, and the animal tiles have to hold their species:
     the engine refuses a misplaced op in silence (F047), so this is the only place the difference
-    between a day that was carried out and a day that was merely written down shows up.
+    between a day that was carried out and a day that was merely written down shows up. It was the
+    mark that used to sit here: the search priced the day from doors the compiler then did not write,
+    and the board came back with the animals unplaced and most of the wheat bare.
     """
     day, tasks, result = short
     plan = to_plan(compile_route(day, tasks, result))
