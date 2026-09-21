@@ -117,20 +117,43 @@ class Manager:
         class_of_tile = self._class_of_tile(obs, of_tile)
 
         deadline = started + self.cfg.solve_budget_ms / 1000.0
+        # ONE forecast per turn, handed to both consumers: the master prices its
+        # objective from it and `market_queue` re-times the day's sells against
+        # it. Without the hand-off belief built the same curve twice — 1.1 ms
+        # for the master and 1.4 ms inside the queue — over two horizons.
+        forecast_obj = self._forecast(obs, config)
         self.day = D.plan(obs, self.contractor, supply,
                           class_of_tile=class_of_tile,
                           iter_cap=self.cfg.master_rounds,
                           hands=0, max_hands=self.cfg.max_hands,
                           budget_s=self.cfg.search_budget_s,
                           rounds=self.cfg.fit_rounds,
-                          pool=self.pool, deadline=deadline)
+                          pool=self.pool, deadline=deadline,
+                          forecast_obj=forecast_obj)
         self.pool = list(self.day.master.pool)
         self.duals = self.day.master.w
         self.certified = bool(self.day.master.certified)
         self._watch(obs)
         self.plan = D.compile(self.day, obs, hands=self.day.hands,
                               config=config, model=self.opponent,
-                              activity=self._activity())
+                              activity=self._activity(),
+                              forecast_obj=forecast_obj)
+
+    def _forecast(self, obs, config):
+        """This turn's market forecast, or None when belief cannot build one.
+
+        `market_queue` builds its own when it is not handed one, so a failure
+        here costs the duplicate work and nothing else — the degrade is the
+        behaviour that shipped, not a second policy.
+        """
+        try:
+            from agent.belief.market import forecast
+            from agent.belief.shed import SEASON_DAYS
+            day = int(obs.get("day", 0)) if isinstance(obs, dict) else 0
+            horizon = max(self.contractor.days, SEASON_DAYS - day)
+            return forecast(obs, days=horizon, config=config)
+        except Exception:                      # noqa: BLE001 - belief is optional
+            return None
 
     def _watch(self, obs) -> None:
         """Feed the rival tracker, building it on the first observation.

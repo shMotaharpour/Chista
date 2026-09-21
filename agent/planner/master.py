@@ -420,7 +420,7 @@ def _validate_cost(cost: np.ndarray) -> None:
 
 
 def _product_price_path(obs, days: int, p_flat: np.ndarray,
-                        config=None) -> tuple[np.ndarray, str]:
+                        config=None, forecast_obj=None) -> tuple[np.ndarray, str]:
     """The product rows of `p`: the market forecast (#15), or flat quotes.
 
     F035: prices rise through the season, so the flat stand-in under-prices
@@ -436,7 +436,11 @@ def _product_price_path(obs, days: int, p_flat: np.ndarray,
     try:
         from agent.belief.market import forecast as _forecast
         from agent.belief.market import price_paths
-        fc = _forecast(obs, days=days, config=config)
+        # A caller that already has this turn's forecast hands it in: the same
+        # curve prices the master's objective and re-times the day's sells, and
+        # building it twice was 1.1 + 1.4 ms of the turn.
+        fc = (forecast_obj if forecast_obj is not None
+              else _forecast(obs, days=days, config=config))
         paths = price_paths(fc, days=days)
     except Exception as exc:                     # noqa: BLE001 - degrade
         return p_flat, f"flat stand-in (forecast failed: {type(exc).__name__})"
@@ -488,7 +492,8 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
                 iter_cap: int = ITER_CAP_DEFAULT,
                 poll=None, owned: list[int] | None = None,
                 pool: list | None = None,
-                deadline: float | None = None) -> MasterResult:
+                deadline: float | None = None,
+                forecast_obj=None) -> MasterResult:
     """Column generation over the tile classes; always publishable.
 
     One round is one Dantzig-Wolfe round (lesson 1.9): the LP solves over EVERY
@@ -521,7 +526,7 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
     p = p_mkt_full[:days]
     # #15: the product rows of `p` come from the market forecast (F035's
     # rising path); the flat stand-in is the documented fallback.
-    p, p_source = _product_price_path(obs, days, p)
+    p, p_source = _product_price_path(obs, days, p, forecast_obj=forecast_obj)
     p_mkt = p[:, list(MARKET_IDS)]
     # The engine-quote floor (see the publish rule in the docstring):
     # the stand-in wages ARE the engine's own prices for the inputs.

@@ -154,7 +154,8 @@ def hire_orders(hands: int, hires_today: int, multiplier: int = 1
 
 
 def sell_rows(obs, harvest_expected: int, cash_needed: float, config=None,
-              *, model=None, activity: int | None = None) -> list:
+              *, model=None, activity: int | None = None,
+              forecast_obj=None) -> list:
     """Belief's per-hour SELL queue, or no rows if it cannot build one.
 
     Called through `market_queue`, which is belief's documented entry point and
@@ -168,7 +169,8 @@ def sell_rows(obs, harvest_expected: int, cash_needed: float, config=None,
     Without a model the queue is the uniform spread and needs neither.
     """
     from agent.belief.shed import market_queue
-    return market_queue(_sellable_obs(obs), harvest_expected=int(harvest_expected),
+    return market_queue(_sellable_obs(obs), forecast_obj=forecast_obj,
+                        harvest_expected=int(harvest_expected),
                         cash_needed=float(cash_needed), config=config,
                         model=model, activity=activity)
 
@@ -221,8 +223,8 @@ def merge(sells: list, hires: list, buys: list, *, cap: int = 10,
 
 
 def build(obs, chains, *, hands: int, harvest_expected: int = 0,
-          config=None, cap: int = 10, model=None, activity: int | None = None
-          ) -> DayMarket:
+          config=None, cap: int = 10, model=None, activity: int | None = None,
+          forecast_obj=None) -> DayMarket:
     """The whole day's market side, from the committed chains."""
     private = obs.get("private", {}) if isinstance(obs, dict) else {}
     farms = obs.get("farms", []) if isinstance(obs, dict) else []
@@ -238,7 +240,8 @@ def build(obs, chains, *, hands: int, harvest_expected: int = 0,
                                    multiplier)
     bill += hire_bill
     sells = sell_rows(obs, harvest_expected, float(bill), config,
-                      model=model, activity=activity)
+                      model=model, activity=activity,
+                      forecast_obj=forecast_obj)
     rows, dropped = merge(sells, hires, buys, cap=cap)
     return DayMarket(rows=rows, bill=int(bill), buys=tuple(map(tuple, buys)),
                      hires=len(hires), dropped=dropped,
