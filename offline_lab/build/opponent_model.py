@@ -129,8 +129,8 @@ def build(train_dates: list[str], progress: bool = False) -> OpponentModel:
                 arr[b] += 1.0
                 qs[b] += float(qty)
             else:                       # BUY_PRODUCT: the dual goods only
-                arr[-1] += 1.0
-                qs[-1] += float(qty)
+                arr[model.BUY_BIN] += 1.0
+                qs[model.BUY_BIN] += float(qty)
             n_obs += 1
         if progress:
             print(f"  {date}: {n_obs:,} aggregated ({time.time()-t0:.0f}s)",
@@ -181,7 +181,7 @@ def main() -> int:
                         "SELL/BUY_PRODUCT orders; activity = the acting "
                         "seat's own 24-turn sell bucket (0 start, 1 silent, "
                         "2 low, 3 mid, 4 high), -1 = plain 3-tuple state; "
-                        "bins = OpponentModel.BINS + net-buy tail",
+                        "bins = sell bins 0..3 + net-buy bin 4 (dual goods)",
                engine=engine_fingerprint(),
                registry=None,
                stats={"states": n_keys, "observations": int(n_obs),

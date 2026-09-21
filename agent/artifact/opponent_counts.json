@@ -2,7 +2,7 @@
   "name": "opponent_counts",
   "kind": "opponent_counts",
   "file": "opponent_counts.npz",
-  "contract": "N[good, day, price_bucket, activity, action] sell-size counts over both seats of the store's SELL/BUY_PRODUCT orders; activity = the acting seat's own 24-turn sell bucket (0 start, 1 silent, 2 low, 3 mid, 4 high), -1 = plain 3-tuple state; bins = OpponentModel.BINS + net-buy tail",
+  "contract": "N[good, day, price_bucket, activity, action] sell-size counts over both seats of the store's SELL/BUY_PRODUCT orders; activity = the acting seat's own 24-turn sell bucket (0 start, 1 silent, 2 low, 3 mid, 4 high), -1 = plain 3-tuple state; bins = sell bins 0..3 + net-buy bin 4 (dual goods)",
   "engine": "a2278746",
   "registry": null,
   "stats": {
@@ -19,10 +19,10 @@
       "2026-09-15",
       "2026-09-16"
     ],
-    "bins": 4
+    "bins": 5
   },
   "source": "offline_lab.build.opponent_model:build",
-  "created_utc": "2026-09-21T02:28:30Z",
+  "created_utc": "2026-09-21T13:09:49Z",
   "eval": {
     "metric": "log_loss_next_turn_action",
     "holdout_dates": [
@@ -35,10 +35,11 @@
       "2026-09-16"
     ],
     "rows": 4084838,
-    "trained": 1.1653,
-    "baseline_global_freq": 1.2144,
-    "baseline_always_hold": 15.8177,
+    "trained": 1.3627,
+    "baseline_global_freq": 1.503,
+    "baseline_always_hold": 23.1661,
     "beats_global_freq": true,
+    "bin_layout": "sell bins 0..3 + net-buy bin 4 (dual goods only)",
     "source": "offline_lab.build.opponent_eval"
   }
 }
