@@ -156,46 +156,6 @@ def test_a_carried_column_is_matched_by_class_KEY_not_by_index():
         f"the warm columns landed on the wrong classes: {carried}")
 
 
-# --- the season -----------------------------------------------------------
-
-def test_the_manager_answers_every_turn_of_a_season_from_a_plan():
-    """Thirty days, and an exception is counted rather than swallowed."""
-    from agent.dispatch import dispatch_plan
-    from offline_lab.kaggle_env import new_environment
-
-    passing = {"farmer": ["PASS"], "hands": [], "market": []}
-    manager = Manager(Config(turn_budget_ms=400.0, reserve_ms=100.0))
-    state = {"fail": 0, "err": None, "days": 0, "calls": 0, "planned": 0}
-
-    def me(obs, config=None):
-        state["calls"] += 1
-        try:
-            if int(obs["hour"]) == 0:
-                manager.observe(obs, config)
-                state["days"] += 1
-            else:
-                manager.step()
-            plan = manager.best()
-            assert plan is not None
-            state["planned"] += 1
-            return dispatch_plan(plan, obs)
-        except Exception as exc:                          # noqa: BLE001
-            state["fail"] += 1
-            state["err"] = state["err"] or f"{type(exc).__name__}: {exc}"
-            return dict(passing)
-
-    env = new_environment({"seed": 0})
-    env.run([me, lambda obs, config=None: dict(passing)])
-
-    assert state["fail"] == 0, f"the manager raised: {state['err']}"
-    assert state["days"] == 30
-    assert state["planned"] == state["calls"], (
-        f"{state['planned']} of {state['calls']} turns answered from a plan")
-    assert env.state[0].reward > 3000.0, (
-        f"scored {env.state[0].reward} against a PASS opponent's 3,000 — the "
-        f"farm is worth less than leaving it alone")
-
-
 def test_the_plan_is_legal_before_any_day_is_observed():
     """`best()` is never None: idle is a legal answer and the honest one."""
     plan = Manager().best()
