@@ -294,6 +294,22 @@ def _solve_at(obs, contractor, supply, class_of_tile, hands, iter_cap,
                                deadline=deadline)
         mixes = M.to_mixes(result, contractor.days)
         choices = C.assign_by_quota(class_of_tile, mixes)
+        # The LP's λ is fractional and fits; rounding it to whole tiles need
+        # not, and on a day-0 board it does not — the quota rounding overruns
+        # the labour row on ten of twenty days (21.0 hours against 15.6).
+        #
+        # #13's `demote_to_feasible` is the repair written for exactly this
+        # and it is NOT wired, because it was measured and it makes the
+        # assignment worse: 10 violated rows in, 16 out, all 1000 steps spent.
+        # It demotes the tile that loses the least value on the EARLIEST
+        # violated day, and the plan it demotes to can use more on a later one
+        # — so each step fixes one day and can break another. A repair that
+        # walks one day at a time cannot answer a constraint that spans them.
+        #
+        # What catches the overrun instead is wsr: a day it cannot walk comes
+        # back incomplete, `plan` cuts the hours and re-solves. That is slower
+        # and it is honest, where shipping a repair that raises the violation
+        # count would not be.
         chains = day_chains(choices, mixes, result.pool)
         committed = sum(
             float(np.asarray(mixes[c.class_key].plans[c.plan_index]

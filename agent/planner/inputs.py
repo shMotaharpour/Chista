@@ -36,7 +36,7 @@ GRAPH_PATH = artifact_path("tile_graph", ".npz")
 
 def load_contractor(days: int = HORIZON_DAYS) -> TileContractor:
     """The shipped graph, cast once per process — never rebuilt at runtime."""
-    return TileContractor(TileGraph.load(GRAPH_PATH), days=days)
+    return TileContractor(with_idle_edges(TileGraph.load(GRAPH_PATH)), days=days)
 
 
 def unit_positions(view: WorldView) -> list[tuple[int, int]]:
@@ -103,3 +103,71 @@ def dual_stand_in(obs: Any, days: int = HORIZON_DAYS) -> tuple[np.ndarray, np.nd
     w[:, RESOURCE_ID["LABOR"]] = (
         float(hire_cost(int(farm.get("hires_today", 0)))) / HOURS_PER_HAND)
     return p, w
+
+
+def with_idle_edges(graph: TileGraph) -> TileGraph:
+    """Every state gets the option of doing nothing, and the day passing.
+
+    Four states in the shipped artifact have no empty-chain edge — `NONE`,
+    `EMPTY_COOP`, `EMPTY_PASTURE` and `WEED` — and they are exactly the four
+    whose night changes nothing. Zero of the 699 idle edges that DO exist are
+    self-loops, so the builder appears to drop an edge that leads back where it
+    started, and these are the only states for which it would.
+
+    The consequence was not cosmetic. Every owned tile starts in `NONE` and a
+    `DIG` returns it there, so **every tile was forced to act every day**. At
+    `w_labour = 100` the DP returned a plan worth −30 and at 500 one worth
+    −5,130, while doing nothing is worth exactly 0: it was not choosing a loss,
+    it had no alternative. The master could never price work down to nothing —
+    only choose which loss — and BUILD → DIG → BUILD was the graph speaking,
+    not the plan.
+
+    So a self-loop is added for each: chain 0, zero cost, zero produce, zero
+    steps. Doing nothing on bare ground leaves bare ground.
+
+    This belongs in the artifact builder and is filed there (#84). It is here
+    because the agent must not ship a model in which idling is illegal, and
+    because doing it at load leaves the artifact byte-identical — the fix and
+    the thing it fixes stay visible to each other.
+    """
+    import dataclasses
+
+    offsets = np.asarray(graph.edge_offsets)
+    chain = np.asarray(graph.edge_chain)
+    missing = [s for s in range(int(graph.n_states))
+               if not (chain[int(offsets[s]):int(offsets[s + 1])] == 0).any()]
+    if not missing:
+        return graph
+
+    nxt, ent = np.asarray(graph.edge_next), np.asarray(graph.edge_entity)
+    cost, produce = np.asarray(graph.edge_cost), np.asarray(graph.edge_produce)
+    steps = np.asarray(graph.edge_steps)
+    need = set(missing)
+
+    new_next, new_chain, new_entity = [], [], []
+    new_cost, new_produce, new_steps = [], [], []
+    new_offsets = np.zeros_like(offsets)
+    for s in range(int(graph.n_states)):
+        lo, hi = int(offsets[s]), int(offsets[s + 1])
+        new_offsets[s] = len(new_chain)
+        new_next.extend(nxt[lo:hi]); new_chain.extend(chain[lo:hi])
+        new_entity.extend(ent[lo:hi]); new_steps.extend(steps[lo:hi])
+        new_cost.extend(cost[lo:hi]); new_produce.extend(produce[lo:hi])
+        if s in need:
+            new_next.append(s)          # the night leaves it where it is
+            new_chain.append(0)         # the empty chain
+            new_entity.append(0)        # constructs nothing
+            new_steps.append(0)
+            new_cost.append(np.zeros(cost.shape[1], dtype=cost.dtype))
+            new_produce.append(np.zeros(produce.shape[1], dtype=produce.dtype))
+    new_offsets[-1] = len(new_chain)
+
+    return dataclasses.replace(
+        graph,
+        edge_offsets=new_offsets,
+        edge_next=np.asarray(new_next, dtype=nxt.dtype),
+        edge_chain=np.asarray(new_chain, dtype=chain.dtype),
+        edge_entity=np.asarray(new_entity, dtype=ent.dtype),
+        edge_steps=np.asarray(new_steps, dtype=steps.dtype),
+        edge_cost=np.asarray(new_cost, dtype=cost.dtype),
+        edge_produce=np.asarray(new_produce, dtype=produce.dtype))

@@ -137,13 +137,43 @@ def test_the_gap_on_a_real_board_is_inside_the_issues_target():
     class_of_tile = [next(owned, None) if k >= 0 else None
                      for k in _board_keys(obs)]
 
-    quota = rounded_value(assign_by_quota(class_of_tile, mixes), mixes)
-    argmax = rounded_value(_by_argmax(class_of_tile, mixes), mixes)
+    from agent.planner.columns import demote_to_feasible, violations
+
+    supply = M.supply_from_obs(obs)
+    caps = {"labour": list(supply.hours)}
+    by_quota = assign_by_quota(class_of_tile, mixes)
+    by_argmax = _by_argmax(class_of_tile, mixes)
+    quota = rounded_value(by_quota, mixes)
     gap = (result.objective - quota) / result.objective
     assert gap <= 0.03, f"integrality gap {gap:.2%} exceeds #13's 3 % target"
-    assert argmax < quota, (
-        f"argmax {argmax:.1f} did not lose to the quota rule {quota:.1f} — the "
-        f"measurement that justifies the quota rule no longer holds")
+
+    # The comparison is FEASIBILITY, not the raw sum. `rounded_value` adds up
+    # plan values and checks no row, so argmax — which gives every tile of a
+    # class the same plan — can total more than the LP itself allows. It did
+    # once idling became available and the idle column stopped being the
+    # heaviest: 38,198 against the quota rule's 33,952, on a day the farm
+    # cannot staff. A bigger number that breaks the labour row is not a better
+    # rounding, and the first version of this guard compared the numbers.
+    # The value is inside the target. The ROWS are not, and that is recorded
+    # rather than asserted away: the LP's fractional mix fits and its integral
+    # rounding does not, which is the integrality gap in the constraint rather
+    # than in the objective.
+    over = violations(by_quota, mixes, caps)
+    assert over, (
+        "the quota rounding now fits every row — the open finding below has "
+        "been fixed, so retire this guard and the comment in day.plan")
+
+    # #13's own repair is measured here and NOT used, because it makes the
+    # assignment worse: it demotes on the earliest violated day and the plan
+    # it demotes to can use more on a later one.
+    repaired, _demoted, remaining = demote_to_feasible(by_quota, mixes, caps)
+    assert len(remaining) >= len(over), (
+        "demote_to_feasible now helps — wire it into day.plan and delete this")
+
+    # What catches the overrun is wsr, downstream: a day it cannot walk comes
+    # back incomplete and the hours are cut. `argmax` is worse still, which is
+    # what the quota rule is for.
+    assert len(violations(by_argmax, mixes, caps)) >= len(over)
 
 
 def _board_keys(obs):

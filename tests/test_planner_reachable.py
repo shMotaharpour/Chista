@@ -392,3 +392,83 @@ def test_the_bound_the_master_reports_is_a_bound_on_a_real_board():
         f"the bound {result.bound:.1f} is below the objective "
         f"{result.objective:.1f}: it is not a bound")
     assert result.gap >= -1e-9
+
+
+def test_every_state_can_choose_to_do_nothing():
+    """Idling is always legal on the board, so it must be legal in the model.
+
+    Four states in the shipped artifact had no empty-chain edge — `NONE`,
+    `EMPTY_COOP`, `EMPTY_PASTURE` and `WEED` — and they are exactly the four
+    whose night changes nothing. Zero of the 699 idle edges that do exist are
+    self-loops, so the builder drops an edge that leads back where it started,
+    and these are the only states for which it would.
+
+    Every owned tile starts in `NONE` and a `DIG` returns it there, so every
+    tile was forced to act every day (#84).
+    """
+    import numpy as np
+    from agent.planner.inputs import GRAPH_PATH, with_idle_edges
+    from agent.tile_dp.graph import TileGraph
+
+    raw = TileGraph.load(GRAPH_PATH)
+    fixed = with_idle_edges(raw)
+
+    def stuck(graph):
+        offsets, chain = np.asarray(graph.edge_offsets), np.asarray(graph.edge_chain)
+        return [s for s in range(int(graph.n_states))
+                if not (chain[int(offsets[s]):int(offsets[s + 1])] == 0).any()]
+
+    assert stuck(raw), "the artifact no longer needs the fix — retire it (#84)"
+    assert stuck(fixed) == [], f"still forced to act: {stuck(fixed)}"
+    # Nothing else moved: the added edges are self-loops that cost and make
+    # nothing, and every original edge is still where it was.
+    assert len(np.asarray(fixed.edge_chain)) == \
+        len(np.asarray(raw.edge_chain)) + len(stuck(raw))
+    offsets, nxt = np.asarray(fixed.edge_offsets), np.asarray(fixed.edge_next)
+    chain = np.asarray(fixed.edge_chain)
+    cost, produce = np.asarray(fixed.edge_cost), np.asarray(fixed.edge_produce)
+    for s in stuck(raw):
+        added = [i for i in range(int(offsets[s]), int(offsets[s + 1]))
+                 if int(chain[i]) == 0]
+        assert len(added) == 1
+        i = added[0]
+        assert int(nxt[i]) == s, "doing nothing must leave the tile where it is"
+        assert not cost[i].any() and not produce[i].any()
+
+
+def test_the_dp_declines_when_the_wage_makes_work_a_loss():
+    """The point of the idle edge: a dual that can switch work OFF.
+
+    Before it, the DP returned a plan worth −30 at `w_labour = 100` and −5,130
+    at 500, while doing nothing is worth exactly 0. It was not choosing a loss;
+    it had no alternative, so the master could only choose WHICH loss.
+    """
+    import numpy as np
+    from agent.planner.inputs import dual_stand_in, load_contractor
+    from agent.planner import master as M
+    from agent.tile_dp.chains import chain_ops
+    from agent.world.model import RESOURCE_ID
+    from offline_lab.kaggle_env import new_environment
+
+    env = new_environment()
+    env.reset(2)
+    obs = env.state[0].observation
+    contractor = load_contractor(days=20)
+    bare = M._owned_states(object(), obs)[0]
+    prices, wages = dual_stand_in(obs, days=20)
+
+    seen = {}
+    for wage in (0, 100, 500):
+        w = wages.copy()
+        w[:, RESOURCE_ID["LABOR"]] = float(wage)
+        board = contractor.price(prices[:20], w[:20], [bare])
+        value = float(board.tile_values[0])
+        assert value >= -1e-6, (
+            f"w_labour={wage}: the DP returned a plan worth {value:.1f} while "
+            f"doing nothing is worth 0 — it cannot decline")
+        seen[wage] = (value, chain_ops(int(board.plans[0][0][2]))
+                      if board.plans[0] else ())
+
+    assert seen[500][1] == (), (
+        f"at a wage of 500 an hour the tile still works: {seen[500][1]}")
+    assert seen[0][0] > seen[100][0] >= seen[500][0], seen

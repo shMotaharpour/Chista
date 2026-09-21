@@ -55,7 +55,19 @@ class Config:
 
     # --- the day -----------------------------------------------------------
     #: The largest hand pool the day layer may offer. wsr caps at 16.
-    max_hands: int = 4
+    #:
+    #: One, measured. Three seasons at each setting, medians:
+    #:
+    #:     idle edges off, 1 hand   32,045      off, 4 hands    5,148
+    #:     idle edges on,  1 hand   35,697      on,  4 hands   22,988
+    #:
+    #: More hands is worth five times the plan to the LP and less than nothing
+    #: on the board, because the day the master commits is re-derived every
+    #: morning and more capacity means more of it is undone. Raising this is
+    #: the FIRST thing to try once a plan survives the night (#79's commitment
+    #: work) — it is capped low because the churn is not fixed, not because
+    #: hiring is bad.
+    max_hands: int = 1
     #: Seconds the day search may spend. None lets it run to its own end,
     #: which is what an offline measurement wants and a turn does not.
     search_budget_s: float = 0.25
