@@ -22,5 +22,23 @@
     "bins": 4
   },
   "source": "offline_lab.build.opponent_model:build",
-  "created_utc": "2026-09-21T02:28:30Z"
+  "created_utc": "2026-09-21T02:28:30Z",
+  "eval": {
+    "metric": "log_loss_next_turn_action",
+    "holdout_dates": [
+      "2026-09-10",
+      "2026-09-11",
+      "2026-09-12",
+      "2026-09-13",
+      "2026-09-14",
+      "2026-09-15",
+      "2026-09-16"
+    ],
+    "rows": 4084838,
+    "trained": 1.1653,
+    "baseline_global_freq": 1.2144,
+    "baseline_always_hold": 15.8177,
+    "beats_global_freq": true,
+    "source": "offline_lab.build.opponent_eval"
+  }
 }
