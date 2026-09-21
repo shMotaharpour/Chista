@@ -582,6 +582,55 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
     return result
 
 
+def to_mixes(result: "MasterResult", days: int, keys_of_class: dict[int, int]
+             ) -> dict[int, "object"]:
+    """`MasterResult` -> the `ClassMix` per class that `columns.py` rounds.
+
+    `columns.assign_tiles` keys a mix by the tile's PACKED KEY, because that is
+    what the board hands it; the master works in graph state ids. `keys_of_class`
+    is the one map between them, and it is passed rather than rebuilt so the
+    two cannot drift.
+
+    Only `labour` and `cash_out` carry real numbers. `wheat_net`, `fert_net`
+    and `stored` are zeros and say so here rather than in a surprise: the first
+    two stopped being quantity rows when they turned out to be purchasable, and
+    `stored` has never existed because a column carries no SELL decision.
+    `columns.violations` skips a row it has no capacity for, so a zero row is
+    inert rather than a lie the repair acts on.
+    """
+    from agent.planner.columns import DAYS, ClassMix, Plan
+
+    def pad(row: np.ndarray) -> tuple[float, ...]:
+        out = np.zeros(DAYS, dtype=np.float64)
+        n = min(DAYS, len(row))
+        out[:n] = np.asarray(row, dtype=np.float64)[:n]
+        return tuple(float(v) for v in out)
+
+    lam = np.asarray(result.lam, dtype=np.float64)
+    reps, counts, _of_tile = result.classes
+    by_class: dict[int, list[tuple[object, float]]] = {c: [] for c in range(len(reps))}
+    for j, col in enumerate(result.pool):
+        plan = Plan(chains=tuple(int(ch) for _d, _st, ch in col.chains),
+                    value=float(col.revenue),
+                    rows={"labour": pad(col.cost[:, 0]),
+                          "cash_out": pad(col.spend),
+                          "wheat_net": pad(np.zeros(days)),
+                          "fert_net": pad(np.zeros(days)),
+                          "stored": pad(np.zeros(days))})
+        by_class[col.cls].append((plan, float(lam[j]) if j < lam.size else 0.0))
+
+    mixes: dict[int, ClassMix] = {}
+    for c, entries in by_class.items():
+        key = keys_of_class.get(c)
+        if key is None or not entries:
+            continue
+        plans = tuple(e[0] for e in entries)
+        mixes[int(key)] = ClassMix(class_key=int(key), count=int(counts[c]),
+                                   plans=plans,
+                                   lam=tuple(e[1] for e in entries))
+    return mixes
+
+
 _GRAPH = None
 
 
