@@ -55,6 +55,12 @@ def _load_dates() -> list[str]:
 
 
 def build(train_dates: list[str], progress: bool = False) -> OpponentModel:
+    """Build the activity-keyed model: the state key is
+    (good, activity_bucket, day/demand, price_bucket), where activity_bucket
+    = the rival's own sell volume over the 24 turns before (start / silent /
+    low / mid / high) — the regime a PASS rival lives in is 'silent', whose
+    corpus answer is near-pure hold.
+    """
     import duckdb
 
     con = duckdb.connect(config={"threads": 2, "memory_limit": "1GB"})
@@ -67,6 +73,15 @@ def build(train_dates: list[str], progress: bool = False) -> OpponentModel:
     for date in train_dates:
         mo = str(STORE / date / "market_orders.parquet")
         city = str(STORE / date / "city_steps.parquet")
+
+        # per-(episode, step, player) sell volume, for the activity window
+        sold: dict[tuple[int, int, int], float] = {}
+        for e, s, p, sold_qty in con.execute(
+            f"select episode_id, step, player, "
+            f"sum(case when op = 'SELL' then qty else 0 end)::DOUBLE "
+            f"from read_parquet('{mo}') group by 1, 2, 3"
+        ).fetchall():
+            sold[(e, s, p)] = float(sold_qty)
 
         state: dict[tuple[int, int], tuple[tuple, tuple]] = {}
         for e, s, *rest in con.execute(
@@ -89,7 +104,24 @@ def build(train_dates: list[str], progress: bool = False) -> OpponentModel:
             if st is None:
                 continue
             prices = st[0]
-            key = model._key(item, s, prices[PRODUCTS.index(item)])
+            # the ACTING player's own 24-turn sell window (this episode,
+            # this player, the 24 steps before this one) — the activity
+            # regime the state lives in
+            window = 0.0
+            for back in range(1, 25):
+                window += sold.get((e, s - back, player), 0.0)
+            if s < 24:
+                activity = 0                        # start: no history yet
+            else:
+                activity = 1                        # silent by default
+                if window > 60:
+                    activity = 4
+                elif window > 10:
+                    activity = 3
+                elif window > 0:
+                    activity = 2
+            key = model._key_activity(item, s, prices[PRODUCTS.index(item)],
+                                      activity)
             arr = counts.setdefault(key, [0.0] * n_bins)
             qs = qty_sum.setdefault(key, [0.0] * n_bins)
             if op == "SELL":
@@ -127,23 +159,29 @@ def main() -> int:
     print(f"built: {n_keys:,} states, {n_obs:,.0f} observations "
           f"({time.time()-t0:.0f}s)")
 
-    # --- serialize: keys are (good, day, price_bucket); arrays are (n_bins,) --
+    # --- serialize: keys are (good, day, price_bucket, activity);
+    # -- arrays are (n_bins,) ------------------------------------------
     keys = sorted(model.counts)
     goods = np.array([k[0] for k in keys])
     days = np.array([k[1] for k in keys], dtype=np.int32)
     buckets = np.array([k[2] for k in keys], dtype=np.int8)
+    activity = np.array([k[3] if len(k) > 3 else -1 for k in keys],
+                        dtype=np.int8)
     counts = np.stack([np.asarray(model.counts[k]) for k in keys]).astype(np.float32)
     qty_sum = np.stack([np.asarray(model.qty_sum[k]) for k in keys]).astype(np.float32)
     npz_path = artifact_path("opponent_counts", ".npz")
     np.savez_compressed(npz_path, goods=goods, days=days, buckets=buckets,
-                        counts=counts, qty_sum=qty_sum)
+                        activity=activity, counts=counts, qty_sum=qty_sum)
 
     from agent.tile_dp.contract import engine_fingerprint
     write_info("opponent_counts", kind="opponent_counts",
                file=npz_path.name,
-               contract="N[good, day, price_bucket, action] sell-size counts "
-                        "over both seats of the store's SELL/BUY_PRODUCT "
-                        "orders; bins = OpponentModel.BINS + net-buy tail",
+               contract="N[good, day, price_bucket, activity, action] "
+                        "sell-size counts over both seats of the store's "
+                        "SELL/BUY_PRODUCT orders; activity = the acting "
+                        "seat's own 24-turn sell bucket (0 start, 1 silent, "
+                        "2 low, 3 mid, 4 high), -1 = plain 3-tuple state; "
+                        "bins = OpponentModel.BINS + net-buy tail",
                engine=engine_fingerprint(),
                registry=None,
                stats={"states": n_keys, "observations": int(n_obs),
