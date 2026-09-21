@@ -303,6 +303,34 @@ def land_image(tasks: TaskArray, board_size: int = BOARD_SIZE) -> np.ndarray:
     return image
 
 
+def spanning_walk(tasks: TaskArray) -> int:
+    """A floor on the walking: the minimum spanning tree over the worked tiles and the shed doors.
+
+    Any set of walks that covers the tiles, starting from the doors, is a connected subgraph over the
+    tiles and the doors together, and the cheapest such subgraph is the tree. `tiles - 1` is the same
+    idea with the crossings left out, which is why a day that works three quadrants needs more.
+    """
+    if tasks.n == 0:
+        return 0
+    nodes = [tuple(int(v) for v in cell) for cell in np.unique(tasks.cells, axis=0)]
+    nodes.extend(tuple(int(v) for v in door) for door in SHED_ACCESS)
+    if len(nodes) < 2:
+        return 0
+
+    far = lambda a, b: abs(a[0] - b[0]) + abs(a[1] - b[1])  # noqa: E731 - one expression, one name
+    inside = {0}
+    best = {i: far(nodes[0], nodes[i]) for i in range(1, len(nodes))}
+    total = 0
+    while len(inside) < len(nodes):
+        pick = min((i for i in best if i not in inside), key=lambda i: best[i])
+        total += best[pick]
+        inside.add(pick)
+        for i in range(len(nodes)):
+            if i not in inside:
+                best[i] = min(best[i], far(nodes[pick], nodes[i]))
+    return total
+
+
 def columns_of(cells: np.ndarray) -> np.ndarray:
     """Number the tiles, so tasks can be grouped by the tile they happen on."""
     seen: dict[tuple[int, int], int] = {}

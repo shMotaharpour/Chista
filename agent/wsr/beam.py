@@ -30,7 +30,7 @@ import numpy as np
 from agent.world.board import MOVE_DELTA, SPAWN
 from agent.world.rules import BOARD_SIZE, TURNS_PER_DAY
 from agent.wsr.routing import walk
-from agent.wsr.tasks import DISTANCE, NO_ITEM, SHED_INDEX, TaskArray
+from agent.wsr.tasks import DISTANCE, NO_ITEM, SHED_INDEX, TaskArray, spanning_walk
 
 Cell = tuple[int, int]
 
@@ -143,8 +143,9 @@ def lower_bound(day: Day, tasks: TaskArray) -> int:
     if tasks.n == 0:
         return 0
     goods = len({int(i) for i in tasks.items if int(i) != NO_ITEM})
-    tiles = len(np.unique(tasks.cells, axis=0))
-    walking = max(0, tiles - 1)
+    # A spanning tree over the tiles and the doors, not the tile count: a day that works three
+    # quadrants pays for the crossings and `tiles - 1` does not.
+    walking = spanning_walk(tasks)
     if tasks.drop_rows.size:
         # A deadline is a hard window on a task that also has precedence, and it means the unit has
         # to finish at a shed door rather than wherever it stopped. So its path reaches the furthest
