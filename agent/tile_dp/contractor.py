@@ -110,7 +110,42 @@ class TileContractor:
         # Cast once at load: casting per call would upcast the whole sweep.
         self.EP = np.ascontiguousarray(graph.edge_produce, dtype=DTYPE)
         self.EC = np.ascontiguousarray(graph.edge_cost, dtype=DTYPE)
+        #: Edge-cost matrices with a walk charged inside, by distance (see
+        #: `_travel_edge_costs`). Built once per distance, not once per round.
+        self._travel_costs: dict[int, tuple[np.ndarray, np.ndarray]] = {}
         self._assert_no_empty_slices()
+
+    def _travel_edge_costs(self, travel_hours: int) -> tuple[np.ndarray, np.ndarray]:
+        """The graph's edge costs with `travel_hours` charged on every worked day.
+
+        The walk to a tile is paid once per day the plan puts a worker on it (the
+        farm is cleared every night and the farmer respawns on a shed door, F040),
+        and it lands on that day's LABOUR column. `0` returns the graph's own
+        table, untouched.
+
+        It has to be charged BEFORE the argmax. An edge priced without its walk is
+        not an edge the farm can run, so a DP that chooses under one price vector
+        while its caller prices the choice under another solves a different
+        problem: its value is not the class's best dual-priced plan, the
+        reduced-cost test is no longer about the master's LP, and the Lagrangian
+        bound `y·b + Σ N_c v_c` can come out BELOW the objective it is supposed to
+        bound. Measured on a real board: bound 33,765.5 against an objective of
+        34,008.8 (-0.72 %), which is not a bound.
+
+        Whole hours by construction: a walk is a Manhattan distance.
+        """
+        hours = int(travel_hours)
+        if hours <= 0:
+            return self.graph.edge_cost, self.EC
+        cached = self._travel_costs.get(hours)
+        if cached is None:
+            cost = np.asarray(self.graph.edge_cost, dtype=np.int64).copy()
+            works = cost[:, LABOR_ID] > 0
+            cost[works, LABOR_ID] += hours
+            cached = (np.ascontiguousarray(cost),
+                      np.ascontiguousarray(cost, dtype=DTYPE))
+            self._travel_costs[hours] = cached
+        return cached
 
     # ---- guards -------------------------------------------------------
     def _assert_no_empty_slices(self) -> None:
@@ -147,12 +182,14 @@ class TileContractor:
         return np.ascontiguousarray(arr, dtype=DTYPE)
 
     # ---- the kernel ---------------------------------------------------
-    def sweep(self, p, w) -> tuple[np.ndarray, np.ndarray]:
+    def sweep(self, p, w, travel_hours: int = 0) -> tuple[np.ndarray, np.ndarray]:
         """Backward sweep: `(days+1, n_states)` values and per-day rewards."""
-        return self._sweep(self._as_dual(p, "prices"), self._as_dual(w, "wages"))
+        _ec_int, ec = self._travel_edge_costs(travel_hours)
+        return self._sweep(self._as_dual(p, "prices"), self._as_dual(w, "wages"), ec)
 
-    def _sweep(self, p: np.ndarray, w: np.ndarray
+    def _sweep(self, p: np.ndarray, w: np.ndarray, ec: np.ndarray | None = None
                ) -> tuple[np.ndarray, np.ndarray]:
+        ec = self.EC if ec is None else ec
         n_edges = int(self.edge_next.size)
         rewards = np.empty((self.days, n_edges), dtype=DTYPE)
         # The terminal row is the season's own end: no liquidation, so shed goods are worth
@@ -161,14 +198,15 @@ class TileContractor:
         for d in range(self.days - 1, -1, -1):
             # Produce and cost are priced by their own vector, in two passes. Folding them
             # into one wider matvec measures slower: the wider gemv loses to BLAS dispatch.
-            r = self.EP @ p[d] - self.EC @ w[d]
+            r = self.EP @ p[d] - ec @ w[d]
             rewards[d] = r
             cand = r + V[d + 1][self.edge_next]
             V[d] = np.maximum.reduceat(cand, self.edge_starts)
         return V, rewards
 
     # ---- plan recovery ------------------------------------------------
-    def _recover(self, V: np.ndarray, rewards: np.ndarray, owned: np.ndarray):
+    def _recover(self, V: np.ndarray, rewards: np.ndarray, owned: np.ndarray,
+                 ec_int: np.ndarray | None = None):
         """Forward walk for every owned tile, in lockstep over the days.
 
         The sweep does not keep the argmax, so plans are recovered forward. The tiles walk
@@ -180,6 +218,7 @@ class TileContractor:
         """
         days = self.days
         n_owned = int(owned.size)
+        ec = self.graph.edge_cost if ec_int is None else ec_int
         per_day_cost = np.zeros((n_owned, days, N_RESOURCE), dtype=np.int64)
         per_day_produce = np.zeros_like(per_day_cost)
         rows = np.empty((days, n_owned), dtype=np.intp)
@@ -205,8 +244,9 @@ class TileContractor:
             # (n_owned, days).
             entities_at[:, d] = self.graph.edge_entity[chosen]
             # Per-day coefficients, not only the sum: a coupling layer works on
-            # labour[d], inputs[r][d] and produce[r][d].
-            per_day_cost[:, d, :] = self.graph.edge_cost[chosen]
+            # labour[d], inputs[r][d] and produce[r][d]. `ec` is the graph's own
+            # table, or the one with this class's walk charged inside it.
+            per_day_cost[:, d, :] = ec[chosen]
             per_day_produce[:, d, :] = self.graph.edge_produce[chosen]
             states = self.edge_next[chosen]
         chain = self.edge_chain[rows]
@@ -218,10 +258,13 @@ class TileContractor:
                 V[0, np.asarray(owned, dtype=np.intp)].astype(np.float64),
                 per_day_cost, per_day_produce, entities_at)
 
-    def price(self, p, w, owned_states) -> PricedBoard:
+    def price(self, p, w, owned_states, travel_hours: int = 0) -> PricedBoard:
         """Price the board: one sweep for every owned tile, plus their columns.
 
-        `owned_states` are graph state ids, one per tile we own.
+        `owned_states` are graph state ids, one per tile we own. `travel_hours` is
+        the walk this group of tiles pays on every day it is worked, charged on
+        the labour column BEFORE the argmax (see `_travel_edge_costs`): a caller
+        that prices tiles at different distances passes each group its own.
         """
         p = self._as_dual(p, "prices")
         w = self._as_dual(w, "wages")
@@ -231,9 +274,10 @@ class TileContractor:
                 raise ValueError(
                     f"owned state id out of range 0..{self.n_states - 1}: "
                     f"{int(owned.min())}..{int(owned.max())}")
-        V, rewards = self._sweep(p, w)
+        ec_int, ec = self._travel_edge_costs(travel_hours)
+        V, rewards = self._sweep(p, w, ec)
         (columns, produced, plans, tile_values, per_day_cost,
-         per_day_produce, per_day_entity) = self._recover(V, rewards, owned)
+         per_day_produce, per_day_entity) = self._recover(V, rewards, owned, ec_int)
         # With no owned tile there is no column and nothing to price; the
         # signal is defined as 0 rather than as the max of an empty set.
         reduced_cost = float(tile_values.max()) if owned.size else 0.0
@@ -247,10 +291,11 @@ class TileContractor:
 
 
 def price_board(graph: TileGraph, p, w, owned_states: Sequence[int],
-                days: int = HORIZON_DAYS) -> PricedBoard:
+                days: int = HORIZON_DAYS, travel_hours: int = 0) -> PricedBoard:
     """One pricing call: the sweep plus the recovered columns.
 
     Builds a `TileContractor`, so the casts pay once per call; a caller pricing every turn
     should hold the contractor instead.
     """
-    return TileContractor(graph, days=days).price(p, w, owned_states)
+    return TileContractor(graph, days=days).price(p, w, owned_states,
+                                                  travel_hours=travel_hours)

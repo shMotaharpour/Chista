@@ -7,7 +7,7 @@
 - Every commit by the agent MUST use `agent-commit-trailer`. Never plain `git commit`.
 - Use world definitios for uniform naming.
 - The submission is `agent/`, self-contained: everything the entry point loads
-  lives inside it (`agent/world/` for the definitions, `agent/tile_dp/models/` for
+  lives inside it (`agent/world/` for the definitions, `agent/artifact/` for
   the model artifacts, and one folder per layer). Nothing inside `agent/` may import
   from outside it. `offline_lab/` and `tests/` import `agent/` as they need, and the
   builders write their artifacts into `agent/`.

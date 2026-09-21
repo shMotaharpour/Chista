@@ -1,7 +1,8 @@
 """Chista agent entry point.
 
 The harness calls a bare function per turn; all state hangs off a
-module-level singleton (agent.runtime.RUNTIME).
+module-level singleton (agent.runtime.RUNTIME), which owns the turn's clock,
+the manager, and the never-raise promise.
 
 Signature `agent(obs, config=None)` - deliberately tolerant of both
 calling conventions (owner note 2026-09-15):
@@ -14,8 +15,9 @@ calling conventions (owner note 2026-09-15):
   needs (turnsPerDay, shedCapacity, ...) is either pinned by an engine
   probe (tests/test_agent_obs.py) or carried in the observation.
 
-This module never raises: the runtime's fallback ladder turns any
-internal error into the safest legal action dict.
+This module never raises: the spine records the failure and returns the
+safest legal action dict (all-PASS). It does not play a different policy
+instead - see docs/ARCHITECTURE.md section 5.
 """
 
 from __future__ import annotations

@@ -22,8 +22,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from agent.replan import load_contractor
-from planner.master import (ALPHA, COUPLING_IDS, ITER_CAP_DEFAULT, N_COUPLING, ROUND_BUDGET_MS, TOL_DUAL, CouplingSupply, equilibrate, published_duals, supply_from_obs)
+from agent.planner.inputs import load_contractor
+from agent.planner.master import (ALPHA, COUPLING_IDS, ITER_CAP_DEFAULT, N_COUPLING, ROUND_BUDGET_MS, TOL_DUAL, CouplingSupply, equilibrate, published_duals, supply_from_obs)
 from agent.world.model import RESOURCE_ID
 # #15's own budget for the price-path forecast the master now calls; the
 # round's hard ceiling is ROUND_BUDGET_MS (sweep + LP) PLUS this, so the two
@@ -123,8 +123,15 @@ def _bare_ids(n_tiles: int) -> list[int]:
 
 def _supply(days: int = 30, hours: float | None = None,
             seeds: int = 4, animals: int = 0, fert: int = 2,
-            wheat_feed: int = 6) -> CouplingSupply:
-    from agent.tile_dp.chains import RESOURCE_ID
+            wheat_feed: int = 6, money: float = 1e6) -> CouplingSupply:
+    """A supply for one probe. `money` is slack by default.
+
+    Every test here predates the cash row, and none of them means to starve
+    the purse — a purse of zero makes every paid column infeasible, which is
+    a different experiment from the one each test is running. The test that
+    wants a tight purse passes one.
+    """
+    from agent.world.model import RESOURCE_ID
     sids = [RESOURCE_ID[f"SEED_{c}"] for c in
             ("WHEAT", "CARROT", "TOMATO", "STRAWBERRY", "MELON")]
     stock = np.zeros(5, dtype=np.int64)
@@ -133,7 +140,8 @@ def _supply(days: int = 30, hours: float | None = None,
     return CouplingSupply(
         hours=np.full(days, hours if hours is not None else 24 * 0.65),
         seed_stock=stock, animal_stock=a_stock,
-        fert_stock=float(fert), wheat_feed_stock=float(wheat_feed))
+        fert_stock=float(fert), wheat_feed_stock=float(wheat_feed),
+        money=float(money))
 
 
 # --- tests ---------------------------------------------------------------
@@ -179,8 +187,8 @@ def test_slack_row_zero_dual() -> None:
     in demand with zero supply degenerates (any dual up to the plan's
     revenue is optimal for HiGHS) — a missing-resource board, not slack.
     """
-    from agent.replan import dual_stand_in
-    from planner.master import COUPLING_IDS, published_duals
+    from agent.planner.inputs import dual_stand_in
+    from agent.planner.master import COUPLING_IDS, published_duals
     rt, c = _RT(), _contractor()
     obs = _obs(_bare_ids(2), c.graph)
     huge = _supply(hours=10_000.0, seeds=10_000, animals=10_000,
@@ -208,9 +216,9 @@ def test_duals_non_negative_every_round() -> None:
         def __getattr__(self, name):
             return getattr(c, name)
 
-        def price(self, p, w, owned):
+        def price(self, p, w, owned, travel_hours: int = 0):
             seen.append(float(np.asarray(w).min()))
-            return c.price(p, w, owned)
+            return c.price(p, w, owned, travel_hours=travel_hours)
 
     res = equilibrate(rt, obs, _Spy(), _supply(),
                       iter_cap=ITER_CAP_DEFAULT)
@@ -247,7 +255,7 @@ def test_alpha_sweep_is_the_evidence() -> None:
     obs = _obs(_bare_ids(3), c.graph)
     supply = _supply()
     travel_at = {}
-    import planner.master as M
+    import agent.planner.master as M
     saved = M.ALPHA
     try:
         for alpha in (0.2, 0.35, 0.5, 0.7):
@@ -295,20 +303,23 @@ def test_fallback_fires_on_solver_error() -> None:
     B1 split the two; the absent-scipy case is
     `test_scipy_absent_is_survivable` below.
     """
-    import planner.master as M
+    import agent.planner.master as M
     rt, c = _RT(), _contractor()
     obs = _obs(_bare_ids(2), c.graph)
 
-    real_solve = M._solve_lp
+    # The LP moved into `agent/planner/colgen.py` when the master became a
+    # real column-generation loop; the fallback contract did not move.
+    from agent.planner import colgen as CG
+    real_solve = CG.solve_master
 
     def _boom(*a, **k):
         raise RuntimeError("master LP failed: simulated HiGHS error on the grader")
 
-    M._solve_lp = _boom
+    CG.solve_master = _boom
     try:
         res = equilibrate(rt, obs, c, _supply())
     finally:
-        M._solve_lp = real_solve
+        CG.solve_master = real_solve
     assert res.used_fallback
     assert res.fallback_reason
     assert res.w.min() >= 0.0 and res.w.shape[0] == c.days   # publishable
@@ -319,7 +330,7 @@ def test_scipy_absent_is_survivable() -> None:
     degrades (review round 1, B1).
 
     A bare module-level `from scipy.optimize import linprog` raises out
-    of `import planner.master` when scipy is missing, so the fallback
+    of `import agent.planner.master` when scipy is missing, so the fallback
     could never run — measured with an import hook, and the local
     grading-like probe already found torch absent. This test runs the
     real thing in a SUBPROCESS (the hook must be installed before the
@@ -329,7 +340,7 @@ def test_scipy_absent_is_survivable() -> None:
 
     R007: verified in its failing direction — restoring the bare import
     makes this test fail with `ImportError: scipy blocked for this
-    probe` at `import planner.master`.
+    probe` at `import agent.planner.master`.
     """
     import subprocess
     import sys
@@ -349,7 +360,7 @@ def test_scipy_absent_is_survivable() -> None:
         "for m in list(sys.modules):\n"
         "    if m == 'scipy' or m.startswith('scipy.'):\n"
         "        del sys.modules[m]\n"
-        "import planner.master as M\n"
+        "import agent.planner.master as M\n"
         "assert M.HAS_SCIPY is False, 'HAS_SCIPY true with scipy blocked'\n"
         "from tests.test_master import _RT, _contractor, _obs, _bare_ids, _supply\n"
         "rt, c = _RT(), _contractor()\n"
@@ -452,7 +463,7 @@ def test_the_market_forecast_reaches_the_masters_product_rows() -> None:
 def test_published_form_zeros_on_market_columns() -> None:
     """Products are market-priced, never input-priced: the published w
     carries duals only on the coupling columns."""
-    from agent.tile_dp.chains import RESOURCE_ID
+    from agent.world.model import RESOURCE_ID
     rt, c = _RT(), _contractor()
     obs = _obs(_bare_ids(2), c.graph)
     res = equilibrate(rt, obs, c, _supply())

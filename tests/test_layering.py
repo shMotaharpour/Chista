@@ -193,20 +193,25 @@ def test_the_submission_is_the_agent_folder() -> None:
 def test_the_closure_is_real_and_covers_the_agent() -> None:
     """A closure that silently matches nothing passes forever.
 
-    The entry must resolve, and the closure must contain the modules the
-    M1 spine is known to load (main -> runtime -> {greedy, dispatch});
-    agent/obs and world/fast_sim join when #11's replanner wires them in
-    - this assertion is updated with the wiring, per review round 1.
+    The entry must resolve, and the closure must contain the modules the spine
+    is known to load. It used to require `agent/greedy`: `main -> runtime ->
+    {greedy, dispatch}` was the M1 spine, and greedy was the policy the runtime
+    fell back to. The ladder is retired (#79) — `agent/runtime.py` has one
+    policy now, the manager — so greedy is required to be ABSENT here (its own
+    guard in `test_agent_runtime.py` lists it with the rest of the retired
+    path), and the manager chain is what must be present.
     """
     assert ENTRY.is_file(), f"submission entry point missing: {ENTRY}"
     closure, roots = submission_closure()
     names = {p.relative_to(REPO).with_suffix("").as_posix() for p in closure}
-    # M1 spine: main -> runtime -> {greedy, dispatch}. agent.obs and
-    # world.fast_sim join the closure when #11's replanner wires them in.
-    for required in ("agent/runtime", "agent/greedy", "agent/dispatch"):
+    for required in ("agent/runtime", "agent/dispatch", "agent/manager/core",
+                     "agent/planner/master", "agent/planner/colgen"):
         assert required in names, (
             f"closure misses {required}: the walk is broken ({sorted(names)})"
         )
+    assert "agent/greedy" not in names, (
+        "the retired greedy policy is back in the submission's closure"
+    )
     assert "opponents" not in roots, (
         "the submission already imports opponents — the guard is allowing "
         "the thing it exists to forbid"
