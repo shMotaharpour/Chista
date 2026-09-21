@@ -208,15 +208,35 @@ class OpponentModel:
              + w * marg)
         return p / p.sum()
 
+    def _activity_marginal(self, good: str, day: int, bucket: int
+                           ) -> tuple[np.ndarray, np.ndarray]:
+        """counts/qty_sum summed over the activity axis for one plain state.
+
+        The old (pre-activity) artifact *was* this marginal, so a caller
+        without a bucket reads exactly what main's table answered.
+        """
+        acc = np.zeros(self.n_bins)
+        acc_q = np.zeros(self.n_bins)
+        base = (good, day, bucket)
+        for key, arr in self.counts.items():
+            if key[:3] == base:
+                acc += np.asarray(arr, dtype=float)
+                acc_q += np.asarray(self.qty_sum.get(key,
+                                                     np.zeros(self.n_bins)),
+                                    dtype=float)
+        return acc, acc_q
+
     def expected_sell(self, good: str, step: int, price: int,
                       activity: int | None = None) -> float:
         """Expected units the rival sells next turn in this state.
 
         `activity` (the rival's own sell bucket over the last 24 turns,
-        from `activity_bucket(tracker)`) selects the activity-keyed table
-        when given: a silent rival's row answers near-pure hold, which is
-        what makes a PASS rival predictable (measured: 1,230 phantom units
-        over 10 days without it, 0 with it).
+        from `tracker.MarketTracker.activity_bucket`) selects the
+        activity-keyed table; a silent rival's row answers near-pure
+        hold, which is what makes a PASS rival predictable (measured:
+        1,230 phantom units over 10 days without it, 0 with it). Without
+        a bucket the plain state is the ACTIVITY MARGINAL — all bucket
+        rows summed — the same answer the pre-activity artifact gave.
         """
         if activity is not None:
             key = self._key_activity(good, step, price, activity)
@@ -225,11 +245,18 @@ class OpponentModel:
             counts = self.counts.get(key, np.zeros(self.n_bins))
             mean_qty = np.where(counts > 0, qs / np.maximum(counts, 1.0), 0.0)
             return float(p @ mean_qty)
+        acc, acc_q = self._activity_marginal(
+            good, int(step // TURNS_PER_DAY),
+            self._bucket(price, MARKET_PARAMS[good]["base"]))
         key = self._key(good, step, price)
-        p = self.policy(good, step, price)
-        qs = self.qty_sum.get(key, np.zeros(self.n_bins))
-        counts = self.counts.get(key, np.zeros(self.n_bins))
-        mean_qty = np.where(counts > 0, qs / np.maximum(counts, 1.0), 0.0)
+        marg = self.good_marginal(good)
+        if float(acc.sum()) <= 0.0 and key not in self.counts:
+            return float(marg[0] * 0.0)      # an unseen plain state: hold
+        n = float(acc.sum())
+        w = self.SHRINK_TOPUP * n / (n + self.SHRINK_TOPUP)
+        p = (acc + self.alpha + w * marg)
+        p = p / p.sum()
+        mean_qty = np.where(acc > 0, acc_q / np.maximum(acc, 1.0), 0.0)
         return float(p @ mean_qty)
 
     def expected_sell_day(self, obs: Any,

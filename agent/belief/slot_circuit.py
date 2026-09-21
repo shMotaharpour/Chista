@@ -122,21 +122,41 @@ def _candidate_schedules(lot: int) -> np.ndarray:
     return S
 
 
-def _rival_scenarios(model: OpponentModel, good: str, step: int, price: int
+def _rival_scenarios(model: OpponentModel, good: str, step: int, price: int,
+                     activity: int | None = None
                      ) -> tuple[np.ndarray, np.ndarray]:
     """The rival's hourly placements from the trained distribution.
+
+    `activity` selects the regime (the caller's tracker bucket); without
+    it the plain state — the ACTIVITY MARGINAL — answers, as the
+    pre-activity artifact did.
 
     Returns (schedules, weights): each row is a 24-hour rival schedule; the
     weights sum to 1 and ARE the model's probabilities.
     """
-    p = model.policy(good, step, price)
-    key = model._key(good, step, price)
-    qs = np.asarray(model.qty_sum.get(key, np.zeros(model.n_bins)), dtype=float)
-    counts = np.asarray(model.counts.get(key, np.zeros(model.n_bins)),
-                        dtype=float)
+    p = model.policy(good, step, price, activity=activity)
+    if activity is not None:
+        key = model._key_activity(good, step, price, activity)
+        qs = model.qty_sum.get(key, np.zeros(model.n_bins))
+        counts = model.counts.get(key, np.zeros(model.n_bins))
+    else:
+        # the plain state's counts: sum the activity rows (the marginal) —
+        # the same answer the pre-activity artifact carried
+        base = model._key(good, step, price)
+        acc = np.zeros(model.n_bins)
+        acc_q = np.zeros(model.n_bins)
+        for k, arr in model.counts.items():
+            if k[:3] == base:
+                acc += np.asarray(arr, dtype=float)
+                acc_q += np.asarray(model.qty_sum.get(
+                    k, np.zeros(model.n_bins)), dtype=float)
+        key, qs, counts = base, acc_q, acc
+    qs = np.asarray(qs, dtype=float)
+    counts = np.asarray(counts, dtype=float)
     bin_means = np.where(counts > 0, qs / np.maximum(counts, 1.0), 0.0)
     # the rival's day volume in the model's expected-sell scale
-    day_volume = float(model.expected_sell(good, step, price)) * TURNS_PER_DAY
+    day_volume = float(model.expected_sell(good, step, price,
+                                           activity=activity)) * TURNS_PER_DAY
 
     scenarios: list[np.ndarray] = []
     weights: list[float] = []
@@ -188,12 +208,15 @@ def _revenue(good: str, start_inv: float, ours: np.ndarray,
     return revenue
 
 
-def plan_day_slots(good: str, lot: int, obs, model: OpponentModel
+def plan_day_slots(good: str, lot: int, obs, model: OpponentModel,
+                   activity: int | None = None
                    ) -> tuple[np.ndarray, float]:
     """The best hourly sell schedule for `lot` of `good` today.
 
-    Returns (schedule (24,), expected revenue). The schedule is what
-    `shed.orders_by_hour` turns into the per-hour queue.
+    `activity` (the tracker's bucket) selects the rival regime; without
+    it the plain activity-marginal answers. Returns (schedule (24,),
+    expected revenue). The schedule is what `shed.orders_by_hour` turns
+    into the per-hour queue.
     """
     step = int(field_of(obs, "step", 0))
     market = field_of(obs, "market", {}) or {}
@@ -202,7 +225,8 @@ def plan_day_slots(good: str, lot: int, obs, model: OpponentModel
     hour_now = step % TURNS_PER_DAY
 
     ours = _candidate_schedules(int(lot))
-    theirs, weights = _rival_scenarios(model, good, step, price)
+    theirs, weights = _rival_scenarios(model, good, step, price,
+                                       activity=activity)
     drain = _drain_per_hour(obs)
     gi = _GI[good]
 
@@ -220,7 +244,8 @@ def plan_day_slots(good: str, lot: int, obs, model: OpponentModel
 
 
 def plan_day_hours(stock: dict[str, int], obs, model: OpponentModel, *,
-                   hour_now: int = 0) -> dict[str, dict[int, int]]:
+                   hour_now: int = 0, activity: int | None = None
+                   ) -> dict[str, dict[int, int]]:
     """The whole day's hour plan — `plan_day_slots` per sellable good.
 
     Maps the stock the rules released (the `plan_sales` `take`) into the
@@ -236,7 +261,8 @@ def plan_day_hours(stock: dict[str, int], obs, model: OpponentModel, *,
     for item, lot in stock.items():
         if int(lot) <= 0:
             continue
-        sched, _rev = plan_day_slots(item, int(lot), obs, model)
+        sched, _rev = plan_day_slots(item, int(lot), obs, model,
+                                     activity=activity)
         per_hour: dict[int, int] = {}
         remaining = int(lot)
         # respect the day's remaining hours and the lot exactly

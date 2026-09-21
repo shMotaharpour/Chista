@@ -374,7 +374,8 @@ def _assert_within_cap(queue: list[list[list]]) -> None:
 
 def market_queue(obs: Any, forecast_obj=None, *, harvest_expected: int = 0,
                  cash_needed: float = 0.0, config: Any = None,
-                 sort_market=None, model=None) -> list[list[list]]:
+                 sort_market=None, model=None, activity: int | None = None
+                 ) -> list[list[list]]:
     """The market half of one day's plan, from the observation alone.
 
     Supply side stand-in: the shed and the bags as the observation shows
@@ -386,7 +387,9 @@ def market_queue(obs: Any, forecast_obj=None, *, harvest_expected: int = 0,
     SELL hours are re-timed by the slot circuit (`plan_day_slots`) per
     good — the quantities stay the guard's decision, only their HOUR
     placement changes. Without a model the uniform spread is kept, so the
-    caller needs no model to get a valid queue.
+    caller needs no model to get a valid queue. `activity` is the rival's
+    own sell bucket (`tracker.MarketTracker.activity_bucket`), selecting
+    the regime row of the trained table.
     """
     from agent.belief.market import forecast as _forecast
     capacity = int(_get(config, "shedCapacity", SHED_CAPACITY))
@@ -411,7 +414,8 @@ def market_queue(obs: Any, forecast_obj=None, *, harvest_expected: int = 0,
             from agent.belief.slot_circuit import plan_day_hours
             sold_stock = {s.item: sum(int(x.units) for x in sales
                                       if x.item == s.item) for s in sales}
-            hour_plan = plan_day_hours(sold_stock, obs, model, hour_now=hour)
+            hour_plan = plan_day_hours(sold_stock, obs, model, hour_now=hour,
+                                       activity=activity)
             sales = plan_sales(state.sellable(), fc, day=day, hour=hour,
                                harvest_expected=incoming,
                                money=_money(obs), cash_needed=cash_needed,

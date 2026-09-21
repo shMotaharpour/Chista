@@ -284,3 +284,25 @@ class MarketTracker:
         if not self.records:
             return np.zeros(len(GOODS))
         return self.records[turn_index].rival_sales
+
+    def activity_bucket(self, step: int, window: int = 24) -> int:
+        """The rival's own sell bucket over the last `window` turns.
+
+        0 start (no history yet), 1 silent (0 units), 2 low, 3 mid,
+        4 high — the same regime the trained artifact is keyed by
+        (`_key_activity`). The rival's per-turn volume here is the
+        tracker's inferred `rival_sales`: exact on the seven one-way
+        goods, net on the two duals.
+        """
+        n = len(self.records)
+        if step < window or n == 0:
+            return 0
+        recent = self.records[-min(window, n):]
+        sold = float(sum(int(r.rival_sales.sum()) for r in recent))
+        if sold <= 0:
+            return 1
+        if sold > 60:
+            return 4
+        if sold > 10:
+            return 3
+        return 2
