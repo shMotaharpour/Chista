@@ -30,10 +30,9 @@ import numpy as np
 from agent.world.board import MOVE_DELTA, SPAWN
 from agent.world.rules import BOARD_SIZE, TURNS_PER_DAY
 from agent.wsr.routing import walk
-from agent.wsr.tasks import DISTANCE, NO_ITEM, SHED_INDEX, TaskArray
+from agent.wsr.tasks import DISTANCE, NO_ITEM, SHED_INDEX, TaskArray, day_walking
 
 Cell = tuple[int, int]
-MAX_HANDS = 16
 
 #: What one step of the search is allowed to cost, as `beam x workers x tasks`. A step's arrays are
 #: that product wide, so a fixed width makes a hundred tiles cost fifty times a quadrant. This is the
@@ -96,6 +95,9 @@ class Result(NamedTuple):
     pool: int
     route: list[tuple[int, str, int]]
     complete: bool
+    #: The worker-turns the route left unspent, walks included: what more work could be laid on the
+    #: same hands. Zero until `search` fills it, which is the only place the pool is known.
+    spare: int = 0
     #: True when a deadline stopped the search before it ran out of tasks to place. A route that is
     #: neither complete nor out of time is the search's own answer: the pool could not carry it.
     out_of_time: bool = False
@@ -126,51 +128,81 @@ class Result(NamedTuple):
 
 
 def lower_bound(day: Day, tasks: TaskArray) -> int:
-    """The fewest hands the day can possibly need, from arithmetic alone.
+    """The fewest units the day can possibly need: the work, against the turns the day has.
 
-    Two floors, and the larger wins. A bound that is too high is worse than useless - the search
-    would skip a pool size that works, which is how a feasible day gets called infeasible - so
-    both are floors and neither is padded:
+    The work is not the tasks alone. Every task costs a turn, every distinct good a consumer needs
+    costs a turn to fetch, and the tiles the day works have to be walked to: to touch T distinct tiles
+    a unit moves at least T - 1 times, because it starts standing on one of them. A drop doubles that
+    walking - the unit has to come back along the path it went out on - and a day with a deadline for
+    its drops is a day whose walking cannot be spent twice.
 
-      work   every task must fit inside the day, and a fetch is not a task of its own: it rides
-             along with the task that needs it, so it is counted once per distinct good.
-      chain  the longest precedence chain plus the walk to its tile, since that work cannot be
-             split between hands however many there are.
+    The turns are not 24 times the hands either. They are a ladder: the farmer's whole day, then 24
+    minus the hire hour for each hand in turn, counted off until the work is covered. A hand hired in
+    turn 2 has 22 turns in it, and dividing the work by the horizon pretends otherwise.
 
-    The solver's own bound is not consulted. A bound taken from the solver is circular.
+    The answer is a POOL, because that is what the caller searches with - the units already on the
+    field are counted in and the search takes them back out.
     """
     if tasks.n == 0:
         return 0
-    goods = {int(i) for i in tasks.items if int(i) != NO_ITEM}
-    by_work = -(-(tasks.n + len(goods)) // day.horizon)
+    goods = len({int(i) for i in tasks.items if int(i) != NO_ITEM})
+    work = tasks.n + goods + day_walking(tasks)
 
-    depth = _chain_depth(tasks)
-    reach = int(DISTANCE[SHED_INDEX].min(axis=0)[tasks.cell_index].max()) if tasks.n else 0
-    by_chain = -(-(depth + reach) // day.horizon)
-    return max(1, by_work, by_chain)
+    total = day.horizon
+    hired = 0
+    while total < work and hired < len(day.hire_times):
+        total += day.horizon - int(day.hire_times[hired])
+        hired += 1
+    return len(day.units) + hired
 
 
-def _chain_depth(tasks: TaskArray) -> int:
-    """The longest precedence chain, in tasks - the critical path through the day's work.
+def spare_turns(day: Day, tasks: TaskArray, result: Result) -> int:
+    """The worker-turns a route leaves unspent, walks included.
 
-    `pred[i, j]` means j precedes i, so a task sits one below its deepest predecessor. The graph is
-    acyclic, so repeated relaxation converges and no recursion is needed.
+    The hands the pool paid for have the day's turns between them; the route spends one per task and
+    one per tile walked, and this is the rest. A manager reads it after `complete` says yes, to decide
+    whether to lay more work on the same hands rather than hiring again.
     """
-    if tasks.n == 0:
-        return 0
-    depth = np.ones(tasks.n, dtype=np.int16)
-    for _ in range(tasks.n):
-        with_pred = tasks.pred.any(axis=1)
-        deeper = (depth[None, :] * tasks.pred).max(axis=1) + 1
-        updated = np.where(with_pred, deeper, depth).astype(np.int16)
-        if (updated == depth).all():
-            break
-        depth = updated
-    return int(depth.max())
+    hired = max(0, result.pool - len(day.units))
+    total = day.horizon + sum(day.horizon - int(hour) for hour in day.hire_times[:hired])
+    if not result.route:
+        return total
+
+    row = {task_id: index for index, task_id in enumerate(tasks.ids)}
+    per_worker: dict[int, list[tuple[int, str]]] = {}
+    for turn, task_id, worker in result.route:
+        if turn < 0:
+            continue
+        per_worker.setdefault(worker, []).append((turn, task_id))
+
+    spent = 0
+    for items in per_worker.values():
+        here = FARMER_START
+        for _turn, task_id in sorted(items):
+            cell = tasks.cells[row[task_id]]
+            spent += abs(here[0] - int(cell[0])) + abs(here[1] - int(cell[1])) + 1
+            here = (int(cell[0]), int(cell[1]))
+    return max(0, total - spent)
+
+
+def ceiling_for(day: Day, tasks: TaskArray) -> int:
+    """The largest pool worth asking about: the units on the field, plus the hands the day offered.
+
+    `hire_times` is the planner's offer - the hour each hand it will pay for may begin - so a pool
+    beyond it is a pool nobody is paying for, and the search has no hour to start those hands on. The
+    tasks bound it too, by argument: every unit does at least one task, so a pool larger than the work
+    cannot be the smallest carrying one. The smaller of the two wins.
+
+    The offer is the tighter of the two by a wide margin, which is the point: the search used to be
+    allowed to hire hands the planner never offered, and answered with pools no one would pay for.
+    """
+    work_bound = tasks.n + len(day.units)
+    offered = len(day.units) + len(day.hire_times)
+    return min(work_bound, offered)
 
 
 def search(day: Day, tasks: TaskArray, *, beam: int | None = None,
-           hands: int | None = None, max_hands: int = MAX_HANDS,
+           hands: int | None = None, max_hands: int | None = None,
            budget_s: float | None = None, warm: Result | None = None) -> Result:
     """The day, searched with `beam` routes in parallel.
 
@@ -201,18 +233,32 @@ def search(day: Day, tasks: TaskArray, *, beam: int | None = None,
     of the day and with every pool the loop tries, so a deadline is the only promise that survives
     a hundred tiles.
     """
+    def done(result: Result) -> Result:
+        """The answer with its spare capacity on it. `search` is the only place the pool is known,
+        and the spare is counted against the hands that pool paid for."""
+        return result._replace(spare=spare_turns(day, tasks, result))
+
     if tasks.n == 0:
-        return Result(0, [], True)
+        return done(Result(0, [], True))
 
     # The arithmetic floor is on the WORKERS a day needs, and the units already on the field are
     # workers, so what has to be hired is the shortfall. Without this the search starts at one hand
     # and stops there, paying the ladder for a day the farmer could have carried alone.
     floor = max(0, lower_bound(day, tasks) - len(day.units))
     start = floor if hands is None else int(hands)
-    ceiling = min(int(max_hands), MAX_HANDS)
+    # A caller's ceiling is theirs to set and may be tighter than the day's own bound - the corpus
+    # test asks for no more hands than the game paid, which is exactly that.
+    bound = ceiling_for(day, tasks)
+    ceiling = bound if max_hands is None else min(int(max_hands), bound)
     deadline = None if budget_s is None else time.perf_counter() + float(budget_s)
+    # The floor is a proved bound on the workers the day needs, so a range whose top is below it is
+    # answered without searching: no pool the caller allowed can lay the day out, however the route is
+    # arranged. The comparison is against the CEILING and not the starting pool - a caller who names
+    # five and allows six is asking about six, and answering about five would refuse a day that fits.
+    if ceiling < floor:
+        return done(Result(ceiling, [], False, infeasible=True))
     if start > ceiling:
-        return Result(ceiling, [], False, infeasible=True)
+        return done(Result(ceiling, [], False, infeasible=True))
 
     def width(pool: int) -> int:
         return beam if beam is not None else beam_for(tasks, len(day.units) + pool)
@@ -222,14 +268,14 @@ def search(day: Day, tasks: TaskArray, *, beam: int | None = None,
         return warm if warm is not None and warm.pool == pool else None
 
     if hands is None and ceiling > start:
-        return _smallest_pool(day, tasks, width, start, ceiling, deadline, seed)
+        return done(_smallest_pool(day, tasks, width, start, ceiling, deadline, seed))
 
     partial: Result | None = None
     placed = -1
     for pool in range(start, ceiling + 1):
         result = _fixed_point(day, tasks, width(pool), pool, deadline, seed(pool))
         if result.complete:
-            return result
+            return done(result)
         if partial is None or _better_route(result, partial):
             partial, placed = result, len(result.route)
         elif len(result.route) <= placed:
@@ -239,7 +285,7 @@ def search(day: Day, tasks: TaskArray, *, beam: int | None = None,
         if result.out_of_time:
             # A larger pool costs more and cannot buy back the time, so the loop stops here.
             break
-    return partial if partial is not None else Result(ceiling, [], False)
+    return done(partial if partial is not None else Result(ceiling, [], False))
 
 
 def _makespan(result: Result) -> int:
@@ -632,6 +678,11 @@ def _expand(day: Day, tasks: TaskArray, done, when, who, free, where, travel, li
 
     start = np.maximum(arrive, released[:, None, :])
     start = np.maximum(start, earliest_here[None, None, :])
+    # A trip is charged the turn spent fetching and not the walk to the door. The walk is real - the
+    # engine makes a PICKUP happen at a door - and pricing it is what makes the search share a bag
+    # instead of fetching, but it also takes five days off the corpus: those days were carried with the
+    # fetch priced at a turn, and the model's budget is short elsewhere. The issue for the nine days
+    # has the measurement; this stays one turn until the budget is right.
     start = start + trip.astype(np.int16)
     finish = start + np.int16(1)
     # An idle drop is finished the moment its worker is free - it costs nothing and takes no turn -
