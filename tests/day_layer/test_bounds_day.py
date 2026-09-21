@@ -146,10 +146,24 @@ def test_the_floor_counts_the_ladder_and_not_the_work_divided_by_the_horizon():
     assert floor > -(-tasks.n // day.horizon), "the floor has to beat the horizon division to matter"
 
 
-def test_the_ceiling_is_the_work_plus_the_units_already_on_the_field():
-    """The largest pool worth asking about: no pool bigger than that can place more than the day holds."""
-    day, tasks = _one_tile_day(tasks_on_the_shed=7, hire_hours=())
+def test_the_ceiling_is_the_hands_the_day_offered_and_not_the_work():
+    """The planner's offer caps the pool: a hand nobody pays for is not a hand the day has.
 
-    assert B.ceiling_for(day, tasks) == tasks.n + len(day.units), (
-        f"the ceiling is the work plus the units on the field, got {B.ceiling_for(day, tasks)}"
+    Seven tasks on one tile with two hands offered is a ceiling of three - the farmer and the two -
+    where the work alone would allow eight.
+    """
+    day, tasks = _one_tile_day(tasks_on_the_shed=7, hire_hours=(1, 1))
+
+    assert B.ceiling_for(day, tasks) == len(day.units) + len(day.hire_times) == 3, (
+        f"the offer is two hands and the farmer, so the ceiling is 3, got {B.ceiling_for(day, tasks)}; "
+        f"8 is the work plus the units, which is what it used to be"
+    )
+
+
+def test_the_ceiling_still_caps_a_day_whose_work_is_smaller_than_its_offer():
+    """Every unit does at least one task, so a pool larger than the work is never the smallest one."""
+    day, tasks = _one_tile_day(tasks_on_the_shed=3, hire_hours=(1,) * 10)
+
+    assert B.ceiling_for(day, tasks) == tasks.n + len(day.units) == 4, (
+        f"three tasks with ten hands offered is capped by the work at 4, got {B.ceiling_for(day, tasks)}"
     )

@@ -186,14 +186,19 @@ def spare_turns(day: Day, tasks: TaskArray, result: Result) -> int:
 
 
 def ceiling_for(day: Day, tasks: TaskArray) -> int:
-    """The largest pool worth asking about: the tasks, plus the units already on the field.
+    """The largest pool worth asking about: the units on the field, plus the hands the day offered.
 
-    Every unit does at least one task, so a pool larger than the number of tasks cannot be the
-    smallest carrying one - which makes this a ceiling by argument rather than by guess. The tighter
-    candidates are guesses: a tour of the tiles bounds the BEST walking, and the search's own route
-    can walk more than it, so a tour-derived ceiling cuts days that would carry.
+    `hire_times` is the planner's offer - the hour each hand it will pay for may begin - so a pool
+    beyond it is a pool nobody is paying for, and the search has no hour to start those hands on. The
+    tasks bound it too, by argument: every unit does at least one task, so a pool larger than the work
+    cannot be the smallest carrying one. The smaller of the two wins.
+
+    The offer is the tighter of the two by a wide margin, which is the point: the search used to be
+    allowed to hire hands the planner never offered, and answered with pools no one would pay for.
     """
-    return tasks.n + len(day.units)
+    work_bound = tasks.n + len(day.units)
+    offered = len(day.units) + len(day.hire_times)
+    return min(work_bound, offered)
 
 
 def search(day: Day, tasks: TaskArray, *, beam: int | None = None,
