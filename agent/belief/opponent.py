@@ -180,8 +180,18 @@ class OpponentModel:
         return b
 
     def observe(self, rec: FlowRecord, tracker: MarketTracker) -> None:
+        # The key the PREDICTOR reads is the activity-keyed one (`policy` /
+        # `expected_sell` are called with the tracker's bucket), so the online
+        # update writes that same row. Measured on the same three days of live
+        # play, one state (CARROT, day 2, bucket 0, activity 1): writing the
+        # plain key leaves that state's own row at the artifact's counts and its
+        # prediction at the pretrained answer to four places, |move| 0.0001;
+        # writing the activity key gives the row [24, 0, 0, 0, 1] and the
+        # prediction [0.5562, 0.1598, 0.1116, 0.1211, 0.0513], |move| 0.8876 —
+        # the rival that never sells, learned.
+        bucket = int(tracker.activity_bucket(rec.step))
         for i, g in enumerate(GOODS):
-            key = self._key(g, rec.step, int(tracker.prices[i]))
+            key = self._key_activity(g, rec.step, int(tracker.prices[i]), bucket)
             arr = self.counts.setdefault(key, np.zeros(self.n_bins))
             qs = self.qty_sum.setdefault(key, np.zeros(self.n_bins))
             q = float(rec.rival_sales[i])

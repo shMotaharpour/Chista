@@ -14,14 +14,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from agent.world.action_rules import SETTLE_RANK, SETTLE_RANK_DEFAULT
 from agent.world.rules import (ANIMAL_RULES, CROP_RULES, TURNS_PER_DAY,
                                hire_cost)
-
-#: The engine settles a turn's market in this order (F032). A day that must
-#: sell before it can afford its seeds has to be queued in it, or the purchase
-#: is refused for want of coins it is about to have.
-QUEUE_RANK = {"BUY_LAND": 0, "SELL": 1, "HIRE": 2}
-DEFAULT_RANK = 3
 
 
 @dataclass(frozen=True)
@@ -154,7 +149,8 @@ def hire_orders(hands: int, hires_today: int, multiplier: int = 1
 
 
 def sell_rows(obs, harvest_expected: int, cash_needed: float, config=None,
-              *, model=None, activity: int | None = None) -> list:
+              *, model=None, activity: int | None = None,
+              forecast_obj=None) -> list:
     """Belief's per-hour SELL queue, or no rows if it cannot build one.
 
     Called through `market_queue`, which is belief's documented entry point and
@@ -168,7 +164,8 @@ def sell_rows(obs, harvest_expected: int, cash_needed: float, config=None,
     Without a model the queue is the uniform spread and needs neither.
     """
     from agent.belief.shed import market_queue
-    return market_queue(_sellable_obs(obs), harvest_expected=int(harvest_expected),
+    return market_queue(_sellable_obs(obs), forecast_obj=forecast_obj,
+                        harvest_expected=int(harvest_expected),
                         cash_needed=float(cash_needed), config=config,
                         model=model, activity=activity)
 
@@ -213,7 +210,8 @@ def merge(sells: list, hires: list, buys: list, *, cap: int = 10,
     opening = [list(o) for o in hires] + [list(o) for o in buys]
     for turn in range(turns):
         row = [list(o) for o in (sells[turn] if turn < len(sells) else [])]
-        row.sort(key=lambda o: QUEUE_RANK.get(o[0] if o else "", DEFAULT_RANK))
+        row.sort(key=lambda o: SETTLE_RANK.get(o[0] if o else "",
+                                               SETTLE_RANK_DEFAULT))
         while opening and len(row) < cap:
             row.append(opening.pop(0))
         rows[turn] = row[:cap]
@@ -221,8 +219,8 @@ def merge(sells: list, hires: list, buys: list, *, cap: int = 10,
 
 
 def build(obs, chains, *, hands: int, harvest_expected: int = 0,
-          config=None, cap: int = 10, model=None, activity: int | None = None
-          ) -> DayMarket:
+          config=None, cap: int = 10, model=None, activity: int | None = None,
+          forecast_obj=None) -> DayMarket:
     """The whole day's market side, from the committed chains."""
     private = obs.get("private", {}) if isinstance(obs, dict) else {}
     farms = obs.get("farms", []) if isinstance(obs, dict) else []
@@ -238,7 +236,8 @@ def build(obs, chains, *, hands: int, harvest_expected: int = 0,
                                    multiplier)
     bill += hire_bill
     sells = sell_rows(obs, harvest_expected, float(bill), config,
-                      model=model, activity=activity)
+                      model=model, activity=activity,
+                      forecast_obj=forecast_obj)
     rows, dropped = merge(sells, hires, buys, cap=cap)
     return DayMarket(rows=rows, bill=int(bill), buys=tuple(map(tuple, buys)),
                      hires=len(hires), dropped=dropped,
