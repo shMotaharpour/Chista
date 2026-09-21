@@ -7,7 +7,7 @@ its own turn plus the walk, and a spare that counted only the tasks would say th
 import pathlib
 import sys
 
-sys.path.insert(0, "/chista/pm/world")
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
 
 from agent.wsr import beam as B
 from agent.wsr import tasks as T

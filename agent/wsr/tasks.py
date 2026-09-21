@@ -304,16 +304,21 @@ def land_image(tasks: TaskArray, board_size: int = BOARD_SIZE) -> np.ndarray:
 
 
 def spanning_walk(tasks: TaskArray) -> int:
-    """A floor on the walking: the minimum spanning tree over the worked tiles and the shed doors.
+    """A floor on the walking: the minimum spanning tree over the worked tiles and the shed.
 
-    Any set of walks that covers the tiles, starting from the doors, is a connected subgraph over the
-    tiles and the doors together, and the cheapest such subgraph is the tree. `tiles - 1` is the same
+    Any set of walks that covers the tiles, starting from the shed, is a connected subgraph over the
+    tiles and the shed together, and the cheapest such subgraph is the tree. `tiles - 1` is the same
     idea with the crossings left out, which is why a day that works three quadrants needs more.
+
+    The shed's four access tiles are ONE node, not four. They all touch the shed, so a worker standing
+    on any of them is at the shed, and a walk that reaches one has reached them all. Leaving them as
+    four nodes makes the tree pay the 2x2 block's own cost - up to three steps that no worker walks -
+    and a floor that is too high is worse than useless: it reports a hand the day does not need.
     """
     if tasks.n == 0:
         return 0
     nodes = [tuple(int(v) for v in cell) for cell in np.unique(tasks.cells, axis=0)]
-    nodes.extend(tuple(int(v) for v in door) for door in SHED_ACCESS)
+    nodes.append(tuple(int(v) for v in SHED_ACCESS[0]))
     if len(nodes) < 2:
         return 0
 

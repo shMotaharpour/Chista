@@ -10,7 +10,7 @@ import json
 import pathlib
 import sys
 
-sys.path.insert(0, "/chista/pm/world")
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
 
 from agent.wsr import beam as B
 from agent.wsr import tasks as T
@@ -74,3 +74,65 @@ def test_an_ask_above_the_day_s_own_ceiling_is_refused_rather_than_crashing():
 
     assert above.infeasible, "an ask above the day's own ceiling was not refused"
     assert above.route == []
+
+
+def test_an_empty_day_is_carried_by_nobody_rather_than_raising():
+    """The manager's idle plan is the first thing the layer is handed, and it has no tasks at all."""
+    day = B.Day(chains=(), available={})
+    result = B.search(day, T.build((), available={}), budget_s=5.0)
+
+    assert result.complete, "a day with no work is not a day that failed"
+    assert result.pool == 0 and result.route == []
+
+
+def _one_tile_day(tasks_on_the_shed, hire_hours):
+    """A day whose arithmetic can be written down: every task on the shed's own tile, no walking."""
+    cell = (4, 4)
+    ops = tuple("WATER" for _ in range(tasks_on_the_shed))
+    grid = [(cell, ops, None)]
+    available = {}
+    day = B.Day(chains=tuple(grid), available=available, hire_times=tuple(hire_hours))
+    return day, T.build(grid, available=available)
+
+
+def test_the_walk_counts_the_shed_once_and_pays_for_the_crossings():
+    """Three quadrants, hand-checked: the tree is the three walks out of the shed's single node.
+
+    From the shed at (4,4): 8 to (0,0), then 9 to (9,0) and 9 to (0,9) - 26. With the four access
+    tiles left as four nodes the tree also pays the 2x2 block's own cost and reads 29.
+    """
+    grid = [((0, 0), ("WATER",), None), ((9, 0), ("WATER",), None), ((0, 9), ("WATER",), None)]
+    tasks = T.build(grid, available={})
+
+    assert T.spanning_walk(tasks) == 26, (
+        f"the tree over three quadrants is 8 + 9 + 9 out of the shed, got {T.spanning_walk(tasks)}; "
+        f"29 means the four access tiles are four nodes again"
+    )
+    assert T.spanning_walk(tasks) > len(grid) - 1, "the tile count is what the tree exists to improve on"
+
+
+def test_the_floor_counts_the_ladder_and_not_the_work_divided_by_the_horizon():
+    """Forty tasks on the shed's tile, three hands hired at hour 20: 24, 28, 32, 36 turns of capacity.
+
+    Dividing the work by the horizon reads 40/24 and answers two hands. The ladder answers four, which
+    is the honest count: a hand hired in turn 20 has four turns in it, not twenty-four.
+    """
+    day, tasks = _one_tile_day(tasks_on_the_shed=40, hire_hours=(20, 20, 20))
+    assert tasks.n == 40
+
+    floor = B.lower_bound(day, tasks)
+
+    assert floor == 4, (
+        f"the ladder gives the farmer 24 turns and each hand 4, so 40 tasks need 4 units, got {floor}; "
+        f"2 is the work divided by the horizon"
+    )
+    assert floor > -(-tasks.n // day.horizon), "the floor has to beat the horizon division to matter"
+
+
+def test_the_ceiling_is_the_work_plus_the_units_already_on_the_field():
+    """The largest pool worth asking about: no pool bigger than that can place more than the day holds."""
+    day, tasks = _one_tile_day(tasks_on_the_shed=7, hire_hours=())
+
+    assert B.ceiling_for(day, tasks) == tasks.n + len(day.units), (
+        f"the ceiling is the work plus the units on the field, got {B.ceiling_for(day, tasks)}"
+    )
