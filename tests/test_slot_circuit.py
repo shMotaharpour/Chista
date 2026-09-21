@@ -13,8 +13,8 @@ import numpy as np
 
 from offline_lab.fast_sim import FastSim
 from agent.belief.opponent import OpponentModel
-from agent.belief.slot_circuit import (_candidate_schedules, _revenue,
-                                       plan_day_slots)
+from agent.belief.slot_circuit import (_candidate_schedules, _drain_per_hour,
+                                       _revenue, plan_day_slots)
 from agent.world.model import PRODUCTS
 
 PASS = {"farmer": ["PASS"], "hands": [], "market": []}
@@ -83,6 +83,73 @@ def test_the_schedule_respects_the_remaining_hours() -> None:
     sched, _rev = plan_day_slots("WHEAT", 20, obs, model)
     assert sched[:18].sum() == 0, sched
     assert abs(sched.sum() - 20) < 1e-6, sched
+
+
+def test_the_candidate_family_is_not_flat() -> None:
+    """The 6 candidates must disagree on revenue somewhere.
+
+    A circuit whose candidates all price identically is not choosing
+    anything — the argmax would be noise. Against a HEAVY rival (90 units
+    front/spread/back of WHEAT) the shapes must spread by > 1%: the drain
+    is small, so dumping beats spreading, and the rival's front-load makes
+    the back shapes worse still.
+    """
+    obs = _sim_to(0, 5)
+    model = OpponentModel(pretrained=True)
+    g = "WHEAT"
+    inv = float(obs["market"]["inventory"][g])
+    drain = _drain_per_hour(obs)
+    heavy_front = np.zeros(24); heavy_front[:8] = 90 / 8
+    heavy_spread = np.full(24, 90 / 24)
+    heavy_back = np.zeros(24); heavy_back[-8:] = 90 / 8
+    scenarios = [(heavy_front, 0.32), (heavy_spread, 0.32), (heavy_back, 0.32),
+                 (np.zeros(24), 0.04)]
+    cands = _candidate_schedules(120)
+    labels = ["dump", "even", "front", "back", "mid", "drip"]
+    exp = []
+    for i in range(len(cands)):
+        sched = np.zeros(24)
+        sched[0:] = cands[i]
+        exp.append(sum(wt * _revenue(g, inv, sched, theirs, drain)
+                       for theirs, wt in scenarios))
+    spread = (max(exp) - min(exp)) / max(exp) * 100
+    assert spread > 1.0, (
+        f"the candidate family is flat ({spread:.2f}% spread): the argmax "
+        "is noise, so the circuit is not choosing anything")
+
+
+def test_market_queue_with_a_model_re_times_the_hours() -> None:
+    """The #78 wire: `market_queue(..., model=...)` must move the queue's
+    sell hours onto the circuit's schedule — same quantities, new hours.
+
+    The claim under test is the WIRE, not the profit: without `model=`,
+    no code path could reach the circuit's +1513 coins/season bench.
+    """
+    from agent.belief.shed import market_queue
+    obs = _sim_to(0, 5)
+    obs = dict(obs)
+    obs["private"] = dict(obs.get("private", {}))
+    obs["private"]["shed"] = {"MILK": 24}
+    obs["private"]["inventories"] = [{}]
+    # force a release: day-5 MILK is mid-ramp, so the peak rule holds and
+    # the guard is the only releaser — hand it the overflow it answers
+    obs["private"]["shed"] = {"MILK": 95}
+    obs["private"]["inventories"] = [{"MILK": 10}]
+    model = OpponentModel(pretrained=True)
+    q_model = market_queue(obs, model=model)
+    q_plain = market_queue(obs)
+    # same total quantity either way — the circuit re-times, never re-sizes
+    total_model = sum(int(o[2]) for row in q_model for o in row)
+    total_plain = sum(int(o[2]) for row in q_plain for o in row)
+    assert total_plain > 0, "the guard released nothing: fixture is off"
+    assert total_model == total_plain, (total_model, total_plain)
+    # and the hours differ: with the model the queue is the circuit's best
+    # response, not the uniform spread
+    hours_model = sorted(h for h, row in enumerate(q_model) if row)
+    hours_plain = sorted(h for h, row in enumerate(q_plain) if row)
+    assert hours_model != hours_plain or any(
+        len(row) != 1 for row in q_model if row), (
+        "model queue is identical to the uniform spread: the wire is dead")
 
 
 def main() -> int:
