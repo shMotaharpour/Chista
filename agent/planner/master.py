@@ -315,7 +315,9 @@ def published_duals(w_coupling: np.ndarray, days: int,
 
         w[d, r] = quote_r · (1 + y_cash[d])
 
-    `y_cash[d]` is the shadow price of a coin on day `d` — what the plan's
+    `cash_dual[d]` here is `Σ_{d' ≥ d}` of the cash rows' duals — a coin spent
+    on day d sits in every cumulative row from d onward. It is the shadow price
+    of a coin — what the plan's
     objective would gain from one more. When the purse is slack it is 0 and
     the input costs its quote; when the purse binds, every seed and every
     animal gets dearer in proportion, and the tiles re-plan onto chains that
@@ -542,11 +544,17 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
         # being the master's reduced cost, and the loop stalls short of a
         # proof: measured at rc 60 on a 52,279 objective, with the same column
         # coming back round after round.
+        # The cash rows are CUMULATIVE, so a coin spent on day d sits in every
+        # row from d onward and a coin earned on day d relieves every row after
+        # it. `ahead[d]` is the shadow price of spending then, `later[d]` of
+        # earning then — and matching the row is not optional: the reduced-cost
+        # test is only a reduced cost of the LP whose duals it used.
         cash_arr = np.asarray(cash, dtype=np.float64)
-        later = np.concatenate([np.cumsum(cash_arr[::-1])[::-1][1:], [0.0]])
+        ahead = np.cumsum(cash_arr[::-1])[::-1]
+        later = np.concatenate([ahead[1:], [0.0]])
         p_eff = p.copy()
         p_eff[:days, list(MARKET_IDS)] *= (1.0 + later[:days])[:, None]
-        exact = published_duals(y, days, cash, supply.quotes)
+        exact = published_duals(y, days, ahead, supply.quotes)
         state["w"] = np.maximum(
             np.maximum((1.0 - ALPHA) * state["w"] + ALPHA * y, 0.0), w_floor)
         state["cash"] = (1.0 - ALPHA) * state["cash"] + ALPHA * np.asarray(cash)
@@ -586,8 +594,8 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
             # once walking is paid for - and the certificate is honest about
             # what it proves: optimal over the columns the DP can offer, not
             # over every plan that exists.
-            cash_use = float(sum(cash[d] * (spend[i][d] - earn[i][:d].sum())
-                                 for d in range(days)))
+            cash_use = float((ahead[:days] * spend[i][:days]).sum()
+                             - (later[:days] * earn[i][:days]).sum())
             values.append(float(earn[i].sum())
                           - float((np.asarray(y)[:days, 0] * hours[:, 0]).sum())
                           - cash_use)

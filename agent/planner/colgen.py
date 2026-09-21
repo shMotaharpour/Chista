@@ -105,11 +105,23 @@ def solve_master(pool: list[Column], counts: np.ndarray, hours: np.ndarray,
         np.zeros((n_coupling * days, 0))
     b_q = np.tile(hours[:days], n_coupling)       # LABOR is the only row today
 
-    # cash rows: what is spent by day d, less what was banked before it
+    # Cash rows, CUMULATIVE: everything spent up to and including day d, less
+    # everything banked before it, against one purse.
+    #
+    #     Σ_{d' ≤ d} spend[d']  −  Σ_{d' < d} earn[d']  ≤  money
+    #
+    # Per-day rows were the bug that broke a season. `spend[d] ≤ money` on
+    # every day independently says the farm may spend its whole purse on day
+    # 0, and again on day 1, and again on day 2 — twenty times over. It
+    # committed to a plan that did exactly that, went broke on day 1, and
+    # scored 4,268 where doing nothing scores 3,000. Money is a STOCK; a row
+    # that treats it as an allowance per day is not a budget.
     A_c = np.zeros((days, n))
     for j, col in enumerate(pool):
+        spend = np.cumsum(np.asarray(col.spend, dtype=np.float64))
+        earn = np.asarray(col.earn, dtype=np.float64)
         for d in range(days):
-            A_c[d, j] = col.spend[d] - (col.earn[:d].sum() if d else 0.0)
+            A_c[d, j] = spend[d] - (earn[:d].sum() if d else 0.0)
     b_c = np.full(days, float(money))
 
     # convexity: one row per class

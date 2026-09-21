@@ -150,6 +150,26 @@ def fit(chains, *, hands: int, available: dict | None = None,
                   bool(result.complete), hours, hours_committed, reason)
 
 
+def hours_for(hands: int, days: int, overhead: float = 0.35) -> np.ndarray:
+    """The labour a day holds with `hands` hired, per day of the horizon.
+
+    `24·(1 + hands) − hands`: the farmer's full day plus one per hand, less the
+    hour each hand loses to being hired (F040 — a hand hired in turn 0 first
+    acts at hour 1). The overhead is #12's M3 placeholder for the walking a
+    route does beyond what a column charges; the columns now carry the walk to
+    the tile, so what is left is the walking BETWEEN them.
+    """
+    gross = 24.0 * (1 + int(hands)) - int(hands)
+    return np.full(days, gross * (1.0 - overhead))
+
+
+def hire_bill(hands: int, hires_today: int = 0, multiplier: int = 1) -> int:
+    """What `hands` hires cost today. Fibonacci, and it resets nightly (F039)."""
+    from agent.world.rules import hire_cost
+    return sum(hire_cost(int(hires_today) + i) * int(multiplier)
+               for i in range(max(0, int(hands))))
+
+
 @dataclass(frozen=True)
 class DayPlan:
     """A master solve, its assignment, and what the day layer made of it."""
@@ -160,6 +180,8 @@ class DayPlan:
     day: DayFit
     rounds: int = 1                # which solve this candidate came from
     overhead: float = 1.0          # the hours correction that was applied
+    hands: int = 0                 # hands this plan pays for
+    net: float = 0.0               # objective less what the hands cost
     #: How many times the master was solved in total. `rounds` is the winner's
     #: own number and a later solve can lose to an earlier one, so the two are
     #: different questions: "which answer is this" and "what did it cost".
@@ -177,7 +199,33 @@ def _better(candidate: "DayPlan", best: "DayPlan") -> bool:
 def plan(obs, contractor, supply, *, class_of_tile, iter_cap: int = 200,
          hands: int = 0, budget_s: float | None = None,
          rounds: int = 3, tolerance: float = 0.02,
-         pool: list | None = None, deadline: float | None = None) -> DayPlan:
+         pool: list | None = None, deadline: float | None = None,
+         max_hands: int | None = None, w_warm=None) -> DayPlan:
+    """Enumerate the pool of hands, and keep the day worth the most net of it.
+
+    **Hiring is a decision, and it was not one.** `supply.hours` came from
+    `len(farm["hands"])`, which is zero at every hour 0 because the engine
+    clears the field overnight (F040) — so the master planned for one farmer
+    for thirty days, and a season worked three to five tiles of twenty-five,
+    banked its money and never bought a quadrant. #12's brief said to treat
+    `hands_d` as an outer enumeration and this is it. What it is worth:
+
+        hands   H_d     hire    objective    tiles
+            0   15.6       0       34,197        5
+            1   30.6       1       57,739        8
+            2   45.5       2       78,266       11
+            4   75.4       7      113,812       16
+            8  135.2      54      166,449       23
+
+    Eight hands cost 54 coins against a purse of 3,000 and are worth five
+    times the plan. The enumeration is cheap because each solve is handed the
+    last one's column pool: the same plans are still plans at a different
+    wage, so only what is missing has to be priced.
+
+    The hire bill is charged over the WHOLE horizon, not once: the hands are
+    cleared every night and hired again every morning (F039), so a plan that
+    counts them once buys twenty days of labour for one day's wages.
+    """
     """Master, assign, ask wsr, correct the hours, repeat.
 
     **wsr is a feasibility oracle here, not a calibration source, and that is
@@ -203,7 +251,34 @@ def plan(obs, contractor, supply, *, class_of_tile, iter_cap: int = 200,
     from agent.planner import columns as C
     from agent.planner import master as M
 
-    hours = np.asarray(supply.hours, dtype=np.float64).copy()
+    ceiling = int(hands if max_hands is None else max_hands)
+    carried = list(pool or [])
+    chosen: DayPlan | None = None
+    # Largest pool FIRST. The first solve is the cold one and the budget may
+    # cut the enumeration after it, so whichever offer runs first is the one a
+    # short turn keeps — and more hands is where the value is (0 hands 34,197,
+    # eight hands 166,449 for 54 coins). Walking down from the ceiling means a
+    # cut enumeration keeps a good day instead of the emptiest one.
+    for offer in range(max(0, ceiling), -1, -1):
+        current = _solve_at(obs, contractor, supply, class_of_tile, offer,
+                            iter_cap, budget_s, rounds, tolerance, carried,
+                            deadline, w_warm)
+        carried = list(current.master.pool)
+        if chosen is None or current.net > chosen.net:
+            chosen = current
+        if deadline is not None and time.perf_counter() >= deadline:
+            break
+    return chosen
+
+
+def _solve_at(obs, contractor, supply, class_of_tile, hands, iter_cap,
+              budget_s, rounds, tolerance, pool, deadline, w_warm=None) -> DayPlan:
+    """One pool size: solve, assign, ask wsr, and price the hands."""
+    from agent.planner import columns as C
+    from agent.planner import master as M
+
+    days = int(np.asarray(supply.hours).size)
+    hours = hours_for(hands, days)
     best: DayPlan | None = None
     applied = 1.0
     candidate: DayPlan | None = None
@@ -215,7 +290,7 @@ def plan(obs, contractor, supply, *, class_of_tile, iter_cap: int = 200,
             wheat_feed_stock=supply.wheat_feed_stock, money=supply.money,
             quotes=supply.quotes)
         result = M.equilibrate(object(), obs, contractor, current,
-                               iter_cap=iter_cap, pool=pool,
+                               w_warm=w_warm, iter_cap=iter_cap, pool=pool,
                                deadline=deadline)
         mixes = M.to_mixes(result, contractor.days)
         choices = C.assign_by_quota(class_of_tile, mixes)
@@ -227,8 +302,12 @@ def plan(obs, contractor, supply, *, class_of_tile, iter_cap: int = 200,
         fitted = fit(chains, hands=hands, budget_s=budget_s,
                      available=availability(obs, chains),
                      hours_committed=committed)
+        # The hands are hired again every morning (F039), so their wage is a
+        # cost on every day of the horizon and not a one-off.
+        bill = hire_bill(hands) * contractor.days
         candidate = DayPlan(result, choices, mixes, fitted, spent, applied,
-                            solves=spent)
+                            solves=spent, hands=hands,
+                            net=float(result.objective) - bill)
         if best is None or _better(candidate, best):
             best = candidate
         best = DayPlan(best.master, best.choices, best.mixes, best.day,
@@ -246,7 +325,7 @@ def plan(obs, contractor, supply, *, class_of_tile, iter_cap: int = 200,
             # that would price the search's clock into the farm's day.
             return candidate
         applied *= max(1.0 + tolerance, float(fitted.overhead))
-        hours = np.asarray(supply.hours, dtype=np.float64) / applied
+        hours = hours_for(hands, days) / applied
 
     return best if best is not None else candidate
 
@@ -282,9 +361,13 @@ def compile(day_plan: "DayPlan", obs, *, hands: int | None = None,
                 hire_times=(1,) * max(1, pool))
     result = B.search(day, tasks, hands=min(pool, max(1, pool)),
                       max_hands=max(1, pool))
+    # The plan is PRICED for `pool` hands; the route may need fewer, but the
+    # market must hire what the day was costed with or the hours row was a
+    # fiction. wsr reports what it used, and the smaller of the two is what
+    # gets paid for.
     ops = compile_route(day, tasks, result, horizon=TURNS_PER_DAY,
                         settled=result.settled)
     harvest = sum(int(units) for _hour, _item, units in ops.arrivals)
-    market = K.build(obs, fitted.chains, hands=result.pool,
+    market = K.build(obs, fitted.chains, hands=min(pool, result.pool) if pool else result.pool,
                      harvest_expected=harvest, config=config)
     return to_plan(ops, market=market.rows)

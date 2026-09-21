@@ -59,6 +59,7 @@ class Manager:
         self.contractor = _contractor(self.cfg)
         self.steps = C.shed_distance()
         self.pool: list = []            # columns carried between days
+        self.duals = None               # yesterday's published prices
         self.plan: dict = dict(IDLE_PLAN)
         self.day: D.DayPlan | None = None
         self.obs = None
@@ -85,13 +86,15 @@ class Manager:
         self.day = D.plan(obs, self.contractor, supply,
                           class_of_tile=class_of_tile,
                           iter_cap=self.cfg.master_rounds,
-                          hands=self.cfg.max_hands,
+                          hands=0, max_hands=self.cfg.max_hands,
                           budget_s=self.cfg.search_budget_s,
                           rounds=self.cfg.fit_rounds,
                           pool=self.pool, deadline=deadline)
         self.pool = list(self.day.master.pool)
+        self.duals = self.day.master.w
         self.certified = bool(self.day.master.certified)
-        self.plan = D.compile(self.day, obs, config=config)
+        self.plan = D.compile(self.day, obs, hands=self.day.hands,
+                              config=config)
 
     def step(self, budget_ms: float | None = None) -> bool:
         """Spend a turn improving the pool. Today's plan is not touched.

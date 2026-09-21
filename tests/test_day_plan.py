@@ -61,20 +61,29 @@ def test_the_day_the_master_commits_can_actually_be_walked(board):
 
 
 def test_the_committed_tiles_are_the_ones_beside_the_shed(board):
-    """The travel term's visible consequence, asserted on the board itself."""
+    """Travel is priced, so the near tiles are taken before the far ones.
+
+    Not "nothing beyond three steps": that was true with one farmer and false
+    with four hands, because more labour genuinely makes a farther tile worth
+    reaching — the guard was asserting the budget, not the rule. The rule that
+    survives is the one the pricing actually implies: a band is never worked
+    while a strictly nearer band sits entirely idle.
+    """
     obs, contractor, supply, class_of_tile = board
     result = D.plan(obs, contractor, supply, class_of_tile=class_of_tile,
-                    iter_cap=200, hands=4, budget_s=2.0)
+                    iter_cap=200, hands=0, max_hands=2, budget_s=2.0)
     steps = C.shed_distance()
     from agent.world.rules import BOARD_SIZE
 
-    worked = [steps[y * BOARD_SIZE + x] for (x, y), _ops, _e in result.day.chains]
+    worked = sorted({int(steps[y * BOARD_SIZE + x])
+                     for (x, y), _ops, _e in result.day.chains})
     assert worked, "nothing committed"
-    assert max(worked) <= 3, (
-        f"a tile {max(worked)} steps out was committed while nearer ones "
-        f"idled: {worked}")
-
-
+    owned = sorted({int(steps[i]) for i, c in enumerate(class_of_tile)
+                    if c is not None})
+    reachable = [d for d in owned if d <= worked[-1]]
+    assert worked == reachable, (
+        f"a band was skipped: worked {worked}, but the farm owns tiles at "
+        f"{reachable} no farther out")
 def test_a_declined_tile_is_not_a_dropped_one(board):
     """Every chain that reaches wsr is a chain the DP chose at these prices.
 

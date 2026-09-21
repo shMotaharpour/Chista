@@ -73,8 +73,13 @@ def _pricer(counts, flip=False):
                 hours, spend, earn, revenue = spec
                 # priced value = revenue − y·hours − cash·(spend − earn banked)
                 cost = float((y[:, 0] * hours).sum())
-                cash_use = float(sum(cash[d] * (spend[d] - (earn[:d].sum() if d else 0.0))
-                                     for d in range(DAYS)))
+                # The cash rows are cumulative, so the subproblem prices a
+                # coin spent on day d at the sum of the duals from d onward.
+                # Pricing it at that day's dual alone is the master and the
+                # pricing step disagreeing about the same plan.
+                ahead = np.cumsum(np.asarray(cash)[::-1])[::-1]
+                later = np.concatenate([ahead[1:], [0.0]])
+                cash_use = float((ahead * spend).sum() - (later * earn).sum())
                 value = revenue - cost - cash_use
                 if value > best:
                     best, best_col = value, _column(c, i, spec)
