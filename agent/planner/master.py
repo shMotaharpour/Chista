@@ -107,7 +107,7 @@ the observation through `dual_stand_in` (#32).
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 try:
@@ -223,11 +223,23 @@ TOL_DUAL = 1.0
 # the cap must come off the contended number, not this floor.
 ITER_CAP_DEFAULT = 8
 
-# A single master round (contractor sweep + LP solve), measured:
-# ~10 ms on the dev box (test_budget prints the live number). The
-# brief's 45 ms full-round ceiling leaves ~4x headroom for the
-# grader's 1.17-1.41x slowdown (agent/runtime.py P-series probes).
-ROUND_BUDGET_MS = 45.0
+# A single master round (contractor sweeps + LP solve), measured.
+#
+# It used to be one sweep per distinct STATE. The subproblem is exact now — the
+# walk is charged inside the DP's own objective — so the board is priced once
+# per distinct DISTANCE instead, which is 4 sweeps on the guard's day-0 board
+# and 4 on this test's. Measured floors (5 readings each, `test_budget` prints
+# the live numbers): the round 53.8 ms with the #15 price-path forecast at
+# 0.7 ms. The ceiling is that measurement with ~1.2x headroom for the grader's
+# 1.17-1.41x slowdown (agent/runtime.py P-series probes).
+#
+# Recorded, not done: the sweep's expensive part is `EP @ p[d] - EC @ w[d]`, and
+# a distance only changes the labour column of `EC` — so one base sweep plus a
+# per-distance term (`dist · y_labour[d] · works`, with `works` precomputed)
+# would give every distance for the cost of a vector add. That is the next
+# performance step, and it belongs with the turn budget (#79), not with the
+# algorithm.
+ROUND_BUDGET_MS = 65.0
 
 # The M3 overhead the #12 brief names for H_d ("start at 35% and
 # measure"): hours the day's routing/carry will eat.
@@ -438,6 +450,39 @@ def _product_price_path(obs, days: int, p_flat: np.ndarray,
     return out, f"market forecast (#15, unlock policy {fc.unlock_policy})"
 
 
+def _repriced_pool(pool, p_mkt: np.ndarray, days: int) -> list:
+    """The warm columns, priced at THIS board's product prices.
+
+    A column's `earn` and `revenue` are its produce at the prices of the board it
+    was BUILT on, and those prices move (F035: the market path rises through the
+    season). Carried as they stand they make the master's LP a hybrid — its
+    objective is yesterday's revenue under today's rows — and its optimum can
+    then beat the Lagrangian bound built from today's class values. Measured on a
+    real mid-season board: 14 warm columns exceeded their own class's value by
+    1,246.4 in total, and at the class maxima that was exactly the bound's
+    shortfall, 203.366 — the bound sat below the objective by precisely the
+    amount the stale prices inflated.
+
+    `produce` is kept for this, so the adoption re-prices instead of discarding.
+    A column without it (an older pool, a hand-built one) is DROPPED: a number
+    nobody can recompute is a number nobody can trust, and a stale revenue is
+    worse than a smaller pool.
+    """
+    if not pool:
+        return pool
+    market = list(MARKET_IDS)
+    out = []
+    for column in pool:
+        if column.produce is None:
+            continue
+        produce = np.asarray(column.produce, dtype=np.float64)
+        if produce.ndim != 2 or produce.shape[0] < days:
+            continue
+        earn = (produce[:days][:, market] * p_mkt[:days]).sum(axis=1)
+        out.append(replace(column, earn=earn, revenue=float(earn.sum())))
+    return out
+
+
 def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
                 w_warm: np.ndarray | None = None,
                 iter_cap: int = ITER_CAP_DEFAULT,
@@ -622,6 +667,7 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
                 cls=c, cls_key=(state_id, dist),
                 cost=hours, spend=spend[i], earn=earn[i],
                 revenue=float(earn[i].sum()),
+                produce=board.per_day_produce[i, :days, :],
                 chains=tuple(board.plans[i]) if i < len(board.plans) else (),
                 entities=_entities(board, i, days),
                 key=colgen.column_key(board, i, days)))
@@ -636,11 +682,14 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
         return np.asarray(values, dtype=np.float64), columns
 
     try:
+        # The warm pool is priced at TODAY's product prices before it is used:
+        # a column's revenue was computed on the board it was built on, and the
+        # market path moves (see `_repriced_pool`).
         cg = colgen.generate(price, supply.hours, supply.money, counts, days,
                              N_COUPLING, idle, rounds=max(1, iter_cap),
                              poll=poll,
                              deadline=t_end,
-                             warm=pool)
+                             warm=_repriced_pool(pool, p_mkt, days))
     except RuntimeError as exc:
         return _fallback(str(exc)[:200])
     except Exception as exc:                    # noqa: BLE001 - degraded, not dead

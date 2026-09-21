@@ -88,6 +88,16 @@ class Column:
     spend: np.ndarray             # (days,) coins paid to the market
     earn: np.ndarray              # (days,) coins banked
     revenue: float                # total, at the published product prices
+    #: (days, N_RESOURCE) what the plan produces per day, in resource space.
+    #: `earn` and `revenue` above are this priced at the product prices of the
+    #: board the column was BUILT on, and those prices move (F035: the market
+    #: path rises through the season). A pool carried between days therefore
+    #: cannot be used as it stands — a column whose revenue is yesterday's makes
+    #: the master's LP a hybrid, and its optimum can then exceed the Lagrangian
+    #: bound built from today's class values (measured: 203.366 over, which was
+    #: exactly the bound's shortfall). Keeping `produce` is what lets the warm
+    #: adoption re-price instead of discarding.
+    produce: np.ndarray | None = None
     #: The class's KEY — `(graph state, distance)`. The index above is
     #: positional and means nothing on another board: tomorrow's class 3 is not
     #: today's. A warm pool is matched on this and remapped, or a plan for an
@@ -332,7 +342,8 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
             else Column(cls=target, cost=column.cost, spend=column.spend,
                         earn=column.earn, revenue=column.revenue,
                         chains=column.chains, entities=column.entities,
-                        cls_key=column.cls_key, key=column.key))
+                        cls_key=column.cls_key, key=column.key,
+                        produce=column.produce))
     seen = {(c.cls, c.key) for c in result.pool}
 
     spent = 0.0

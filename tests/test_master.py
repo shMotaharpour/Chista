@@ -216,9 +216,9 @@ def test_duals_non_negative_every_round() -> None:
         def __getattr__(self, name):
             return getattr(c, name)
 
-        def price(self, p, w, owned):
+        def price(self, p, w, owned, travel_hours: int = 0):
             seen.append(float(np.asarray(w).min()))
-            return c.price(p, w, owned)
+            return c.price(p, w, owned, travel_hours=travel_hours)
 
     res = equilibrate(rt, obs, _Spy(), _supply(),
                       iter_cap=ITER_CAP_DEFAULT)
