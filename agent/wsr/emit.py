@@ -195,4 +195,23 @@ def check_route(day: Day, tasks: TaskArray, result: Result, settled=None) -> lis
                 complaints.append(f"{tasks.ids[j]} must come before {row}")
         if tasks.items[i] >= 0 and when[row] < int(tasks.earliest[i]):
             complaints.append(f"{row} needs its good at {when[row]}, before it is in the shed")
+
+    # A worker tie: the tasks a task must share a worker with. A route that splits a group hands the
+    # work to a worker that cannot do it - a drop by anybody but the worker holding the good banks
+    # nothing - and the engine would run it without a word.
+    if tasks.ties.size:
+        who_of = {task_id: int(worker) for _turn, task_id, worker in result.route}
+        for i in range(tasks.n):
+            row = tasks.ids[i]
+            if row not in who_of:
+                continue
+            for slot in range(tasks.ties.shape[1]):
+                mate = int(tasks.ties[i, slot])
+                if mate < 0:
+                    continue
+                other = tasks.ids[mate]
+                if other in who_of and who_of[other] != who_of[row]:
+                    complaints.append(
+                        f"{row} and {other} must be the same worker: "
+                        f"{who_of[row]} and {who_of[other]}")
     return complaints

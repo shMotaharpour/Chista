@@ -854,6 +854,23 @@ def _expand(day: Day, tasks: TaskArray, done, when, who, free, where, travel, li
     before_latest = start <= latest_here[None, None, :]
     legal = (ready & ~done[:, index] & in_time.any(axis=1) & before_latest.any(axis=1))
     legal = legal[:, None, :] & in_time & before_latest
+    # A worker tie: a task and the tasks it must share a worker with - a fetch and the op that
+    # consumes it, a drop and the good it banks - are one worker's work. A candidate whose mate is
+    # already done by somebody else is not a candidate. Without this a drop could be placed on a
+    # worker that never held the good: it hands over nothing, and the day would still be called
+    # complete.
+    if tasks.ties.size:
+        mates = tasks.ties[index]                        # (w, k) row indices, -1 for no mate
+        for slot in range(mates.shape[1]):
+            mate = mates[:, slot]
+            real = mate >= 0
+            if not real.any():
+                continue
+            done_mate = done[:, mate.clip(0)]            # (b, w)
+            who_mate = who[:, mate.clip(0)]              # (b, w)
+            same = ((~done_mate)[:, None, :]
+                    | (who_mate[:, None, :] == np.arange(m)[None, :, None]))
+            legal = legal & (same | ~real[None, None, :])
     finish = np.where(legal, finish, BIG)
 
     # On the frontier's own width, not the day's: the selection maps the column it picked back
