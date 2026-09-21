@@ -100,6 +100,14 @@ def _column_for(pool, choice, mix):
     return None
 
 
+def availability(obs, chains) -> dict:
+    """wsr's `available` for this day, from the observation's own stocks."""
+    from agent.planner.market import availability as _availability
+    private = obs.get("private", {}) if isinstance(obs, dict) else {}
+    return _availability(chains, dict(private.get("seeds", {}) or {}),
+                         dict(private.get("shed", {}) or {}))
+
+
 def fit(chains, *, hands: int, available: dict | None = None,
         budget_s: float | None = None, beam: int | None = None,
         hours_committed: float = 0.0, warm=None) -> DayFit:
@@ -214,7 +222,7 @@ def plan(obs, contractor, supply, *, class_of_tile, iter_cap: int = 200,
                              .row("labour"))[0])
             for c in choices if c is not None)
         fitted = fit(chains, hands=hands, budget_s=budget_s,
-                     available={e: 1 for _c, _o, e in chains if e},
+                     available=availability(obs, chains),
                      hours_committed=committed)
         candidate = DayPlan(result, choices, mixes, fitted, spent, applied,
                             solves=spent)
@@ -233,3 +241,42 @@ def plan(obs, contractor, supply, *, class_of_tile, iter_cap: int = 200,
         hours = np.asarray(supply.hours, dtype=np.float64) / applied
 
     return best if best is not None else candidate
+
+
+def compile(day_plan: "DayPlan", obs, *, hands: int | None = None,
+            config=None) -> dict:
+    """A `DayPlan` -> the `{"units": [...], "market": [...]}` the dispatcher slices.
+
+    The unit ops come from the day layer's own compiler, against the hand
+    positions the search settled on — `Result.settled`, which is the one
+    correct way to write the day down (#73). The market side is assembled from
+    the SAME chains, so a seed the plan needs and a seed the queue buys cannot
+    disagree.
+
+    A day that did not fit compiles to nobody doing anything. That is a legal
+    answer and the honest one: the alternative is dispatching a route the
+    engine will refuse op by op without a word (F047).
+    """
+    from agent.planner import market as K
+    from agent.wsr import beam as B
+    from agent.wsr import tasks as T
+    from agent.wsr.emit import compile_route, to_plan
+
+    fitted = day_plan.day
+    pool = int(fitted.pool if hands is None else hands)
+    if not fitted.complete or not fitted.chains:
+        rows = K.build(obs, (), hands=0, config=config).rows
+        return {"units": [[["PASS"]] * TURNS_PER_DAY], "market": rows}
+
+    available = availability(obs, fitted.chains)
+    tasks = T.build(fitted.chains, available=available)
+    day = B.Day(chains=tuple(fitted.chains), available=available,
+                hire_times=(1,) * max(1, pool))
+    result = B.search(day, tasks, hands=min(pool, max(1, pool)),
+                      max_hands=max(1, pool))
+    ops = compile_route(day, tasks, result, horizon=TURNS_PER_DAY,
+                        settled=result.settled)
+    harvest = sum(int(units) for _hour, _item, units in ops.arrivals)
+    market = K.build(obs, fitted.chains, hands=result.pool,
+                     harvest_expected=harvest, config=config)
+    return to_plan(ops, market=market.rows)
