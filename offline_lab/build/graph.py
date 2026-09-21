@@ -4,9 +4,10 @@ Run from the repo root:
 
     .venv/bin/python -m offline_lab.build.graph
 
-Writes `agent/artifact/tile_graph.npz` (the graph) and
-`agent/tile_dp/models/build_report.json`, then reloads the written file to prove the
-round-trip works. The artifact is a tracked model file: it is committed, and this
+Writes `agent/artifact/tile_graph.npz` (the graph), its info
+`agent/artifact/tile_graph.json` and the chain table beside it
+(`tile_chains.json` / `tile_chains.data.json`), then reloads the written file to prove
+the round-trip works. The artifact is a tracked model file: it is committed, and this
 builder is the only thing that writes it.
 
 It lives outside `agent/` on purpose: it drives the simulator
@@ -33,7 +34,10 @@ Assertions (decision 8): a wrong edge must fail the build, never be stored.
     fert_left). The growth dims themselves (yield_units, care_bank) and the engine's
     destroy paths are the engine's own answer, read from `decode_tile`, because this
     repo never re-implements the game (R003);
-  * PASS is a whole-chain op: PASS inside a multi-op chain is rejected.
+  * PASS is a whole-chain op: PASS inside a multi-op chain is rejected;
+  * every node keeps its idle day (#84): the empty chain is the decision to decline,
+    so a node that ends the build without a free, product-less idle edge fails the
+    build (NoDeclineEdge) instead of shipping a graph the DP cannot switch off.
 """
 
 from __future__ import annotations
@@ -93,6 +97,10 @@ class ChainNotRealised(RuntimeError):
 
 class StateMismatch(RuntimeError):
     """Decision 8: the engine's next state is not the one the chain promises."""
+
+
+class NoDeclineEdge(RuntimeError):
+    """A node without its idle day: the DP could not switch the tile off (#84)."""
 
 
 def _new_sim() -> FastSim:
@@ -590,7 +598,16 @@ def _is_noop_edge(state_id: int, edge: Edge) -> bool:
     nothing and produces nothing, and PASS reaches the same node for free, so
     it is a no-op whether or not it spends an hour (the old rule caught only the
     zero-cost ones and let a 2-hour DIG+BUILD self-loop through).
+
+    The IDLE day is the one exception (#84): the empty chain is not a no-op, it IS
+    the decision to decline, and a node that cannot decline has a floor under its
+    value - the DP is forced to act on a tile it wants to leave alone. The exception
+    bites in exactly the four day-invariant states (bare, weed, empty coop, empty
+    pasture); every other node's idle day already moves the tile (age, consec,
+    unfed), so its idle edge is not a self-loop and never reaches this test.
     """
+    if not chain_ops(edge.chain_id):        # NO_ACTION: declining is a decision
+        return False
     return edge.to_id == state_id and not any(edge.produce)
 
 
@@ -613,8 +630,12 @@ def _dominates(better: Edge, worse: Edge) -> bool:
     return better.cost != worse.cost or better.produce != worse.produce
 
 
-def _prune(state_id: int, edges: list[Edge]) -> tuple[list[Edge], int]:
-    """No-op sweep + dominance pruning (decision 9 keeps these rules)."""
+def _prune(state_id: int, edges: list[Edge]) -> tuple[list[Edge], int, int]:
+    """No-op sweep + dominance pruning (decision 9 keeps these rules).
+
+    Returns the kept edges, how many the sweep dropped and how many dominance dropped -
+    two different laws, and the report needs both.
+    """
     kept = [e for e in edges if not _is_noop_edge(state_id, e)]
     final = [e for e in kept
              if not any(_dominates(other, e) for other in kept
@@ -622,6 +643,23 @@ def _prune(state_id: int, edges: list[Edge]) -> tuple[list[Edge], int]:
     # Both counts, so the report shows the Pareto sweep really ran: no-op drops and
     # dominated drops are different laws and only the first one was being reported.
     return final, len(edges) - len(kept), len(kept) - len(final)
+
+
+def _assert_decline(state_id: int, state: TileState, kept: list[Edge]) -> None:
+    """Every node must keep its idle day: the empty chain, free, producing nothing.
+
+    The decline is a decision, not a no-op (#84), and it is what keeps the DP's value
+    from being floored by a move it cannot take - so a node that ends up without one
+    fails the build instead of shipping a graph that cannot switch the tile off.
+    """
+    for edge in kept:
+        if not chain_ops(edge.chain_id):
+            if any(edge.cost) or any(edge.produce):
+                raise NoDeclineEdge(
+                    f"state {state_id} ({state.describe()}): the idle edge is not free: "
+                    f"cost {list(edge.cost)}, produce {list(edge.produce)}")
+            return
+    raise NoDeclineEdge(f"state {state_id} ({state.describe()}) kept no idle edge")
 
 
 # --------------------------------------------------------------------- build
@@ -702,6 +740,7 @@ def build_graph(entity: str | None = None, progress: bool = False) -> TileGraph:
     for sid in range(n_states):
         offsets[sid] = len(edge_next)
         kept, dropped, dominated = _prune(sid, edges.get(sid, []))
+        _assert_decline(sid, state_list[sid], kept)
         n_noop += dropped
         n_dominated += dominated
         for edge in kept:
