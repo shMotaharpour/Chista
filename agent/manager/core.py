@@ -35,6 +35,7 @@ manager failed, and passes.
 from __future__ import annotations
 
 import time
+from typing import Any
 
 import numpy as np
 
@@ -62,7 +63,7 @@ _OPPONENT: object | None = None
 _OPPONENT_TRIED = False
 
 
-def opponent_model():
+def opponent_model() -> Any:
     """The rival model, or None when there is no trained table to read."""
     global _OPPONENT, _OPPONENT_TRIED
     if not _OPPONENT_TRIED:
@@ -137,6 +138,12 @@ class Manager:
         Not in `__init__`: the seat index is in the observation (`player`), not
         in the config, and a tracker built for the wrong seat reads the wrong
         farm's flows without saying so.
+
+        The record the tracker returns is handed to the model as well: belief's
+        documented chain is `tracker.observe() -> model.observe(rec, tracker) ->
+        expected_sell(...)`, and the middle link was the one nobody walked, so
+        the pretrained table was frozen for the whole season while the queue
+        read its predictions.
         """
         if obs is None:
             return
@@ -144,7 +151,9 @@ class Manager:
             from agent.belief.tracker import MarketTracker
             player = int(obs.get("player", 0)) if isinstance(obs, dict) else 0
             self.tracker = MarketTracker(player=player)
-        self.tracker.observe(obs)
+        record = self.tracker.observe(obs)
+        if record is not None and self.opponent is not None:
+            self.opponent.observe(record, self.tracker)
 
     def _activity(self) -> int | None:
         """The rival's own sell bucket over the last day, or None if unwatched.
