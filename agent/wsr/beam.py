@@ -42,6 +42,10 @@ STEP_WORK = 16 * 16 * 200
 #: The measured ends of the useful range: below 8 a day starts losing tasks (4 placed 47 of 50 where
 #: 8 placed all of them), and above 32 nothing improved on any layer.
 MIN_BEAM, MAX_BEAM = 8, 64
+#: How many times the pickup charge is re-derived before the conservative day is handed back. The
+#: charge only grows (each pass keeps the larger of the two) and is bounded by the day's own
+#: distinct-good count, so this is a ceiling on an iteration that has usually settled by the first.
+CHARGE_PASSES = 3
 
 
 def beam_for(tasks: TaskArray, workers: int) -> int:
@@ -156,33 +160,70 @@ def lower_bound(day: Day, tasks: TaskArray) -> int:
     return len(day.units) + hired
 
 
-def spare_turns(day: Day, tasks: TaskArray, result: Result) -> int:
-    """The worker-turns a route leaves unspent, walks included.
+def _bag(tasks: TaskArray, entries: list[tuple[int, str]]) -> dict[int, int]:
+    """How much of each good one worker's day uses, so one trip can carry all of it."""
+    bag: dict[int, int] = {}
+    for _turn, task_id in entries:
+        good = int(tasks.items[tasks.ids.index(task_id)])
+        if good >= 0:
+            bag[good] = bag.get(good, 0) + 1
+    return bag
 
-    The hands the pool paid for have the day's turns between them; the route spends one per task and
-    one per tile walked, and this is the rest. A manager reads it after `complete` says yes, to decide
-    whether to lay more work on the same hands rather than hiring again.
+
+def bags_of(day: Day, tasks: TaskArray, result: Result) -> list[int]:
+    """The pickups each worker's own day needs: one per distinct good in its own bag.
+
+    The compiler writes one PICKUP per good, at the worker's door, before its walk - so this count is
+    what the search has to charge that worker, and it is a property of the route rather than of the
+    day. `_fixed_point` iterates it; `compile_route` writes from the same bags.
     """
-    hired = max(0, result.pool - len(day.units))
-    total = day.horizon + sum(day.horizon - int(hour) for hour in day.hire_times[:hired])
-    if not result.route:
-        return total
-
-    row = {task_id: index for index, task_id in enumerate(tasks.ids)}
-    per_worker: dict[int, list[tuple[int, str]]] = {}
+    per: dict[int, list[tuple[int, str]]] = {}
     for turn, task_id, worker in result.route:
-        if turn < 0:
-            continue
-        per_worker.setdefault(worker, []).append((turn, task_id))
+        per.setdefault(int(worker), []).append((int(turn), task_id))
+    return [len(_bag(tasks, per.get(worker, []))) for worker in range(len(day.units) + result.pool)]
 
-    spent = 0
-    for items in per_worker.values():
-        here = FARMER_START
-        for _turn, task_id in sorted(items):
-            cell = tasks.cells[row[task_id]]
-            spent += abs(here[0] - int(cell[0])) + abs(here[1] - int(cell[1])) + 1
-            here = (int(cell[0]), int(cell[1]))
-    return max(0, total - spent)
+
+def remaining_turns(day: Day, tasks: TaskArray, result: Result) -> list[int]:
+    """What each worker's day has left once the route is carried out, per worker.
+
+    A worker's capacity is its own day: the horizon less the hour it begins at, so the farmer holds
+    one more turn than a hand hired in turn 0 (F040). The route spends a turn per task, a turn per
+    tile walked - the walk from where the worker stands to its next task - and the turns its own
+    pickups take at its door before the first walk. What is left is the room a manager may lay more
+    work into, and it is the same number the compiler leaves as PASS turns: `_run` prices the day
+    from these, `compile_route` writes it from the same rule.
+    """
+    hours = _start_hours(day, result.pool)
+    arrival = first_arrival(tasks)
+    starts = _start_positions(day, result.pool, result.settled)
+    per: dict[int, list[tuple[int, str]]] = {}
+    for turn, task_id, worker in result.route:
+        per.setdefault(int(worker), []).append((int(turn), task_id))
+
+    out: list[int] = []
+    for worker in range(len(day.units) + result.pool):
+        entries = sorted(per.get(worker, []))
+        bag = _bag(tasks, entries)
+        here = (int(starts[worker][0]), int(starts[worker][1]))
+        spent = first_walk_turn(hours[worker], arrival, len(bag)) - int(hours[worker])
+        for _turn, task_id in entries:
+            row = tasks.ids.index(task_id)
+            target = (int(tasks.cells[row][0]), int(tasks.cells[row][1]))
+            spent += len(walk(here, target)) + 1
+            here = target
+        out.append(int(day.horizon) - int(hours[worker]) - spent)
+    return out
+
+
+def spare_turns(day: Day, tasks: TaskArray, result: Result) -> int:
+    """The worker-turns a route leaves unspent: `remaining_turns`, summed over the pool.
+
+    The hands the pool paid for have the day's turns between them; the route spends one per task, one
+    per tile walked, and the turns its own pickups take - a worker that carries goods spends its first
+    turns at its door, and those are not room for more work. A manager reads it after `complete` says
+    yes, to decide whether to lay more work on the same hands rather than hiring again.
+    """
+    return sum(remaining_turns(day, tasks, result))
 
 
 def ceiling_for(day: Day, tasks: TaskArray) -> int:
@@ -309,7 +350,85 @@ def _better_route(candidate: Result, best: Result) -> bool:
 
 def _fixed_point(day: Day, tasks: TaskArray, beam: int, pool: int,
                  deadline: float | None, warm: Result | None = None) -> Result:
-    """One pool, searched until the hands stop moving.
+    """One pool, searched until the pickups and the hands' doors stop moving.
+
+    Two things the search prices are properties of the ROUTE it produces rather than of the day: the
+    pickups each worker's own bag needs, and the doors the hands land on (a unit that walks off its
+    door in the first turn moves every hand hired after it, F040). The doors are settled in `_settle`
+    and the pickups are charged here, because the charge changes which route the search finds and the
+    route changes the charge.
+
+    The charge is a ceiling: a route priced with fewer turns at its door than its own bags need cannot
+    be written (the compiler puts the pickups there), so the ceiling may only grow, and it grows to
+    whatever the last route asked for. A route that asks for LESS than it was charged is a route with
+    turns nobody spends - its workers wait at their doors for pickups they never make - so once the
+    ceiling stops moving, the pass is repeated with the route's own bags: priced with exactly the
+    pickups it makes, or not returned at all.
+
+    The answer is the day-wide charge's own day, improved only by a route that compiles and beats it
+    by the search's own ordering (`_better_route` - carried first, then more work, then the earlier
+    stop). The conservative pass is therefore always in hand: a deadline can cut a later pass short,
+    and a half-built attempt must never replace the fuller day the first pass found.
+    """
+    conservative = _settle(day, tasks, beam, pool, deadline, warm)
+    if conservative.complete:
+        # The day-wide charge already carries the day, so the tightening pass has nothing to win on
+        # completeness - and it costs a search per pass, which on a real day is the budget the caller
+        # gave (F046). The day-wide charge is a ceiling, so the day it found is the day.
+        return conservative
+    best: Result = conservative
+    charge = bags_of(day, tasks, conservative)
+    tightened = False
+    for _attempt in range(CHARGE_PASSES + 1):
+        candidate = _settle(day, tasks, beam, pool, deadline, warm, charge=charge)
+        if _consistent(day, tasks, candidate) and _better_route(candidate, best):
+            best = candidate
+        bags = bags_of(day, tasks, candidate)
+        grown = [max(charged, bag) for charged, bag in zip(charge, bags)]
+        if grown != charge:
+            charge = grown
+            continue
+        if tightened:
+            break
+        tightened = True
+        charge = bags
+    return best
+
+
+def _consistent(day: Day, tasks: TaskArray, result: Result) -> bool:
+    """Whether the day that would be compiled is the day that was priced, and one that compiles.
+
+    Two things the compiler derives from the route have to agree with what the search priced:
+
+      the doors    the compiler derives where the hands land from the route
+                   (`_settled_after_first_turn`), and a unit that leaves its door in the first turn
+                   moves every hand hired after it (F040). A route priced from doors the day does not
+                   have is one the engine silently scrambles rather than refuses, so the settled is
+                   checked here by hand.
+      the rest     the pickups each worker's own bag needs, the walks that carry them, and the turns
+                   the tasks were given: `check_route` re-derives all of it from the route and names
+                   what the engine's rules would refuse, and the compile itself is the last word -
+                   `check_route` does not cover the walk that carries a worker between tasks, and
+                   `compile_route` refuses rather than pads a walk that does not fit.
+
+    A route that fails either is not an answer the search may hand back.
+    """
+    from agent.wsr.emit import check_route, compile_route   # emit imports this module: late
+
+    if tuple(result.settled) != tuple(_settled_after_first_turn(day, tasks, result)):
+        return False
+    if check_route(day, tasks, result):
+        return False
+    try:
+        compile_route(day, tasks, result)
+    except ValueError:
+        return False
+    return True
+
+
+def _settle(day: Day, tasks: TaskArray, beam: int, pool: int,
+            deadline: float | None, warm: Result | None = None, charge=None) -> Result:
+    """One pool at one pickup charge, searched until the hands stop moving.
 
     The hands land on the doors that are free WHEN THEY ARE HIRED, and a unit walking off a door in
     the first turn changes which doors those are. So the positions are settled against the search's
@@ -318,7 +437,7 @@ def _fixed_point(day: Day, tasks: TaskArray, beam: int, pool: int,
     """
     settled = None
     started = time.perf_counter()
-    result = _run(day, tasks, hands=pool, beam=beam, deadline=deadline, warm=warm)
+    result = _run(day, tasks, hands=pool, beam=beam, deadline=deadline, warm=warm, charge=charge)
     spent = time.perf_counter() - started
     for _attempt in range(3):
         # An attempt costs about what the last one cost, so one that starts with less than that left
@@ -336,7 +455,7 @@ def _fixed_point(day: Day, tasks: TaskArray, beam: int, pool: int,
         settled = nxt
         started = time.perf_counter()
         result = _run(day, tasks, hands=pool, beam=beam, settled=settled, deadline=deadline,
-                      warm=warm)
+                      warm=warm, charge=charge)
         spent = time.perf_counter() - started
     return result
 
@@ -413,7 +532,7 @@ def _warm_row(tasks: TaskArray, warm: Result, done, when, who, free, where, trav
 
 def _run(day: Day, tasks: TaskArray, *, hands: int, beam: int,
          settled=None, deadline: float | None = None,
-         warm: Result | None = None) -> Result:
+         warm: Result | None = None, charge=None) -> Result:
     """One pool size: search the day, and report how much of it the pool could carry."""
     n = tasks.n
     start_pos = _start_positions(day, hands, settled)         # (m, 2)
@@ -430,7 +549,7 @@ def _run(day: Day, tasks: TaskArray, *, hands: int, beam: int,
     # Every worker starts at its own hour: the farmer at the day's first, a hand at the hour the
     # planner offered it. Starting them all together would hand the search turns the engine will
     # not give, which is how a day gets called feasible that the harness then truncates.
-    hours = start_hours(day, tasks, hands)
+    hours = start_hours(day, tasks, hands, charge)
     free = np.tile(hours[None, :], (rows, 1)).astype(np.int16)
     where = np.tile(start_pos[None, :, :], (rows, 1, 1))
     travel = np.zeros((rows,), dtype=np.int16)
@@ -527,7 +646,9 @@ def _settled_after_first_turn(day: Day, tasks: TaskArray, result: Result) -> lis
 
     A unit moves in the first turn only if its first task needs a walk that starts then - the walk
     occupies the turns immediately before the task, so a task at turn t with a walk of w moves
-    from turn t-w. This is the compiler's own rule, applied to the route the search just built.
+    from turn t-w. That is exact rather than a guess because the compiler writes every walk to END
+    at its task (`compile_route`), so the walk it writes and the turns this rule counts are the
+    same turns.
     """
 
     occupied = [(int(c[0]), int(c[1])) for c in day.units]
@@ -545,11 +666,12 @@ def _settled_after_first_turn(day: Day, tasks: TaskArray, result: Result) -> lis
         moves = walk(occupied[worker], target)
         if not moves:
             continue
-        # The walk occupies the turns immediately before the task, and a unit is free from the
-        # first turn of its day. It moves in turn zero only when the walk begins exactly there -
-        # a walk that would have to start before the day did is not a walk the day can make, and
-        # assuming otherwise is what let the model credit the farmer a move it never took.
-        if turn - len(moves) == 0:
+        # The walk occupies the turns immediately before the task - `walk_start_turn` is where the
+        # compiler writes it - so the unit's first op is a move exactly when that turn is zero. It
+        # is read from the same rule the writer uses rather than guessed from the gap between the
+        # walk and the task: a task with slack lets the compiler walk early, and counting a move it
+        # did not write (or missing one it did) moves the doors the hands land on.
+        if walk_start_turn(turn, len(moves)) == 0:
             step = moves[0][0]
             if step in MOVE_DELTA:
                 dx, dy = MOVE_DELTA[step]
@@ -585,9 +707,47 @@ def first_arrival(tasks: TaskArray) -> int:
     return int(tasks.earliest[goods].min())
 
 
-def start_hours(day: Day, tasks: TaskArray, hands: int) -> np.ndarray:
-    """The hour each worker's WALK may begin: its own hour, the goods, and the pickups before it."""
-    return np.maximum(_start_hours(day, hands), first_arrival(tasks)) + np.int16(preload_turns(tasks))
+def walk_start_turn(turn: int, moves: int) -> int:
+    """The turn the compiler writes a walk in: it ENDS at the task's turn.
+
+    The writer (`compile_route`) and the reader that works out where the units stand after the first
+    turn (`_settled_after_first_turn`) both go through here, so "the unit's first op is a move" and
+    "the walk starts at turn 0" cannot become two different questions. The rewrite that introduced
+    this layer answered the reader's half with a guess at the gap between the walk and the task while
+    the writer kept starting walks at the earliest free turn; the two disagreed wherever a first task
+    had slack, which moved every hand's door (F040) and made the day the engine ran a different day.
+    The pre-rewrite `plan_day` had it right by reading the compiled route's first op; this is that
+    reading, spelled once.
+    """
+    return int(turn) - int(moves)
+
+
+def first_walk_turn(hour: int, arrival: int, bag: int) -> int:
+    """The turn the compiler writes a worker's first walk in - `compile_route`'s `last + 1`.
+
+    A worker with an empty bag walks from the turn its own day begins; one that carries goods spends
+    its first turns at its door picking them up, one per distinct good, and walks after that. The
+    compiler writes the ops with this rule and the model counts where the units stand after the first
+    turn with it, so the day that is written and the day that was priced cannot disagree.
+    """
+    return int(hour) if not bag else max(int(hour), int(arrival)) + int(bag)
+
+
+def start_hours(day: Day, tasks: TaskArray, hands: int, charge=None) -> np.ndarray:
+    """The hour each worker's WALK may begin: its own hour, the goods, and the pickups before it.
+
+    `charge` is how many pickups each worker's own day needs - one turn per distinct good in its bag.
+    That is a property of the route (which worker does what), so the search iterates it
+    (`_fixed_point`) and this is where the iteration lands. Without it every worker is charged the
+    day's whole distinct-good count: a ceiling that is always safe and costs the search the turns
+    nobody uses.
+    """
+    hours = _start_hours(day, hands)
+    if charge is None:
+        charge = [preload_turns(tasks)] * len(hours)
+    arrival = first_arrival(tasks)
+    return np.asarray([first_walk_turn(h, arrival, c) for h, c in zip(hours, charge)],
+                      dtype=np.int16)
 
 
 def _start_hours(day: Day, hands: int) -> np.ndarray:
@@ -694,6 +854,23 @@ def _expand(day: Day, tasks: TaskArray, done, when, who, free, where, travel, li
     before_latest = start <= latest_here[None, None, :]
     legal = (ready & ~done[:, index] & in_time.any(axis=1) & before_latest.any(axis=1))
     legal = legal[:, None, :] & in_time & before_latest
+    # A worker tie: a task and the tasks it must share a worker with - a fetch and the op that
+    # consumes it, a drop and the good it banks - are one worker's work. A candidate whose mate is
+    # already done by somebody else is not a candidate. Without this a drop could be placed on a
+    # worker that never held the good: it hands over nothing, and the day would still be called
+    # complete.
+    if tasks.ties.size:
+        mates = tasks.ties[index]                        # (w, k) row indices, -1 for no mate
+        for slot in range(mates.shape[1]):
+            mate = mates[:, slot]
+            real = mate >= 0
+            if not real.any():
+                continue
+            done_mate = done[:, mate.clip(0)]            # (b, w)
+            who_mate = who[:, mate.clip(0)]              # (b, w)
+            same = ((~done_mate)[:, None, :]
+                    | (who_mate[:, None, :] == np.arange(m)[None, :, None]))
+            legal = legal & (same | ~real[None, None, :])
     finish = np.where(legal, finish, BIG)
 
     # On the frontier's own width, not the day's: the selection maps the column it picked back

@@ -16,11 +16,16 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from agent.world.action_rules import CARRIES
+from agent.world.action_rules import CARRIES, YIELDS
 from agent.world.model import UnitAction
 from agent.world.rules import BOARD_SIZE, SHED_ACCESS
 
 NO_ITEM = -1
+
+#: The ops that put a good in a worker's bag off a TILE - what a drop has to bank. The world's own
+#: `YIELDS` is the source; PICKUP is in that table too, but what it takes is already in the shed, so
+#: a day that picked up and dropped would be walking in a circle.
+BANKS_A_DROP: tuple[str, ...] = tuple(op for op in YIELDS if op != "PICKUP")
 
 
 def distance_matrix(size: int = BOARD_SIZE) -> np.ndarray:
@@ -78,6 +83,11 @@ class TaskArray:
     #: bag, so what it banks is decided by which harvests happened since the drop before it; this
     #: column is what lets the search see that a second drop with nothing new in the bag is free.
     banks: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int16))
+    #: The tasks each task must share a WORKER with, as row indices, padded with -1: one row per
+    #: group-mate slot. A fetch and the op that consumes it are one group (the good is in one
+    #: worker's bag), and a drop is in the group of the task it banks (a drop by anybody else hands
+    #: over nothing). Empty when the day has no groups.
+    ties: np.ndarray = field(default_factory=lambda: np.zeros((0, 0), dtype=np.int16))
     cells: np.ndarray = field(default_factory=lambda: np.zeros((0, 2), dtype=np.int16))
     columns: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int8))
     pred: np.ndarray = field(default_factory=lambda: np.zeros((0, 0), dtype=bool))
@@ -405,6 +415,9 @@ def build(chains, *, available: dict[str, int] | None = None, horizon: int = 24,
     drop_by = list(drop_by) if drop_by is not None else []
     tasks = []
     order: list[tuple[str, str]] = []
+    #: Groups of task ids that must be done BY THE SAME WORKER. `expand_chain` builds one per fetch,
+    #: and a drop joins the group of the task it banks (see below).
+    groups: list[list[str]] = []
     column_of: dict[str, int] = {}
     for index, (cell, ops, entity) in enumerate(chains):
         # The chain's entity is passed twice, exactly as the instance compiler does: once as the
@@ -414,6 +427,7 @@ def build(chains, *, available: dict[str, int] | None = None, horizon: int = 24,
                                  prefix=f"d{index}_")
         tasks.extend(expansion.tasks)
         order.extend(expansion.order)
+        groups.extend(expansion.groups)
         for task in expansion.tasks:
             column_of[task.id] = index
 
@@ -427,9 +441,12 @@ def build(chains, *, available: dict[str, int] | None = None, horizon: int = 24,
     order = [(b, a) for b, a in order if b not in fetches and a not in fetches]
     column_of = {tid: col for tid, col in column_of.items() if tid not in fetches}
 
-    # A DROP is derived: a harvest the caller wants banked gets a drop of its own, and the drop's
+    # A DROP is derived: a good the worker took off a tile gets a drop of its own, and the drop's
     # cell is the door it hands the bag over at - so the walk to it is priced by the same rule as
-    # any other task and nothing in the search has to know what a drop is.
+    # any other task and nothing in the search has to know what a drop is. The ops that put a good in
+    # a worker's bag are the world's own `YIELDS`; PICKUP is in that table too, but what it takes is
+    # already in the shed, so it needs no walk back. The bag is the worker's, so a drop banks what its
+    # own worker took: the order edge below is the whole of the precedence a drop needs.
     deadline_of: dict[str, int] = {}
     banks_of: dict[str, str] = {}
     for index in range(len(chains)):
@@ -438,11 +455,12 @@ def build(chains, *, available: dict[str, int] | None = None, horizon: int = 24,
             continue
         cell = chains[index][0]
         for task in list(tasks):
-            if column_of.get(task.id) != index or task.action != UnitAction.HARVEST:
+            if column_of.get(task.id) != index or task.action.value not in BANKS_A_DROP:
                 continue
             drop_id = f"{task.id}_drop"
             tasks.append(MinorTask(id=drop_id, cell=nearest_shed(cell), action=UnitAction.DROP))
             order.append((task.id, drop_id))              # bank it after you take it
+            groups.append([task.id, drop_id])             # and bank it by the same worker
             column_of[drop_id] = index
             deadline_of[drop_id] = int(deadline)
             banks_of[drop_id] = task.id
@@ -450,6 +468,18 @@ def build(chains, *, available: dict[str, int] | None = None, horizon: int = 24,
     ids = [t.id for t in tasks]
     row_of = {tid: i for i, tid in enumerate(ids)}
     n = len(tasks)
+
+    # The groups as row indices, one column per mate slot. A member that is not a row carries no
+    # tie - a fetch is the trip a consumer makes rather than a task of its own - so a group that is
+    # left with one member is no constraint at all.
+    rows_of_group = [[row_of[tid] for tid in group if tid in row_of] for group in groups]
+    rows_of_group = [group for group in rows_of_group if len(group) > 1]
+    mate_width = max((len(group) - 1 for group in rows_of_group), default=0)
+    ties = np.full((n, mate_width), -1, dtype=np.int16)
+    for group in rows_of_group:
+        for row in group:
+            mates = [other for other in group if other != row][:mate_width]
+            ties[row, :len(mates)] = mates
 
     pred = np.zeros((n, n), dtype=bool)
     for before, after in order:
@@ -509,6 +539,7 @@ def build(chains, *, available: dict[str, int] | None = None, horizon: int = 24,
         earliest=earliest,
         latest=latest,
         banks=banks,
+        ties=ties,
     )
 
 
