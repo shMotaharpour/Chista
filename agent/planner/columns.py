@@ -135,6 +135,89 @@ def assign_tiles(tile_keys: Sequence[int],
     return choices
 
 
+def shed_distance(size: int | None = None) -> np.ndarray:
+    """Manhattan steps from every cell to the nearest shed door, in reading order.
+
+    Computed here rather than imported from `wsr`: the day layer owns the
+    routing, the planner owns the placement, and a table each can derive in
+    four lines is not worth a dependency between them. The doors come from
+    `world`, so there is still one source (R005).
+
+    The master keys its classes with this. A tile is REACHED afresh on every
+    day it is worked — the farm is cleared every night and the farmer respawns
+    on a shed door (F040) — so a plan that works `v` days on a tile `d` steps
+    out spends at least `v·d` hours walking, and two tiles of one graph state
+    at different distances are not the same proposition.
+    """
+    from agent.world.board import SHED_DOORS
+    from agent.world.rules import BOARD_SIZE
+    n = int(size or BOARD_SIZE)
+    ys, xs = np.divmod(np.arange(n * n), n)
+    out = np.full(n * n, 1 << 30, dtype=np.int64)
+    for dx, dy in SHED_DOORS:
+        np.minimum(out, np.abs(xs - int(dx)) + np.abs(ys - int(dy)), out=out)
+    return out
+
+
+def assign_by_quota(class_of_tile: Sequence[int | None],
+                    mixes: dict[int, ClassMix]) -> list[Choice | None]:
+    """One plan per tile, keeping the MIX: floor the weights, then remainders.
+
+    The simple rule above gives every tile of a class the plan with the largest
+    λ. That was shipped as "the simplest one that can work", with the quota
+    variant written down as the fallback for when the gap measurement says it
+    is not enough. The measurement now exists, and it says so:
+
+        LP objective (certified)   53,510.7
+        rounded by argmax                0.0
+        integrality gap                100 %      (#13's target: 3 %)
+
+    Zero because the largest single weight on a day-0 board is the IDLE column
+    — 19.8 tiles of 25 — so argmax idles the whole farm and throws away a mix
+    of 21 plans. A rule that discards the mix discards the reason the master
+    exists.
+
+    The quota rule: plan `j` takes `floor(λ_j)` tiles, and the tiles left over
+    go to the largest fractional parts. Deterministic — ties fall to the lowest
+    plan index, as `assign_tiles` promises — and it reproduces the LP's mix
+    exactly whenever the weights happen to be integral.
+    """
+    order: dict[int, list[int]] = {}
+    for position, cls in enumerate(class_of_tile):
+        if cls is None:
+            continue
+        mix = mixes.get(int(cls))
+        if mix is None or mix.count == 0:
+            continue
+        order.setdefault(int(cls), []).append(position)
+
+    choices: list[Choice | None] = [None] * len(class_of_tile)
+    for key, positions in order.items():
+        mix = mixes[key]
+        lam = np.asarray(mix.lam, dtype=np.float64)
+        seats = len(positions)
+        whole = np.floor(lam).astype(np.int64)
+        # A class may be offered more weight than it has tiles (the LP is
+        # fractional and the board is not); the floors are trimmed from the
+        # lightest plan up so the heaviest weights keep their seats.
+        while int(whole.sum()) > seats:
+            live = np.flatnonzero(whole > 0)
+            whole[live[int(np.argmin(lam[live]))]] -= 1
+        left = seats - int(whole.sum())
+        if left > 0:
+            frac = lam - np.floor(lam)
+            # `-frac` sorts descending and `argsort` is stable, so equal
+            # fractions fall to the lowest plan index.
+            for j in np.argsort(-frac, kind="stable")[:left]:
+                whole[int(j)] += 1
+        seat = 0
+        for j, n in enumerate(whole):
+            for _ in range(int(n)):
+                choices[positions[seat]] = Choice(key, j)
+                seat += 1
+    return choices
+
+
 def counts(choices: Iterable[Choice | None]) -> dict[tuple[int, int], int]:
     """How many tiles took each plan, as `{(class_key, plan_index): n}`."""
     tally: dict[tuple[int, int], int] = {}

@@ -2,8 +2,8 @@
 
 Run:  .venv/bin/python -m tests.test_evaluate
 
-Covers the harness's own logic; the runner and pool layers have their
-own suites (tests/test_pool_isolation.py, tests/test_pool_loader.py).
+Covers the harness's own logic; the pool loader has its own suite
+(tests/test_pool_loader.py).
 The classification rules pinned here are the issue's metric contract:
 
 - the margin is A - B on the same seed against the same opponent;
