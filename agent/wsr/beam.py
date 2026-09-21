@@ -228,6 +228,11 @@ def search(day: Day, tasks: TaskArray, *, beam: int | None = None,
     of the day and with every pool the loop tries, so a deadline is the only promise that survives
     a hundred tiles.
     """
+    def done(result: Result) -> Result:
+        """The answer with its spare capacity on it. `search` is the only place the pool is known,
+        and the spare is counted against the hands that pool paid for."""
+        return result._replace(spare=spare_turns(day, tasks, result))
+
     if tasks.n == 0:
         return done(Result(0, [], True))
 
@@ -241,13 +246,14 @@ def search(day: Day, tasks: TaskArray, *, beam: int | None = None,
     bound = ceiling_for(day, tasks)
     ceiling = bound if max_hands is None else min(int(max_hands), bound)
     deadline = None if budget_s is None else time.perf_counter() + float(budget_s)
+    # The floor is a proved bound on the workers the day needs, so a range whose top is below it is
+    # answered without searching: no pool the caller allowed can lay the day out, however the route is
+    # arranged. The comparison is against the CEILING and not the starting pool - a caller who names
+    # five and allows six is asking about six, and answering about five would refuse a day that fits.
+    if ceiling < floor:
+        return done(Result(ceiling, [], False, infeasible=True))
     if start > ceiling:
         return done(Result(ceiling, [], False, infeasible=True))
-
-    def done(result: Result) -> Result:
-        """The answer with its spare capacity on it. `search` is the only place the pool is known,
-        and the spare is counted against the hands that pool paid for."""
-        return result._replace(spare=spare_turns(day, tasks, result))
 
     def width(pool: int) -> int:
         return beam if beam is not None else beam_for(tasks, len(day.units) + pool)
