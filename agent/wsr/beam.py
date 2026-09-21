@@ -563,11 +563,12 @@ def _settled_after_first_turn(day: Day, tasks: TaskArray, result: Result) -> lis
         moves = walk(occupied[worker], target)
         if not moves:
             continue
-        # The walk occupies the turns immediately before the task, and a unit is free from the
-        # first turn of its day. It moves in turn zero only when the walk begins exactly there -
-        # a walk that would have to start before the day did is not a walk the day can make, and
-        # assuming otherwise is what let the model credit the farmer a move it never took.
-        if turn - len(moves) == 0:
+        # The walk occupies the turns immediately before the task - `walk_start_turn` is where the
+        # compiler writes it - so the unit's first op is a move exactly when that turn is zero. It
+        # is read from the same rule the writer uses rather than guessed from the gap between the
+        # walk and the task: a task with slack lets the compiler walk early, and counting a move it
+        # did not write (or missing one it did) moves the doors the hands land on.
+        if walk_start_turn(turn, len(moves)) == 0:
             step = moves[0][0]
             if step in MOVE_DELTA:
                 dx, dy = MOVE_DELTA[step]
@@ -624,6 +625,16 @@ def first_arrival(tasks: TaskArray) -> int:
     if not goods.any():
         return 0
     return int(tasks.earliest[goods].min())
+
+
+def walk_start_turn(turn: int, moves: int) -> int:
+    """The turn the compiler writes a walk in: it ENDS at the task's turn.
+
+    The writer (`compile_route`) and the reader that works out where the units stand after the first
+    turn (`_settled_after_first_turn`) both go through here, so "the unit's first op is a move" and
+    "the walk starts at turn 0" cannot become two different questions.
+    """
+    return int(turn) - int(moves)
 
 
 def first_walk_turn(hour: int, arrival: int, bag: int) -> int:

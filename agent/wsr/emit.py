@@ -22,7 +22,8 @@ from __future__ import annotations
 from typing import NamedTuple
 
 from agent.wsr.beam import (Day, Result, _bag, _settled_after_first_turn, _start_hours,
-                            _start_positions, first_arrival, first_walk_turn, preload_turns)
+                            _start_positions, first_arrival, first_walk_turn, preload_turns,
+                            walk_start_turn)
 from agent.wsr.routing import nearest_shed, walk
 from agent.wsr.tasks import ITEM_CODE, TaskArray
 
@@ -106,7 +107,7 @@ def compile_route(day: Day, tasks: TaskArray, result: Result, *,
             # moved a unit off its door in turn 0 while the model had it standing there - and a unit
             # that leaves its door in the first turn moves where every hand after it lands (F040).
             _room(task_id, worker, turn, len(moves), last[worker] + 1)
-            _write(ops[worker], turn - len(moves), moves)
+            _write(ops[worker], walk_start_turn(turn, len(moves)), moves)
             ops[worker][turn] = tasks.ops[row]
             at[worker] = target
             last[worker] = turn
