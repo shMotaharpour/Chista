@@ -67,7 +67,7 @@ def test_the_solve_stops_inside_the_budget_it_was_given():
     from agent.tile_dp.graph import TileGraph
     from offline_lab.kaggle_env import new_environment
 
-    env = new_environment()
+    env = new_environment({"seed": 0})
     env.reset(2)
     obs = env.state[0].observation
     graph = TileGraph.load(GRAPH_PATH)
@@ -108,7 +108,7 @@ def test_a_warm_pool_reaches_the_same_answer_in_a_fraction_of_the_rounds():
     from agent.planner.inputs import load_contractor
     from offline_lab.kaggle_env import new_environment
 
-    env = new_environment()
+    env = new_environment({"seed": 0})
     env.reset(2)
     obs = env.state[0].observation
     contractor = load_contractor(days=20)
@@ -184,7 +184,7 @@ def test_the_manager_answers_every_turn_of_a_season_from_a_plan():
             state["err"] = state["err"] or f"{type(exc).__name__}: {exc}"
             return dict(passing)
 
-    env = new_environment()
+    env = new_environment({"seed": 0})
     env.run([me, lambda obs, config=None: dict(passing)])
 
     assert state["fail"] == 0, f"the manager raised: {state['err']}"
