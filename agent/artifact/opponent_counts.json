@@ -2,7 +2,7 @@
   "name": "opponent_counts",
   "kind": "opponent_counts",
   "file": "opponent_counts.npz",
-  "contract": "N[good, day, price_bucket, action] sell-size counts over both seats of the store's SELL/BUY_PRODUCT orders; bins = OpponentModel.BINS + net-buy tail",
+  "contract": "N[good, day, price_bucket, activity, action] sell-size counts over both seats of the store's SELL/BUY_PRODUCT orders; activity = the acting seat's own 24-turn sell bucket (0 start, 1 silent, 2 low, 3 mid, 4 high), -1 = plain 3-tuple state; bins = OpponentModel.BINS + net-buy tail",
   "engine": "a2278746",
   "registry": null,
   "stats": {
@@ -22,5 +22,5 @@
     "bins": 4
   },
   "source": "offline_lab.build.opponent_model:build",
-  "created_utc": "2026-09-21T00:49:40Z"
+  "created_utc": "2026-09-21T02:28:30Z"
 }

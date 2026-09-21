@@ -61,31 +61,42 @@ GOODS: tuple[str, ...] = PRODUCTS
 #: before the first online observation; the agent keeps counting on top of it.
 
 
-def _load_trained() -> dict[tuple[str, int, int], np.ndarray] | None:
-    """The corpus counts as {key: (n_bins,) float array}, or None."""
+def _load_trained() -> dict[tuple, np.ndarray] | None:
+    """The corpus counts as {key: (n_bins,) float array}, or None.
+
+    Keys are (good, day, price_bucket, activity); an artifact written
+    without the activity column reads as activity = -1 (the plain
+    3-tuple state, the pre-#65 shape).
+    """
     from agent.artifact import ARTIFACT_DIR
 
     npz = ARTIFACT_DIR / "opponent_counts.npz"
     if not npz.exists():
         return None
     with np.load(npz, allow_pickle=False) as data:
-        return {(str(g), int(d), int(b)): np.asarray(c, dtype=float)
-                for g, d, b, c in zip(data["goods"], data["days"],
-                                      data["buckets"], data["counts"],
-                                      strict=True)}
+        act = data["activity"] if "activity" in data.files else None
+        return {(str(g), int(d), int(b), int(a) if act is not None else -1):
+                np.asarray(c, dtype=float)
+                for g, d, b, a, c in zip(
+                    data["goods"], data["days"], data["buckets"],
+                    act if act is not None else [-1] * len(data["goods"]),
+                    data["counts"], strict=True)}
 
 
-def _load_trained_qty() -> dict[tuple[str, int, int], np.ndarray] | None:
+def _load_trained_qty() -> dict[tuple, np.ndarray] | None:
     from agent.artifact import ARTIFACT_DIR
 
     npz = ARTIFACT_DIR / "opponent_counts.npz"
     if not npz.exists():
         return None
     with np.load(npz, allow_pickle=False) as data:
-        return {(str(g), int(d), int(b)): np.asarray(q, dtype=float)
-                for g, d, b, q in zip(data["goods"], data["days"],
-                                      data["buckets"], data["qty_sum"],
-                                      strict=True)}
+        act = data["activity"] if "activity" in data.files else None
+        return {(str(g), int(d), int(b), int(a) if act is not None else -1):
+                np.asarray(q, dtype=float)
+                for g, d, b, a, q in zip(
+                    data["goods"], data["days"], data["buckets"],
+                    act if act is not None else [-1] * len(data["goods"]),
+                    data["qty_sum"], strict=True)}
 
 
 class OpponentModel:
@@ -145,12 +156,12 @@ class OpponentModel:
     def _key_activity(self, good: str, step: int, price: int,
                       activity: int) -> tuple[str, int, int, int]:
         """The activity key (#65 follow-up): the 3-tuple with the rival's
-        own activity bucket PREPENDED — (good, activity, dim2, dim3). The
-        activity regime is the rival's own recent behaviour, so it rides
-        on top of every per-good key shape without changing them.
+        own activity bucket APPENDED — (good, day, price_bucket, activity).
+        The activity regime is the rival's own recent behaviour, so it
+        rides on top of every per-good key shape without changing them.
         """
         base = self._key(good, step, price)
-        return (good, activity) + base[1:]
+        return base + (int(activity),)
 
     def _bin(self, qty: float) -> int:
         b = 0
@@ -221,7 +232,8 @@ class OpponentModel:
         mean_qty = np.where(counts > 0, qs / np.maximum(counts, 1.0), 0.0)
         return float(p @ mean_qty)
 
-    def expected_sell_day(self, obs: Any) -> dict[str, float]:
+    def expected_sell_day(self, obs: Any,
+                          activity: int | None = None) -> dict[str, float]:
         """The rival's expected sell volume PER DAY for every good, from the
         observation alone — the `residual` forecast() consumes.
 
@@ -230,6 +242,11 @@ class OpponentModel:
         day's 24 turns (the same turn shape the forecast's walk applies it
         in). This is step 1 of #65: the wire between the trained model and
         the price path.
+
+        `activity` selects the activity-keyed table (the rival's own
+        24-turn sell bucket, from `activity_bucket(tracker)`); without it
+        the plain states answer, which the activity artifact does not
+        carry — callers wire the tracker's bucket or get zeros.
         """
         market = field_of(obs, "market", {}) or {}
         raw_inv = dict(field_of(market, "inventory", {}) or {})
@@ -240,7 +257,8 @@ class OpponentModel:
             price = int(field_of(market, "prices", {}) and
                         dict(field_of(market, "prices", {})).get(g, 0)
                         or price_of(g, inv))
-            per_turn = self.expected_sell(g, day_start, price)
+            per_turn = self.expected_sell(g, day_start, price,
+                                          activity=activity)
             out[g] = float(per_turn * TURNS_PER_DAY)
         return out
 

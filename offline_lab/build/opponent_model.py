@@ -159,23 +159,29 @@ def main() -> int:
     print(f"built: {n_keys:,} states, {n_obs:,.0f} observations "
           f"({time.time()-t0:.0f}s)")
 
-    # --- serialize: keys are (good, day, price_bucket); arrays are (n_bins,) --
+    # --- serialize: keys are (good, day, price_bucket, activity);
+    # -- arrays are (n_bins,) ------------------------------------------
     keys = sorted(model.counts)
     goods = np.array([k[0] for k in keys])
     days = np.array([k[1] for k in keys], dtype=np.int32)
     buckets = np.array([k[2] for k in keys], dtype=np.int8)
+    activity = np.array([k[3] if len(k) > 3 else -1 for k in keys],
+                        dtype=np.int8)
     counts = np.stack([np.asarray(model.counts[k]) for k in keys]).astype(np.float32)
     qty_sum = np.stack([np.asarray(model.qty_sum[k]) for k in keys]).astype(np.float32)
     npz_path = artifact_path("opponent_counts", ".npz")
     np.savez_compressed(npz_path, goods=goods, days=days, buckets=buckets,
-                        counts=counts, qty_sum=qty_sum)
+                        activity=activity, counts=counts, qty_sum=qty_sum)
 
     from agent.tile_dp.contract import engine_fingerprint
     write_info("opponent_counts", kind="opponent_counts",
                file=npz_path.name,
-               contract="N[good, day, price_bucket, action] sell-size counts "
-                        "over both seats of the store's SELL/BUY_PRODUCT "
-                        "orders; bins = OpponentModel.BINS + net-buy tail",
+               contract="N[good, day, price_bucket, activity, action] "
+                        "sell-size counts over both seats of the store's "
+                        "SELL/BUY_PRODUCT orders; activity = the acting "
+                        "seat's own 24-turn sell bucket (0 start, 1 silent, "
+                        "2 low, 3 mid, 4 high), -1 = plain 3-tuple state; "
+                        "bins = OpponentModel.BINS + net-buy tail",
                engine=engine_fingerprint(),
                registry=None,
                stats={"states": n_keys, "observations": int(n_obs),
