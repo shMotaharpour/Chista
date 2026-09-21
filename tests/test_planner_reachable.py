@@ -397,43 +397,36 @@ def test_the_bound_the_master_reports_is_a_bound_on_a_real_board():
 def test_every_state_can_choose_to_do_nothing():
     """Idling is always legal on the board, so it must be legal in the model.
 
-    Four states in the shipped artifact had no empty-chain edge — `NONE`,
-    `EMPTY_COOP`, `EMPTY_PASTURE` and `WEED` — and they are exactly the four
-    whose night changes nothing. Zero of the 699 idle edges that do exist are
-    self-loops, so the builder drops an edge that leads back where it started,
-    and these are the only states for which it would.
+    Four states in the shipped artifact once had no empty-chain edge — `NONE`,
+    `EMPTY_COOP`, `EMPTY_PASTURE` and `WEED` — exactly the four whose night
+    changes nothing. Every owned tile starts in `NONE` and a `DIG` returns it
+    there, so every tile was forced to act every day.
 
-    Every owned tile starts in `NONE` and a `DIG` returns it there, so every
-    tile was forced to act every day (#84).
+    The builder fixed it in #88 (closing #84) and the load-time patch this
+    guard used to check was retired with it. What is left is the thing that
+    mattered: the agent must not ship a model in which idling is illegal.
     """
     import numpy as np
-    from agent.planner.inputs import GRAPH_PATH, with_idle_edges
+    from agent.planner.inputs import GRAPH_PATH
     from agent.tile_dp.graph import TileGraph
 
-    raw = TileGraph.load(GRAPH_PATH)
-    fixed = with_idle_edges(raw)
+    graph = TileGraph.load(GRAPH_PATH)
+    offsets, chain = np.asarray(graph.edge_offsets), np.asarray(graph.edge_chain)
+    stuck = [s for s in range(int(graph.n_states))
+             if not (chain[int(offsets[s]):int(offsets[s + 1])] == 0).any()]
+    assert stuck == [], f"states that cannot decline the day: {stuck}"
 
-    def stuck(graph):
-        offsets, chain = np.asarray(graph.edge_offsets), np.asarray(graph.edge_chain)
-        return [s for s in range(int(graph.n_states))
-                if not (chain[int(offsets[s]):int(offsets[s + 1])] == 0).any()]
-
-    assert stuck(raw), "the artifact no longer needs the fix — retire it (#84)"
-    assert stuck(fixed) == [], f"still forced to act: {stuck(fixed)}"
-    # Nothing else moved: the added edges are self-loops that cost and make
-    # nothing, and every original edge is still where it was.
-    assert len(np.asarray(fixed.edge_chain)) == \
-        len(np.asarray(raw.edge_chain)) + len(stuck(raw))
-    offsets, nxt = np.asarray(fixed.edge_offsets), np.asarray(fixed.edge_next)
-    chain = np.asarray(fixed.edge_chain)
-    cost, produce = np.asarray(fixed.edge_cost), np.asarray(fixed.edge_produce)
-    for s in stuck(raw):
-        added = [i for i in range(int(offsets[s]), int(offsets[s + 1]))
-                 if int(chain[i]) == 0]
-        assert len(added) == 1
-        i = added[0]
-        assert int(nxt[i]) == s, "doing nothing must leave the tile where it is"
-        assert not cost[i].any() and not produce[i].any()
+    # The four that needed it decline by standing still, for free.
+    nxt = np.asarray(graph.edge_next)
+    cost, produce = np.asarray(graph.edge_cost), np.asarray(graph.edge_produce)
+    loops = 0
+    for s in range(int(graph.n_states)):
+        for i in range(int(offsets[s]), int(offsets[s + 1])):
+            if int(chain[i]) == 0 and int(nxt[i]) == s:
+                loops += 1
+                assert not cost[i].any(), "doing nothing must cost nothing"
+                assert not produce[i].any(), "doing nothing must make nothing"
+    assert loops == 4, f"expected the four day-invariant self-loops, got {loops}"
 
 
 def test_the_dp_declines_when_the_wage_makes_work_a_loss():

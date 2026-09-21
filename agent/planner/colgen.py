@@ -257,6 +257,44 @@ def column_key(board, tile: int, days: int) -> tuple:
     return tuple((int(d), int(chain)) for d, _state, chain in plan[:days])
 
 
+def pool_values(pool: list, y, cash, n_classes: int, days: int) -> np.ndarray:
+    """The best dual-priced value each class can already show, from the pool.
+
+    `lagrangian_bound` needs `v_c(y) = max over EVERY plan of class c`, and the
+    pricing step hands back only the one plan the subproblem just proposed. On
+    this problem the DP picks its chain before the travel term is added to the
+    column, so the proposal is not always the class's best at those duals — a
+    column an earlier round already put in the pool can beat it. Taking the max
+    over both is what keeps `L(y)` above the objective it exists to bound.
+
+    Measured: without it the bound came back 33,765.5 against an objective of
+    34,008.8 — below by 0.7 %, which is not a bound.
+
+    The cash weighting matches `solve_master`'s cumulative row exactly: a coin
+    spent on day d sits in every row from d onward, so its shadow price is the
+    suffix sum of the cash duals, and revenue banked on d relieves every row
+    after it.
+    """
+    cash_arr = np.asarray(cash, dtype=np.float64)
+    ahead = np.cumsum(cash_arr[::-1])[::-1]
+    later = np.concatenate([ahead[1:], [0.0]])
+    y_arr = np.asarray(y, dtype=np.float64)
+    best = np.full(int(n_classes), -np.inf, dtype=np.float64)
+    for col in pool:
+        c = int(col.cls)
+        if not 0 <= c < len(best):
+            continue
+        cost = np.asarray(col.cost, dtype=np.float64)[:days]
+        spend = np.asarray(col.spend, dtype=np.float64)[:days]
+        earn = np.asarray(col.earn, dtype=np.float64)[:days]
+        v = (float(earn.sum())
+             - float((y_arr[:days, :cost.shape[1]] * cost).sum())
+             - float((ahead[:days] * spend).sum() - (later[:days] * earn).sum()))
+        if v > best[c]:
+            best[c] = v
+    return np.where(np.isfinite(best), best, 0.0)
+
+
 def generate(price, supply_hours, money, counts, days, n_coupling,
              idle_columns, *, rounds: int = 12, poll=None,
              deadline=None, warm: list | None = None,
@@ -356,6 +394,11 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
                           for c, e in zip(centre, exact))
                     if smoothed else exact)
             values, columns = price(used[0], used[1])
+            # v_c is a MAX over the class's plans, and the pool holds plans the
+            # subproblem did not just propose. See `pool_values`.
+            values = np.maximum(
+                np.asarray(values, dtype=np.float64),
+                pool_values(result.pool, used[0], used[1], len(values), days))
             bound = lagrangian_bound(
                 MasterSolve(result.solve.lam, np.asarray(used[0]),
                             np.asarray(used[1]), np.asarray(used[2]),
