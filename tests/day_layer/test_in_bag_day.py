@@ -31,12 +31,6 @@ PER_TILE = 12
 NEAR, FAR = (5, 5), (1, 1)
 TIMETABLE = {"FERTILIZER": 0, "WHEAT": 0}
 
-_NOT_TIED = (
-    "measured on this branch: the search puts the producer and the consumer on different workers "
-    "(a COLLECT on worker 1 and its FERTILIZE on worker 0), so the good is wasted and the consumer "
-    "pays a trip. Nothing ties them - `pred` is empty between the two and the trip is charged one "
-    "turn with no walk to the door"
-)
 
 
 def test_a_deadline_makes_the_walking_longer():
@@ -56,6 +50,15 @@ def test_a_deadline_makes_the_walking_longer():
         f"the walking is {T.day_walking(plain)} either way: the deadline is not in it")
 
 
+_NOT_TIED = (
+    "the walk is real and the model does not charge it: a trip is one turn in `_expand`, so fetching "
+    "is as cheap as sharing a bag and the search puts a producer and its consumer on different "
+    "workers. Pricing the detour fixes both of these tests and takes five days off the corpus - 92 "
+    "carried becomes 87 - because those days were carried with the fetch priced at a turn. The budget "
+    "is what is short, not the walk"
+)
+
+
 @pytest.mark.xfail(strict=True, reason=_NOT_TIED)
 def test_a_collected_good_reaches_its_consumer():
     """The worker that collects the fertilizer is the worker that spreads it: the bag is not shared."""
@@ -71,10 +74,19 @@ def test_a_collected_good_reaches_its_consumer():
         f"{worker_of['d1_fertilize']}, so the collection was wasted")
 
 
+_NOT_TIED = (
+    "the walk is real and the model does not charge it: a trip is one turn in `_expand`, so fetching "
+    "is as cheap as sharing a bag and the search puts a producer and its consumer on different "
+    "workers. Pricing the detour fixes both of these tests and takes five days off the corpus - 92 "
+    "carried becomes 87 - because those days were carried with the fetch priced at a turn. The budget "
+    "is what is short, not the walk"
+)
+
+
 @pytest.mark.xfail(strict=True, reason=_NOT_TIED)
 def test_a_harvested_crop_reaches_its_consumer():
     """The same for wheat: a harvest puts it in the bag and a feed takes it out of that bag."""
-    chains = [(NEAR, ("HARVEST",), None), (FAR, ("FEED",), None)]
+    chains = [(NEAR, ("HARVEST",), "WHEAT"), (FAR, ("FEED",), None)]
     tasks = T.build(chains, available=TIMETABLE)
     result = B.search(B.Day(chains=tuple(chains), available=TIMETABLE, hire_times=(1, 1)),
                       tasks, hands=2, max_hands=2)

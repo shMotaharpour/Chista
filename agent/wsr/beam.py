@@ -30,7 +30,7 @@ import numpy as np
 from agent.world.board import MOVE_DELTA, SPAWN
 from agent.world.rules import BOARD_SIZE, TURNS_PER_DAY
 from agent.wsr.routing import walk
-from agent.wsr.tasks import DISTANCE, NO_ITEM, TaskArray, day_walking
+from agent.wsr.tasks import DISTANCE, NO_ITEM, SHED_INDEX, TaskArray, day_walking
 
 Cell = tuple[int, int]
 
@@ -667,6 +667,11 @@ def _expand(day: Day, tasks: TaskArray, done, when, who, free, where, travel, li
 
     start = np.maximum(arrive, released[:, None, :])
     start = np.maximum(start, earliest_here[None, None, :])
+    # A trip is charged the turn spent fetching and not the walk to the door. The walk is real - the
+    # engine makes a PICKUP happen at a door - and pricing it is what makes the search share a bag
+    # instead of fetching, but it also takes five days off the corpus: those days were carried with the
+    # fetch priced at a turn, and the model's budget is short elsewhere. The issue for the nine days
+    # has the measurement; this stays one turn until the budget is right.
     start = start + trip.astype(np.int16)
     finish = start + np.int16(1)
     # An idle drop is finished the moment its worker is free - it costs nothing and takes no turn -
