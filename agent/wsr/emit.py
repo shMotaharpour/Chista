@@ -21,8 +21,9 @@ from __future__ import annotations
 
 from typing import NamedTuple
 
-from agent.wsr.beam import (Day, Result, _settled_after_first_turn, _start_hours,
-                            _start_positions, first_arrival, preload_turns)
+from agent.wsr.beam import (Day, Result, _bag, _settled_after_first_turn, _start_hours,
+                            _start_positions, first_arrival, first_walk_turn, preload_turns,
+                            walk_start_turn)
 from agent.wsr.routing import nearest_shed, walk
 from agent.wsr.tasks import ITEM_CODE, TaskArray
 
@@ -82,11 +83,14 @@ def compile_route(day: Day, tasks: TaskArray, result: Result, *,
     arrival = first_arrival(tasks)
     for worker in range(m):
         bag = _bag(tasks, by_worker.get(worker, []))
-        first = max(int(hours[worker]), arrival)
+        # The pickups go on the worker's own first turns, one per good, at its door: a hand offered
+        # from hour 1 cannot pick anything up at hour 0 (F040). The walk then begins where they end,
+        # which is what `first_walk_turn` says and what the search charged this worker for.
+        pickup = max(int(hours[worker]), arrival)
         for step, good in enumerate(sorted(bag)):
-            ops[worker][first + step] = ("PICKUP", ITEM_NAME[good], bag[good])
+            ops[worker][pickup + step] = ("PICKUP", ITEM_NAME[good], bag[good])
         if bag:
-            last[worker] = first + len(bag) - 1
+            last[worker] = first_walk_turn(hours[worker], arrival, len(bag)) - 1
 
     for worker, entries in by_worker.items():
         for turn, task_id in sorted(entries):
@@ -97,9 +101,15 @@ def compile_route(day: Day, tasks: TaskArray, result: Result, *,
             row = tasks.ids.index(task_id)
             target = (int(tasks.cells[row][0]), int(tasks.cells[row][1]))
             moves = walk(at[worker], target)
-            first = last[worker] + 1
-            _room(task_id, worker, turn, len(moves), first)
-            _write(ops[worker], first, moves)
+            # The walk ENDS at the task's turn, not at the first turn the worker is free: a worker
+            # with slack waits where it stands and then walks, so the turns the walk occupies are
+            # exactly the ones the model counted when it priced the day. Writing it early instead
+            # moved a unit off its door in turn 0 while the model had it standing there - and a unit
+            # that leaves its door in the first turn moves where every hand after it lands (F040).
+            # That was the rewrite's regression, not the old layer's rule: `walk_start_turn` is the
+            # reading the pre-rewrite `plan_day` took from the compiled route.
+            _room(task_id, worker, turn, len(moves), last[worker] + 1)
+            _write(ops[worker], walk_start_turn(turn, len(moves)), moves)
             ops[worker][turn] = tasks.ops[row]
             at[worker] = target
             last[worker] = turn
@@ -130,16 +140,6 @@ def to_plan(day_ops: DayOps, market=None) -> dict:
     """
     return {"units": [[list(op) for op in unit] for unit in day_ops.units],
             "market": list(market or [])}
-
-
-def _bag(tasks: TaskArray, entries: list[tuple[int, str]]) -> dict[int, int]:
-    """How much of each good this worker's day uses, so one trip can carry all of it."""
-    bag: dict[int, int] = {}
-    for _turn, task_id in entries:
-        good = int(tasks.items[tasks.ids.index(task_id)])
-        if good >= 0:
-            bag[good] = bag.get(good, 0) + 1
-    return bag
 
 
 def _write(ops: list[tuple], first: int, moves: list[tuple]) -> None:
@@ -195,4 +195,23 @@ def check_route(day: Day, tasks: TaskArray, result: Result, settled=None) -> lis
                 complaints.append(f"{tasks.ids[j]} must come before {row}")
         if tasks.items[i] >= 0 and when[row] < int(tasks.earliest[i]):
             complaints.append(f"{row} needs its good at {when[row]}, before it is in the shed")
+
+    # A worker tie: the tasks a task must share a worker with. A route that splits a group hands the
+    # work to a worker that cannot do it - a drop by anybody but the worker holding the good banks
+    # nothing - and the engine would run it without a word.
+    if tasks.ties.size:
+        who_of = {task_id: int(worker) for _turn, task_id, worker in result.route}
+        for i in range(tasks.n):
+            row = tasks.ids[i]
+            if row not in who_of:
+                continue
+            for slot in range(tasks.ties.shape[1]):
+                mate = int(tasks.ties[i, slot])
+                if mate < 0:
+                    continue
+                other = tasks.ids[mate]
+                if other in who_of and who_of[other] != who_of[row]:
+                    complaints.append(
+                        f"{row} and {other} must be the same worker: "
+                        f"{who_of[row]} and {who_of[other]}")
     return complaints
