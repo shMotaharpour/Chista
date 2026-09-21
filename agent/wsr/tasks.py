@@ -242,6 +242,67 @@ class TaskArray:
         return out
 
 
+#: The layers of `land_image`, in order, and what each one counts.
+IMAGE_LAYERS: tuple[str, ...] = (
+    "tasks",        # how many tasks the tile carries
+    "wheat",        # the tile needs wheat: a FEED eats one
+    "fertilizer",   # the tile needs fertilizer: a FERTILIZE spreads one
+    "animal",       # the tile takes an animal: a PLACE puts one down
+    "drop",         # the tile's harvest has to reach the shed by a deadline
+    "depth",        # the longest chain on the tile, in tasks
+)
+
+
+def chain_depth(tasks: TaskArray) -> np.ndarray:
+    """The longest precedence chain each task sits in, in tasks.
+
+    `pred[i, j]` means j precedes i, so a task sits one below its deepest predecessor. The graph is
+    acyclic, so repeated relaxation converges and no recursion is needed.
+    """
+    if tasks.n == 0:
+        return np.zeros(0, dtype=np.int16)
+    depth = np.ones(tasks.n, dtype=np.int16)
+    for _ in range(tasks.n):
+        with_pred = tasks.pred.any(axis=1)
+        deeper = (depth[None, :] * tasks.pred).max(axis=1) + 1
+        updated = np.where(with_pred, deeper, depth).astype(np.int16)
+        if (updated == depth).all():
+            break
+        depth = updated
+    return depth
+
+
+def land_image(tasks: TaskArray, board_size: int = BOARD_SIZE) -> np.ndarray:
+    """The day as one board per quantity, stacked: shape (board, board, len(IMAGE_LAYERS)).
+
+    A view of the arrays rather than a second source of truth - every layer is a scatter of a column
+    `build` already filled. Read it as `image[x, y]` for a tile's own vector, or `image[:, :, n]` for
+    a whole board of one quantity.
+    """
+    from agent.world.action import Animal, Product
+
+    image = np.zeros((board_size, board_size, len(IMAGE_LAYERS)), dtype=np.int16)
+    if tasks.n == 0:
+        return image
+    x = tasks.cells[:, 0].astype(np.int64)
+    y = tasks.cells[:, 1].astype(np.int64)
+    depth = chain_depth(tasks)
+
+    np.add.at(image[:, :, 0], (x, y), 1)
+    wheat, fertilizer = _item_code(Product.WHEAT), _item_code(Product.FERTILIZER)
+    animal_codes = {_item_code(a) for a in Animal}
+    np.maximum.at(image[:, :, 1], (x, y), (tasks.items == wheat).astype(np.int16))
+    np.maximum.at(image[:, :, 2], (x, y), (tasks.items == fertilizer).astype(np.int16))
+    np.maximum.at(image[:, :, 3], (x, y),
+                  np.isin(tasks.items, list(animal_codes)).astype(np.int16))
+    np.maximum.at(image[:, :, 5], (x, y), depth)
+    if tasks.drop_rows.size:
+        rows = tasks.drop_rows
+        np.maximum.at(image[:, :, 4], (tasks.cells[rows, 0].astype(np.int64),
+                                       tasks.cells[rows, 1].astype(np.int64)), 1)
+    return image
+
+
 def columns_of(cells: np.ndarray) -> np.ndarray:
     """Number the tiles, so tasks can be grouped by the tile they happen on."""
     seen: dict[tuple[int, int], int] = {}
