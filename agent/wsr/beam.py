@@ -126,28 +126,41 @@ class Result(NamedTuple):
 
 
 def lower_bound(day: Day, tasks: TaskArray) -> int:
-    """The fewest hands the day can possibly need, from arithmetic alone.
+    """The fewest units the day can possibly need: the work, against the turns the day has.
 
-    Two floors, and the larger wins. A bound that is too high is worse than useless - the search
-    would skip a pool size that works, which is how a feasible day gets called infeasible - so
-    both are floors and neither is padded:
+    The work is not the tasks alone. Every task costs a turn, every distinct good a consumer needs
+    costs a turn to fetch, and the tiles the day works have to be walked to: to touch T distinct tiles
+    a unit moves at least T - 1 times, because it starts standing on one of them. A drop doubles that
+    walking - the unit has to come back along the path it went out on - and a day with a deadline for
+    its drops is a day whose walking cannot be spent twice.
 
-      work   every task must fit inside the day, and a fetch is not a task of its own: it rides
-             along with the task that needs it, so it is counted once per distinct good.
-      chain  the longest precedence chain plus the walk to its tile, since that work cannot be
-             split between hands however many there are.
+    The turns are not 24 times the hands either. They are a ladder: the farmer's whole day, then 24
+    minus the hire hour for each hand in turn, counted off until the work is covered. A hand hired in
+    turn 2 has 22 turns in it, and dividing the work by the horizon pretends otherwise.
 
-    The solver's own bound is not consulted. A bound taken from the solver is circular.
+    The answer is a POOL, because that is what the caller searches with - the units already on the
+    field are counted in and the search takes them back out.
     """
     if tasks.n == 0:
         return 0
-    goods = {int(i) for i in tasks.items if int(i) != NO_ITEM}
-    by_work = -(-(tasks.n + len(goods)) // day.horizon)
+    goods = len({int(i) for i in tasks.items if int(i) != NO_ITEM})
+    tiles = len(np.unique(tasks.cells, axis=0))
+    walking = max(0, tiles - 1)
+    if tasks.drop_rows.size:
+        # A deadline is a hard window on a task that also has precedence, and it means the unit has
+        # to finish at a shed door rather than wherever it stopped. So its path reaches the furthest
+        # tile and comes back: at least twice the distance from a door to it. Not a doubling of the
+        # tile count, which a route that works the tiles in a loop can beat.
+        reach = int(DISTANCE[SHED_INDEX].min(axis=0)[tasks.cell_index].max())
+        walking = max(walking, 2 * reach)
+    work = tasks.n + goods + walking
 
-    depth = _chain_depth(tasks)
-    reach = int(DISTANCE[SHED_INDEX].min(axis=0)[tasks.cell_index].max()) if tasks.n else 0
-    by_chain = -(-(depth + reach) // day.horizon)
-    return max(1, by_work, by_chain)
+    total = day.horizon
+    hired = 0
+    while total < work and hired < len(day.hire_times):
+        total += day.horizon - int(day.hire_times[hired])
+        hired += 1
+    return len(day.units) + hired
 
 
 def walking_tour(tasks: TaskArray) -> int:
@@ -189,25 +202,6 @@ def predicted_pool(day: Day, tasks: TaskArray) -> int:
     if turns <= 0:
         return 0
     return max(1, -(-(tasks.n + goods + walking_tour(tasks)) // turns))
-
-
-def _chain_depth(tasks: TaskArray) -> int:
-    """The longest precedence chain, in tasks - the critical path through the day's work.
-
-    `pred[i, j]` means j precedes i, so a task sits one below its deepest predecessor. The graph is
-    acyclic, so repeated relaxation converges and no recursion is needed.
-    """
-    if tasks.n == 0:
-        return 0
-    depth = np.ones(tasks.n, dtype=np.int16)
-    for _ in range(tasks.n):
-        with_pred = tasks.pred.any(axis=1)
-        deeper = (depth[None, :] * tasks.pred).max(axis=1) + 1
-        updated = np.where(with_pred, deeper, depth).astype(np.int16)
-        if (updated == depth).all():
-            break
-        depth = updated
-    return int(depth.max())
 
 
 def search(day: Day, tasks: TaskArray, *, beam: int | None = None,
