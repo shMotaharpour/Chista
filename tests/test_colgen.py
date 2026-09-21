@@ -218,3 +218,51 @@ def test_mu_is_zero_while_a_class_still_has_idle_weight():
     solve = solve_master([_idle(0)], counts, np.full(DAYS, 12.0), 300.0,
                          DAYS, N_COUPLING)
     assert solve.mu[0] == pytest.approx(0.0, abs=1e-9)
+
+
+def test_the_lagrangian_bound_is_a_bound():
+    """`L(y) = y·b + Σ_c N_c·v_c(y)` must never fall below what it bounds.
+
+    It did: −71,123 against an objective of 34,197. A class's value came back
+    negative because the tile DP chooses its chain before the travel term is
+    added to the column, so a chain it liked can be a loss once the walk is
+    paid for — and a class is never worth less than its idle column, which is
+    worth zero. Flooring there is not a fudge: it is including a column the
+    pricing step has and was not reporting.
+    """
+    counts = np.array([7, 4])
+    hours = np.full(DAYS, 9.0)
+    money = 240.0
+    res = generate(_pricer(counts), hours, money, counts, DAYS, N_COUPLING,
+                   [_idle(0), _idle(1)], rounds=25)
+
+    assert res.certified, res.stopped
+    assert np.isfinite(res.bound)
+    assert res.bound >= res.solve.objective - 1e-6, (
+        f"the bound {res.bound:.3f} is below the objective "
+        f"{res.solve.objective:.3f}, so it is not a bound")
+    assert res.gap >= -1e-9
+
+
+def test_smoothing_never_certifies_on_a_dual_the_master_did_not_produce():
+    """A misprice goes to the TRUE duals before anything is called optimal.
+
+    Wentges prices at `α·π_best + (1−α)·π_LP`. A certificate declared there
+    would certify a problem nobody solved — and a column that beats its price
+    while ALREADY BEING IN THE POOL is a misprice too, from the master's side:
+    the round bought nothing either way.
+    """
+    counts = np.array([10])
+    hours = np.full(DAYS, 12.0)
+    plain = generate(_pricer(counts), hours, 300.0, counts, DAYS, N_COUPLING,
+                     [_idle(0)], rounds=25, smoothing=0.0)
+    smoothed = generate(_pricer(counts), hours, 300.0, counts, DAYS,
+                        N_COUPLING, [_idle(0)], rounds=25, smoothing=0.8)
+
+    for name, res in (("plain", plain), ("smoothed", smoothed)):
+        assert res.certified, f"{name}: {res.stopped}"
+        assert res.bound >= res.solve.objective - 1e-6, name
+    assert smoothed.solve.objective == pytest.approx(plain.solve.objective,
+                                                     rel=1e-9), (
+        "smoothing moved the optimum, which means it reached the pricing "
+        "step's own objective and not only the path to it")

@@ -299,6 +299,8 @@ class MasterResult:
     #: cost. `converged` is kept as its alias for the callers that read it.
     certified: bool = False
     stopped: str = ""              # why the loop ended, when it was not certified
+    bound: float = float("inf")    # the best Lagrangian bound seen
+    gap: float = float("inf")      # (bound - objective) / bound
 
 
 def published_duals(w_coupling: np.ndarray, days: int,
@@ -596,9 +598,18 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
             # over every plan that exists.
             cash_use = float((ahead[:days] * spend[i][:days]).sum()
                              - (later[:days] * earn[i][:days]).sum())
-            values.append(float(earn[i].sum())
-                          - float((np.asarray(y)[:days, 0] * hours[:, 0]).sum())
-                          - cash_use)
+            # The class's best plan is never worth LESS than its idle column,
+            # which every class has and which is worth zero. Without this floor
+            # the value can go negative — the DP chose its chain before the
+            # travel term was added, so a chain it liked can be a loss once the
+            # walk is paid for — and a negative value makes `L(y) = y·b + Σ N_c
+            # v_c` smaller than the objective it is supposed to bound. Measured:
+            # bound −71,123 against an objective of 34,197, which is not a bound
+            # at all.
+            values.append(max(0.0,
+                              float(earn[i].sum())
+                              - float((np.asarray(y)[:days, 0] * hours[:, 0]).sum())
+                              - cash_use))
         return np.asarray(values, dtype=np.float64), columns
 
     try:
@@ -615,6 +626,8 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
     w_cur = state["w"]
     result.cash_duals = state["cash"]
     result.rounds = cg.rounds
+    result.bound = cg.bound
+    result.gap = cg.gap
     result.pool = cg.pool
     result.certified = cg.certified
     result.stopped = cg.stopped

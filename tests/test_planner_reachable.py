@@ -363,3 +363,32 @@ def test_the_labour_row_carries_the_walk_not_just_the_ops():
         assert (column.cost[worked, 0] >= distance).all(), (
             f"a worked day on a tile {distance} steps out costs less than the "
             f"walk to reach it")
+
+
+def test_the_bound_the_master_reports_is_a_bound_on_a_real_board():
+    """`L(y)` must never fall below the objective it bounds — on THIS board.
+
+    The synthetic pricer in `test_colgen` cannot catch this: its classes never
+    price a plan at a loss. The real one does. The tile DP chooses its chain
+    before the travel term reaches the column, so a chain it liked can be a
+    loss once the walk is paid for, and the class value went negative — bound
+    −71,123 against an objective of 34,197, which is not a bound at all. A
+    class is never worth less than its idle column, which is worth zero.
+    """
+    import numpy as np
+    from agent.planner import master as M
+    from agent.planner.inputs import load_contractor
+    from offline_lab.kaggle_env import new_environment
+
+    env = new_environment()
+    env.reset(2)
+    obs = env.state[0].observation
+    result = M.equilibrate(object(), obs, load_contractor(days=20),
+                           M.supply_from_obs(obs), iter_cap=200)
+
+    assert result.certified, result.stopped
+    assert np.isfinite(result.bound), "no bound was computed at all"
+    assert result.bound >= result.objective - 1e-6, (
+        f"the bound {result.bound:.1f} is below the objective "
+        f"{result.objective:.1f}: it is not a bound")
+    assert result.gap >= -1e-9

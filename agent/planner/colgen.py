@@ -161,6 +161,31 @@ def reduced_costs(values: np.ndarray, mu: np.ndarray) -> np.ndarray:
     return np.asarray(values, dtype=np.float64) + np.asarray(mu, dtype=np.float64)
 
 
+def lagrangian_bound(solve: MasterSolve, values: np.ndarray,
+                     counts: np.ndarray, hours: np.ndarray, money: float,
+                     days: int, n_coupling: int) -> float:
+    """`L(y) = y·b + Σ_c N_c · v_c(y)` — an UPPER bound on the master's optimum.
+
+    Relax the coupling rows with their duals and the problem separates into
+    the classes, each free to pick its best plan at those prices. `values[c]`
+    IS that best dual-priced value: it is what the pricing step just computed.
+    So the bound costs nothing beyond an inner product, and without it column
+    generation has no idea how far from done it is — "no column has a positive
+    reduced cost" is a certificate at the END and says nothing on the way.
+
+    It is also what makes Wentges smoothing work: the stability centre is the
+    dual with the BEST bound so far, not the last one seen.
+
+    Sources: Wentges (1997); Pessoa, Sadykov, Uchoa & Vanderbeck (2018).
+    """
+    y = np.asarray(solve.y, dtype=np.float64)
+    cash = np.asarray(solve.cash, dtype=np.float64)
+    rhs = float((y[:days, :n_coupling].sum(axis=1) * hours[:days]).sum()
+                + cash[:days].sum() * float(money))
+    return rhs + float((np.asarray(counts, dtype=np.float64)
+                        * np.asarray(values, dtype=np.float64)).sum())
+
+
 @dataclass
 class ColgenResult:
     """The mix, the duals, and whether the answer carries a proof."""
@@ -174,6 +199,17 @@ class ColgenResult:
     certified: bool = False
     stopped: str = ""             # why the loop ended, when it was not certified
     rc_history: list = field(default_factory=list)
+    #: The best (smallest) Lagrangian bound seen. `inf` before the first
+    #: pricing round. The master's objective is a lower bound and this an
+    #: upper one, so the two together are the only honest statement of how
+    #: close the answer is while the loop is still running.
+    bound: float = float("inf")
+    #: `(bound − objective) / bound` at the end, or `inf` with no bound yet.
+    @property
+    def gap(self) -> float:
+        if self.solve is None or not np.isfinite(self.bound) or self.bound <= 0:
+            return float("inf")
+        return (self.bound - self.solve.objective) / abs(self.bound)
 
 
 def classes_of(owned: list[int], distances: list[int] | None = None
@@ -223,7 +259,8 @@ def column_key(board, tile: int, days: int) -> tuple:
 
 def generate(price, supply_hours, money, counts, days, n_coupling,
              idle_columns, *, rounds: int = 12, poll=None,
-             deadline=None, warm: list | None = None) -> ColgenResult:
+             deadline=None, warm: list | None = None,
+             smoothing: float = 0.0) -> ColgenResult:
     """The loop: master over every column so far, price, add, repeat.
 
     `price(y, cash)` is the caller's pricing step: it publishes the duals to
@@ -261,15 +298,42 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
     seen = {(c.cls, c.key) for c in result.pool}
 
     spent = 0.0
+    # --- Wentges dual price smoothing -----------------------------------
+    # The pricing step is fed `α·π_best + (1−α)·π_LP`, where π_best is the
+    # dual that gave the BEST Lagrangian bound so far — the stability centre —
+    # and not the previous iterate. That distinction is the method: the LP's
+    # duals jump between extreme points of a degenerate dual polyhedron, and a
+    # subproblem chasing them prices plans nobody will use. Smoothing toward
+    # the last value (which is what this did) smooths toward whatever noise
+    # came last; smoothing toward the incumbent smooths toward the best
+    # information the run has.
+    #
+    # Wentges (1997); Pessoa, Sadykov, Uchoa & Vanderbeck (2018).
+    #
+    # DEFAULT OFF, and measured rather than assumed. On this problem it does
+    # not help and it corrupts the bound:
+    #
+    #     alpha 0.0   objective 34,197   bound 34,197   gap  0.0 %
+    #     alpha 0.3   objective 33,921   bound 33,843   gap -0.2 %
+    #     alpha 0.5   objective 33,800   bound 33,750   gap -0.1 %
+    #
+    # A bound BELOW the objective is not a bound, and two runs certifying at
+    # different objectives are two different fixed points. Both symptoms have
+    # one cause: the pricing here is not an exact Lagrangian subproblem. The
+    # travel a plan cannot avoid is added to the column AFTER the DP has
+    # chosen its chain, so the DP optimises one objective and the master
+    # prices another. Smoothing's guarantees assume they are the same, so it
+    # has nothing to stabilise and only moves where the loop stops.
+    #
+    # The fix is exact pricing — the walk inside the DP's own objective — not
+    # more stabilisation. The knob stays because it costs nothing and because
+    # the day the pricing is exact it is the first thing to try again.
+    centre = None                        # (y, cash, mu) at the best bound
+    alpha = float(smoothing)
+
     for _ in range(max(1, rounds)):
         if poll is not None:
             poll()
-        # A round costs about what the last one cost, so one that starts with
-        # less than that left runs PAST the deadline rather than up to it —
-        # the caller's turn is a second and the overrun draws on a bank meant
-        # for something else. Checking only at the END of the round is what
-        # put 25 turns of a season over a 965 ms budget, the worst at 2.7 s.
-        # (wsr reached the same rule for its own budget, in #70.)
         if deadline is not None and time.perf_counter() + spent >= deadline:
             result.stopped = "budget"
             return result
@@ -278,41 +342,61 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
                                     days, n_coupling)
         result.rounds += 1
 
-        values, columns = price(result.solve.y, result.solve.cash)
-        rc = reduced_costs(values, result.solve.mu)
+        exact = (result.solve.y, result.solve.cash, result.solve.mu)
+        added, rc = 0, np.zeros(0)
+        for attempt in range(2):
+            # Attempt 0 prices at the smoothed dual; attempt 1 is the MISPRICE
+            # retry at the LP's own. A misprice is not only "no column beats
+            # its price" — a column that beats it and is ALREADY IN THE POOL is
+            # the same thing from the master's side: the round bought nothing.
+            # Both send the loop to the true duals, because no certificate and
+            # no stall may be declared on a dual the master did not produce.
+            smoothed = centre is not None and alpha > 0.0 and attempt == 0
+            used = (tuple(alpha * np.asarray(c) + (1.0 - alpha) * np.asarray(e)
+                          for c, e in zip(centre, exact))
+                    if smoothed else exact)
+            values, columns = price(used[0], used[1])
+            bound = lagrangian_bound(
+                MasterSolve(result.solve.lam, np.asarray(used[0]),
+                            np.asarray(used[1]), np.asarray(used[2]),
+                            result.solve.objective),
+                values, counts, supply_hours, money, days, n_coupling)
+            if bound < result.bound:
+                result.bound, centre = bound, used
+            rc = reduced_costs(values, used[2])
+
+            added = 0
+            for c in np.argsort(-rc):
+                if rc[c] <= RC_TOL:
+                    break
+                col = columns[int(c)]
+                if (col.cls, col.key) in seen:
+                    continue           # the pool already holds this plan
+                seen.add((col.cls, col.key))
+                result.pool.append(col)
+                added += 1
+            if added or not smoothed:
+                break
+            alpha *= 0.5               # the smoothed dual bought nothing
         result.rc_history.append(float(np.max(rc)) if rc.size else 0.0)
 
         if not rc.size or float(np.max(rc)) <= RC_TOL:
-            # No class offers a plan worth having. The mix is optimal over the
-            # FULL column set and the subproblems just proved it. THIS is the
-            # certificate, and it is the reduced costs that carry it — not the
-            # fact that nothing was appended.
+            # No class offers a plan worth having, at the TRUE duals — the
+            # retry above guarantees the test was made there. The mix is
+            # optimal over the full column set and the subproblems proved it.
             result.certified = True
             return result
-
-        added = 0
-        for c in np.argsort(-rc):
-            if rc[c] <= RC_TOL:
-                break
-            col = columns[int(c)]
-            if (col.cls, col.key) in seen:
-                continue           # the pool already holds this plan
-            seen.add((col.cls, col.key))
-            result.pool.append(col)
-            added += 1
-
-        spent = max(spent, time.perf_counter() - started)
         if added == 0:
-            # Every improving column was already in the pool. That is NOT a
-            # proof: the pricing step says a plan beats what the master pays
-            # for it while the master already holds that plan, which means the
-            # reduced-cost test disagrees with the LP it was derived from — a
-            # dual sign error, or a degenerate tie. Certifying here is how a
-            # flipped sign passes for convergence (lesson 1.9 §4.2), so it is
-            # reported as a stall and the caller is told the mix is unproven.
-            result.stopped = f"stalled: rc {float(np.max(rc)):.6g} on a column the pool holds"
+            # Every improving column was already in the pool, at the true
+            # duals. That is not a proof: the pricing step says a plan beats
+            # what the master pays for it while the master already holds that
+            # plan, which means the reduced-cost test disagrees with the LP it
+            # came from — a dual sign error, or a degenerate tie.
+            result.stopped = (f"stalled: rc {float(np.max(rc)):.6g} on a "
+                              f"column the pool holds")
             return result
 
+        spent = max(spent, time.perf_counter() - started)
 
     result.stopped = "round cap"
     return result
