@@ -29,7 +29,13 @@ ARTIFACT = Path(__file__).resolve().parent / "artifact" / "config.json"
 
 @dataclass(frozen=True)
 class Config:
-    """The tuned numbers. Every field is a quantity; none is a mode."""
+    """The tuned numbers. Every field is a quantity; none is a mode.
+
+    One field is a boolean — `log_gaps` — and it is here on purpose: it selects
+    no plan path (the same turns are played with it on or off), it only decides
+    whether the evidence is printed. A field that changes WHICH policy runs is
+    still a switch in a new coat and still does not belong here.
+    """
 
     # --- the turn's clock --------------------------------------------------
     #: The working budget inside one turn, in ms. F046: one free second per
@@ -38,6 +44,17 @@ class Config:
     #: Held back for compiling and dispatching, so a solve that runs to its
     #: deadline still leaves the turn a legal answer.
     reserve_ms: float = 140.0
+    #: Print the wall clock between two calls of the agent, with the running
+    #: mean and sd of the season so far.
+    #:
+    #: Off by default: 719 `G` lines belong to a run whose log we mean to read,
+    #: not to every local season. Turn it on for the submission we care about.
+    #: The gap is measured from the end of our previous turn to the start of
+    #: this one, so on the grader — where the two seats run one after the other
+    #: (F058) — it carries the engine's own overhead plus, above that floor,
+    #: whatever the opponent spent thinking: the one reading of the rival's
+    #: resource use a submission can take from inside.
+    log_gaps: bool = False
 
     # --- the contractor ----------------------------------------------------
     #: Days the tile DP looks ahead when it prices the board.

@@ -29,9 +29,13 @@ budget and the reserve live in `agent/config.py` (`turn_budget_ms`,
 observation, which is authoritative.
 
 Timing log: one `D` line per day, one `A` line per anomaly (a turn over the
-working budget, or a failure). There is no switch for it: these numbers are the
-evidence (R005), and a switch that can hide them is how a dead rung stayed
-invisible for four days.
+working budget, or a failure), and — when `Config.log_gaps` is on — one `G`
+line per turn carrying the wall clock between this call and the last, with the
+running mean and sd. The gap is the opponent's turn as seen from inside: the
+two seats run one after the other (F058), so above the engine's own ~36.8 ms
+floor it is the rival spending the shared second. There is no switch for the
+rest of it: those numbers are the evidence (R005), and a switch that can hide
+them is how a dead rung stayed invisible for four days.
 """
 
 from __future__ import annotations
@@ -72,6 +76,41 @@ def _overage_of(obs) -> float:
     return float(getattr(obs, "remainingOverageTime", EPISODE_BANK_S))
 
 
+class GapStats:
+    """Running mean and sd of the wall clock between two calls of the agent.
+
+    The harness runs the two seats one after the other (F058), so the gap from
+    the end of our previous turn to the start of this one is the engine's own
+    overhead plus, above that floor, the opponent's thinking time. Measured
+    against an instant opponent the floor is ~36.8 ms (`gap_p50`, 35.0-39.3
+    across 29 days, the P2 probe in this repo's history), so anything above it
+    is the rival spending the shared turn — the only reading of the opponent's
+    resource use a submission can take from inside the game.
+
+    Welford's update: one pass, no stored history, and `sd` is 0.0 until there
+    are two readings to compare. The first turn of a season has no gap at all
+    (there is no previous return), so `n` lags the turn count by one.
+    """
+
+    def __init__(self) -> None:
+        self.n = 0
+        self.mean = 0.0
+        self.m2 = 0.0
+        self.last_ms = 0.0
+
+    def add(self, ms: float) -> None:
+        self.n += 1
+        delta = ms - self.mean
+        self.mean += delta / self.n
+        self.m2 += delta * (ms - self.mean)
+        self.last_ms = float(ms)
+
+    @property
+    def sd(self) -> float:
+        """Sample sd; 0.0 before there is a second reading."""
+        return (self.m2 / (self.n - 1)) ** 0.5 if self.n > 1 else 0.0
+
+
 class Runtime:
     """The turn's clock, the manager, and the never-raise promise."""
 
@@ -91,11 +130,19 @@ class Runtime:
         self.failed_days: set[int] = set()
         self.worst_overrun_s = 0.0
         self.day_logged = -1
+        #: The wall clock between two calls of the agent: the opponent's turn,
+        #: read from inside (see `GapStats`).
+        self.gaps = GapStats()
+        self.last_return_t: float | None = None
 
     # ---- the per-turn entry ----
     def act(self, obs, config=None) -> dict:
         """The harness's per-turn call: one legal action dict, never raising."""
         started = time.perf_counter()
+        # The gap carries the opponent's turn (see `GapStats`); the first turn
+        # of a season has no previous return and is not a reading.
+        if self.last_return_t is not None:
+            self.gaps.add((started - self.last_return_t) * 1000.0)
         error: Exception | None = None
         try:
             if self.manager is None:
@@ -119,6 +166,7 @@ class Runtime:
             self.worst_overrun_s,
             max(0.0, self_s - self.cfg.turn_budget_ms / 1000.0))
         self._log(obs, self_s, error)
+        self.last_return_t = time.perf_counter()
         self.turns += 1
         return action
 
@@ -147,6 +195,13 @@ class Runtime:
             reason = "over_budget" if error is None else f"error={error!r}"
             print(f"A day={day} hour={hour} self_ms={self_s * 1000:.1f} "
                   f"overage={_overage_of(obs):.3f} {reason}", flush=True)
+        # The opponent's turn, from inside: off unless the run's log is one we
+        # mean to read (`Config.log_gaps`).
+        if self.cfg.log_gaps and self.gaps.n:
+            print(f"G turn={self.turns} day={day} hour={hour} "
+                  f"gap_ms={self.gaps.last_ms:.1f} n={self.gaps.n} "
+                  f"mean_ms={self.gaps.mean:.1f} sd_ms={self.gaps.sd:.1f}",
+                  flush=True)
 
     def _certified(self) -> Any:
         return getattr(self.manager, "certified", None)

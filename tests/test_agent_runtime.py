@@ -12,6 +12,9 @@ Contracts under test:
 - A manager that raises is RECORDED (`Runtime.failures`, `failed_days`) and the
   turn PASSes. No second policy answers in its place - that is the failure mode
   `docs/ARCHITECTURE.md` section 5 exists to prevent.
+- The wall clock between two calls is measured on every turn after the first,
+  with a running mean and sd (`Runtime.gaps`), and printed only when
+  `Config.log_gaps` asks for it.
 - The spine imports no fallback-ladder module: the ladder is gone, not dormant.
 """
 
@@ -313,6 +316,61 @@ def test_the_spine_imports_no_fallback_ladder() -> None:
     for doomed in ("agent.greedy", "agent.replan", "agent.market_layer",
                    "agent.belief.ladder", "agent.planner.master"):
         assert doomed not in imported, f"{doomed} is back in the spine"
+
+
+# --------------------------------------------------------------- the opponent's turn
+
+def test_the_gap_stats_match_a_direct_computation() -> None:
+    """Welford's running mean and sd, against `statistics` on the same numbers.
+
+    Structural, not timed: the arithmetic is checked on known inputs, and the
+    one rule that is easy to get wrong is that a single reading has no sd.
+    """
+    import statistics
+    from agent.runtime import GapStats
+
+    gaps = GapStats()
+    assert gaps.n == 0 and gaps.mean == 0.0 and gaps.sd == 0.0
+    for value in (10.0, 20.0, 30.0, 40.0):
+        gaps.add(value)
+    assert gaps.n == 4
+    assert gaps.mean == 25.0
+    assert gaps.last_ms == 40.0
+    assert abs(gaps.sd - statistics.stdev([10.0, 20.0, 30.0, 40.0])) < 1e-9
+    single = GapStats()
+    single.add(7.0)
+    assert single.mean == 7.0 and single.sd == 0.0
+
+
+def test_every_call_after_the_first_records_a_gap() -> None:
+    """One reading per turn after the first: the season's own gap count."""
+    fake = _FakeManager()
+    runtime = _runtime(fake)
+    for turn in range(5):
+        runtime.act(_obs(day=0, hour=turn))
+    assert runtime.gaps.n == 4, runtime.gaps.n
+    assert runtime.gaps.last_ms > 0.0
+    assert runtime.gaps.mean > 0.0
+
+
+def test_the_gap_line_is_printed_only_when_the_config_asks() -> None:
+    """`Config.log_gaps`: off by default, and it prints the running stats.
+
+    The quiet arm makes TWO calls: the first turn of a season has no previous
+    return, so a one-call arm would pass whether or not the switch is read at
+    all (found by the R007 drill, which came back with zero red guards).
+    """
+    quiet = _runtime(_FakeManager(), log_gaps=False)
+    _quiet(quiet.act, _obs(day=0, hour=1))          # first call: no gap yet
+    stdout, _ = _quiet(quiet.act, _obs(day=0, hour=2))
+    assert quiet.gaps.n == 1, "the arm did not produce a reading to hide"
+    assert "G turn=" not in stdout, stdout
+    loud = _runtime(_FakeManager(), log_gaps=True)
+    stdout, _ = _quiet(loud.act, _obs(day=0, hour=1))
+    assert "G turn=" not in stdout, "the first turn has no previous return"
+    stdout, _ = _quiet(loud.act, _obs(day=0, hour=2))
+    assert "G turn=" in stdout, stdout
+    assert "gap_ms=" in stdout and "mean_ms=" in stdout and "sd_ms=" in stdout, stdout
 
 
 def main() -> int:
