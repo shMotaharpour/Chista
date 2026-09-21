@@ -30,6 +30,25 @@ How it works (the closed circuit):
 
 The output feeds `shed.market_queue` as the hour plan, replacing the
 uniform spread.
+
+## THE DECISION BOUNDARY (the manager measurement, 2026-09-20 — read this)
+
+This circuit prices the SALE. It does not know what the sold unit was
+worth to OUR OWN PLAN — and against a PASS opponent that gap is measured
+and it is worth ~2,000 coins a season (manager PR #72's `_market_rows`
+note): buys+hires only scored 2,950; adding belief's sell queue scored
+907-1,706, because the queue sold the shed's WHEAT — the FEED the animal
+pipeline converts into MILK at ~160/unit — at 25-27/unit. Selling feed
+wheat early kills the plan that makes the real money.
+
+So the contract, per the architecture: **the circuit re-times the hours
+of a sale the PLAN has already decided to make; it never decides WHETHER
+a good is sellable.** The caller (the manager, #72) supplies the lots and
+the per-unit opportunity cost when it lands; until then the circuit is
+only for the goods the plan will not consume itself (the shop-demand
+goods whose whole value IS the market sale), not for WHEAT/FERTILIZER
+the farm eats.
+
 """
 from __future__ import annotations
 
