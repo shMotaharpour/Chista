@@ -173,7 +173,7 @@ def classes_of(owned: list[int]) -> tuple[list[int], np.ndarray, list[int]]:
     return reps, counts, of_tile
 
 
-def _column_key(board, tile: int, days: int) -> tuple:
+def column_key(board, tile: int, days: int) -> tuple:
     """A plan's signature: the chain it runs on each day, and nothing else.
 
     Two plans that run the same chains are the same column however they were

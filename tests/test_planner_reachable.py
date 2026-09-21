@@ -201,3 +201,119 @@ def test_the_cash_row_stops_the_plan_buying_what_it_cannot_afford():
     assert cash.size and cash.max() > 0.0, (
         "no day has a positive shadow price on a coin, so the purse never "
         "bound — the cash row is missing from the LP")
+
+
+def test_the_master_accumulates_columns_and_mixes_them():
+    """Many plans, combined — not one plan scaled.
+
+    The loop used to re-price and REPLACE its column set every round, so the
+    pool never held more than one plan per class and `lam` could only say how
+    many tiles ran it. On a day-0 board of 25 identical tiles that is the whole
+    difference between "25 cows or none" and a mix.
+    """
+    import numpy as np
+    from agent.planner import master as M
+    from agent.planner.inputs import load_contractor
+    from offline_lab.kaggle_env import new_environment
+
+    env = new_environment()
+    env.reset(2)
+    obs = env.state[0].observation
+    result = M.equilibrate(object(), obs, load_contractor(days=20),
+                           M.supply_from_obs(obs), iter_cap=40)
+
+    assert not result.used_fallback, result.fallback_reason
+    assert len(result.pool) > 3, (
+        f"{len(result.pool)} columns after 40 rounds — the pool is not growing")
+    lam = np.asarray(result.lam, dtype=float)
+    assert int((lam > 1e-6).sum()) >= 3, (
+        f"only {int((lam > 1e-6).sum())} columns carry weight: the master is "
+        f"scaling one plan, not combining several")
+    reps, counts, of_tile = result.classes
+    assert len(of_tile) == 25 and int(counts.sum()) == 25
+
+
+def test_the_certificate_is_reachable_on_a_real_board():
+    """Given rounds, the pricing step proves there is nothing left to add.
+
+    This is the whole claim of Dantzig-Wolfe and it is asserted rather than
+    assumed: measured at 83 rounds and 740 ms on a day-0 board, so a cap of
+    150 has headroom without making the test a benchmark.
+    """
+    from agent.planner import master as M
+    from agent.planner.inputs import load_contractor
+    from offline_lab.kaggle_env import new_environment
+
+    env = new_environment()
+    env.reset(2)
+    obs = env.state[0].observation
+    result = M.equilibrate(object(), obs, load_contractor(days=20),
+                           M.supply_from_obs(obs), iter_cap=150)
+
+    assert result.certified, (
+        f"no certificate after {result.rounds} rounds: {result.stopped}")
+    assert result.history and result.history[-1] <= M.colgen.RC_TOL, (
+        f"certified with a positive reduced cost {result.history[-1]}")
+    assert result.objective > 0
+
+
+def test_the_optimum_does_not_depend_on_the_damping_constant():
+    """`ALPHA` shapes what the agent READS, never what the loop proves.
+
+    This test used to assert that damping reached the optimum in fewer rounds,
+    which was true while the pricing step was fed damped duals — and that was
+    the bug: the reduced-cost test `value + mu` is only a reduced cost of the
+    LP the duals came from, so pricing at anything else stops it being about
+    that LP. The stall detector caught it (rc 1597 on a column the pool already
+    held, forever). Pricing now uses the master's own duals, and `ALPHA` only
+    damps `result.w`, the published price the rest of the agent consumes.
+
+    So the invariant is the stronger one: the certified optimum is the same
+    number whatever `ALPHA` is. If it ever is not, damping has leaked back into
+    the pricing path.
+    """
+    from agent.planner import master as M
+    from agent.planner.inputs import load_contractor
+    from offline_lab.kaggle_env import new_environment
+
+    env = new_environment()
+    env.reset(2)
+    obs = env.state[0].observation
+    contractor = load_contractor(days=20)
+    supply = M.supply_from_obs(obs)
+
+    original = M.ALPHA
+    runs = {}
+    try:
+        for alpha in (0.3, 1.0):
+            M.ALPHA = alpha
+            runs[alpha] = M.equilibrate(object(), obs, contractor, supply,
+                                        iter_cap=150)
+    finally:
+        M.ALPHA = original
+
+    for alpha, res in runs.items():
+        assert res.certified, f"ALPHA={alpha}: no certificate ({res.stopped})"
+    assert runs[0.3].objective == pytest.approx(runs[1.0].objective, rel=1e-9), (
+        f"the optimum moved with the damping constant: "
+        f"{runs[0.3].objective:.6f} vs {runs[1.0].objective:.6f} — damping has "
+        f"leaked into the pricing step")
+    assert runs[0.3].rounds == runs[1.0].rounds
+
+
+def test_every_good_the_DP_is_paid_for_is_a_good_the_master_counts():
+    """The subproblem and the master must value the same plan the same way.
+
+    FERTILIZER is a product the market quotes, and a tile that collects it was
+    paid for it in `tile_values` and credited nothing in its column's revenue.
+    The reduced cost then never reached zero — measured, the loop stalled 60
+    short of a proof on a 52,279 objective, with the same column coming back
+    round after round. With it counted the loop certifies in 47 rounds.
+    """
+    from agent.planner import master as M
+    from agent.world.model import PRODUCTS, RESOURCE_NAMES
+
+    priced = {RESOURCE_NAMES[i] for i in M.MARKET_IDS}
+    assert priced == set(PRODUCTS), (
+        f"the DP is paid for {sorted(set(PRODUCTS) - priced)} and the master "
+        f"counts none of it")
