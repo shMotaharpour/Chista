@@ -45,6 +45,10 @@ SHED_CAPACITY = 100          # engine default; the run's config can override it
 MAX_ORDERS_PER_TURN = 10     # F031 - the engine drops the 11th silently
 SEASON_DAYS = 30             # F029
 
+# SELL takes products only (engine `_parse_order`); the shed's other keys
+# are animals, placed by PLACE, never quoted by the market.
+_SELLABLE = frozenset(PRODUCTS)
+
 
 def _get(config: Any, key: str, default: Any) -> Any:
     if config is None:
@@ -93,8 +97,18 @@ class ShedState:
         return max(0, incoming - self.room)
 
     def sellable(self) -> dict[str, int]:
-        """Shed contents, positive quantities only."""
-        return {item: int(n) for item, n in self.shed.items() if int(n) > 0}
+        """What the market will actually quote: shed items that are PRODUCTS,
+        with a positive count.
+
+        The shed holds PRODUCTS + ANIMALS (12 keys, `world/model.py:194`,
+        engine :171) — but `SELL` takes products only (`_parse_order`,
+        :631-649), so a goose in the shed is not sellable; it is placed by
+        PLACE or it sits. Returning the whole shed here made every animal
+        a KeyError downstream (the sell queue is keyed by `ladder._IX`,
+        products only).
+        """
+        return {item: int(n) for item, n in self.shed.items()
+                if int(n) > 0 and item in _SELLABLE}
 
 
 def shed_state(obs: Any, capacity: int | None = None) -> ShedState:
@@ -360,13 +374,19 @@ def _assert_within_cap(queue: list[list[list]]) -> None:
 
 def market_queue(obs: Any, forecast_obj=None, *, harvest_expected: int = 0,
                  cash_needed: float = 0.0, config: Any = None,
-                 sort_market=None) -> list[list[list]]:
+                 sort_market=None, model=None) -> list[list[list]]:
     """The market half of one day's plan, from the observation alone.
 
     Supply side stand-in: the shed and the bags as the observation shows
     them. #14 publishes a plan of what the units will harvest today
     (`harvest_expected`); until that is wired in, the caller passes its own
     estimate and this module says so on the result's assumptions.
+
+    `model` (#78) is a pretrained opponent model: when given, the day's
+    SELL hours are re-timed by the slot circuit (`plan_day_slots`) per
+    good — the quantities stay the guard's decision, only their HOUR
+    placement changes. Without a model the uniform spread is kept, so the
+    caller needs no model to get a valid queue.
     """
     from agent.belief.market import forecast as _forecast
     capacity = int(_get(config, "shedCapacity", SHED_CAPACITY))
@@ -382,6 +402,23 @@ def market_queue(obs: Any, forecast_obj=None, *, harvest_expected: int = 0,
                        harvest_expected=incoming,
                        money=_money(obs), cash_needed=cash_needed,
                        capacity=capacity)
+    if model is not None and sales:
+        # the circuit re-times the day's sell queue: the quantities come
+        # from the rules above, the HOURS from the trained model. The lots
+        # are the rules' own take (what plan_sales released), read back
+        # from `sales` so the plan can never under-sell the guard.
+        try:
+            from agent.belief.slot_circuit import plan_day_hours
+            sold_stock = {s.item: sum(int(x.units) for x in sales
+                                      if x.item == s.item) for s in sales}
+            hour_plan = plan_day_hours(sold_stock, obs, model, hour_now=hour)
+            sales = plan_sales(state.sellable(), fc, day=day, hour=hour,
+                               harvest_expected=incoming,
+                               money=_money(obs), cash_needed=cash_needed,
+                               capacity=capacity,
+                               hour_plan=hour_plan)
+        except Exception:
+            pass                        # degrade to the uniform spread
     queue = orders_by_hour(sales)
     if sort_market is not None:            # F032: land, sells, hires, buys
         queue = [sort_market(row) if row else row for row in queue]
