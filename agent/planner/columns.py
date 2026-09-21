@@ -135,7 +135,31 @@ def assign_tiles(tile_keys: Sequence[int],
     return choices
 
 
-def assign_by_quota(tile_keys: Sequence[int],
+def shed_distance(size: int | None = None) -> np.ndarray:
+    """Manhattan steps from every cell to the nearest shed door, in reading order.
+
+    Computed here rather than imported from `wsr`: the day layer owns the
+    routing, the planner owns the placement, and a table each can derive in
+    four lines is not worth a dependency between them. The doors come from
+    `world`, so there is still one source (R005).
+
+    The master keys its classes with this. A tile is REACHED afresh on every
+    day it is worked — the farm is cleared every night and the farmer respawns
+    on a shed door (F040) — so a plan that works `v` days on a tile `d` steps
+    out spends at least `v·d` hours walking, and two tiles of one graph state
+    at different distances are not the same proposition.
+    """
+    from agent.world.board import SHED_DOORS
+    from agent.world.rules import BOARD_SIZE
+    n = int(size or BOARD_SIZE)
+    ys, xs = np.divmod(np.arange(n * n), n)
+    out = np.full(n * n, 1 << 30, dtype=np.int64)
+    for dx, dy in SHED_DOORS:
+        np.minimum(out, np.abs(xs - int(dx)) + np.abs(ys - int(dy)), out=out)
+    return out
+
+
+def assign_by_quota(class_of_tile: Sequence[int | None],
                     mixes: dict[int, ClassMix]) -> list[Choice | None]:
     """One plan per tile, keeping the MIX: floor the weights, then remainders.
 
@@ -159,15 +183,15 @@ def assign_by_quota(tile_keys: Sequence[int],
     exactly whenever the weights happen to be integral.
     """
     order: dict[int, list[int]] = {}
-    for position, key in enumerate(tile_keys):
-        if key == LOCKED_KEY:
+    for position, cls in enumerate(class_of_tile):
+        if cls is None:
             continue
-        mix = mixes.get(int(key))
+        mix = mixes.get(int(cls))
         if mix is None or mix.count == 0:
             continue
-        order.setdefault(int(key), []).append(position)
+        order.setdefault(int(cls), []).append(position)
 
-    choices: list[Choice | None] = [None] * len(tile_keys)
+    choices: list[Choice | None] = [None] * len(class_of_tile)
     for key, positions in order.items():
         mix = mixes[key]
         lam = np.asarray(mix.lam, dtype=np.float64)

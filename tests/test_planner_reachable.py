@@ -146,58 +146,39 @@ def test_a_purchasable_input_is_not_capped_by_a_stock_of_zero():
 
 
 def test_the_cash_row_stops_the_plan_buying_what_it_cannot_afford():
-    """A purse that binds before the hours do, and a master that reads it.
+    """A smaller purse buys a smaller plan, and a coin has a price when it bites.
 
-    On a real day-0 board the HOURS row binds first (15.6 for 25 tiles), so a
-    season-shaped test would pass with the cash row deleted — which is what the
-    first version of this guard did, and a guard that cannot fail is not a
-    guard. So the hours are made abundant and the purse is made the scarce
-    thing, which is the case the row exists for.
-
-    This is also the case a scalar price cannot answer: 25 tiles in one graph
-    state, so the DP offers ONE column and no per-resource price makes it offer
-    two. What tells them apart is the allocation — λ — and the row that bounds
-    it here is cash.
+    Stated as a PROPERTY of the row, not as a tile count against a calibrated
+    purse: the first version of this guard picked a purse from what the
+    stand-in duals happened to price, and the master converges somewhere else,
+    so it asserted a number that had stopped meaning anything. Monotonicity in
+    money needs no calibration and cannot pass with the row deleted.
     """
     import numpy as np
     from agent.planner import master as M
-    from agent.planner.inputs import dual_stand_in, load_contractor
+    from agent.planner.inputs import load_contractor
     from offline_lab.kaggle_env import new_environment
 
     env = new_environment()
     env.reset(2)
     obs = env.state[0].observation
-    days = 20
+    contractor = load_contractor(days=20)
     base = M.supply_from_obs(obs)
-    contractor = load_contractor(days=days)
-    owned = M._owned_states(object(), obs)
 
-    p_stand, w_stand = dual_stand_in(obs, days=days)
-    board = contractor.price(p_stand, w_stand, owned)
-    spend, _ = M.column_cash(board, base, days)
-    purse = float(spend[:, 0].min()) * 2.5          # ~2 tiles' worth of day-0 spend
-    rich_hours = M.CouplingSupply(
-        hours=np.full(30, 10_000.0), seed_stock=base.seed_stock,
-        animal_stock=base.animal_stock, fert_stock=base.fert_stock,
-        wheat_feed_stock=base.wheat_feed_stock, money=purse, quotes=base.quotes)
+    def with_money(coins):
+        supply = M.CouplingSupply(
+            hours=np.full(30, 10_000.0), seed_stock=base.seed_stock,
+            animal_stock=base.animal_stock, fert_stock=base.fert_stock,
+            wheat_feed_stock=base.wheat_feed_stock, money=float(coins),
+            quotes=base.quotes)
+        return M.equilibrate(object(), obs, contractor, supply, iter_cap=60)
 
-    result = M.equilibrate(object(), obs, contractor, rich_hours)
-    lam = np.asarray(result.lam, dtype=float)
-    committed = float(lam[:-1].sum())
+    rich, poor = with_money(base.money), with_money(base.money / 50.0)
 
-    assert result.objective > 0, "the master took only the idle column"
-    assert committed < 25.0 - 1e-6, (
-        f"with hours abundant and only {purse:.0f} coins, the master still "
-        f"committed {committed:.2f} of 25 tiles — it is not reading the purse")
-    # A binding purse has a positive shadow price: that IS the cash row, and
-    # it is zero on every day if the row is not in the LP at all.
-    #
-    # The λ cannot be re-checked against a board priced here, because the
-    # weights belong to the LAST ROUND's columns and `MasterResult` does not
-    # carry them — re-pricing at the published `w` gives a different board and
-    # a different spend. TODO(#79): the result has to hand back the columns it
-    # weighted, or `columns.assign_tiles` cannot round the mix it was given.
-    cash = np.asarray(result.cash_duals, dtype=float)
+    assert rich.objective > poor.objective, (
+        f"a purse 50x smaller bought the same plan ({rich.objective:.1f} vs "
+        f"{poor.objective:.1f}) — the cash row is not binding anything")
+    cash = np.asarray(poor.cash_duals, dtype=float)
     assert cash.size and cash.max() > 0.0, (
         "no day has a positive shadow price on a coin, so the purse never "
         "bound — the cash row is missing from the LP")
@@ -317,3 +298,68 @@ def test_every_good_the_DP_is_paid_for_is_a_good_the_master_counts():
     assert priced == set(PRODUCTS), (
         f"the DP is paid for {sorted(set(PRODUCTS) - priced)} and the master "
         f"counts none of it")
+
+
+def test_travel_is_charged_and_the_far_tiles_are_left_alone():
+    """A tile is reached afresh every day it is worked, and the master knows.
+
+    The farm is cleared every night and the farmer respawns on a shed door
+    (F040), so a plan that works `v` days on a tile `d` steps out spends at
+    least `v·d` hours walking there. It used to be nowhere in the model except
+    a flat 35 % haircut on the supply, and that is not a rounding error:
+    measured on a day-0 board, the assignment's travel alone was 307 hours
+    against a budget of 15.6 hours a DAY.
+
+    With the distance in the class key and the walk in the column's labour
+    row, the answer says it plainly — the tiles the master commits are the
+    ones near the shed.
+    """
+    import numpy as np
+    from agent.planner import master as M
+    from agent.planner.inputs import load_contractor
+    from offline_lab.kaggle_env import new_environment
+
+    env = new_environment()
+    env.reset(2)
+    obs = env.state[0].observation
+    result = M.equilibrate(object(), obs, load_contractor(days=20),
+                           M.supply_from_obs(obs), iter_cap=200)
+    assert result.certified, result.stopped
+
+    reps, _counts, _of_tile = result.classes
+    assert all(isinstance(r, tuple) and len(r) == 2 for r in reps), (
+        "a class must carry its distance, or its column cannot price the walk")
+    assert len({d for _s, d in reps}) > 1, (
+        "one distance band on a 25-tile quadrant: the classes are not banded")
+
+    lam = np.asarray(result.lam, dtype=float)
+    worked = {reps[c.cls][1] for j, c in enumerate(result.pool)
+              if j < lam.size and lam[j] > 1e-6 and c.revenue > 0.0}
+    assert worked, "nothing was committed at all"
+    assert max(worked) <= min(d for _s, d in reps) + 4, (
+        f"the master committed a tile {max(worked)} steps out while nearer "
+        f"ones idled — travel is not reaching the labour row")
+
+
+def test_the_labour_row_carries_the_walk_not_just_the_ops():
+    """The column's hours on a worked day exceed the chain's own hours."""
+    import numpy as np
+    from agent.planner import master as M
+    from agent.planner.inputs import load_contractor
+    from offline_lab.kaggle_env import new_environment
+
+    env = new_environment()
+    env.reset(2)
+    obs = env.state[0].observation
+    result = M.equilibrate(object(), obs, load_contractor(days=20),
+                           M.supply_from_obs(obs), iter_cap=40)
+    reps, _c, _o = result.classes
+    far = max(range(len(reps)), key=lambda c: reps[c][1])
+    distance = reps[far][1]
+    columns = [c for c in result.pool if c.cls == far and c.cost[:, 0].sum() > 0]
+    assert columns, "the farthest class has no working column to check"
+    for column in columns:
+        worked = column.cost[:, 0] > 0
+        assert (column.cost[worked, 0] >= distance).all(), (
+            f"a worked day on a tile {distance} steps out costs less than the "
+            f"walk to reach it")

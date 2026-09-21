@@ -152,21 +152,35 @@ class ColgenResult:
     rc_history: list = field(default_factory=list)
 
 
-def classes_of(owned: list[int]) -> tuple[list[int], np.ndarray, list[int]]:
-    """`owned` state ids -> (one representative per class, counts, tile→class).
+def classes_of(owned: list[int], distances: list[int] | None = None
+               ) -> tuple[list[tuple[int, int]], np.ndarray, list[int]]:
+    """`owned` state ids -> (class keys, counts, tile→class).
 
-    A class is a graph state: two tiles in the same state have the same
-    subproblem and the same answer, so pricing both is pricing twice. 25 empty
-    tiles on a day-0 board are ONE class of 25.
+    A class used to be a graph state alone. It is `(state, distance to the
+    nearest shed door)`, because the contractor prices a state and a WORKER
+    walks to a square. The farm is cleared every night and the farmer respawns
+    on a shed door (F040), so a tile is reached afresh on every day it is
+    worked: a plan that works `v` days on a tile `d` steps out spends at least
+    `v·d` hours walking, and that is not a rounding error. Measured on a day-0
+    board, 25 tiles: 307 hours of pure travel against a labour budget of 15.6
+    hours a DAY.
+
+    With the distance in the key, the tiles of a class are interchangeable
+    again — which is the only thing that makes a column honest, because a
+    column is what every tile of its class runs.
+
+    `distances` is per owned tile, in the same order. None keeps the old
+    state-only classes, which is what a caller with no board means.
     """
-    reps: list[int] = []
-    index: dict[int, int] = {}
+    reps: list[tuple[int, int]] = []
+    index: dict[tuple[int, int], int] = {}
     of_tile: list[int] = []
-    for state in owned:
-        if state not in index:
-            index[state] = len(reps)
-            reps.append(int(state))
-        of_tile.append(index[state])
+    for i, state in enumerate(owned):
+        key = (int(state), int(distances[i]) if distances is not None else 0)
+        if key not in index:
+            index[key] = len(reps)
+            reps.append(key)
+        of_tile.append(index[key])
     counts = np.zeros(len(reps), dtype=np.int64)
     for c in of_tile:
         counts[c] += 1

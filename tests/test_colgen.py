@@ -133,11 +133,26 @@ def test_the_certificate_is_the_stopping_rule_not_the_round_cap():
         "one round cannot both price and prove there is nothing left to price")
 
 
-def test_a_class_is_a_graph_state_not_a_tile():
-    reps, counts, of_tile = classes_of([7, 7, 7, 9, 7, 9])
-    assert reps == [7, 9]
-    assert list(counts) == [4, 2]
-    assert of_tile == [0, 0, 0, 1, 0, 1]
+def test_a_class_is_a_graph_state_and_a_distance():
+    """Two tiles of one state at different distances are different classes.
+
+    The contractor prices a STATE; a worker walks to a SQUARE. The farm is
+    cleared every night and the farmer respawns on a shed door (F040), so a
+    tile is reached afresh on every day it is worked — `v` working days on a
+    tile `d` steps out is at least `v·d` hours of walking, and a column that
+    every tile of its class runs cannot be honest about that unless the tiles
+    really are the same distance out.
+    """
+    reps, counts, of_tile = classes_of([7, 7, 7, 9, 7, 9],
+                                       [0, 0, 3, 1, 0, 1])
+    assert reps == [(7, 0), (7, 3), (9, 1)]
+    assert list(counts) == [3, 1, 2]
+    assert of_tile == [0, 0, 1, 2, 0, 2]
+
+    # Without distances the old state-only classes come back, which is what a
+    # caller with no board in hand means.
+    reps, counts, of_tile = classes_of([7, 7, 9])
+    assert reps == [(7, 0), (9, 0)] and list(counts) == [2, 1]
 
 
 def test_the_convexity_dual_keeps_its_sign():

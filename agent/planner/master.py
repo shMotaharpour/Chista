@@ -492,7 +492,9 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
     # One subproblem per CLASS, not per tile: tiles in the same graph state
     # have the same answer, so pricing both prices twice. `colgen` accumulates
     # the columns across rounds and stops on the reduced-cost certificate.
-    reps, counts, of_tile = colgen.classes_of(owned)
+    from agent.planner.columns import shed_distance
+    steps = shed_distance()
+    reps, counts, of_tile = colgen.classes_of(owned, _owned_distances(obs, steps))
     result.classes = (reps, counts, of_tile)
     idle = [colgen.Column(cls=c, cost=np.zeros((days, N_COUPLING)),
                           spend=np.zeros(days), earn=np.zeros(days),
@@ -539,20 +541,46 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
         state["w"] = np.maximum(
             np.maximum((1.0 - ALPHA) * state["w"] + ALPHA * y, 0.0), w_floor)
         state["cash"] = (1.0 - ALPHA) * state["cash"] + ALPHA * np.asarray(cash)
-        board = contractor.price(p_eff, exact, reps)
+        # One board per distinct STATE: two classes that differ only in how
+        # far the tile is from the shed run the same DP, and pricing both
+        # prices twice.
+        states = sorted({sid for sid, _d in reps})
+        at = {sid: i for i, sid in enumerate(states)}
+        board = contractor.price(p_eff, exact, states)
         cost = board.per_day_cost[:, :days, COUPLING_IDS].astype(np.float64)
         _validate_cost(cost)
         produce = board.per_day_produce[:, :days, list(MARKET_IDS)] \
             .astype(np.float64)
         earn = (produce * p_mkt[:days][None, :, :]).sum(axis=2)
         spend, _ = column_cash(board, supply, days)
-        columns = [
-            colgen.Column(cls=c, cost=cost[c], spend=spend[c], earn=earn[c],
-                          revenue=float(earn[c].sum()),
-                          chains=tuple(board.plans[c]) if c < len(board.plans) else (),
-                          key=colgen.column_key(board, c, days))
-            for c in range(len(reps))]
-        return np.asarray(board.tile_values, dtype=np.float64), columns
+
+        columns, values = [], []
+        for c, (state_id, dist) in enumerate(reps):
+            i = at[state_id]
+            # The travel the plan cannot avoid: `dist` steps for every day it
+            # puts a worker on the tile. It is a LOWER bound - a route may walk
+            # further, never less - so the LP stays a relaxation and its
+            # objective stays an upper bound on what the board can do.
+            hours = cost[i].copy()
+            hours[:, 0] += (hours[:, 0] > 0.0) * float(dist)
+            columns.append(colgen.Column(
+                cls=c, cost=hours, spend=spend[i], earn=earn[i],
+                revenue=float(earn[i].sum()),
+                chains=tuple(board.plans[i]) if i < len(board.plans) else (),
+                key=colgen.column_key(board, i, days)))
+            # The value is recomputed from the COLUMN, not taken from the DP:
+            # the DP never saw the travel term, so `tile_values` is the value
+            # of a plan nobody can walk. Pricing is therefore inexact in the
+            # travel term - the DP may propose a chain that is not the best one
+            # once walking is paid for - and the certificate is honest about
+            # what it proves: optimal over the columns the DP can offer, not
+            # over every plan that exists.
+            cash_use = float(sum(cash[d] * (spend[i][d] - earn[i][:d].sum())
+                                 for d in range(days)))
+            values.append(float(earn[i].sum())
+                          - float((np.asarray(y)[:days, 0] * hours[:, 0]).sum())
+                          - cash_use)
+        return np.asarray(values, dtype=np.float64), columns
 
     try:
         cg = colgen.generate(price, supply.hours, supply.money, counts, days,
@@ -582,14 +610,14 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
     return result
 
 
-def to_mixes(result: "MasterResult", days: int, keys_of_class: dict[int, int]
-             ) -> dict[int, "object"]:
+def to_mixes(result: "MasterResult", days: int) -> dict[int, "object"]:
     """`MasterResult` -> the `ClassMix` per class that `columns.py` rounds.
 
-    `columns.assign_tiles` keys a mix by the tile's PACKED KEY, because that is
-    what the board hands it; the master works in graph state ids. `keys_of_class`
-    is the one map between them, and it is passed rather than rebuilt so the
-    two cannot drift.
+    Keyed by CLASS INDEX. A packed tile key stopped identifying a class the
+    moment the distance to the shed joined the key: a board has many tiles of
+    one state at many distances, and they are different classes because they
+    cost different hours to reach. `result.classes[2]` is the class of every
+    owned tile, in board order, which is what `assign_by_quota` consumes.
 
     Only `labour` and `cash_out` carry real numbers. `wheat_net`, `fert_net`
     and `stored` are zeros and say so here rather than in a surprise: the first
@@ -621,14 +649,27 @@ def to_mixes(result: "MasterResult", days: int, keys_of_class: dict[int, int]
 
     mixes: dict[int, ClassMix] = {}
     for c, entries in by_class.items():
-        key = keys_of_class.get(c)
-        if key is None or not entries:
+        if not entries:
             continue
-        plans = tuple(e[0] for e in entries)
-        mixes[int(key)] = ClassMix(class_key=int(key), count=int(counts[c]),
-                                   plans=plans,
-                                   lam=tuple(e[1] for e in entries))
+        mixes[int(c)] = ClassMix(class_key=int(c), count=int(counts[c]),
+                                 plans=tuple(e[0] for e in entries),
+                                 lam=tuple(e[1] for e in entries))
     return mixes
+
+
+def _owned_distances(obs, steps: np.ndarray) -> list[int]:
+    """Steps to the nearest shed door for every owned tile, in `owned` order.
+
+    Walks the board exactly as `_owned_states` does, so the two lists line up
+    by construction rather than by a comment promising they do.
+    """
+    from agent.obs import LOCKED_KEY, decode_world
+    graph = _shipped_graph()
+    view = decode_world(obs, at_day_start=True,
+                        graph_keys=frozenset(graph.key_index))
+    keys = np.asarray(view.me.keys).reshape(-1)
+    return [int(steps[i]) for i, k in enumerate(keys)
+            if int(k) != LOCKED_KEY and int(k) in graph.key_index]
 
 
 _GRAPH = None

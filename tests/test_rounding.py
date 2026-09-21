@@ -26,11 +26,10 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from agent.planner.columns import (DAYS, ClassMix, Plan, assign_by_quota,
-                                   assign_tiles, rounded_value)
-from agent.obs import LOCKED_KEY
+from agent.planner.columns import (DAYS, Choice, ClassMix, Plan,
+                                   assign_by_quota, rounded_value)
 
-KEY = 10240
+KEY = 0            # a class INDEX now, not a packed tile key
 
 
 def _plan(value: float, hours: float = 1.0) -> Plan:
@@ -38,6 +37,16 @@ def _plan(value: float, hours: float = 1.0) -> Plan:
                 rows={"labour": (hours,) * DAYS, "cash_out": (0.0,) * DAYS,
                       "wheat_net": (0.0,) * DAYS, "fert_net": (0.0,) * DAYS,
                       "stored": (0.0,) * DAYS})
+
+
+def _by_argmax(class_of_tile, mixes):
+    """#13's shipped rule, on class indices: every tile takes the biggest λ."""
+    out = []
+    for cls in class_of_tile:
+        mix = mixes.get(cls) if cls is not None else None
+        out.append(None if mix is None
+                   else Choice(cls, int(np.argmax(np.asarray(mix.lam)))))
+    return out
 
 
 def _mix(lam, values=None, count=None) -> dict[int, ClassMix]:
@@ -56,7 +65,7 @@ def test_quota_keeps_the_mix_where_argmax_collapses_it():
     mixes = _mix([6.0, 2.0, 1.0, 1.0], values=[0.0, 30.0, 20.0, 10.0])
     keys = [KEY] * 10
 
-    by_max = assign_tiles(keys, mixes)
+    by_max = _by_argmax(keys, mixes)
     by_quota = assign_by_quota(keys, mixes)
 
     assert rounded_value(by_max, mixes) == 0.0
@@ -96,39 +105,77 @@ def test_a_class_offered_more_weight_than_it_has_tiles_keeps_the_heaviest():
 
 
 def test_a_locked_tile_never_takes_a_plan():
-    """Working a LOCKED tile spends hours as a silent no-op (F042)."""
+    """Working a LOCKED tile spends hours as a silent no-op (F042).
+
+    A locked quadrant reaches the assignment as `None` in `class_of_tile`: the
+    master never priced it, so there is no class for it to be in.
+    """
     mixes = _mix([2.0])
-    choices = assign_by_quota([KEY, LOCKED_KEY, KEY, LOCKED_KEY], mixes)
+    choices = assign_by_quota([KEY, None, KEY, None], mixes)
     assert choices[1] is None and choices[3] is None
     assert choices[0] is not None and choices[2] is not None
 
 
 def test_the_gap_on_a_real_board_is_inside_the_issues_target():
     """#13's own acceptance, run for the first time against a real LP bound."""
-    from agent.obs import decode_world
     from agent.planner import master as M
-    from agent.planner.inputs import GRAPH_PATH, load_contractor
-    from agent.tile_dp.graph import TileGraph
+    from agent.planner.inputs import load_contractor
     from offline_lab.kaggle_env import new_environment
 
     env = new_environment()
     env.reset(2)
     obs = env.state[0].observation
-    graph = TileGraph.load(GRAPH_PATH)
     result = M.equilibrate(object(), obs, load_contractor(days=20),
-                           M.supply_from_obs(obs), iter_cap=150)
+                           M.supply_from_obs(obs), iter_cap=200)
     assert result.certified, result.stopped
 
-    view = decode_world(obs, at_day_start=True,
-                        graph_keys=frozenset(graph.key_index))
-    inverse = {state: key for key, state in graph.key_index.items()}
-    reps, _counts, _of_tile = result.classes
-    mixes = M.to_mixes(result, 20, {i: inverse[s] for i, s in enumerate(reps)})
-    keys = [int(k) for k in np.asarray(view.me.keys).reshape(-1)]
+    mixes = M.to_mixes(result, 20)
+    _reps, _counts, of_tile = result.classes
+    # The master prices the tiles it owns, in board order; the rest of the
+    # board is a quadrant we have not bought and has no class.
+    owned = iter(of_tile)
+    class_of_tile = [next(owned, None) if k >= 0 else None
+                     for k in _board_keys(obs)]
 
-    quota = rounded_value(assign_by_quota(keys, mixes), mixes)
+    quota = rounded_value(assign_by_quota(class_of_tile, mixes), mixes)
+    argmax = rounded_value(_by_argmax(class_of_tile, mixes), mixes)
     gap = (result.objective - quota) / result.objective
     assert gap <= 0.03, f"integrality gap {gap:.2%} exceeds #13's 3 % target"
-    assert rounded_value(assign_tiles(keys, mixes), mixes) < quota, (
-        "argmax did not lose to the quota rule — the measurement that justifies "
-        "the quota rule no longer holds")
+    assert argmax < quota, (
+        f"argmax {argmax:.1f} did not lose to the quota rule {quota:.1f} — the "
+        f"measurement that justifies the quota rule no longer holds")
+
+
+def _board_keys(obs):
+    """The board's packed keys in reading order, LOCKED as a negative."""
+    from agent.obs import decode_world
+    from agent.planner.inputs import GRAPH_PATH
+    from agent.tile_dp.graph import TileGraph
+
+    graph = TileGraph.load(GRAPH_PATH)
+    view = decode_world(obs, at_day_start=True,
+                        graph_keys=frozenset(graph.key_index))
+    return [int(k) for k in np.asarray(view.me.keys).reshape(-1)]
+
+
+def test_the_distance_table_measures_from_the_shed_doors():
+    """The origin, asserted — a table with the right shape and the wrong centre
+    still orders tiles plausibly, so only the values catch it.
+
+    The four shed-access tiles are the doors (`SHED_ACCESS`, NW/NE/SW/SE around
+    the middle), so they are zero steps out and the board's corners are the
+    farthest at 8.
+    """
+    from agent.planner.columns import shed_distance
+    from agent.world.board import SHED_DOORS
+    from agent.world.rules import BOARD_SIZE
+
+    steps = shed_distance().reshape(BOARD_SIZE, BOARD_SIZE)
+    for x, y in SHED_DOORS:
+        assert steps[y][x] == 0, f"door {(x, y)} is {steps[y][x]} steps out"
+    n = BOARD_SIZE - 1
+    for corner in ((0, 0), (0, n), (n, 0), (n, n)):
+        assert steps[corner[1]][corner[0]] == 8, (
+            f"corner {corner} is {steps[corner[1]][corner[0]]} steps from the "
+            f"shed, not 8 — the table is not measured from the doors")
+    assert steps.min() == 0 and steps.max() == 8
