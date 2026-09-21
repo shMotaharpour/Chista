@@ -122,7 +122,10 @@ def test_the_gap_on_a_real_board_is_inside_the_issues_target():
     from agent.planner.inputs import load_contractor
     from offline_lab.kaggle_env import new_environment
 
-    env = new_environment()
+    # Seeded: unseeded, every number below moved between runs — this guard read
+    # 11 violated rows on one draw and 19 on another, which made it a coin flip
+    # rather than a guard.
+    env = new_environment({"seed": 0})
     env.reset(2)
     obs = env.state[0].observation
     result = M.equilibrate(object(), obs, load_contractor(days=20),
@@ -163,17 +166,25 @@ def test_the_gap_on_a_real_board_is_inside_the_issues_target():
         "the quota rounding now fits every row — the open finding below has "
         "been fixed, so retire this guard and the comment in day.plan")
 
-    # #13's own repair is measured here and NOT used, because it makes the
-    # assignment worse: it demotes on the earliest violated day and the plan
-    # it demotes to can use more on a later one.
-    repaired, _demoted, remaining = demote_to_feasible(by_quota, mixes, caps)
+    # #13's own repair is measured here and NOT used. On this board it leaves
+    # MORE violated rows than it started with, because it demotes on the
+    # earliest violated day and the plan it demotes to can use more on a later
+    # one — and the demotion log shows it bouncing between the same two plans
+    # rather than terminating. That is the second half of the open finding.
+    repaired, demoted, remaining = demote_to_feasible(by_quota, mixes, caps)
     assert len(remaining) >= len(over), (
         "demote_to_feasible now helps — wire it into day.plan and delete this")
+    steps = list(zip(demoted, demoted[1:]))
+    assert len(set(steps)) < len(steps), (
+        "the demotion stopped repeating itself — re-read what it does now")
 
-    # What catches the overrun is wsr, downstream: a day it cannot walk comes
-    # back incomplete and the hours are cut. `argmax` is worse still, which is
-    # what the quota rule is for.
-    assert len(violations(by_argmax, mixes, caps)) >= len(over)
+    # argmax against the quota rule is NOT asserted. On this board argmax breaks
+    # 9 rows against the quota rule's 11; on the boards this test used to draw
+    # unseeded it was the other way round, and that is why it is recorded here
+    # instead of pinned. The quota rule's case is the LP's own mix — every tile
+    # of a class on one plan cannot total more than the LP allows — not a row
+    # count on one board.
+    assert len(violations(by_argmax, mixes, caps)) > 0
 
 
 def _board_keys(obs):

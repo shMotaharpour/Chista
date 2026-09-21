@@ -447,41 +447,57 @@ def test_every_state_can_choose_to_do_nothing():
 
     Four states in the shipped artifact had no empty-chain edge — `NONE`,
     `EMPTY_COOP`, `EMPTY_PASTURE` and `WEED` — and they are exactly the four
-    whose night changes nothing. Zero of the 699 idle edges that do exist are
+    whose night changes nothing. Zero of the 699 idle edges that DID exist were
     self-loops, so the builder drops an edge that leads back where it started,
-    and these are the only states for which it would.
+    and these were the only states for which it would.
 
-    Every owned tile starts in `NONE` and a `DIG` returns it there, so every
-    tile was forced to act every day (#84).
+    The consequence was not cosmetic. Every owned tile starts in `NONE` and a
+    `DIG` returns it there, so **every tile was forced to act every day** (#84):
+    at `w_labour = 100` the DP returned a plan worth −30 and at 500 one worth
+    −5,130 while doing nothing is worth exactly 0. It was not choosing a loss,
+    it had no alternative.
+
+    The artifact has the edges now, so the load-time patch that used to add them
+    (`planner/inputs.py::with_idle_edges`) is gone, and this guard is the
+    property it was standing in for: every state in the SHIPPED graph can
+    decline, and declining is a self-loop that costs and makes nothing. It is
+    asserted on the artifact rather than on a patched copy, which is the whole
+    point of the retirement — the fix and the thing it fixed used to be two
+    different objects.
     """
     import numpy as np
-    from agent.planner.inputs import GRAPH_PATH, with_idle_edges
+    from agent.planner.inputs import GRAPH_PATH
     from agent.tile_dp.graph import TileGraph
 
-    raw = TileGraph.load(GRAPH_PATH)
-    fixed = with_idle_edges(raw)
+    graph = TileGraph.load(GRAPH_PATH)
+    offsets = np.asarray(graph.edge_offsets)
+    chain = np.asarray(graph.edge_chain)
+    nxt = np.asarray(graph.edge_next)
+    cost = np.asarray(graph.edge_cost)
+    produce = np.asarray(graph.edge_produce)
 
-    def stuck(graph):
-        offsets, chain = np.asarray(graph.edge_offsets), np.asarray(graph.edge_chain)
-        return [s for s in range(int(graph.n_states))
-                if not (chain[int(offsets[s]):int(offsets[s + 1])] == 0).any()]
-
-    assert stuck(raw), "the artifact no longer needs the fix — retire it (#84)"
-    assert stuck(fixed) == [], f"still forced to act: {stuck(fixed)}"
-    # Nothing else moved: the added edges are self-loops that cost and make
-    # nothing, and every original edge is still where it was.
-    assert len(np.asarray(fixed.edge_chain)) == \
-        len(np.asarray(raw.edge_chain)) + len(stuck(raw))
-    offsets, nxt = np.asarray(fixed.edge_offsets), np.asarray(fixed.edge_next)
-    chain = np.asarray(fixed.edge_chain)
-    cost, produce = np.asarray(fixed.edge_cost), np.asarray(fixed.edge_produce)
-    for s in stuck(raw):
-        added = [i for i in range(int(offsets[s]), int(offsets[s + 1]))
+    idle = {}
+    for s in range(int(graph.n_states)):
+        found = [i for i in range(int(offsets[s]), int(offsets[s + 1]))
                  if int(chain[i]) == 0]
-        assert len(added) == 1
-        i = added[0]
-        assert int(nxt[i]) == s, "doing nothing must leave the tile where it is"
-        assert not cost[i].any() and not produce[i].any()
+        if found:
+            idle[s] = found
+
+    missing = [s for s in range(int(graph.n_states)) if s not in idle]
+    assert missing == [], f"forced to act: {missing}"
+    for s, found in idle.items():
+        assert len(found) == 1, f"state {s} has {len(found)} idle edges"
+        i = found[0]
+        assert not cost[i].any() and not produce[i].any(), (
+            "the idle edge must cost and make nothing, or declining is not free")
+
+    # Declining is not the same as standing still: 699 of the 703 states move
+    # when nothing is done (the night advances them) and exactly four do not —
+    # `NONE`, `EMPTY_COOP`, `EMPTY_PASTURE` and `WEED`, the four #84 named. The
+    # guard pins the split, not the ids: a state that stops moving is a night
+    # that stopped happening.
+    still = [s for s in idle if int(nxt[idle[s][0]]) == s]
+    assert len(still) == 4, f"states whose night changes nothing: {still}"
 
 
 def test_the_dp_declines_when_the_wage_makes_work_a_loss():
