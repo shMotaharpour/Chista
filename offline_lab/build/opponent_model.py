@@ -55,6 +55,12 @@ def _load_dates() -> list[str]:
 
 
 def build(train_dates: list[str], progress: bool = False) -> OpponentModel:
+    """Build the activity-keyed model: the state key is
+    (good, activity_bucket, day/demand, price_bucket), where activity_bucket
+    = the rival's own sell volume over the 24 turns before (start / silent /
+    low / mid / high) — the regime a PASS rival lives in is 'silent', whose
+    corpus answer is near-pure hold.
+    """
     import duckdb
 
     con = duckdb.connect(config={"threads": 2, "memory_limit": "1GB"})
@@ -67,6 +73,15 @@ def build(train_dates: list[str], progress: bool = False) -> OpponentModel:
     for date in train_dates:
         mo = str(STORE / date / "market_orders.parquet")
         city = str(STORE / date / "city_steps.parquet")
+
+        # per-(episode, step, player) sell volume, for the activity window
+        sold: dict[tuple[int, int, int], float] = {}
+        for e, s, p, sold_qty in con.execute(
+            f"select episode_id, step, player, "
+            f"sum(case when op = 'SELL' then qty else 0 end)::DOUBLE "
+            f"from read_parquet('{mo}') group by 1, 2, 3"
+        ).fetchall():
+            sold[(e, s, p)] = float(sold_qty)
 
         state: dict[tuple[int, int], tuple[tuple, tuple]] = {}
         for e, s, *rest in con.execute(
@@ -89,7 +104,24 @@ def build(train_dates: list[str], progress: bool = False) -> OpponentModel:
             if st is None:
                 continue
             prices = st[0]
-            key = model._key(item, s, prices[PRODUCTS.index(item)])
+            # the ACTING player's own 24-turn sell window (this episode,
+            # this player, the 24 steps before this one) — the activity
+            # regime the state lives in
+            window = 0.0
+            for back in range(1, 25):
+                window += sold.get((e, s - back, player), 0.0)
+            if s < 24:
+                activity = 0                        # start: no history yet
+            else:
+                activity = 1                        # silent by default
+                if window > 60:
+                    activity = 4
+                elif window > 10:
+                    activity = 3
+                elif window > 0:
+                    activity = 2
+            key = model._key_activity(item, s, prices[PRODUCTS.index(item)],
+                                      activity)
             arr = counts.setdefault(key, [0.0] * n_bins)
             qs = qty_sum.setdefault(key, [0.0] * n_bins)
             if op == "SELL":

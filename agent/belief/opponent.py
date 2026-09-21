@@ -107,8 +107,8 @@ class OpponentModel:
                  pretrained: bool = True) -> None:
         self.alpha = alpha
         self.n_bins = n_bins
-        self.counts: dict[tuple[str, int, int], np.ndarray] = {}
-        self.qty_sum: dict[tuple[str, int, int], np.ndarray] = {}
+        self.counts: dict[tuple, np.ndarray] = {}
+        self.qty_sum: dict[tuple, np.ndarray] = {}
         self._marginals: dict[str, np.ndarray] = {}
         self._marginal_dirty = True
         if pretrained:
@@ -142,6 +142,16 @@ class OpponentModel:
     def _key(self, good: str, step: int, price: int) -> tuple[str, int, int]:
         return (good, int(step // 24), self._bucket(price, MARKET_PARAMS[good]["base"]))
 
+    def _key_activity(self, good: str, step: int, price: int,
+                      activity: int) -> tuple[str, int, int, int]:
+        """The activity key (#65 follow-up): the 3-tuple with the rival's
+        own activity bucket PREPENDED — (good, activity, dim2, dim3). The
+        activity regime is the rival's own recent behaviour, so it rides
+        on top of every per-good key shape without changing them.
+        """
+        base = self._key(good, step, price)
+        return (good, activity) + base[1:]
+
     def _bin(self, qty: float) -> int:
         b = 0
         for edge in self.BINS:
@@ -162,7 +172,8 @@ class OpponentModel:
                 arr[-1] += 1.0            # the residual went negative: a net buy
         self._marginal_dirty = True
 
-    def policy(self, good: str, step: int, price: int) -> np.ndarray:
+    def policy(self, good: str, step: int, price: int,
+               activity: int | None = None) -> np.ndarray:
         """Action distribution for a state, hierarchically smoothed.
 
         `(counts + alpha + w * marginal) / (n + k*alpha + w)` with
@@ -170,9 +181,13 @@ class OpponentModel:
         gets ~8 pseudo-counts from its good's aggregate, a 5000-observation
         state gets 49 — the empirical state dominates where it has data,
         the good's own prior carries it where it does not. Unseen states
-        read the good's marginal directly.
+        read the good's marginal directly. With `activity`, the
+        activity-keyed table is used (see `expected_sell`).
         """
-        arr = self.counts.get(self._key(good, step, price))
+        key = (self._key_activity(good, step, price, activity)
+               if activity is not None
+               else self._key(good, step, price))
+        arr = self.counts.get(key)
         marg = self.good_marginal(good)
         if arr is None:
             return marg
@@ -182,8 +197,23 @@ class OpponentModel:
              + w * marg)
         return p / p.sum()
 
-    def expected_sell(self, good: str, step: int, price: int) -> float:
-        """Expected units the rival sells next turn in this state."""
+    def expected_sell(self, good: str, step: int, price: int,
+                      activity: int | None = None) -> float:
+        """Expected units the rival sells next turn in this state.
+
+        `activity` (the rival's own sell bucket over the last 24 turns,
+        from `activity_bucket(tracker)`) selects the activity-keyed table
+        when given: a silent rival's row answers near-pure hold, which is
+        what makes a PASS rival predictable (measured: 1,230 phantom units
+        over 10 days without it, 0 with it).
+        """
+        if activity is not None:
+            key = self._key_activity(good, step, price, activity)
+            p = self.policy(good, step, price, activity=activity)
+            qs = self.qty_sum.get(key, np.zeros(self.n_bins))
+            counts = self.counts.get(key, np.zeros(self.n_bins))
+            mean_qty = np.where(counts > 0, qs / np.maximum(counts, 1.0), 0.0)
+            return float(p @ mean_qty)
         key = self._key(good, step, price)
         p = self.policy(good, step, price)
         qs = self.qty_sum.get(key, np.zeros(self.n_bins))
