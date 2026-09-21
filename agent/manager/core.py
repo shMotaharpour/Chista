@@ -78,13 +78,21 @@ class Manager:
         self.obs, self.config = obs, config
         supply = M.supply_from_obs(obs)
         owned = M._owned_states(object(), obs)
-        _reps, _counts, of_tile = classes_of(
-            owned, M._owned_distances(obs, self.steps))
-        class_of_tile = self._class_of_tile(obs, of_tile)
+        dists = M._owned_distances(obs, self.steps)
+        # `one_tile`: price the farmer's own square and nothing else. The
+        # farmer spawns on a shed-access tile (F040) which IS one of the owned
+        # 25 — the distance-0 class — so this is a filter over the owned list,
+        # and travel, allocation and rounding all fall out of the loop with it.
+        keep = M.farmer_tile_mask(obs) if self.cfg.one_tile \
+            else [True] * len(owned)
+        owned = [s for s, k in zip(owned, keep) if k]
+        dists = [d for d, k in zip(dists, keep) if k]
+        _reps, _counts, of_tile = classes_of(owned, dists)
+        class_of_tile = self._class_of_tile(obs, of_tile, keep)
 
         deadline = started + self.cfg.solve_budget_ms / 1000.0
         self.day = D.plan(obs, self.contractor, supply,
-                          class_of_tile=class_of_tile,
+                          class_of_tile=class_of_tile, keep=keep,
                           iter_cap=self.cfg.master_rounds,
                           hands=0, max_hands=self.cfg.max_hands,
                           budget_s=self.cfg.search_budget_s,
@@ -125,17 +133,30 @@ class Manager:
         return self.plan
 
     # -- the board --------------------------------------------------------
-    def _class_of_tile(self, obs, of_tile) -> list:
+    def _class_of_tile(self, obs, of_tile, keep=None) -> list:
         """The class index of every board position, None where nothing is planned.
 
         `of_tile` covers the tiles the master priced, in board order; the rest
         of the board is a quadrant we have not bought (F042) and has no class.
+
+        `keep` is the owned-tile filter `observe` applied, in the same order.
+        A tile it drops was never priced, so it has no class and gets `None` —
+        without this the walker would hand it the NEXT priced tile's class and
+        every tile after it would be off by one.
         """
         from agent.obs import decode_world
         view = decode_world(obs, at_day_start=True, graph_keys=self.keys)
-        walker = iter(of_tile)
-        return [next(walker, None) if int(k) >= 0 else None
-                for k in np.asarray(view.me.keys).reshape(-1)]
+        walker, kept = iter(of_tile), iter(keep if keep is not None else ())
+        out = []
+        for k in np.asarray(view.me.keys).reshape(-1):
+            if int(k) < 0:
+                out.append(None)
+                continue
+            if keep is not None and not next(kept, False):
+                out.append(None)        # owned, but not priced this turn
+                continue
+            out.append(next(walker, None))
+        return out
 
 
 def _load_graph():

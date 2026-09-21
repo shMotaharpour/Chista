@@ -63,16 +63,28 @@ class Config:
     #:
     #: More hands is worth five times the plan to the LP and less than nothing
     #: on the board, because the day the master commits is re-derived every
-    #: morning and more capacity means more of it is undone. Raising this is
-    #: the FIRST thing to try once a plan survives the night (#79's commitment
-    #: work) — it is capped low because the churn is not fixed, not because
-    #: hiring is bad.
-    max_hands: int = 1
+    #: morning and more capacity means more of it is undone.
+    #:
+    #: It is ZERO now, and zero is a real setting: the farm runs on the farmer
+    #: alone, `hire_times` is empty, and `ceiling_for` therefore answers one —
+    #: the search cannot return a pool nobody offered to pay for. Nothing about
+    #: hiring is disabled; the offer is simply empty, so every hiring path is
+    #: exercised with the number it is given.
+    max_hands: int = 0
     #: Seconds the day search may spend. None lets it run to its own end,
     #: which is what an offline measurement wants and a turn does not.
     search_budget_s: float = 0.25
     #: Master solves one `plan` may spend correcting the hours it committed.
     fit_rounds: int = 2
+
+    #: Price only the tile the farmer is standing on, not the whole farm.
+    #:
+    #: The farmer spawns on a shed-access tile (F040) and that tile is one of
+    #: the 25 the farm owns — it is the distance-0 class. Pricing it alone
+    #: removes travel, allocation and rounding from the loop in one move, and
+    #: leaves exactly belief -> DP -> the day. It is a diagnostic setting and
+    #: it is meant to be turned off again.
+    one_tile: bool = True
 
     # --- the market --------------------------------------------------------
     #: Orders per turn the engine accepts (F031). A cap, not a target.
@@ -83,8 +95,8 @@ class Config:
             raise ValueError(
                 f"a turn budget of {self.turn_budget_ms} ms leaves nothing "
                 f"after the {self.reserve_ms} ms reserve")
-        if not 1 <= self.max_hands <= 16:
-            raise ValueError(f"max_hands {self.max_hands} is outside 1..16")
+        if not 0 <= self.max_hands <= 16:
+            raise ValueError(f"max_hands {self.max_hands} is outside 0..16")
         if not 0.0 < self.damping <= 1.0:
             raise ValueError(f"damping {self.damping} is outside (0, 1]")
         if self.horizon_days < 1:

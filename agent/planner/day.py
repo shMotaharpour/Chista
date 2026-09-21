@@ -129,15 +129,24 @@ def fit(chains, *, hands: int, available: dict | None = None,
 
     available = available or {}
     tasks = T.build(chains, available=available)
+    # The OFFER is exactly what the caller is paying for. `max(1, hands)` used
+    # to sit here, so a caller asking for none was offered one anyway and the
+    # search could answer with a pool nobody had agreed to hire. With an empty
+    # offer `ceiling_for` answers `len(day.units)` — the farmer, and no hand.
     day = B.Day(chains=tuple(chains), available=available,
-                hire_times=(1,) * max(1, hands))
+                hire_times=(1,) * max(0, int(hands)))
     floor = max(0, B.lower_bound(day, tasks) - len(day.units))
     result = B.search(day, tasks, beam=beam,
-                      hands=min(floor, max(1, hands)), max_hands=max(1, hands),
+                      hands=min(floor, max(0, int(hands))),
+                      max_hands=max(0, int(hands)),
                       budget_s=budget_s, warm=warm)
 
+    # The units are the farmer PLUS the hands the pool paid for — `day.units`
+    # is the farmer and `result.pool` the hires, so the day holds `1 + pool`
+    # worker-days. `max(1, pool)` was right only at pool 0 and under-counted
+    # by a whole worker everywhere else.
     hours = float(max((turn for turn, _t, _w in result.route), default=0) + 1) \
-        * max(1, result.pool)
+        * (len(day.units) + int(result.pool))
     if result.complete and check_route(day, tasks, result, result.settled):
         # A route the compiler will not take is a day that did not fit, which
         # is an answer the caller already knows how to use (#73 is why this is
@@ -200,7 +209,8 @@ def plan(obs, contractor, supply, *, class_of_tile, iter_cap: int = 200,
          hands: int = 0, budget_s: float | None = None,
          rounds: int = 3, tolerance: float = 0.02,
          pool: list | None = None, deadline: float | None = None,
-         max_hands: int | None = None, w_warm=None) -> DayPlan:
+         max_hands: int | None = None, w_warm=None,
+         keep: list[bool] | None = None) -> DayPlan:
     """Enumerate the pool of hands, and keep the day worth the most net of it.
 
     **Hiring is a decision, and it was not one.** `supply.hours` came from
@@ -262,7 +272,7 @@ def plan(obs, contractor, supply, *, class_of_tile, iter_cap: int = 200,
     for offer in range(max(0, ceiling), -1, -1):
         current = _solve_at(obs, contractor, supply, class_of_tile, offer,
                             iter_cap, budget_s, rounds, tolerance, carried,
-                            deadline, w_warm)
+                            deadline, w_warm, keep=keep)
         carried = list(current.master.pool)
         if chosen is None or current.net > chosen.net:
             chosen = current
@@ -272,7 +282,8 @@ def plan(obs, contractor, supply, *, class_of_tile, iter_cap: int = 200,
 
 
 def _solve_at(obs, contractor, supply, class_of_tile, hands, iter_cap,
-              budget_s, rounds, tolerance, pool, deadline, w_warm=None) -> DayPlan:
+              budget_s, rounds, tolerance, pool, deadline, w_warm=None,
+              keep: list[bool] | None = None) -> DayPlan:
     """One pool size: solve, assign, ask wsr, and price the hands."""
     from agent.planner import columns as C
     from agent.planner import master as M
@@ -289,7 +300,7 @@ def _solve_at(obs, contractor, supply, class_of_tile, hands, iter_cap,
             animal_stock=supply.animal_stock, fert_stock=supply.fert_stock,
             wheat_feed_stock=supply.wheat_feed_stock, money=supply.money,
             quotes=supply.quotes)
-        result = M.equilibrate(object(), obs, contractor, current,
+        result = M.equilibrate(object(), obs, contractor, current, keep=keep,
                                w_warm=w_warm, iter_cap=iter_cap, pool=pool,
                                deadline=deadline)
         mixes = M.to_mixes(result, contractor.days)
@@ -374,9 +385,8 @@ def compile(day_plan: "DayPlan", obs, *, hands: int | None = None,
     available = availability(obs, fitted.chains)
     tasks = T.build(fitted.chains, available=available)
     day = B.Day(chains=tuple(fitted.chains), available=available,
-                hire_times=(1,) * max(1, pool))
-    result = B.search(day, tasks, hands=min(pool, max(1, pool)),
-                      max_hands=max(1, pool))
+                hire_times=(1,) * max(0, pool))
+    result = B.search(day, tasks, hands=max(0, pool), max_hands=max(0, pool))
     # The plan is PRICED for `pool` hands; the route may need fewer, but the
     # market must hire what the day was costed with or the hours row was a
     # fiction. wsr reports what it used, and the smaller of the two is what

@@ -443,7 +443,8 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
                 iter_cap: int = ITER_CAP_DEFAULT,
                 poll=None, owned: list[int] | None = None,
                 pool: list | None = None,
-                deadline: float | None = None) -> MasterResult:
+                deadline: float | None = None,
+                keep: list[bool] | None = None) -> MasterResult:
     """Tâtonnement to (approximate) equilibrium; always publishable.
 
     The loop is a true Dantzig-Wolfe round: at the current duals the
@@ -452,6 +453,12 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
     re-solves over the fresh columns, the duals damp onto the new
     prices. Stopping early still leaves a usable incumbent: the last
     `(p, published_w)` pair is on the result at every point.
+
+    `keep` filters the owned tiles, in `_owned_states` order — the states AND
+    their distances together, which is the whole point: passing a shortened
+    `owned` alone would leave the distances the full board's and every class
+    would carry another tile's walk. `Config.one_tile` uses it to price the
+    farmer's own square and nothing else.
 
     Never raises for solver trouble — the fallback publishes the warm
     prices and says so. `poll()` (the rung's deadline bail) may raise:
@@ -507,7 +514,13 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
     # the columns across rounds and stops on the reduced-cost certificate.
     from agent.planner.columns import shed_distance
     steps = shed_distance()
-    reps, counts, of_tile = colgen.classes_of(owned, _owned_distances(obs, steps))
+    dists = _owned_distances(obs, steps)
+    if keep is not None:
+        # Both lists, or neither: they are parallel by construction and a
+        # filter applied to one of them silently re-pairs every tile after it.
+        owned = [v for v, k in zip(owned, keep) if k]
+        dists = [v for v, k in zip(dists, keep) if k]
+    reps, counts, of_tile = colgen.classes_of(owned, dists)
     result.classes = (reps, counts, of_tile)
     idle = [colgen.Column(cls=c, cost=np.zeros((days, N_COUPLING)),
                           spend=np.zeros(days), earn=np.zeros(days),
@@ -698,6 +711,31 @@ def _entities(board, tile: int, days: int) -> tuple:
         return ()
     return tuple(entity_of_code(int(code))
                  for code in board.per_day_entity[tile, :days])
+
+
+def farmer_tile_mask(obs) -> list[bool]:
+    """True for the one owned tile the farmer is standing on, False elsewhere.
+
+    The farmer spawns on a shed-access tile (F040) and that tile IS one of the
+    25 the farm owns — it is the distance-0 class. So "only the tile the farmer
+    is on" is a filter over the owned list, in `_owned_states` order, and not a
+    different kind of tile.
+
+    Walks the board exactly as `_owned_states` and `_owned_distances` do, so
+    all three line up by construction.
+    """
+    from agent.obs import LOCKED_KEY, decode_world
+    from agent.planner.inputs import unit_positions
+    from agent.world.rules import BOARD_SIZE
+
+    graph = _shipped_graph()
+    view = decode_world(obs, at_day_start=True,
+                        graph_keys=frozenset(graph.key_index))
+    fx, fy = unit_positions(view)[0]
+    here = int(fx) * int(BOARD_SIZE) + int(fy)
+    keys = np.asarray(view.me.keys).reshape(-1)
+    return [i == here for i, k in enumerate(keys)
+            if int(k) != LOCKED_KEY and int(k) in graph.key_index]
 
 
 def _owned_distances(obs, steps: np.ndarray) -> list[int]:
