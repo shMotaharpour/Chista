@@ -124,3 +124,38 @@ def test_the_partial_route_replays_as_the_day_it_was_priced_as(short) -> None:
     for cell, _ops, entity in ANIMAL_TILES:
         assert board.get(cell, {}).get("animal") == entity, (
             f"{cell} was built for {entity} and holds {board.get(cell, {}).get('animal')!r}")
+
+
+def test_the_remaining_capacity_is_the_day_the_compiler_wrote(short) -> None:
+    """The spare the search reports, against the PASS turns in the compiled day.
+
+    The two are counted from opposite sides - the search from the route it placed, the compiler from
+    the ops it writes - so this is where the accounting is checked rather than assumed. A manager
+    reads `spare` to decide whether to lay more work on the same hands, and a number that does not
+    match the day it will actually dispatch is worse than no number at all.
+    """
+    day, tasks, result = short
+    ops = compile_route(day, tasks, result)
+    # A row is the whole horizon long, so a hand's row carries the turns before its own hour as PASS
+    # too - turn 0 is not part of a day that begins at hour 1. The comparison starts where the day
+    # does.
+    hours = B._start_hours(day, result.pool)
+    idle = [sum(1 for op in row[int(hours[w]):] if op == ("PASS",))
+            for w, row in enumerate(ops.units)]
+    assert B.remaining_turns(day, tasks, result) == idle, (
+        "the search's remaining capacity and the compiler's PASS turns disagree: "
+        f"{B.remaining_turns(day, tasks, result)} against {idle}")
+    assert result.spare == sum(idle), (
+        f"the answer reports {result.spare} unspent turns and the day holds {sum(idle)}")
+
+
+def test_one_more_hand_leaves_more_of_the_day_unspent(short) -> None:
+    """The pool, read from the other side: a hand more is a day with more room left in it.
+
+    Without this the spare could be a constant and the first test would still pass.
+    """
+    _day_, _tasks, result = short
+    day, tasks = _day(hands=HANDS + 1)
+    bigger = B.search(day, tasks, beam=64, hands=HANDS + 1, max_hands=HANDS + 1)
+    assert bigger.spare > result.spare, (
+        f"{HANDS + 1} hands leave {bigger.spare} turns unspent, {HANDS} leave {result.spare}")

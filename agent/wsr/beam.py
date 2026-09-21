@@ -127,6 +127,10 @@ class Result(NamedTuple):
     #: it. The arithmetic floor is a count of workers and the ceiling is a count of hands, and on a
     #: hundred tiles the first passes the second - which is an answer about the day, not an error.
     infeasible: bool = False
+    #: The worker-turns the route leaves unspent, walks and pickups included - the room a manager may
+    #: lay more work into. Filled by `search`, which is the only place the pool is known; zero until
+    #: then. `remaining_turns` is the same number per worker.
+    spare: int = 0
 
 
 def lower_bound(day: Day, tasks: TaskArray) -> int:
@@ -206,7 +210,7 @@ def search(day: Day, tasks: TaskArray, *, beam: int | None = None,
     a hundred tiles.
     """
     if tasks.n == 0:
-        return Result(0, [], True)
+        return _with_spare(day, tasks, Result(0, [], True))
 
     # The arithmetic floor is on the WORKERS a day needs, and the units already on the field are
     # workers, so what has to be hired is the shortfall. Without this the search starts at one hand
@@ -216,7 +220,7 @@ def search(day: Day, tasks: TaskArray, *, beam: int | None = None,
     ceiling = min(int(max_hands), MAX_HANDS)
     deadline = None if budget_s is None else time.perf_counter() + float(budget_s)
     if start > ceiling:
-        return Result(ceiling, [], False, infeasible=True)
+        return _with_spare(day, tasks, Result(ceiling, [], False, infeasible=True))
 
     def width(pool: int) -> int:
         return beam if beam is not None else beam_for(tasks, len(day.units) + pool)
@@ -226,14 +230,15 @@ def search(day: Day, tasks: TaskArray, *, beam: int | None = None,
         return warm if warm is not None and warm.pool == pool else None
 
     if hands is None and ceiling > start:
-        return _smallest_pool(day, tasks, width, start, ceiling, deadline, seed)
+        return _with_spare(day, tasks,
+                           _smallest_pool(day, tasks, width, start, ceiling, deadline, seed))
 
     partial: Result | None = None
     placed = -1
     for pool in range(start, ceiling + 1):
         result = _fixed_point(day, tasks, width(pool), pool, deadline, seed(pool))
         if result.complete:
-            return result
+            return _with_spare(day, tasks, result)
         if partial is None or _better_route(result, partial):
             partial, placed = result, len(result.route)
         elif len(result.route) <= placed:
@@ -243,7 +248,8 @@ def search(day: Day, tasks: TaskArray, *, beam: int | None = None,
         if result.out_of_time:
             # A larger pool costs more and cannot buy back the time, so the loop stops here.
             break
-    return partial if partial is not None else Result(ceiling, [], False)
+    return _with_spare(day, tasks,
+                       partial if partial is not None else Result(ceiling, [], False))
 
 
 def _makespan(result: Result) -> int:
@@ -617,6 +623,52 @@ def bags_of(day: Day, tasks: TaskArray, result: Result) -> list[int]:
     for turn, task_id, worker in result.route:
         per.setdefault(int(worker), []).append((int(turn), task_id))
     return [len(_bag(tasks, per.get(worker, []))) for worker in range(len(day.units) + result.pool)]
+
+
+def remaining_turns(day: Day, tasks: TaskArray, result: Result) -> list[int]:
+    """What each worker's day has left once the route is carried out, per worker.
+
+    A worker's capacity is its own day: the horizon less the hour it begins at, so the farmer holds
+    one more turn than a hand hired in turn 0 (F040). The route spends a turn per task, a turn per
+    tile walked - the walk from where the worker stands to its next task - and the turns its own
+    pickups take at its door before the first walk. What is left is the room a manager may lay more
+    work into, and it is the same number the compiler leaves as PASS turns: `_run` prices the day
+    from these, `compile_route` writes it from the same rule.
+    """
+    hours = _start_hours(day, result.pool)
+    arrival = first_arrival(tasks)
+    starts = _start_positions(day, result.pool, result.settled)
+    per: dict[int, list[tuple[int, str]]] = {}
+    for turn, task_id, worker in result.route:
+        per.setdefault(int(worker), []).append((int(turn), task_id))
+
+    out: list[int] = []
+    for worker in range(len(day.units) + result.pool):
+        entries = sorted(per.get(worker, []))
+        bag = _bag(tasks, entries)
+        here = (int(starts[worker][0]), int(starts[worker][1]))
+        spent = first_walk_turn(hours[worker], arrival, len(bag)) - int(hours[worker])
+        for _turn, task_id in entries:
+            row = tasks.ids.index(task_id)
+            target = (int(tasks.cells[row][0]), int(tasks.cells[row][1]))
+            spent += len(walk(here, target)) + 1
+            here = target
+        out.append(int(day.horizon) - int(hours[worker]) - spent)
+    return out
+
+
+def spare_turns(day: Day, tasks: TaskArray, result: Result) -> int:
+    """The worker-turns a route leaves unspent: `remaining_turns`, summed over the pool.
+
+    Exact, pickups included - a worker that carries goods spends its first turns at its door, and
+    those are not room for more work.
+    """
+    return sum(remaining_turns(day, tasks, result))
+
+
+def _with_spare(day: Day, tasks: TaskArray, result: Result) -> Result:
+    """The answer with its remaining capacity on it. `search` is the only place the pool is known."""
+    return result._replace(spare=spare_turns(day, tasks, result))
 
 
 def first_arrival(tasks: TaskArray) -> int:
