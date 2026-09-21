@@ -99,7 +99,14 @@ class ChainOutcome:
 
 @dataclass(frozen=True)
 class Edge:
-    """One CSR edge, decoded: `from_id -> to_id` by `chain_id`, for `entity_code`."""
+    """One CSR edge, decoded: `from_id -> to_id` by `chain_id`, for `entity_code`.
+
+    `chains` is the table `chain_id` indexes: a graph that was just built carries the
+    table it produced, and a graph loaded from disk carries none (its table is the
+    registry on disk, which the loader already checked). Without it an id decoded
+    against another table names another chain - ids are positions, so only the owning
+    graph can say which.
+    """
 
     from_id: int
     to_id: int
@@ -107,10 +114,12 @@ class Edge:
     entity_code: int
     cost: tuple[int, ...]
     produce: tuple[int, ...]
+    chains: tuple = ()
 
     @property
     def ops(self) -> tuple[str, ...]:
-        return chain_ops(self.chain_id)
+        return (tuple(self.chains[self.chain_id]) if self.chains
+                else chain_ops(self.chain_id))
 
     @property
     def name(self) -> str:
@@ -187,7 +196,8 @@ class TileGraph:
         return Edge(state_id, int(self.edge_next[row]),
                     int(self.edge_chain[row]), int(self.edge_entity[row]),
                     tuple(int(v) for v in self.edge_cost[row]),
-                    tuple(int(v) for v in self.edge_produce[row]))
+                    tuple(int(v) for v in self.edge_produce[row]),
+                    self.chains)
 
     def edges_from(self, state_id: int) -> Iterator[Edge]:
         lo, hi = self.edges_of(state_id)
