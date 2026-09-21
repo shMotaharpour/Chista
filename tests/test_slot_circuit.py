@@ -118,6 +118,40 @@ def test_the_candidate_family_is_not_flat() -> None:
         "is noise, so the circuit is not choosing anything")
 
 
+def test_market_queue_with_a_model_re_times_the_hours() -> None:
+    """The #78 wire: `market_queue(..., model=...)` must move the queue's
+    sell hours onto the circuit's schedule — same quantities, new hours.
+
+    The claim under test is the WIRE, not the profit: without `model=`,
+    no code path could reach the circuit's +1513 coins/season bench.
+    """
+    from agent.belief.shed import market_queue
+    obs = _sim_to(0, 5)
+    obs = dict(obs)
+    obs["private"] = dict(obs.get("private", {}))
+    obs["private"]["shed"] = {"MILK": 24}
+    obs["private"]["inventories"] = [{}]
+    # force a release: day-5 MILK is mid-ramp, so the peak rule holds and
+    # the guard is the only releaser — hand it the overflow it answers
+    obs["private"]["shed"] = {"MILK": 95}
+    obs["private"]["inventories"] = [{"MILK": 10}]
+    model = OpponentModel(pretrained=True)
+    q_model = market_queue(obs, model=model)
+    q_plain = market_queue(obs)
+    # same total quantity either way — the circuit re-times, never re-sizes
+    total_model = sum(int(o[2]) for row in q_model for o in row)
+    total_plain = sum(int(o[2]) for row in q_plain for o in row)
+    assert total_plain > 0, "the guard released nothing: fixture is off"
+    assert total_model == total_plain, (total_model, total_plain)
+    # and the hours differ: with the model the queue is the circuit's best
+    # response, not the uniform spread
+    hours_model = sorted(h for h, row in enumerate(q_model) if row)
+    hours_plain = sorted(h for h, row in enumerate(q_plain) if row)
+    assert hours_model != hours_plain or any(
+        len(row) != 1 for row in q_model if row), (
+        "model queue is identical to the uniform spread: the wire is dead")
+
+
 def main() -> int:
     tests = [(k, v) for k, v in sorted(globals().items())
              if k.startswith("test_") and callable(v)]

@@ -217,3 +217,43 @@ def plan_day_slots(good: str, lot: int, obs, model: OpponentModel
     sched = np.zeros(HOURS)
     sched[hour_now:] = ours[best][: HOURS - hour_now]
     return sched, float(expected[best])
+
+
+def plan_day_hours(stock: dict[str, int], obs, model: OpponentModel, *,
+                   hour_now: int = 0) -> dict[str, dict[int, int]]:
+    """The whole day's hour plan — `plan_day_slots` per sellable good.
+
+    Maps the stock the rules released (the `plan_sales` `take`) into the
+    `hour_plan` shape `plan_sales` consumes: `{item: {hour: units}}`. A
+    good whose circuit schedule cannot fit its lot keeps the uniform
+    fallback (the item is simply absent from the plan), so the caller
+    never gets a plan that under-sells the guard's release.
+    """
+    hours = [h for h in range(max(0, int(hour_now)), HOURS)]
+    if not hours:
+        return {}
+    plan: dict[str, dict[int, int]] = {}
+    for item, lot in stock.items():
+        if int(lot) <= 0:
+            continue
+        sched, _rev = plan_day_slots(item, int(lot), obs, model)
+        per_hour: dict[int, int] = {}
+        remaining = int(lot)
+        # respect the day's remaining hours and the lot exactly
+        for h in hours:
+            if remaining <= 0:
+                break
+            u = int(sched[h])
+            if u <= 0:
+                continue
+            u = min(u, remaining)
+            per_hour[h] = u
+            remaining -= u
+        if remaining > 0 and per_hour:
+            # the schedule under-fills (all its weight was on past hours):
+            # top the last scheduled hour up rather than drop units
+            last = max(per_hour)
+            per_hour[last] += remaining
+        if per_hour:
+            plan[item] = per_hour
+    return plan
