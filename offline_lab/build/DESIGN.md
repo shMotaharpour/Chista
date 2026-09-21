@@ -63,7 +63,12 @@ tile — which is why changing a barn into a coop goes through `DIG` first.
 
 ## Pruning
 
-1. **No-op sweep** — a chain that changed nothing and consumed nothing is dropped.
+1. **No-op sweep** — an edge that lands back on the node it started from and produces
+   nothing is dropped, whether or not it spends an hour (a 2-hour `DIG+BUILD` self-loop is
+   not a decision the DP needs). The **idle day is the exception** (#84): the empty chain
+   IS the decision to decline, so it stays even where a day cannot move the tile — bare,
+   weed, empty coop, empty pasture. A node that cannot decline has a floor under its value,
+   and the DP is forced to spend on a tile it wants to leave alone.
 2. **Dominance** — for edges with the SAME next state, `e1` dominates `e2` iff
    `cost(e1)[r] <= cost(e2)[r]` for every resource AND `produce(e1)[r] >= produce(e2)[r]` for
    every resource, with at least one strict component. Compared component by component and

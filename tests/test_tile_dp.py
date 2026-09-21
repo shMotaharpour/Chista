@@ -6,10 +6,12 @@ Contracts under test:
 - TileState decode/pack round-trips (carrot + ongoing/animal dims).
 - The carrot graph is engine truth: honest-yield calendars come out of its
   edges (3 by day-3 start no-fert; WATER,HARVEST = 4 with fert).
-- Chain shape: every op is a known op; inside each DIG-free segment no op
-  repeats, WATER precedes HARVEST (F009) and a PLACE follows its BUILD.
-- Pruning: no zero-cost self-loops; dominated edges absent (no
-  FERTILIZE->HARVEST with bare-HARVEST production on fert-less states).
+- Chain shape: every op is a known op; inside one tile episode (a DIG, or a PLANT
+  after a HARVEST, starts a new one) no op repeats, WATER precedes HARVEST (F009)
+  and a PLACE follows its BUILD.
+- Pruning: the only product-less self-loop a node keeps is the idle day (#84);
+  dominated edges absent (no FERTILIZE->HARVEST with bare-HARVEST production on
+  fert-less states).
 - Dominance is componentwise on BOTH vectors (2026-09-14): a difference in one
   cost or one produce component keeps both edges; only a componentwise-<= cost
   with a componentwise->= produce prunes. Nothing is netted.
@@ -23,16 +25,27 @@ Contracts under test:
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
-from agent.tile_dp.chains import (TILE_OPS, CHAIN_NAMES, NO_ACTION, RES_CARROT, RES_MELON, RES_SEED_CARROT, RES_SEED_WHEAT, RESOURCE_NAMES, chain_labor, chains_for, domain_ok)
+from agent.tile_dp.chains import CHAIN_NAMES, NO_ACTION, TILE_OPS
+from agent.world.model import RESOURCE_NAMES, TileKind
+from offline_lab.build.chains import chains_for, domain_ok
+from offline_lab.build.graph import (_act, _dominates, _exec_chain, _new_sim,
+                                     _tile_and_day, build_graph)
+from offline_lab.build.ledger import chain_labor
 from agent.world.model import RES_WHEAT
 from agent.world.model import RES_FERTILIZER
 from agent.world.model import RES_LABOR
 from agent.world.model import RESOURCE_ID
 from agent.world.model import N_RESOURCE
-from agent.tile_dp.graph import (Edge, TileGraph, _dominates, _exec_chain, _new_sim,
-                           build_graph)
+from agent.tile_dp.graph import Edge, TileGraph
 from agent.tile_dp.tile_state import KIND_NONE, TileState, decode_tile
+
+# The resource names this file compares vectors on, as `world.model` spells them.
+RES_CARROT = "CARROT"
+RES_MELON = "MELON"
+RES_SEED_CARROT = "SEED_CARROT"
+RES_SEED_WHEAT = "SEED_WHEAT"
 
 _CARROT: TileGraph | None = None
 
@@ -70,20 +83,24 @@ def test_chain_order_canonical() -> None:
     (HARVEST, DIG, PLANT, WATER) waters the NEXT plant (owner's item 4).
     """
     for ops in CHAIN_NAMES:
-        if ops == (NO_ACTION,):
+        if not ops:
             continue
         # Every op is a known worker or market op.
         for op in ops:
             assert op in TILE_OPS, (ops, op)
-        # Split the chain into DIG-free segments: a DIG starts a new tile
-        # (the old plant is gone, a new one may be planted and watered), so
-        # every canonical-order rule holds WITHIN one segment.
+        # Split the chain into one-tile episodes: a DIG starts a new tile (the old
+        # plant is gone, a new one may be planted and watered), and so does a PLANT
+        # after a HARVEST - a one-shot crop is cleared by its own harvest
+        # (kaggriculture.py:464-468), so the tile is bare again and the day's
+        # canonical order restarts there, exactly as it does after a DIG.
         segments: list[list[str]] = [[]]
         for op in ops:
             if op == "DIG":
                 segments.append([])
-            else:
-                segments[-1].append(op)
+                continue
+            if op == "PLANT" and "HARVEST" in segments[-1]:
+                segments.append([])
+            segments[-1].append(op)
         for seg in segments:
             # No op repeats inside one segment (one water per plant day...).
             assert len(set(seg)) == len(seg), ops
@@ -108,17 +125,18 @@ def test_young_plant_cannot_harvest() -> None:
     """A young plant is not harvested, and nothing is planted into an occupied
     tile: a chain may only PLANT after it DIGs that tile free (owner's item 4).
     """
-    young = chains_for("PLANT", -1)
+    young = chains_for(TileKind.PLANT, -1)
     assert all("HARVEST" not in c for c in young)
-    assert all(c[0] != "PLANT" for c in young)
-    assert any(c[0] == "DIG" and "PLANT" in c for c in young)
+    assert all(not c or c[0] != "PLANT" for c in young)
+    assert any(c and c[0] == "DIG" and "PLANT" in c for c in young)
 
 
 def test_registry_contracts() -> None:
     """The registry's own invariants (brief part 2, item 1)."""
     assert len(RESOURCE_NAMES) == 18
     assert len(set(RESOURCE_NAMES)) == 18
-    assert [c for c in CHAIN_NAMES if NO_ACTION in c] == [(NO_ACTION,)]
+    assert [c for c in CHAIN_NAMES if c == NO_ACTION] == [NO_ACTION]
+    assert all(NO_ACTION not in c for c in CHAIN_NAMES)   # only ever a whole chain
     assert max(chain_labor(c) for c in CHAIN_NAMES) <= 24
     # CARE without FEED is a no-op: it must not even be a registry entry
     assert not [c for c in CHAIN_NAMES if "CARE" in c and "FEED" not in c]
@@ -231,13 +249,24 @@ def test_dominated_fert_harvest_absent() -> None:
                 f"dominated edge kept on {s.describe()}")
 
 
-def test_no_zero_cost_self_loops() -> None:
+def test_the_idle_day_is_kept_where_the_day_cannot_move_the_tile() -> None:
+    """A product-less self-loop is a no-op, and the idle day is the exception (#84):
+    it is the decision to decline. So the states a day cannot move keep their empty
+    chain, and no OTHER product-less self-loop may exist (a 2-hour DIG+BUILD of the
+    tile's own structure is not one).
+    """
     g = _carrot()
+    stuck = [i for i in range(g.n_states)
+             if any(e.to_id == i for e in g.edges_from(i) if e.ops == NO_ACTION)]
+    assert {g.state_of(i).kind for i in stuck} == {TileKind.NONE, TileKind.WEED}, (
+        f"the idle day is missing where a day cannot move the tile: {stuck}")
     for i in range(g.n_states):
         for edge in g.edges_from(i):
-            assert not (edge.to_id == i and not any(edge.cost)
-                        and not any(edge.produce)), (
-                f"zero-cost self-loop on state {i}")
+            if edge.to_id != i or any(edge.produce):
+                continue
+            assert edge.ops == NO_ACTION, (
+                f"product-less self-loop on state {i}: {edge.name}")
+            assert not any(edge.cost), f"the idle day is not free on state {i}"
 
 
 def test_chain_one_day_contract() -> None:
@@ -249,9 +278,9 @@ def test_chain_one_day_contract() -> None:
     """
     assert chain_labor((NO_ACTION,)) == 0
     assert chain_labor(("PLANT", "WATER")) == 2
-    assert chain_labor(("BUILD", "PLACE", "FEED")) == 3
+    assert chain_labor(("BUILD_COOP", "PLACE", "FEED")) == 3
     bare = TileState(KIND_NONE, None, None, None, 0, 0, 0, 0, 0, 0)
-    todo = [c for c in list(chains_for("NONE")) + list(chains_for("PLANT", 1))
+    todo = [c for c in list(chains_for(TileKind.NONE)) + list(chains_for(TileKind.PLANT, 1))
             if domain_ok(c, "CARROT")]      # the graph filters domains too
     for ops in todo:
         sim = _new_sim()
@@ -292,12 +321,28 @@ def test_merged_vectors_are_two_18_vectors() -> None:
     assert g.edge_produce.shape == (g.n_edges, N_RESOURCE)
     assert g.edge_cost.dtype == np.int32
     assert g.edge_produce.dtype == np.int32
-    wheat = RESOURCE_ID[RES_WHEAT]
-    both = [e for e in _all_edges(g)
-            if e.cost[wheat] > 0 and e.produce[wheat] > 0]
-    assert both, ("no edge both eats and harvests wheat: netting the cost and "
-                  "produce vectors would go unnoticed")
     assert g.n_edges == sum(1 for _ in _all_edges(g))
+    # A chain that spends one resource and produces another keeps the two vectors
+    # apart: FEED eats a wheat and the animal's own product is what comes back.
+    wheat = RESOURCE_ID[RES_WHEAT]
+    fed = [e for e in _all_edges(g) if e.ops and "FEED" in e.ops]
+    assert fed, "no edge feeds an animal"
+    assert all(e.cost[wheat] == 1 for e in fed)
+    assert all(e.produce[wheat] == 0 for e in fed)
+
+
+@pytest.mark.xfail(reason="the cross-domain layering gap (#89): no PLANT-state edge carries "
+                          "a BUILD, so no edge both eats and harvests wheat", strict=True)
+def test_an_edge_can_both_eat_and_harvest_wheat() -> None:
+    """The strongest witness that the vectors are never netted: one edge that spends a
+    wheat on FEED and harvests wheat on the same day, which only a chain that harvests the
+    crop and then builds on the freed tile can have. It is missing from the graph (#89),
+    and this test is what caught it.
+    """
+    g = _merged()
+    wheat = RESOURCE_ID[RES_WHEAT]
+    assert [e for e in _all_edges(g)
+            if e.cost[wheat] > 0 and e.produce[wheat] > 0]
 
 
 def test_fert_collect_edges_survive() -> None:
@@ -368,7 +413,7 @@ def _build_with(factory, entity: str) -> TileGraph:
     same executor, the same assertions - under a different RNG seed,
     instead of re-implementing the build beside it.
     """
-    from agent.tile_dp import graph as G
+    from offline_lab.build import graph as G
 
     real = G._new_sim
     G._new_sim = factory
@@ -442,7 +487,7 @@ def test_weed_rng_reaches_tile_transitions() -> None:
     """
     def idle(seed: int, spawn: float, days: int = 12):
         from offline_lab.fast_sim import FastSim
-        from agent.tile_dp.graph import _act, _tile_and_day
+        from offline_lab.build.graph import _act, _tile_and_day
 
         sim = FastSim({"episodeSteps": 30 * 24, "seed": seed,
                        "weedSpawnChance": spawn})

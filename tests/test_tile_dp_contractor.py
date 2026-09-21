@@ -29,17 +29,19 @@ from pathlib import Path
 
 import numpy as np
 
+from agent.artifact import artifact_path
 from agent.tile_dp.chains import chain_ops
 from agent.world.model import RESOURCE_ID
 from agent.world.model import N_RESOURCE
+from agent.world.model import RES_LABOR
 from agent.tile_dp.contractor import HORIZON_DAYS, TileContractor, price_board
-from agent.tile_dp.graph import build_graph
+from offline_lab.build.graph import build_graph
 from agent.tile_dp.tile_state import KIND_NONE, KIND_PLANT, TileState
 
 from kaggle_environments.envs.kaggriculture import kaggriculture as K
 
 REPO = Path(__file__).resolve().parents[1]
-GRAPH_PATH = REPO / "tile_dp" / "models" / "graph_tile_lifecycle.npz"
+GRAPH_PATH = artifact_path("tile_graph", ".npz")
 
 # Acceptance ceilings from issue #11 §7 / §5.
 SWEEP_CEILING_MS = 15.0
@@ -80,7 +82,7 @@ def _integer_duals() -> tuple[np.ndarray, np.ndarray]:
     p[RESOURCE_ID["CARROT"]] = 35
     p[RESOURCE_ID["EGG"]] = 60
     w = np.zeros(N_RESOURCE)
-    w[RESOURCE_ID["LABOR_HOURS"]] = 3
+    w[RESOURCE_ID[RES_LABOR]] = 3
     w[RESOURCE_ID["FERTILIZER"]] = 7
     return p, w
 
@@ -141,7 +143,7 @@ def test_monotone_in_prices_and_in_wages() -> None:
     assert np.all(price_board(graph, p_hi, w0, [0]).values >= base)
 
     w_lo = w0.copy()
-    w_lo[RESOURCE_ID["LABOR_HOURS"]] -= 1
+    w_lo[RESOURCE_ID[RES_LABOR]] -= 1
     assert np.all(price_board(graph, p0, w_lo, [0]).values >= base)
 
     p_lo = p0.copy()
