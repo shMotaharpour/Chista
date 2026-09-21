@@ -347,7 +347,7 @@ def _solve_at(obs, contractor, supply, class_of_tile, hands, iter_cap,
 
 
 def compile(day_plan: "DayPlan", obs, *, hands: int | None = None,
-            config=None) -> dict:
+            config=None, model=None, activity: int | None = None) -> dict:
     """A `DayPlan` -> the `{"units": [...], "market": [...]}` the dispatcher slices.
 
     The unit ops come from the day layer's own compiler, against the hand
@@ -368,7 +368,8 @@ def compile(day_plan: "DayPlan", obs, *, hands: int | None = None,
     fitted = day_plan.day
     pool = int(fitted.pool if hands is None else hands)
     if not fitted.complete or not fitted.chains:
-        rows = K.build(obs, (), hands=0, config=config).rows
+        rows = K.build(obs, (), hands=0, config=config,
+                       model=model, activity=activity).rows
         return {"units": [[["PASS"]] * TURNS_PER_DAY], "market": rows}
 
     available = availability(obs, fitted.chains)
@@ -385,5 +386,6 @@ def compile(day_plan: "DayPlan", obs, *, hands: int | None = None,
                         settled=result.settled)
     harvest = sum(int(units) for _hour, _item, units in ops.arrivals)
     market = K.build(obs, fitted.chains, hands=min(pool, result.pool) if pool else result.pool,
-                     harvest_expected=harvest, config=config)
+                     harvest_expected=harvest, config=config,
+                     model=model, activity=activity)
     return to_plan(ops, market=market.rows)

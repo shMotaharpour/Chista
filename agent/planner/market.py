@@ -153,21 +153,24 @@ def hire_orders(hands: int, hires_today: int, multiplier: int = 1
     return orders, bill
 
 
-def sell_rows(obs, harvest_expected: int, cash_needed: float, config=None
-              ) -> list:
+def sell_rows(obs, harvest_expected: int, cash_needed: float, config=None,
+              *, model=None, activity: int | None = None) -> list:
     """Belief's per-hour SELL queue, or no rows if it cannot build one.
 
     Called through `market_queue`, which is belief's documented entry point and
     the only one that assembles the shed state, the forecast, the capacity
-    guard and the season-end liquidation in one place. It is a UNIFORM spread:
-    the slot circuit that would beat it is built and benched at +1513 coins a
-    season and cannot be reached from here (#78 — `market_queue` neither takes
-    an `hour_plan` nor forwards one, and reaching past it would mean rebuilding
-    belief's assembly in the planner).
+    guard and the season-end liquidation in one place. It is a UNIFORM spread
+    unless a `model` is handed in: then the quantities stay the guard's decision
+    and only their HOUR placement is re-timed by the slot circuit — the circuit
+    that is built and benched at +1513 coins a season, and `market_queue`'s own
+    `model=`/`activity=` is the wire that reaches it (#78). `activity` is the
+    rival's own sell bucket, `tracker.MarketTracker.activity_bucket(step)`.
+    Without a model the queue is the uniform spread and needs neither.
     """
     from agent.belief.shed import market_queue
     return market_queue(_sellable_obs(obs), harvest_expected=int(harvest_expected),
-                        cash_needed=float(cash_needed), config=config)
+                        cash_needed=float(cash_needed), config=config,
+                        model=model, activity=activity)
 
 
 def _sellable_obs(obs):
@@ -218,7 +221,8 @@ def merge(sells: list, hires: list, buys: list, *, cap: int = 10,
 
 
 def build(obs, chains, *, hands: int, harvest_expected: int = 0,
-          config=None, cap: int = 10) -> DayMarket:
+          config=None, cap: int = 10, model=None, activity: int | None = None
+          ) -> DayMarket:
     """The whole day's market side, from the committed chains."""
     private = obs.get("private", {}) if isinstance(obs, dict) else {}
     farms = obs.get("farms", []) if isinstance(obs, dict) else []
@@ -233,7 +237,8 @@ def build(obs, chains, *, hands: int, harvest_expected: int = 0,
     hires, hire_bill = hire_orders(hands, int(farm.get("hires_today", 0)),
                                    multiplier)
     bill += hire_bill
-    sells = sell_rows(obs, harvest_expected, float(bill), config)
+    sells = sell_rows(obs, harvest_expected, float(bill), config,
+                      model=model, activity=activity)
     rows, dropped = merge(sells, hires, buys, cap=cap)
     return DayMarket(rows=rows, bill=int(bill), buys=tuple(map(tuple, buys)),
                      hires=len(hires), dropped=dropped,

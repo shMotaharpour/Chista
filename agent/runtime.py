@@ -8,10 +8,10 @@ Per turn:
   hour 0   -> `Manager.observe(obs, config)`: solve inside the turn's budget and
               commit today's plan. The units act this turn, so the plan has to
               exist now, and this is the one call that may spend the budget.
-  hour > 0 -> `Manager.step(budget_ms=...)`: spend what is left of the free
-              second on tomorrow's column pool. F058 measured `actTimeout` as
-              per turn with the first second free, so hours 1..23 are ~23 free
-              seconds a day the solve otherwise never sees.
+  hour > 0 -> `Manager.step(obs, budget_ms=...)`: spend what is left of the free
+              second on tomorrow's column pool, and feed the rival tracker the
+              turn it is in (its bucket is a window over 24 TURNS, so a tracker
+              fed once a day would read 24 days and call it a day).
   then     -> `dispatch_plan(Manager.best(), obs)`: slice the committed plan by
               hour into the dict the engine reads.
 
@@ -45,7 +45,7 @@ from typing import Any
 
 from agent.config import Config
 from agent.dispatch import PASS_ACTION, dispatch_plan
-from agent.manager.core import Manager
+from agent.manager.core import Manager, opponent_model
 
 #: F046's episode overage bank, as the default for a caller that omits it. The
 #: observation carries the live figure (`remainingOverageTime`); this constant
@@ -123,6 +123,11 @@ class Runtime:
         #: the contractor is the one step that can fail on a fresh checkout,
         #: and a failure here must be recorded like any other.
         self.manager: Manager | None = None
+        #: The pretrained rival model is loaded HERE, at import, and never in a
+        #: turn: 1,222 ms measured against a 965 ms hour-0 budget, so loading it
+        #: lazily would cost the season's first day its plan (#95). `Manager`
+        #: shares this one instance.
+        opponent_model()
         self.turns = 0
         #: One entry per failed turn, newest last, capped so a broken season
         #: cannot grow the log without bound.
@@ -150,7 +155,7 @@ class Runtime:
             if _hour_of(obs) == 0:
                 self.manager.observe(obs, config)
             else:
-                self.manager.step(budget_ms=self._remaining_ms(started))
+                self.manager.step(obs, budget_ms=self._remaining_ms(started))
             action = dispatch_plan(self.manager.best(), obs)
         except Exception as exc:                  # noqa: BLE001 - the harness contract
             # The ladder's job, done honestly: a legal answer plus a record.

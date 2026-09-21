@@ -63,7 +63,7 @@ class _FakeManager:
         if self.raises == "observe":
             raise RuntimeError("observe blew up")
 
-    def step(self, budget_ms: float | None = None) -> bool:
+    def step(self, obs=None, budget_ms: float | None = None) -> bool:
         self.stepped.append(budget_ms)
         if self.raises == "step":
             raise RuntimeError("step blew up")
@@ -216,10 +216,10 @@ def test_the_day_line_is_written_once_per_day() -> None:
 def test_an_over_budget_turn_is_logged_as_an_anomaly() -> None:
     """A turn over the working budget gets an `A` line even when nothing raised."""
     class _SlowManager(_FakeManager):
-        def step(self, budget_ms: float | None = None) -> bool:
+        def step(self, obs=None, budget_ms: float | None = None) -> bool:
             import time
             time.sleep(0.05)
-            return super().step(budget_ms)
+            return super().step(obs, budget_ms)
 
     runtime = _runtime(_SlowManager(), turn_budget_ms=5.0, reserve_ms=1.0)
     stdout, action = _quiet(runtime.act, _obs(day=0, hour=1))

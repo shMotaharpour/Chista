@@ -48,6 +48,33 @@ from agent.world.rules import TURNS_PER_DAY
 
 IDLE_PLAN = {"units": [[["PASS"]] * TURNS_PER_DAY], "market": []}
 
+#: The pretrained rival model, loaded ONCE per process (#95).
+#:
+#: `OpponentModel(pretrained=True)` reads `agent/artifact/opponent_counts.npz`
+#: (2,811 states) and takes 1,222 ms measured — more than the whole hour-0 turn
+#: budget (965 ms), so it cannot be loaded inside a turn. It is warmed at import
+#: by `agent/runtime.py` and shared by every manager.
+#:
+#: An artifact that is missing or empty gives `None` rather than an empty table:
+#: the caller then passes no model at all and the queue keeps its uniform spread,
+#: instead of re-timing the day on a table with nothing in it.
+_OPPONENT: object | None = None
+_OPPONENT_TRIED = False
+
+
+def opponent_model():
+    """The rival model, or None when there is no trained table to read."""
+    global _OPPONENT, _OPPONENT_TRIED
+    if not _OPPONENT_TRIED:
+        _OPPONENT_TRIED = True
+        try:
+            from agent.belief.opponent import OpponentModel
+            model = OpponentModel(pretrained=True)
+            _OPPONENT = model if getattr(model, "counts", None) else None
+        except Exception:                       # noqa: BLE001 - belief is optional
+            _OPPONENT = None
+    return _OPPONENT
+
 
 class Manager:
     """`observe` at hour 0, `step` every turn, `best` whenever asked."""
@@ -65,6 +92,12 @@ class Manager:
         self.obs = None
         self.config = None
         self.certified = False
+        #: The rival's own history, fed every observation (#95). Cheap: 0.1 ms
+        #: measured per call. Its `activity_bucket` is what selects the regime
+        #: row of the trained table, so the model needs the tracker and the
+        #: tracker needs every turn, not only the day's first.
+        self.tracker = None
+        self.opponent = opponent_model()
 
     # -- the day ----------------------------------------------------------
     def observe(self, obs, config=None) -> None:
@@ -93,16 +126,48 @@ class Manager:
         self.pool = list(self.day.master.pool)
         self.duals = self.day.master.w
         self.certified = bool(self.day.master.certified)
+        self._watch(obs)
         self.plan = D.compile(self.day, obs, hands=self.day.hands,
-                              config=config)
+                              config=config, model=self.opponent,
+                              activity=self._activity())
 
-    def step(self, budget_ms: float | None = None) -> bool:
+    def _watch(self, obs) -> None:
+        """Feed the rival tracker, building it on the first observation.
+
+        Not in `__init__`: the seat index is in the observation (`player`), not
+        in the config, and a tracker built for the wrong seat reads the wrong
+        farm's flows without saying so.
+        """
+        if obs is None:
+            return
+        if self.tracker is None:
+            from agent.belief.tracker import MarketTracker
+            player = int(obs.get("player", 0)) if isinstance(obs, dict) else 0
+            self.tracker = MarketTracker(player=player)
+        self.tracker.observe(obs)
+
+    def _activity(self) -> int | None:
+        """The rival's own sell bucket over the last day, or None if unwatched.
+
+        Bucket 0 is "no history yet", which is a row the trained table has, so
+        day 0 is priced from the start regime rather than from no regime.
+        """
+        if self.tracker is None or self.tracker.step < 0:
+            return None
+        return int(self.tracker.activity_bucket(self.tracker.step))
+
+    def step(self, obs=None, budget_ms: float | None = None) -> bool:
         """Spend a turn improving the pool. Today's plan is not touched.
 
         It cannot be: the units have already acted on it. What this buys is
         tomorrow's hour 0, which starts from a pool that is closer to done.
         Returns whether the master's answer is certified.
+
+        `obs` is this turn's observation and is optional: it feeds the rival
+        tracker (the pool work below needs no observation at all), so a caller
+        that only wants the pool can leave it out.
         """
+        self._watch(obs)
         if self.obs is None or self.certified:
             return self.certified
         budget = self.cfg.solve_budget_ms if budget_ms is None else budget_ms
