@@ -72,7 +72,15 @@ def test_the_floor_stall_is_real() -> None:
 
 
 def _brute(good: str, inventory: int, lot: int, drains: list[int]) -> int:
-    """Exhaustive enumeration of the day split — the DP's reference."""
+    """Exhaustive enumeration of the day split — the DP's reference.
+
+    Engine order per day (F037): the sale quotes the inventory BEFORE
+    that day's drain, so both the units sold and the past drains
+    subtract from the state the day prices against (`inventory - sold -
+    W[d]`). The pre-#96 version ADDED `sold` here, which agreed with the
+    DP's own sign bug — two wrongs agreeing, the reason the split defect
+    survived this enumeration.
+    """
     g = good
     W = [0]
     for d in drains[:-1]:
@@ -82,7 +90,7 @@ def _brute(good: str, inventory: int, lot: int, drains: list[int]) -> int:
         if d == len(drains):
             best[0] = max(best[0], coins)
             return
-        st = inventory + sold - W[d]
+        st = inventory - sold - W[d]
         for k in range(lot - sold + 1):
             rec(d + 1, sold + k,
                 coins + sell_coins(g, st, k))
@@ -106,10 +114,10 @@ def test_the_day_split_is_the_exact_optimum() -> None:
         W = np.concatenate([[0], np.cumsum(drains)[:-1]])
         xg = np.zeros(len(drains), dtype=int)
         for _ in range(lot):
-            marg = [K.market_price(g, float(inv + xg.sum() - W[d]))
+            marg = [K.market_price(g, float(inv - xg.sum() - W[d]))
                     for d in range(len(drains))]
             xg[int(np.argmax(marg))] += 1
-        gc = sum(sell_coins(g, inv + int(xg[:d].sum()) - W[d], int(xg[d]))
+        gc = sum(sell_coins(g, inv - int(xg[:d].sum()) - W[d], int(xg[d]))
                  for d in range(len(drains)))
         greedy_loses += gc < coins
     assert greedy_loses > 0, (

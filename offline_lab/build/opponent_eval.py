@@ -104,7 +104,8 @@ def _eval_rows(dates: list[str]) -> tuple[np.ndarray, np.ndarray, np.ndarray,
             ix = key_ix.get(key)
             if ix is None:
                 continue                      # a state training never saw
-            b = model._bin(float(qty)) if op == "SELL" else model.n_bins - 1
+            b = (model._bin(float(qty)) if op == "SELL"
+                 else model.BUY_BIN)
             s_idx.append(ix)
             a_idx.append(b)
             g_idx.append(PRODUCTS.index(item))
