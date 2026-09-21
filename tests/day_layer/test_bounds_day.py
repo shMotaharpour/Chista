@@ -15,7 +15,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
 from agent.wsr import beam as B
 from agent.wsr import tasks as T
 
-CORPUS = pathlib.Path("/chista/pm/world/tests/day_layer/corpus/real_days.json")
+CORPUS = pathlib.Path(__file__).parent / "corpus" / "real_days.json"
 #: A day from the archive with a floor worth asking about: 93 tasks, one unit on the field.
 DAY_KEY = ("2026-08-24", 98009264, 14)
 
@@ -96,19 +96,36 @@ def _one_tile_day(tasks_on_the_shed, hire_hours):
 
 
 def test_the_walk_counts_the_shed_once_and_pays_for_the_crossings():
-    """Three quadrants, hand-checked: the tree is the three walks out of the shed's single node.
+    """Three quadrants, hand-checked: each tile's edge to the shed is 8 from its own nearest door.
 
-    From the shed at (4,4): 8 to (0,0), then 9 to (9,0) and 9 to (0,9) - 26. With the four access
-    tiles left as four nodes the tree also pays the 2x2 block's own cost and reads 29.
+    (0,0) is 8 from (4,4), (9,0) is 8 from (5,4) and (0,9) is 8 from (4,5), and 8 beats the 9 a tile
+    would pay to reach another tile - so the tree is 8 + 8 + 8 = 24. One representative door reads 26,
+    and the four access tiles as four nodes read 27.
     """
     grid = [((0, 0), ("WATER",), None), ((9, 0), ("WATER",), None), ((0, 9), ("WATER",), None)]
     tasks = T.build(grid, available={})
 
-    assert T.spanning_walk(tasks) == 26, (
-        f"the tree over three quadrants is 8 + 9 + 9 out of the shed, got {T.spanning_walk(tasks)}; "
-        f"29 means the four access tiles are four nodes again"
+    assert T.spanning_walk(tasks) == 24, (
+        f"the tree over three quadrants is 8 + 8 + 8 out of the shed's nearest doors, "
+        f"got {T.spanning_walk(tasks)}; 26 is one representative door, 27 is four doors"
     )
     assert T.spanning_walk(tasks) > len(grid) - 1, "the tile count is what the tree exists to improve on"
+
+
+def test_the_shed_s_edge_costs_the_nearest_door_and_not_a_representative_one():
+    """Two corners of the board: 8 out of each nearest door, 16 in all.
+
+    A worker may start on any of the shed's four access tiles, so a tile's edge to the shed is the
+    distance to the nearest of them. Charging the representative (4,4) instead reads 8 + 10 = 18, and
+    leaving the four as four nodes reads 19.
+    """
+    grid = [((0, 0), ("WATER",), None), ((9, 9), ("WATER",), None)]
+    tasks = T.build(grid, available={})
+
+    assert T.spanning_walk(tasks) == 16, (
+        f"(0,0) is 8 from its nearest door and (9,9) is 8 from its own, so the tree is 16, "
+        f"got {T.spanning_walk(tasks)}; 18 is one representative door, 19 is four doors"
+    )
 
 
 def test_the_floor_counts_the_ladder_and_not_the_work_divided_by_the_horizon():
