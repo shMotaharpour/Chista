@@ -114,10 +114,19 @@ class OpponentModel:
     BINS = (1.0, 3.0, 6.0)      # sell-size bin edges
     SHRINK_TOPUP: float = 50.0  # pseudo-counts the good's prior can add
 
-    def __init__(self, alpha: float = 0.5, n_bins: int = 4,
+    #: Bin layout, both sides of a dual good's trade (the owner's ruling,
+    #: 2026-09-21): `0` hold, `1..3` sell-size bins (1-2 / 3-5 / >=6), and
+    #: bin `4` = the seat's net BUY count — dual goods only, never a
+    #: SELL-only good. `expected_sell` reads bins 0..3, `expected_buy`
+    #: reads bin 4; the two sides of the market never share a bin, so a
+    #: silent-on-sells rival buying feed wheat cannot pose as a seller.
+    N_BINS: int = 5
+    BUY_BIN: int = 4
+
+    def __init__(self, alpha: float = 0.5, n_bins: int | None = None,
                  pretrained: bool = True) -> None:
         self.alpha = alpha
-        self.n_bins = n_bins
+        self.n_bins = n_bins if n_bins is not None else self.N_BINS
         self.counts: dict[tuple, np.ndarray] = {}
         self.qty_sum: dict[tuple, np.ndarray] = {}
         self._marginals: dict[str, np.ndarray] = {}
@@ -180,7 +189,7 @@ class OpponentModel:
             arr[b] += 1.0
             qs[b] += q
             if g in DUAL and rec.rival_buys[i] > 0:
-                arr[-1] += 1.0            # the residual went negative: a net buy
+                arr[self.BUY_BIN] += 1.0  # the residual went negative: a net buy
         self._marginal_dirty = True
 
     def policy(self, good: str, step: int, price: int,
@@ -233,26 +242,46 @@ class OpponentModel:
                                     dtype=float)
         return acc, acc_q
 
+    def _mean_volume(self, counts: np.ndarray, qty_sum: np.ndarray,
+                     good: str, buy: bool) -> np.ndarray:
+        """Per-bin mean volume, sell bins and the buy bin kept apart.
+
+        Bin 4 holds a dual good's net BUY counts, so a SELL query
+        (`buy=False`) zeroes it and a BUY query (`buy=True`) reads only
+        it. A SELL-only good never fills bin 4: every filled bin is a
+        sale, so a SELL query reads them all and a BUY query is 0 by
+        construction.
+        """
+        mean = np.where(counts > 0, qty_sum / np.maximum(counts, 1.0), 0.0)
+        if good in DUAL:
+            if buy:
+                out = np.zeros_like(mean)
+                out[self.BUY_BIN] = mean[self.BUY_BIN]
+                return out
+            mean[self.BUY_BIN] = 0.0
+            return mean
+        return np.zeros_like(mean) if buy else mean
+
     def expected_sell(self, good: str, step: int, price: int,
                       activity: int | None = None) -> float:
-        """Expected units the rival sells next turn in this state.
+        """Expected units the rival SELLS next turn in this state.
 
         `activity` (the rival's own sell bucket over the last 24 turns,
         from `tracker.MarketTracker.activity_bucket`) selects the
-        activity-keyed table; a silent rival's row answers near-pure
-        hold, which is what makes a PASS rival predictable (measured:
-        1,230 phantom units over 10 days without it, 0 with it). Without
-        a bucket the plain state is the ACTIVITY MARGINAL — all bucket
-        rows summed — which is how the pre-activity table was built, over
-        this artifact's own (rebuilt, wider) corpus rather than that one's
-        numbers. See `_activity_marginal`.
+        activity-keyed table; the plain path reads the activity marginal.
+        A dual good's buy bin is excluded from this volume — a rival that
+        is silent on sells while BUYING (a PASS-like seat buying feed
+        wheat) answers 0 here, its purchases read through
+        `expected_buy`. See `_mean_volume`.
         """
         if activity is not None:
             key = self._key_activity(good, step, price, activity)
             p = self.policy(good, step, price, activity=activity)
             qs = self.qty_sum.get(key, np.zeros(self.n_bins))
             counts = self.counts.get(key, np.zeros(self.n_bins))
-            mean_qty = np.where(counts > 0, qs / np.maximum(counts, 1.0), 0.0)
+            mean_qty = self._mean_volume(np.asarray(counts, dtype=float),
+                                         np.asarray(qs, dtype=float),
+                                         good, buy=False)
             return float(p @ mean_qty)
         acc, acc_q = self._activity_marginal(
             good, int(step // TURNS_PER_DAY),
@@ -265,7 +294,41 @@ class OpponentModel:
         w = self.SHRINK_TOPUP * n / (n + self.SHRINK_TOPUP)
         p = (acc + self.alpha + w * marg)
         p = p / p.sum()
-        mean_qty = np.where(acc > 0, acc_q / np.maximum(acc, 1.0), 0.0)
+        mean_qty = self._mean_volume(acc, acc_q, good, buy=False)
+        return float(p @ mean_qty)
+
+    def expected_buy(self, good: str, step: int, price: int,
+                     activity: int | None = None) -> float:
+        """Expected units the rival BUYS next turn in this state.
+
+        Only meaningful for the DUAL goods (WHEAT, FERTILIZER) — a
+        SELL-only good's buy bin is empty by construction and this
+        answers 0. Same state shapes as `expected_sell`; the volume
+        comes from the buy bin alone (`_mean_volume` routes the other
+        way). The manager reads this to model the rival's demand for the
+        two goods the farm also trades.
+        """
+        if activity is not None:
+            key = self._key_activity(good, step, price, activity)
+            p = self.policy(good, step, price, activity=activity)
+            qs = self.qty_sum.get(key, np.zeros(self.n_bins))
+            counts = self.counts.get(key, np.zeros(self.n_bins))
+            mean_qty = self._mean_volume(np.asarray(counts, dtype=float),
+                                         np.asarray(qs, dtype=float),
+                                         good, buy=True)
+            return float(p @ mean_qty)
+        acc, acc_q = self._activity_marginal(
+            good, int(step // TURNS_PER_DAY),
+            self._bucket(price, MARKET_PARAMS[good]["base"]))
+        key = self._key(good, step, price)
+        marg = self.good_marginal(good)
+        if float(acc.sum()) <= 0.0 and key not in self.counts:
+            return 0.0
+        n = float(acc.sum())
+        w = self.SHRINK_TOPUP * n / (n + self.SHRINK_TOPUP)
+        p = (acc + self.alpha + w * marg)
+        p = p / p.sum()
+        mean_qty = self._mean_volume(acc, acc_q, good, buy=True)
         return float(p @ mean_qty)
 
     def expected_sell_day(self, obs: Any,
