@@ -59,6 +59,69 @@ def _sell_hours(rows) -> list[tuple[int, int]]:
             if any(o and o[0] == "SELL" for o in row)]
 
 
+def test_the_manager_builds_one_forecast_per_turn(monkeypatch):
+    """One curve, two consumers: the master's objective and the sell queue.
+
+    Belief's `forecast` was built twice per turn — once for the master's price
+    path (1.1 ms) and once inside `market_queue` (1.4 ms) — over two horizons
+    for the same curve. The manager now builds it once and hands it to both, and
+    this guard counts the builds rather than reading the call sites.
+    """
+    from agent.belief import market as BM
+    from agent.belief import shed as SH
+
+    calls: list = []
+    original_forecast = BM.forecast
+
+    def counting_forecast(*args, **kwargs):
+        calls.append(kwargs.get("days"))
+        return original_forecast(*args, **kwargs)
+
+    handed: dict = {}
+    original_queue = SH.market_queue
+
+    def spying_queue(obs, *args, **kwargs):
+        handed["forecast_obj"] = kwargs.get("forecast_obj")
+        return original_queue(obs, *args, **kwargs)
+
+    monkeypatch.setattr(BM, "forecast", counting_forecast)
+    monkeypatch.setattr(SH, "market_queue", spying_queue)
+
+    _env, obs = _board()
+    manager = MC.Manager(Config())
+    manager.observe(obs, {"farmHandCostMult": 1})
+
+    assert len(calls) == 1, f"the turn built {len(calls)} forecasts: {calls}"
+    assert handed.get("forecast_obj") is not None, (
+        "the queue was left to build its own forecast again")
+
+
+def test_handing_the_forecast_in_does_not_change_the_prices():
+    """The reuse must be the same curve, not a different one.
+
+    The master's price path is what its objective is optimised against, so a
+    hand-off that shifted it by a coin would change every plan. Measured by
+    building the path both ways on the same board.
+    """
+    import numpy as np
+
+    from agent.belief.market import forecast
+    from agent.planner import master as M
+
+    _env, obs = _board()
+    days = 20
+    p_full, _w = M.dual_stand_in(obs)
+    fc = forecast(obs, days=days, config={"farmHandCostMult": 1})
+
+    handed, source_a = M._product_price_path(obs, days, p_full[:days],
+                                             forecast_obj=fc)
+    built, source_b = M._product_price_path(obs, days, p_full[:days])
+
+    assert np.array_equal(handed, built), (
+        "the handed-in forecast priced a different curve")
+    assert source_a == source_b
+
+
 def test_the_manager_hands_the_trained_model_to_the_queue(monkeypatch):
     """The shipped path passes `model=`/`activity=`, and they are the real ones.
 

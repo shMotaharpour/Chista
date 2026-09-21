@@ -46,17 +46,15 @@ MAX_MARKET_ORDERS = 10                    # F031; the engine drops the 11th
 def _sort_market(orders: list[list]) -> list[list]:
     """F032's queue order: land -> sells -> hires -> purchases.
 
-    The engine settles a turn in this fixed order and it matters: sells
-    free shed room before that turn's hires and purchases take it back.
-    `planner.repair._sort_market` is the one implementation, but importing
-    it drags `agent.planner`'s package init (master -> replan -> the WSR
-    day compiler) into every market-layer call — a chain that mid-migration
-    fails at import. This is the same 4-line ordering kept here with a
-    test pinning the two against each other; when the planner package
-    imports cleanly again, delegate back to it.
+    The engine settles a turn in this fixed order and it matters: sells free
+    shed room before that turn's hires and purchases take it back. This used to
+    be a second copy of the rule, kept here because importing the planner
+    dragged its package init through `agent.replan` and failed; that chain is
+    broken now, so it delegates to the planner's one implementation.
     """
-    rank = {"BUY_LAND": 0, "SELL": 1, "HIRE": 2}
-    return sorted(orders, key=lambda o: (rank.get(o[0], 3),))
+    from agent.planner.repair import sort_market
+
+    return sort_market(orders)
 
 
 class MarketLayer:

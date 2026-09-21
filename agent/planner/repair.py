@@ -38,8 +38,9 @@ from agent.world.rules import (ANIMAL_RULES, CROP_RULES, LAND_PRICES,
 
 from agent.dispatch import MAX_MARKET_ORDERS
 
-# The market ops that need money, in the order the engine reads the queue.
-_QUEUE_RANK = {"BUY_LAND": 0, "SELL": 1, "HIRE": 2}
+# The market ops that need money are ranked by F032's settle order, which lives
+# in the world's reference module (`world.action_rules.SETTLE_RANK`) — this file
+# used to keep its own copy, which is a second rule.
 
 # Items a worker op must already be carrying (F004: the FERTILIZE is refused
 # when the acting unit holds none; FEED is the same shape).
@@ -175,10 +176,12 @@ def order_cost(order: Iterable[str], obs: Any, hires_today: int,
     return None
 
 
-def _sort_market(market: list[list[str]]) -> list[list[str]]:
+def sort_market(market: list[list[str]]) -> list[list[str]]:
     """F032's queue order: land, then sells, then hires, then purchases."""
+    from agent.world.action_rules import SETTLE_RANK, SETTLE_RANK_DEFAULT
+
     def rank(order: list[str]) -> int:
-        return _QUEUE_RANK.get(order[0] if order else "", 3)
+        return SETTLE_RANK.get(order[0] if order else "", SETTLE_RANK_DEFAULT)
 
     return sorted(market, key=rank)          # stable: same-rank keeps its order
 
@@ -229,7 +232,7 @@ def repair_day(plan: dict, obs: Any) -> RepairResult:
 
     # ---- market: F032's order, then F031's cap, then the purse ----
     market = [list(order) for order in plan.get("market", [])]
-    market = _sort_market(market)
+    market = sort_market(market)
     purse = _money(obs)
     hires_today = int(farm.get("hires_today", 0))
     land_bought = 0                 # carried through the walk: land escalates (B1)

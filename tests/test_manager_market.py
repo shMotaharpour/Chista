@@ -29,6 +29,32 @@ def _chain(cell, ops, entity):
     return (cell, chain_ops(chain_id_of(ops)), entity)
 
 
+def test_the_settle_order_has_exactly_one_definition():
+    """F032 is a design decision, and a second copy is a second decision.
+
+    It was written four times: `planner/market.py`'s `QUEUE_RANK`,
+    `planner/repair.py`'s `_QUEUE_RANK`, a fourth inline dict in
+    `market_layer.py` — whose own docstring asked to delegate back once the
+    planner imported cleanly — and the belief hook it is passed through. The
+    engine settles strictly by queue index, so two tables can disagree and one
+    of them would be wrong without saying so.
+    """
+    import pathlib
+    import re
+
+    root = pathlib.Path(__file__).resolve().parents[1]
+    table = re.compile(r"""["']BUY_LAND["']\s*:\s*0""")
+    copies = [str(path.relative_to(root))
+              for path in (root / "agent").rglob("*.py")
+              if path != root / "agent/world/action_rules.py"
+              and table.search(path.read_text())]
+    assert not copies, f"a second copy of F032's order table: {copies}"
+
+    from agent.world.action_rules import SETTLE_RANK, SETTLE_RANK_DEFAULT
+    assert SETTLE_RANK == {"BUY_LAND": 0, "SELL": 1, "HIRE": 2}
+    assert SETTLE_RANK_DEFAULT == 3
+
+
 def test_wheat_the_seed_and_wheat_the_product_are_different_purchases():
     """One name, two goods, two orders — and buying the wrong one is silent.
 

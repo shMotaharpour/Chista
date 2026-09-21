@@ -17,6 +17,15 @@ from dataclasses import dataclass
 
 from agent.world.model import Animal, Crop, Product
 
+#: F032 — the engine settles a turn's orders strictly by queue index, so the
+#: order IS a design decision: land first (the purse it takes decides whether
+#: the rest land), then sales (they free the shed room the purchases want),
+#: then hires, then purchases. One table, in the world's own reference module,
+#: because a second copy is a second rule.
+SETTLE_RANK = {"BUY_LAND": 0, "SELL": 1, "HIRE": 2}
+#: Everything else (a purchase) settles last.
+SETTLE_RANK_DEFAULT = 3
+
 
 @dataclass(frozen=True)
 class ActionRule:
