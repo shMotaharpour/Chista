@@ -1,13 +1,10 @@
 # ChistaAgent — Kaggriculture competition agent (Kaggle)
-# Python 3.11. torch is CPU-only: install it FIRST from the PyTorch CPU index,
-# then let the rest of this file resolve from PyPI:
+# Python 3.11. Build the venv and install everything from PyPI:
 #
 #   uv venv .venv --python 3.11
-#   uv pip install --python .venv/bin/python "torch==2.14.0+cpu" \
-#       --index-url https://download.pytorch.org/whl/cpu
 #   uv pip install --python .venv/bin/python -r requirements.txt
 
-# Core: Kaggle environment, optimization, ML
+# Core: Kaggle environment and optimization
 # kaggle-environments is pinned EXACTLY: world/fast_sim.py drives the environment's
 # own interpreter through private APIs, so a version bump can change game behavior
 # under every simulation at once. Bump it together with tests/test_world_parity.py
@@ -15,7 +12,6 @@
 kaggle-environments==1.32.7
 ortools>=9.15
 scipy>=1.17
-torch>=2.14.0
 
 # Analysis / plotting
 numpy>=1.26
