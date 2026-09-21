@@ -95,6 +95,9 @@ class Result(NamedTuple):
     pool: int
     route: list[tuple[int, str, int]]
     complete: bool
+    #: The worker-turns the route left unspent, walks included: what more work could be laid on the
+    #: same hands. Zero until `search` fills it, which is the only place the pool is known.
+    spare: int = 0
     #: True when a deadline stopped the search before it ran out of tasks to place. A route that is
     #: neither complete nor out of time is the search's own answer: the pool could not carry it.
     out_of_time: bool = False
@@ -163,6 +166,35 @@ def lower_bound(day: Day, tasks: TaskArray) -> int:
     return len(day.units) + hired
 
 
+def spare_turns(day: Day, tasks: TaskArray, result: Result) -> int:
+    """The worker-turns a route leaves unspent, walks included.
+
+    The hands the pool paid for have the day's turns between them; the route spends one per task and
+    one per tile walked, and this is the rest. A manager reads it after `complete` says yes, to decide
+    whether to lay more work on the same hands rather than hiring again.
+    """
+    hired = max(0, result.pool - len(day.units))
+    total = day.horizon + sum(day.horizon - int(hour) for hour in day.hire_times[:hired])
+    if not result.route:
+        return total
+
+    row = {task_id: index for index, task_id in enumerate(tasks.ids)}
+    per_worker: dict[int, list[tuple[int, str]]] = {}
+    for turn, task_id, worker in result.route:
+        if turn < 0:
+            continue
+        per_worker.setdefault(worker, []).append((turn, task_id))
+
+    spent = 0
+    for items in per_worker.values():
+        here = FARMER_START
+        for _turn, task_id in sorted(items):
+            cell = tasks.cells[row[task_id]]
+            spent += abs(here[0] - int(cell[0])) + abs(here[1] - int(cell[1])) + 1
+            here = (int(cell[0]), int(cell[1]))
+    return max(0, total - spent)
+
+
 def ceiling_for(day: Day, tasks: TaskArray) -> int:
     """The largest pool worth asking about: the tasks, plus the units already on the field.
 
@@ -207,7 +239,7 @@ def search(day: Day, tasks: TaskArray, *, beam: int | None = None,
     a hundred tiles.
     """
     if tasks.n == 0:
-        return Result(0, [], True)
+        return done(Result(0, [], True))
 
     # The arithmetic floor is on the WORKERS a day needs, and the units already on the field are
     # workers, so what has to be hired is the shortfall. Without this the search starts at one hand
@@ -220,7 +252,12 @@ def search(day: Day, tasks: TaskArray, *, beam: int | None = None,
     ceiling = bound if max_hands is None else min(int(max_hands), bound)
     deadline = None if budget_s is None else time.perf_counter() + float(budget_s)
     if start > ceiling:
-        return Result(ceiling, [], False, infeasible=True)
+        return done(Result(ceiling, [], False, infeasible=True))
+
+    def done(result: Result) -> Result:
+        """The answer with its spare capacity on it. `search` is the only place the pool is known,
+        and the spare is counted against the hands that pool paid for."""
+        return result._replace(spare=spare_turns(day, tasks, result))
 
     def width(pool: int) -> int:
         return beam if beam is not None else beam_for(tasks, len(day.units) + pool)
@@ -230,14 +267,14 @@ def search(day: Day, tasks: TaskArray, *, beam: int | None = None,
         return warm if warm is not None and warm.pool == pool else None
 
     if hands is None and ceiling > start:
-        return _smallest_pool(day, tasks, width, start, ceiling, deadline, seed)
+        return done(_smallest_pool(day, tasks, width, start, ceiling, deadline, seed))
 
     partial: Result | None = None
     placed = -1
     for pool in range(start, ceiling + 1):
         result = _fixed_point(day, tasks, width(pool), pool, deadline, seed(pool))
         if result.complete:
-            return result
+            return done(result)
         if partial is None or _better_route(result, partial):
             partial, placed = result, len(result.route)
         elif len(result.route) <= placed:
@@ -247,7 +284,7 @@ def search(day: Day, tasks: TaskArray, *, beam: int | None = None,
         if result.out_of_time:
             # A larger pool costs more and cannot buy back the time, so the loop stops here.
             break
-    return partial if partial is not None else Result(ceiling, [], False)
+    return done(partial if partial is not None else Result(ceiling, [], False))
 
 
 def _makespan(result: Result) -> int:
