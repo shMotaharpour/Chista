@@ -37,7 +37,8 @@ def test_the_wire_moves_the_price_path_down() -> None:
     """A model that expects rival supply must price the future LOWER."""
     obs = _sim_to(0, 3)
     model = OpponentModel(pretrained=True)
-    residual = model.expected_sell_day(obs)
+    # a HIGH-activity rival (bucket 4): the regime the corpus says sells
+    residual = model.expected_sell_day(obs, activity=4)
     assert any(v > 0 for v in residual.values()), "the model expects nothing?"
     fc_plain = forecast(obs, days=5)
     fc_rival = forecast(obs, days=5, residual=residual)
@@ -61,7 +62,7 @@ def test_the_model_fed_path_sits_toward_the_oracle() -> None:
     fc_zero = f(obs, days=4)
     fc_oracle = f(obs, days=4, residual=oracle)
     model = OpponentModel(pretrained=True)
-    fed = model.expected_sell_day(obs)
+    fed = model.expected_sell_day(obs, activity=4)
     fc_model = f(obs, days=4, residual={"WHEAT": fed["WHEAT"]})
     gi = PRODUCTS.index("WHEAT")
     p_zero = fc_zero.prices[3][gi]

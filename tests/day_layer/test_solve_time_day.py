@@ -18,7 +18,7 @@ import pathlib
 import sys
 import time
 
-sys.path.insert(0, "/chista/pm/world")
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
 
 from agent.wsr import beam as B
 from agent.wsr import tasks as T

@@ -2,12 +2,12 @@
   "name": "opponent_counts",
   "kind": "opponent_counts",
   "file": "opponent_counts.npz",
-  "contract": "mixed per-good keys: (good, demand_bucket, price_bucket) for CARROT/TOMATO/STRAWBERRY/MILK/EGG/WOOL \u2014 (good, day, price_bucket) for WHEAT/MELON/FERTILIZER; days col = demand bucket 0..3 or season day",
+  "contract": "N[good, day, price_bucket, activity, action] sell-size counts over both seats of the store's SELL/BUY_PRODUCT orders; activity = the acting seat's own 24-turn sell bucket (0 start, 1 silent, 2 low, 3 mid, 4 high), -1 = plain 3-tuple state; bins = OpponentModel.BINS + net-buy tail",
   "engine": "a2278746",
   "registry": null,
   "stats": {
-    "states": 337,
-    "observations": 17810859,
+    "states": 2811,
+    "observations": 24874155,
     "train_dates": 40,
     "holdout_dates": 7,
     "holdout": [
@@ -21,6 +21,24 @@
     ],
     "bins": 4
   },
-  "source": "offline_lab.build.opponent_pergood_eval:build",
-  "created_utc": "2026-09-20T20:26:14Z"
+  "source": "offline_lab.build.opponent_model:build",
+  "created_utc": "2026-09-21T02:28:30Z",
+  "eval": {
+    "metric": "log_loss_next_turn_action",
+    "holdout_dates": [
+      "2026-09-10",
+      "2026-09-11",
+      "2026-09-12",
+      "2026-09-13",
+      "2026-09-14",
+      "2026-09-15",
+      "2026-09-16"
+    ],
+    "rows": 4084838,
+    "trained": 1.1653,
+    "baseline_global_freq": 1.2144,
+    "baseline_always_hold": 15.8177,
+    "beats_global_freq": true,
+    "source": "offline_lab.build.opponent_eval"
+  }
 }

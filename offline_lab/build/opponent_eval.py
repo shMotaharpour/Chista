@@ -38,11 +38,15 @@ def _holdout_dates() -> list[str]:
     return list(info["stats"]["holdout"])
 
 
-def _state_action_rows(dates: list[str]) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """(state_idx, action_idx, good_idx) rows from the holdout dates.
+def _eval_rows(dates: list[str]) -> tuple[np.ndarray, np.ndarray, np.ndarray,
+                                          np.ndarray]:
+    """(state_idx, action_idx, good_idx, activity_idx) from the holdout.
 
     The state key/bins come from OpponentModel itself; the rows are the
-    ACTUAL actions the seats committed on the held-out days.
+    ACTUAL actions the seats committed on the held-out days, and each row
+    carries the acting seat's OWN activity bucket (its 24-turn sell
+    window, the same computation the builder applies) so the
+    activity-keyed table is scored on the states it actually models.
     """
     import duckdb
 
@@ -54,10 +58,19 @@ def _state_action_rows(dates: list[str]) -> tuple[np.ndarray, np.ndarray, np.nda
     keys = sorted(model.counts)
     key_ix = {k: i for i, k in enumerate(keys)}
 
-    s_idx, a_idx, g_idx = [], [], []
+    s_idx, a_idx, g_idx, act_idx = [], [], [], []
     for date in dates:
         mo = str(STORE / date / "market_orders.parquet")
         city = str(STORE / date / "city_steps.parquet")
+
+        sold: dict[tuple[int, int, int], float] = {}
+        for e, s, p, sold_qty in con.execute(
+            f"select episode_id, step, player, "
+            f"sum(case when op = 'SELL' then qty else 0 end)::DOUBLE "
+            f"from read_parquet('{mo}') group by 1, 2, 3"
+        ).fetchall():
+            sold[(e, s, p)] = float(sold_qty)
+
         state: dict[tuple[int, int], tuple] = {}
         for e, s, *rest in con.execute(
             f"select episode_id, step, {price_cols} "
@@ -65,16 +78,29 @@ def _state_action_rows(dates: list[str]) -> tuple[np.ndarray, np.ndarray, np.nda
         ).fetchall():
             state[(e, s)] = tuple(rest)
         agg = con.execute(
-            f"select episode_id, step, op, item, sum(qty)::DOUBLE qty "
+            f"select episode_id, step, player, op, item, sum(qty)::DOUBLE qty "
             f"from read_parquet('{mo}') "
             f"where op in ('SELL', 'BUY_PRODUCT') and item in ({items_sql}) "
-            f"group by 1, 2, 3, 4"
+            f"group by 1, 2, 3, 4, 5"
         ).fetchall()
-        for e, s, op, item, qty in agg:
+        for e, s, player, op, item, qty in agg:
             prices = state.get((e, s))
             if prices is None:
                 continue
-            key = model._key(item, s, prices[PRODUCTS.index(item)])
+            window = sum(sold.get((e, s - back, player), 0.0)
+                         for back in range(1, 25))
+            if s < 24:
+                activity = 0
+            else:
+                activity = 1
+                if window > 60:
+                    activity = 4
+                elif window > 10:
+                    activity = 3
+                elif window > 0:
+                    activity = 2
+            key = model._key_activity(item, s, prices[PRODUCTS.index(item)],
+                                      activity)
             ix = key_ix.get(key)
             if ix is None:
                 continue                      # a state training never saw
@@ -82,20 +108,26 @@ def _state_action_rows(dates: list[str]) -> tuple[np.ndarray, np.ndarray, np.nda
             s_idx.append(ix)
             a_idx.append(b)
             g_idx.append(PRODUCTS.index(item))
-    return np.array(s_idx), np.array(a_idx), np.array(g_idx)
+            act_idx.append(activity)
+    return (np.array(s_idx), np.array(a_idx), np.array(g_idx),
+            np.array(act_idx))
 
 
 def _policy_matrix(model: OpponentModel, keys) -> np.ndarray:
     """The model's OWN policy per state (hierarchical smoothing applied).
 
     The key's price bucket is mapped back to a representative price
-    (`base * (1 + bucket/3)`), the same mapping `_bucket` quantizes.
+    (`base * (1 + bucket/3)`), the same mapping `_bucket` quantizes. The
+    activity dimension is queried with `activity=`, bypassing the
+    smoothing's marginal fallback for unseen activity states.
     """
     from agent.world.prices import MARKET_PARAMS
     out = np.zeros((len(keys), model.n_bins))
-    for i, (good, day, bucket) in enumerate(keys):
+    for i, key in enumerate(keys):
+        good, day, bucket = key[0], key[1], key[2]
+        activity = key[3] if len(key) > 3 else None
         price = int(round((1.0 + bucket / 3.0) * MARKET_PARAMS[good]["base"]))
-        out[i] = model.policy(good, day * 24, price)
+        out[i] = model.policy(good, day * 24, price, activity=activity)
     return out
 
 
@@ -120,7 +152,7 @@ def main() -> int:
     P_hold = np.zeros((len(keys), trained.n_bins))
     P_hold[:, trained.n_bins - 1] = 1.0
 
-    s_idx, a_idx, g_idx = _state_action_rows(holdout)
+    s_idx, a_idx, g_idx, _act = _eval_rows(holdout)
     n = len(s_idx)
     print(f"holdout rows: {n:,} over {len(set(s_idx.tolist())):,} seen states "
           f"({time.time()-t0:.0f}s)")

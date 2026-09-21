@@ -17,9 +17,10 @@ The clock here is the test's own. A real deadline that lands between two attempt
 test that fails for the hardware is worth less than no test: each call to the clock costs one unit,
 so the sweep is a sweep.
 """
+import pathlib
 import sys
 
-sys.path.insert(0, "/chista/pm/world")
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
 
 from agent.tile_dp.chains import chain_id_of, chain_ops
 from agent.wsr import beam as B

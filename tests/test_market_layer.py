@@ -225,13 +225,38 @@ def test_without_the_market_layer_the_same_day_destroys_product():
 
 
 def test_shed_state_reads_the_bags_and_blocks_buys_at_the_cap():
-    obs = {"private": {"shed": {"WHEAT": 99, "MELON": 1},
+    obs = {"private": {"shed": {"WHEAT": 99, "MELON": 1, "GOOSE": 2},
                        "inventories": [{"CARROT": 3}, {}]}}
     state = shed_state(obs)
-    assert (state.held, state.carried, state.room) == (100, 3, 0)
+    assert (state.held, state.carried, state.room) == (102, 3, 0)
     assert state.buys_blocked                        # F043's second half
-    assert state.night_overflow() == 3               # nothing fits
+    assert state.night_overflow() == 3               # the bags don't fit
     assert state.sellable() == {"WHEAT": 99, "MELON": 1}
+    # the shed's animal is held and counted, but never quoted: a SELL of a
+    # non-product raises KeyError downstream (#77 — the 159 raises/season
+    # the manager hit on day-0 livestock)
+    assert "GOOSE" not in state.sellable()
+
+
+def test_an_animal_in_the_shed_never_reaches_the_sell_queue():
+    """R007 for #77: the queue the dispatcher consumes is products-only.
+
+    Break it by removing the `_SELLABLE` filter in `sellable()` — the
+    market_queue below raises KeyError('GOOSE') without it.
+    """
+    obs = {"private": {"shed": {"WHEAT": 40, "GOOSE": 1},
+                       "inventories": [{}]},
+           "day": 3, "hour": 0, "money": 100,
+           "market": {"inventory": {g: 100 for g in (
+               "WHEAT", "CARROT", "TOMATO", "MELON", "STRAWBERRY", "MILK",
+               "EGG", "WOOL", "FERTILIZER")},
+               "prices": {g: 25 for g in (
+                   "WHEAT", "CARROT", "TOMATO", "MELON", "STRAWBERRY",
+                   "MILK", "EGG", "WOOL", "FERTILIZER")}}}
+    queue = market_queue(obs, forecast_obj=None, config=None)
+    for row in queue:
+        for order in row:
+            assert order[1] != "GOOSE"
 
 
 # --- the schedule and the queue ------------------------------------------

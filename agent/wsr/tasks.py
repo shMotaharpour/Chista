@@ -242,6 +242,119 @@ class TaskArray:
         return out
 
 
+#: The layers of `land_image`, in order, and what each one counts.
+IMAGE_LAYERS: tuple[str, ...] = (
+    "tasks",        # how many tasks the tile carries
+    "wheat",        # the tile needs wheat: a FEED eats one
+    "fertilizer",   # the tile needs fertilizer: a FERTILIZE spreads one
+    "animal",       # the tile takes an animal: a PLACE puts one down
+    "drop",         # the tile's harvest has to reach the shed by a deadline
+    "depth",        # the longest chain on the tile, in tasks
+)
+
+
+def chain_depth(tasks: TaskArray) -> np.ndarray:
+    """The longest precedence chain each task sits in, in tasks.
+
+    `pred[i, j]` means j precedes i, so a task sits one below its deepest predecessor. The graph is
+    acyclic, so repeated relaxation converges and no recursion is needed.
+    """
+    if tasks.n == 0:
+        return np.zeros(0, dtype=np.int16)
+    depth = np.ones(tasks.n, dtype=np.int16)
+    for _ in range(tasks.n):
+        with_pred = tasks.pred.any(axis=1)
+        deeper = (depth[None, :] * tasks.pred).max(axis=1) + 1
+        updated = np.where(with_pred, deeper, depth).astype(np.int16)
+        if (updated == depth).all():
+            break
+        depth = updated
+    return depth
+
+
+def land_image(tasks: TaskArray, board_size: int = BOARD_SIZE) -> np.ndarray:
+    """The day as one board per quantity, stacked: shape (board, board, len(IMAGE_LAYERS)).
+
+    A view of the arrays rather than a second source of truth - every layer is a scatter of a column
+    `build` already filled. Read it as `image[x, y]` for a tile's own vector, or `image[:, :, n]` for
+    a whole board of one quantity.
+    """
+    from agent.world.action import Animal, Product
+
+    image = np.zeros((board_size, board_size, len(IMAGE_LAYERS)), dtype=np.int16)
+    if tasks.n == 0:
+        return image
+    x = tasks.cells[:, 0].astype(np.int64)
+    y = tasks.cells[:, 1].astype(np.int64)
+    depth = chain_depth(tasks)
+
+    np.add.at(image[:, :, 0], (x, y), 1)
+    wheat, fertilizer = _item_code(Product.WHEAT), _item_code(Product.FERTILIZER)
+    animal_codes = {_item_code(a) for a in Animal}
+    np.maximum.at(image[:, :, 1], (x, y), (tasks.items == wheat).astype(np.int16))
+    np.maximum.at(image[:, :, 2], (x, y), (tasks.items == fertilizer).astype(np.int16))
+    np.maximum.at(image[:, :, 3], (x, y),
+                  np.isin(tasks.items, list(animal_codes)).astype(np.int16))
+    np.maximum.at(image[:, :, 5], (x, y), depth)
+    if tasks.drop_rows.size:
+        rows = tasks.drop_rows
+        np.maximum.at(image[:, :, 4], (tasks.cells[rows, 0].astype(np.int64),
+                                       tasks.cells[rows, 1].astype(np.int64)), 1)
+    return image
+
+
+def spanning_walk(tasks: TaskArray) -> int:
+    """A floor on the walking: the minimum spanning tree over the worked tiles, rooted at the shed.
+
+    Any set of walks that covers the tiles, starting from the shed, is a connected subgraph over the
+    tiles and the shed together, and the cheapest such subgraph is the tree. `tiles - 1` is the same
+    idea with the crossings left out, which is why a day that works three quadrants needs more.
+
+    The shed is ONE node and it is the root, so a tile's edge to it costs the distance to the NEAREST
+    of its four access tiles: a worker may start on any of them, and charging one representative door
+    overcharges every tile that is nearer another. Leaving the four as four nodes is worse still - the
+    tree then pays the 2x2 block's own cost, up to three steps no worker walks - and a floor that is
+    too high is worse than useless: it reports a hand the day does not need.
+    """
+    if tasks.n == 0:
+        return 0
+    cells, first = np.unique(tasks.cells, axis=0, return_index=True)
+    nodes = [tuple(int(v) for v in cell) for cell in cells]
+    if not nodes:
+        return 0
+    nearest = DISTANCE[SHED_INDEX].min(axis=0)[tasks.cell_index[first]]
+
+    far = lambda a, b: abs(a[0] - b[0]) + abs(a[1] - b[1])  # noqa: E731 - one expression, one name
+    inside: set[int] = set()
+    best = {i: int(nearest[i]) for i in range(len(nodes))}
+    total = 0
+    while len(inside) < len(nodes):
+        pick = min((i for i in best if i not in inside), key=lambda i: best[i])
+        total += best[pick]
+        inside.add(pick)
+        for i in range(len(nodes)):
+            if i not in inside:
+                best[i] = min(best[i], far(nodes[pick], nodes[i]))
+    return total
+
+
+def day_walking(tasks: TaskArray) -> int:
+    """The walking a day cannot pay less than: the tree over its tiles, doubled on a deadline day.
+
+    A spanning tree over the worked tiles and the shed doors is a floor on any set of walks that
+    covers them, and unlike the tile count it pays for the crossings. A day with a drop deadline adds
+    a second floor: a unit has to reach the furthest tile and finish at a door, so its path is at
+    least twice the distance from that door to that tile.
+    """
+    if tasks.n == 0:
+        return 0
+    walking = spanning_walk(tasks)
+    if tasks.drop_rows.size:
+        reach = int(DISTANCE[SHED_INDEX].min(axis=0)[tasks.cell_index].max())
+        walking = max(walking, 2 * reach)
+    return walking
+
+
 def columns_of(cells: np.ndarray) -> np.ndarray:
     """Number the tiles, so tasks can be grouped by the tile they happen on."""
     seen: dict[tuple[int, int], int] = {}
