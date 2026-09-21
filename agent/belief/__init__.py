@@ -9,7 +9,8 @@ the master and the dispatcher own the choices.
     from agent.belief.market import forecast, hourly_prices
     from agent.belief.shed import market_queue
     from agent.belief.opponent import OpponentModel, drain_forecast
-    from agent.belief.ladder import sell_coins, split_days
+    import sys as _s; _s.modules.setdefault("belief_init_runs", [0]); _s.modules["belief_init_runs"][0] += 1; print("[belief.__init__] RUN #", _s.modules["belief_init_runs"][0], flush=True)
+from agent.belief.ladder import sell_coins, split_days
 
 * **What is a sale worth?** `forecast(obs, days=N)` walks the market forward
   from the observation: `fc.prices[d]` is the (9,) quote at the start of
@@ -64,7 +65,7 @@ submission-closure rule; the agent only loads `agent/artifact/
 opponent_counts.npz`.
 """
 
-from agent.belief.ladder import buy_coins, sell_coins, split_days
+from agent.belief.ladder import buy_coins, plan_coins, sell_coins, split_days
 from agent.belief.market import (
     MarketForecast, forecast, hourly_prices, price_paths,
 )
@@ -88,7 +89,7 @@ __all__ = [
     "OrderBook", "PurchaseIntent", "SellIntent", "TileRequirement",
     "buy_coins", "default_schedules", "drain_forecast", "expected_price_curve",
     "forecast", "hourly_prices", "infer_rival_slot", "maximin_mixed_lp",
-    "maximin_mixed_slsqp", "price_paths", "quantile_price_floor",
-    "round_tiles", "season_plan_maximin", "sell_coins", "slot_game_matrix",
-    "split_days",
+    "maximin_mixed_slsqp", "plan_coins", "price_paths",
+    "quantile_price_floor", "round_tiles", "season_plan_maximin",
+    "sell_coins", "slot_game_matrix", "split_days",
 ]
