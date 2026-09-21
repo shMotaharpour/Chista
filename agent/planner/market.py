@@ -14,14 +14,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from agent.world.action_rules import SETTLE_RANK, SETTLE_RANK_DEFAULT
 from agent.world.rules import (ANIMAL_RULES, CROP_RULES, TURNS_PER_DAY,
                                hire_cost)
-
-#: The engine settles a turn's market in this order (F032). A day that must
-#: sell before it can afford its seeds has to be queued in it, or the purchase
-#: is refused for want of coins it is about to have.
-QUEUE_RANK = {"BUY_LAND": 0, "SELL": 1, "HIRE": 2}
-DEFAULT_RANK = 3
 
 
 @dataclass(frozen=True)
@@ -215,7 +210,8 @@ def merge(sells: list, hires: list, buys: list, *, cap: int = 10,
     opening = [list(o) for o in hires] + [list(o) for o in buys]
     for turn in range(turns):
         row = [list(o) for o in (sells[turn] if turn < len(sells) else [])]
-        row.sort(key=lambda o: QUEUE_RANK.get(o[0] if o else "", DEFAULT_RANK))
+        row.sort(key=lambda o: SETTLE_RANK.get(o[0] if o else "",
+                                               SETTLE_RANK_DEFAULT))
         while opening and len(row) < cap:
             row.append(opening.pop(0))
         rows[turn] = row[:cap]
