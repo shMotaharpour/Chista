@@ -20,7 +20,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from agent.planner.colgen import (Column, classes_of, generate, reduced_costs,
+from agent.planner.colgen import (Column, cash_rows, classes_of, generate,
+                                  reduced_costs,
                                   solve_master)
 
 DAYS = 3
@@ -88,6 +89,46 @@ def _pricer(counts, flip=False):
         return np.array(values), columns
 
     return price
+
+
+def test_the_cash_rows_are_the_loop_they_replaced():
+    """`cash_rows` collapses a per-(column, day) loop into two `cumsum`s.
+
+    The loop it replaced was the single largest block in the season's profile —
+    18,082,088 `ndarray.sum` calls, 30.9 s of the season's 136.5 s of `act` —
+    and the two are the same arithmetic, because `earn[:d].sum()` is
+    `cumsum(earn)[d-1]`.
+
+    The guard is the loop's own definition written out, plus a column whose
+    earnings land BEFORE its last spend, because that is the only shape that can
+    tell the day-at-a-time sum from the running sum: with the shift dropped, a
+    plan would be charged for the money it banks on the same day it spends, and
+    the cash rows are where "money is a stock" lives — a row off by one day lets
+    a plan spend the same purse twice (measured once: 4,268 against 3,000 for
+    doing nothing).
+    """
+    early = (np.array([1.0, 1.0, 1.0]), np.array([10.0, 0, 0]),
+             np.array([7.0, 11.0, 0.0]), 18.0)
+    pool = [_idle(0), _idle(1)]
+    pool += [_column(0, i, spec) for i, spec in enumerate(_plans())]
+    pool += [_column(0, 9, early)]
+
+    reference = np.zeros((DAYS, len(pool)))
+    for j, col in enumerate(pool):
+        spend = np.cumsum(np.asarray(col.spend, dtype=np.float64))
+        earn = np.asarray(col.earn, dtype=np.float64)
+        for d in range(DAYS):
+            reference[d, j] = spend[d] - (earn[:d].sum() if d else 0.0)
+
+    got = cash_rows(pool, DAYS)
+    assert got.shape == reference.shape
+    assert np.allclose(got, reference, rtol=0.0, atol=1e-12)
+
+    # The hand-computed column: spend 10 on day 0, bank 7 then 11 after it.
+    assert got[0, -1] == 10.0        # nothing banked before day 0
+    assert got[1, -1] == 3.0         # 10 spent, 7 already in
+    assert got[2, -1] == -8.0        # 10 spent, 18 banked: the row may go negative
+    assert got[:, 0].tolist() == [0.0] * DAYS
 
 
 def test_the_pool_grows_and_the_master_mixes_plans():

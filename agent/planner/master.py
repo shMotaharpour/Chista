@@ -233,12 +233,14 @@ ITER_CAP_DEFAULT = 8
 # 0.7 ms. The ceiling is that measurement with ~1.2x headroom for the grader's
 # 1.17-1.41x slowdown (agent/runtime.py P-series probes).
 #
-# Recorded, not done: the sweep's expensive part is `EP @ p[d] - EC @ w[d]`, and
-# a distance only changes the labour column of `EC` — so one base sweep plus a
-# per-distance term (`dist · y_labour[d] · works`, with `works` precomputed)
-# would give every distance for the cost of a vector add. That is the next
-# performance step, and it belongs with the turn budget (#79), not with the
-# algorithm.
+# The sweep's expensive half is `EP @ p[d] - EC @ w[d]`, and a distance only
+# changes the labour column of `EC`, so a round now prices every distance off
+# ONE base sweep (`TileContractor.price_many`): measured on a day-0 board, 9
+# distances cost 35.9 ms one sweep each against 16.6 ms off one base, 2.16x.
+# What is left per distance — the day loop and the plan recovery — cannot be
+# shared: batching the day loop over a distance axis measured 0.48x, i.e.
+# slower, because that loop is numpy dispatch over 12,000 edges per day rather
+# than arithmetic on one big array.
 ROUND_BUDGET_MS = 65.0
 
 # The M3 overhead the #12 brief names for H_d ("start at 35% and
@@ -649,8 +651,12 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
             if int(state_id) not in group:
                 group.append(int(state_id))
         boards: dict[int, tuple] = {}
+        # One base sweep for every distance in the round, not one sweep each:
+        # the distance only changes the walk on the labour column, so the gemv
+        # over the graph is shared (`TileContractor.price_many`).
+        priced = contractor.price_many(p_eff, exact, groups)
         for dist, group in sorted(groups.items()):
-            board_d = contractor.price(p_eff, exact, group, travel_hours=dist)
+            board_d = priced[int(dist)]
             cost_d = board_d.per_day_cost[:, :days, COUPLING_IDS].astype(np.float64)
             _validate_cost(cost_d)
             produce_d = board_d.per_day_produce[:, :days, list(MARKET_IDS)] \
