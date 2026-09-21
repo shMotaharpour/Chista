@@ -220,6 +220,13 @@ def test_the_certificate_is_reachable_on_a_real_board():
     This is the whole claim of Dantzig-Wolfe and it is asserted rather than
     assumed: measured at 83 rounds and 740 ms on a day-0 board, so a cap of
     150 has headroom without making the test a benchmark.
+
+    The reduced cost is checked against the SAME tolerance the loop certifies
+    against (`colgen.rc_tolerance(objective)`), not against the absolute floor:
+    `rc` is a difference of two objective-scale quantities and the pricer sweeps
+    in float32, so the last round's rc is the pricer's own rounding and not a
+    plan worth having. Pinned as one definition so the guard cannot drift from
+    the loop.
     """
     from agent.planner import master as M
     from agent.planner.inputs import load_contractor
@@ -233,8 +240,10 @@ def test_the_certificate_is_reachable_on_a_real_board():
 
     assert result.certified, (
         f"no certificate after {result.rounds} rounds: {result.stopped}")
-    assert result.history and result.history[-1] <= M.colgen.RC_TOL, (
-        f"certified with a positive reduced cost {result.history[-1]}")
+    tol = M.colgen.rc_tolerance(result.objective)
+    assert result.history and result.history[-1] <= tol, (
+        f"certified with a reduced cost {result.history[-1]} above the "
+        f"tolerance {tol} for an objective of {result.objective}")
     assert result.objective > 0
 
 
@@ -392,6 +401,45 @@ def test_the_bound_the_master_reports_is_a_bound_on_a_real_board():
         f"the bound {result.bound:.1f} is below the objective "
         f"{result.objective:.1f}: it is not a bound")
     assert result.gap >= -1e-9
+
+
+def test_the_walk_is_inside_the_class_labour_column():
+    """A class d steps from a shed door spends at least d hours on every worked day.
+
+    The guard for the exact-pricing contract. If the walk is not charged inside
+    the DP — or is charged to the value but not carried into the column — the LP
+    sees work that costs no travel and the certificate is about a farm nobody can
+    run. No other guard here notices: a subproblem that skips a cost it should
+    pay is still an upper bound, so the bound stays valid while the plan becomes
+    un-walkable. Read off the pool the master actually built.
+    """
+    import numpy as np
+    from agent.planner import master as M
+    from agent.planner.inputs import load_contractor
+    from offline_lab.kaggle_env import new_environment
+
+    env = new_environment()
+    env.reset(2)
+    obs = env.state[0].observation
+    result = M.equilibrate(object(), obs, load_contractor(days=20),
+                           M.supply_from_obs(obs), iter_cap=150)
+
+    checked = 0
+    for column in result.pool:
+        if column.key == ("idle",) or not column.cls_key:
+            continue
+        dist = int(column.cls_key[1])
+        if dist <= 0:
+            continue
+        labour = np.asarray(column.cost, dtype=np.float64)[:, 0]
+        for day, hours in enumerate(labour):
+            if hours > 0.0:
+                assert hours >= dist, (
+                    f"class {column.cls_key} works on day {day} with {hours} "
+                    f"labour hours, less than the {dist} steps its walk costs: "
+                    "the walk is not inside the DP's own objective")
+                checked += 1
+    assert checked > 0, "no class farther than a shed door was in the pool"
 
 
 def test_every_state_can_choose_to_do_nothing():

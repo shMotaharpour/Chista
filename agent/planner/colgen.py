@@ -50,6 +50,34 @@ except Exception:                                  # noqa: BLE001
 #: the master for nothing (lesson 1.9 §4.4: dedupe or the master fattens).
 RC_TOL = 1e-6
 
+#: ...and a reduced cost lives on the OBJECTIVE's scale, so the floor above is
+#: not enough on its own: `rc` is a difference of coins, and 1e-6 absolute is
+#: below the noise floor of any board worth a few thousand.
+#:
+#: The pricer's own precision is the binding one. `TileContractor` sweeps in
+#: float32 (`DTYPE`), so every class value carries ~1.2e-7 relative error, and
+#: the LP's duals come back in float64 from HiGHS. On the real board below, the
+#: loop stalled on `rc 2.24e-4` — 6.3e-9 relative at an objective of 35,772,
+#: i.e. inside the pricer's own noise — and the column it wanted was already in
+#: the pool: raising the tolerance to 1e-3 certified the SAME objective
+#: (35,772.2194) with the same bound (35,772.2202). A tolerance is therefore
+#: read as `max(RC_TOL, RC_REL_TOL · |objective|)`, and the constant is float32's
+#: epsilon with room for a horizon's accumulation.
+RC_REL_TOL = 1e-6
+
+
+def rc_tolerance(objective: float) -> float:
+    """The reduced-cost tolerance for a board whose LP objective is this.
+
+    One definition, read by the loop that certifies and by the guards that check
+    the certificate: `rc` is a difference of two quantities on the objective's
+    scale (`value + mu`, with `mu` the convexity marginal), and the value comes
+    out of a float32 sweep, so the cancellation floor is `|objective| · eps` —
+    about 4.3e-3 at an objective of 35,772. Anything below that is the pricer's
+    own rounding, and refusing to certify on it is refusing to certify at all.
+    """
+    return max(RC_TOL, RC_REL_TOL * abs(float(objective)))
+
 
 @dataclass(frozen=True)
 class Column:
@@ -248,13 +276,23 @@ def classes_of(owned: list[int], distances: list[int] | None = None
 
 
 def column_key(board, tile: int, days: int) -> tuple:
-    """A plan's signature: the chain it runs on each day, and nothing else.
+    """A plan's signature: the chain it runs on each day, and what it constructs.
 
     Two plans that run the same chains are the same column however they were
     priced, and the pool must hold one of them — the lesson's fourth pitfall.
+
+    The ENTITY is part of the signature. A chain id names the op (`PLANT`), not
+    the crop: an empty tile can plant WHEAT on one round and CARROT on the next
+    with the same chain id and the same per-day op sequence, and the two columns
+    do not cost the same (a carrot seed is 20, a wheat seed 10). Leaving the
+    entity out made them one key, so the loop refused to add the second and then
+    reported `stalled: rc ... on a column the pool holds` — a positive reduced
+    cost on a column it had never actually priced.
     """
     plan = board.plans[tile] if tile < len(board.plans) else ()
-    return tuple((int(d), int(chain)) for d, _state, chain in plan[:days])
+    entity = board.per_day_entity[tile, :days] if board.per_day_entity is not None else ()
+    return tuple((int(d), int(chain), int(entity[i]) if i < len(entity) else 0)
+                 for i, (d, _state, chain) in enumerate(plan[:days]))
 
 
 def generate(price, supply_hours, money, counts, days, n_coupling,
@@ -310,24 +348,29 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
     #
     # Wentges (1997); Pessoa, Sadykov, Uchoa & Vanderbeck (2018).
     #
-    # DEFAULT OFF, and measured rather than assumed. On this problem it does
-    # not help and it corrupts the bound:
+    # DEFAULT OFF, and measured rather than assumed. On this problem, with the
+    # PRICING AS IT WAS, it did not help and it corrupted the bound:
     #
     #     alpha 0.0   objective 34,197   bound 34,197   gap  0.0 %
     #     alpha 0.3   objective 33,921   bound 33,843   gap -0.2 %
     #     alpha 0.5   objective 33,800   bound 33,750   gap -0.1 %
     #
     # A bound BELOW the objective is not a bound, and two runs certifying at
-    # different objectives are two different fixed points. Both symptoms have
-    # one cause: the pricing here is not an exact Lagrangian subproblem. The
-    # travel a plan cannot avoid is added to the column AFTER the DP has
-    # chosen its chain, so the DP optimises one objective and the master
-    # prices another. Smoothing's guarantees assume they are the same, so it
-    # has nothing to stabilise and only moves where the loop stops.
+    # different objectives are two different fixed points. Both symptoms had one
+    # cause: the pricing was not an exact Lagrangian subproblem — the travel a
+    # plan cannot avoid was added to the column AFTER the DP had chosen its
+    # chain, and the purchasable inputs were charged their quote inside the
+    # subproblem, which the cash row had not. Smoothing's guarantees assume the
+    # subproblem IS the Lagrangian one, so it had nothing to stabilise and only
+    # moved where the loop stopped.
     #
-    # The fix is exact pricing — the walk inside the DP's own objective — not
-    # more stabilisation. The knob stays because it costs nothing and because
-    # the day the pricing is exact it is the first thing to try again.
+    # That is fixed (see `master.equilibrate`'s pricing step and
+    # `TileContractor._travel_edge_costs`): the bound is now valid and tight on
+    # the real board — bound 35,772.2202 against an objective of 35,772.2194,
+    # gap +0.000000. The table above therefore PREDATES the fix and says nothing
+    # about smoothing on an exact pricer. The knob stays off until it is
+    # re-measured, which is the next thing to try (Wentges 1997; Pessoa,
+    # Sadykov, Uchoa & Vanderbeck 2018).
     centre = None                        # (y, cash, mu) at the best bound
     alpha = float(smoothing)
 
@@ -343,6 +386,9 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
         result.rounds += 1
 
         exact = (result.solve.y, result.solve.cash, result.solve.mu)
+        # The reduced-cost tolerance for THIS board: an absolute floor, raised to
+        # the pricer's own precision on the objective's scale (see RC_REL_TOL).
+        tol = rc_tolerance(result.solve.objective)
         added, rc = 0, np.zeros(0)
         for attempt in range(2):
             # Attempt 0 prices at the smoothed dual; attempt 1 is the MISPRICE
@@ -367,7 +413,7 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
 
             added = 0
             for c in np.argsort(-rc):
-                if rc[c] <= RC_TOL:
+                if rc[c] <= tol:
                     break
                 col = columns[int(c)]
                 if (col.cls, col.key) in seen:
@@ -380,7 +426,7 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
             alpha *= 0.5               # the smoothed dual bought nothing
         result.rc_history.append(float(np.max(rc)) if rc.size else 0.0)
 
-        if not rc.size or float(np.max(rc)) <= RC_TOL:
+        if not rc.size or float(np.max(rc)) <= tol:
             # No class offers a plan worth having, at the TRUE duals — the
             # retry above guarantees the test was made there. The mix is
             # optimal over the full column set and the subproblems proved it.
@@ -391,9 +437,10 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
             # duals. That is not a proof: the pricing step says a plan beats
             # what the master pays for it while the master already holds that
             # plan, which means the reduced-cost test disagrees with the LP it
-            # came from — a dual sign error, or a degenerate tie.
-            result.stopped = (f"stalled: rc {float(np.max(rc)):.6g} on a "
-                              f"column the pool holds")
+            # came from — a dual sign error, a degenerate tie, or a pricer whose
+            # arithmetic is coarser than the tolerance (see RC_REL_TOL).
+            result.stopped = (f"stalled: rc {float(np.max(rc)):.6g} above tol "
+                              f"{tol:.6g} on a column the pool holds")
             return result
 
         spent = max(spent, time.perf_counter() - started)

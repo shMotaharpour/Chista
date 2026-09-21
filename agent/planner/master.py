@@ -444,14 +444,28 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
                 poll=None, owned: list[int] | None = None,
                 pool: list | None = None,
                 deadline: float | None = None) -> MasterResult:
-    """Tâtonnement to (approximate) equilibrium; always publishable.
+    """Column generation over the tile classes; always publishable.
 
-    The loop is a true Dantzig-Wolfe round: at the current duals the
-    contractor RE-PRICES the board (a price change changes which chain
-    is each tile's best response — the columns must follow), the LP
-    re-solves over the fresh columns, the duals damp onto the new
-    prices. Stopping early still leaves a usable incumbent: the last
-    `(p, published_w)` pair is on the result at every point.
+    One round is one Dantzig-Wolfe round (lesson 1.9): the LP solves over EVERY
+    column found so far — the pool accumulates, it is never replaced — the
+    duals price each class's subproblem, the subproblem's best plan is added if
+    its reduced cost clears the tolerance, and the loop stops when no class
+    offers one. That stop is a certificate, not a flat objective.
+
+    **The pricing step is the exact Lagrangian subproblem**, and two things
+    depend on it. `p_eff` prices produce at `p·(1+later)` and `exact` prices a
+    purchasable input at `quote·ahead`: the cash row prices SPENDING at `ahead`,
+    so the base quote belongs to the row, not to the subproblem. And the walk is
+    charged inside the DP's own objective (`TileContractor._travel_edge_costs`),
+    not added to the column afterwards. Charging either one in the wrong place
+    leaves the DP optimising a different objective than the master prices, and
+    then `values` is not the class's dual-priced value: the reduced-cost test is
+    no longer about this LP, the certificate proves nothing, and the Lagrangian
+    bound can come out BELOW the objective it bounds. Measured before the fix:
+    bound 33,765.5 against an objective of 34,008.8.
+
+    Stopping early still leaves a usable incumbent: the last `(p, published_w)`
+    pair is on the result at every point.
 
     Never raises for solver trouble — the fallback publishes the warm
     prices and says so. `poll()` (the rung's deadline bail) may raise:
@@ -557,31 +571,53 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
         p_eff = p.copy()
         p_eff[:days, list(MARKET_IDS)] *= (1.0 + later[:days])[:, None]
         exact = published_duals(y, days, ahead, supply.quotes)
+        # The Lagrangian subproblem's own prices. The cash row prices SPENDING
+        # at `ahead` — not at the quote — so a purchasable input reaches the
+        # tiles at `quote·ahead`, and the base quote stays in the row where it
+        # belongs. Charging `quote·(1+ahead)` here made the DP optimise a
+        # different objective than the master prices, so the class value
+        # underestimated its true Lagrangian value and the bound came out below
+        # the objective (measured: 35,026.9 against 35,048.8).
+        for i, rid in enumerate(PURCHASE_IDS):
+            exact[:, rid] = np.maximum(exact[:, rid] - float(supply.quotes[i]), 0.0)
         state["w"] = np.maximum(
             np.maximum((1.0 - ALPHA) * state["w"] + ALPHA * y, 0.0), w_floor)
         state["cash"] = (1.0 - ALPHA) * state["cash"] + ALPHA * np.asarray(cash)
-        # One board per distinct STATE: two classes that differ only in how
-        # far the tile is from the shed run the same DP, and pricing both
-        # prices twice.
-        states = sorted({sid for sid, _d in reps})
-        at = {sid: i for i, sid in enumerate(states)}
-        board = contractor.price(p_eff, exact, states)
-        cost = board.per_day_cost[:, :days, COUPLING_IDS].astype(np.float64)
-        _validate_cost(cost)
-        produce = board.per_day_produce[:, :days, list(MARKET_IDS)] \
-            .astype(np.float64)
-        earn = (produce * p_mkt[:days][None, :, :]).sum(axis=2)
-        spend, _ = column_cash(board, supply, days)
+        # One board per distinct DISTANCE, not per state: the walk is charged on
+        # the labour column of every worked day, so it has to be inside the DP's
+        # own objective (`TileContractor._travel_edge_costs`), and a class is
+        # (state, distance) — so the classes sharing a distance share a sweep.
+        # Classes that differ only in state now run one sweep each, and that is
+        # the price of an exact subproblem: with the walk added AFTER the argmax
+        # the DP optimises one objective while the master prices another, so the
+        # value is not the class's best dual-priced plan, the reduced-cost test
+        # is no longer about this LP, and the bound can come out below the
+        # objective it bounds (measured: 33,765.5 against 34,008.8).
+        groups: dict[int, list[int]] = {}
+        for state_id, dist in reps:
+            group = groups.setdefault(int(dist), [])
+            if int(state_id) not in group:
+                group.append(int(state_id))
+        boards: dict[int, tuple] = {}
+        for dist, group in sorted(groups.items()):
+            board_d = contractor.price(p_eff, exact, group, travel_hours=dist)
+            cost_d = board_d.per_day_cost[:, :days, COUPLING_IDS].astype(np.float64)
+            _validate_cost(cost_d)
+            produce_d = board_d.per_day_produce[:, :days, list(MARKET_IDS)] \
+                .astype(np.float64)
+            earn_d = (produce_d * p_mkt[:days][None, :, :]).sum(axis=2)
+            spend_d, _ = column_cash(board_d, supply, days)
+            boards[dist] = (board_d, {s: i for i, s in enumerate(group)},
+                            cost_d, earn_d, spend_d)
 
         columns, values = [], []
         for c, (state_id, dist) in enumerate(reps):
-            i = at[state_id]
-            # The travel the plan cannot avoid: `dist` steps for every day it
-            # puts a worker on the tile. It is a LOWER bound - a route may walk
-            # further, never less - so the LP stays a relaxation and its
-            # objective stays an upper bound on what the board can do.
+            board, at, cost, earn, spend = boards[int(dist)]
+            i = at[int(state_id)]
+            # The walk is already in `cost`: it was charged before the DP chose,
+            # so this is the class's best dual-priced plan and not the best plan
+            # at prices nobody pays.
             hours = cost[i].copy()
-            hours[:, 0] += (hours[:, 0] > 0.0) * float(dist)
             columns.append(colgen.Column(
                 cls=c, cls_key=(state_id, dist),
                 cost=hours, spend=spend[i], earn=earn[i],
@@ -589,27 +625,14 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
                 chains=tuple(board.plans[i]) if i < len(board.plans) else (),
                 entities=_entities(board, i, days),
                 key=colgen.column_key(board, i, days)))
-            # The value is recomputed from the COLUMN, not taken from the DP:
-            # the DP never saw the travel term, so `tile_values` is the value
-            # of a plan nobody can walk. Pricing is therefore inexact in the
-            # travel term - the DP may propose a chain that is not the best one
-            # once walking is paid for - and the certificate is honest about
-            # what it proves: optimal over the columns the DP can offer, not
-            # over every plan that exists.
+            # The value is the class's own dual-priced value: revenue, less the
+            # coupling duals (labour, the walk included), less the cash the plan
+            # ties up. The floor is a belt rather than a correction now: the idle
+            # column is worth exactly 0 and every class has it, so the DP cannot
+            # return less than nothing.
             cash_use = float((ahead[:days] * spend[i][:days]).sum()
                              - (later[:days] * earn[i][:days]).sum())
-            # The class's best plan is never worth LESS than its idle column,
-            # which every class has and which is worth zero. Without this floor
-            # the value can go negative — the DP chose its chain before the
-            # travel term was added, so a chain it liked can be a loss once the
-            # walk is paid for — and a negative value makes `L(y) = y·b + Σ N_c
-            # v_c` smaller than the objective it is supposed to bound. Measured:
-            # bound −71,123 against an objective of 34,197, which is not a bound
-            # at all.
-            values.append(max(0.0,
-                              float(earn[i].sum())
-                              - float((np.asarray(y)[:days, 0] * hours[:, 0]).sum())
-                              - cash_use))
+            values.append(max(0.0, float(board.tile_values[i])))
         return np.asarray(values, dtype=np.float64), columns
 
     try:
