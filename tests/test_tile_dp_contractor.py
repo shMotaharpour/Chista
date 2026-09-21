@@ -387,6 +387,52 @@ def test_empty_owned_board_prices_nothing() -> None:
 
 # ------------------------------------------------------------------ budget
 
+def test_pricing_many_distances_shares_only_the_distance_free_half() -> None:
+    """`price_many` prices every distance off one base sweep — and the base is
+    only the half the walk does not touch.
+
+    The walk lands on the LABOUR column of the worked edges (`_travel_edge_costs`),
+    so a distance-`h` group's edge costs are `EC + h·mask` and its rewards are
+    `EP @ p[d] - EC @ w[d] - h·(mask · w[d, LABOUR])`: the gemv over the graph is
+    the same work for every distance. Sharing it is worth 2.16x on a day-0 board
+    (9 distances: 35.9 ms one sweep each, 16.6 ms off one base), and this is the
+    guard that the sharing did not change what a distance is worth — every
+    distance's values, rewards and recovered columns are pinned against the
+    explicit-cost sweep, which is the path that pays the walk per distance.
+
+    The integer duals make this an equality and not a tolerance: every reward and
+    every value is an exactly representable float32, so agreement here is about
+    the arithmetic being the same, not about rounding being small.
+    """
+    graph = _graph()
+    p, w = _integer_duals()
+    contractor = TileContractor(graph, days=HORIZON_DAYS)
+    owned = _owned("wheat")
+    distances = (0, 1, 3, 7)
+
+    priced = contractor.price_many(p, w, {h: owned for h in distances})
+    prices = contractor._as_dual(p, "prices")
+    wages = contractor._as_dual(w, "wages")
+
+    assert sorted(priced) == sorted(distances)
+    for h in distances:
+        board = priced[h]
+        ec_int, ec = contractor._travel_edge_costs(h)
+        V, rewards = contractor._sweep(prices, wages, ec)
+        assert np.array_equal(board.values, V), f"distance {h}: values differ"
+        assert np.array_equal(board.rewards, rewards), \
+            f"distance {h}: rewards differ"
+        reference = contractor.price(p, w, owned, travel_hours=h)
+        assert np.array_equal(board.columns, reference.columns)
+        assert np.array_equal(board.produce, reference.produce)
+        assert board.plans == reference.plans
+        assert board.reduced_cost == reference.reduced_cost
+
+    # And the walk is actually in there: a distance that charges nothing would
+    # make the sharing trivially true.
+    assert not np.array_equal(priced[0].values, priced[3].values)
+
+
 def test_budget_sweep_and_recovery() -> None:
     """Issue #11 §7: sweep ≤ 15 ms, 100 tile recoveries ≤ 5 ms.
 

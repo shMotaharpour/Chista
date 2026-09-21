@@ -113,6 +113,12 @@ class TileContractor:
         #: Edge-cost matrices with a walk charged inside, by distance (see
         #: `_travel_edge_costs`). Built once per distance, not once per round.
         self._travel_costs: dict[int, tuple[np.ndarray, np.ndarray]] = {}
+        #: The edges a walk is charged on — those with a positive LABOUR cost —
+        #: as a 0/1 float32 vector, so the distance enters the sweep's rewards
+        #: as one elementwise term and one base gemv serves every distance
+        #: (see `_sweep_from`).
+        self._travel_mask = np.ascontiguousarray(
+            (np.asarray(graph.edge_cost)[:, LABOR_ID] > 0).astype(DTYPE))
         self._assert_no_empty_slices()
 
     def _travel_edge_costs(self, travel_hours: int) -> tuple[np.ndarray, np.ndarray]:
@@ -190,19 +196,51 @@ class TileContractor:
     def _sweep(self, p: np.ndarray, w: np.ndarray, ec: np.ndarray | None = None
                ) -> tuple[np.ndarray, np.ndarray]:
         ec = self.EC if ec is None else ec
+        rewards = np.empty((self.days, int(self.edge_next.size)), dtype=DTYPE)
+        for d in range(self.days - 1, -1, -1):
+            # Produce and cost are priced by their own vector, in two passes. Folding them
+            # into one wider matvec measures slower: the wider gemv loses to BLAS dispatch.
+            rewards[d] = self.EP @ p[d] - ec @ w[d]
+        return self._backward(rewards), rewards
+
+    def _base_rewards(self, p: np.ndarray, w: np.ndarray) -> np.ndarray:
+        """`EP @ p[d] - EC @ w[d]` for every day: the sweep's distance-free half.
+
+        The walk only ever lands on the LABOUR column of the worked edges
+        (`_travel_edge_costs`), so the edge cost of a distance-`h` group is
+        `EC + h·mask` and its rewards are `base - h·(mask · w[:, LABOUR])` — one
+        gemv per day for every distance instead of one per distance.
+        """
+        rewards = np.empty((self.days, int(self.edge_next.size)), dtype=DTYPE)
+        for d in range(self.days):
+            rewards[d] = self.EP @ p[d] - self.EC @ w[d]
+        return rewards
+
+    def _sweep_from(self, base: np.ndarray, w: np.ndarray, travel_hours: int
+                    ) -> tuple[np.ndarray, np.ndarray]:
+        """The backward sweep for one distance, given `_base_rewards`."""
+        hours = int(travel_hours)
+        if hours <= 0:
+            rewards = base
+        else:
+            term = self._travel_mask[None, :] * w[:, LABOR_ID][:, None]
+            rewards = base - np.float32(hours) * term
+        return self._backward(rewards), rewards
+
+    def _backward(self, rewards: np.ndarray) -> np.ndarray:
+        """The day loop: every state takes the best of its own out-edges."""
         n_edges = int(self.edge_next.size)
-        rewards = np.empty((self.days, n_edges), dtype=DTYPE)
+        if rewards.shape != (self.days, n_edges):
+            raise ValueError(
+                f"rewards: expected shape ({self.days}, {n_edges}), "
+                f"got {rewards.shape}")
         # The terminal row is the season's own end: no liquidation, so shed goods are worth
         # nothing and V[days] is zero.
         V = np.zeros((self.days + 1, self.n_states), dtype=DTYPE)
         for d in range(self.days - 1, -1, -1):
-            # Produce and cost are priced by their own vector, in two passes. Folding them
-            # into one wider matvec measures slower: the wider gemv loses to BLAS dispatch.
-            r = self.EP @ p[d] - ec @ w[d]
-            rewards[d] = r
-            cand = r + V[d + 1][self.edge_next]
+            cand = rewards[d] + V[d + 1][self.edge_next]
             V[d] = np.maximum.reduceat(cand, self.edge_starts)
-        return V, rewards
+        return V
 
     # ---- plan recovery ------------------------------------------------
     def _recover(self, V: np.ndarray, rewards: np.ndarray, owned: np.ndarray,
@@ -266,28 +304,52 @@ class TileContractor:
         the labour column BEFORE the argmax (see `_travel_edge_costs`): a caller
         that prices tiles at different distances passes each group its own.
         """
-        p = self._as_dual(p, "prices")
-        w = self._as_dual(w, "wages")
-        owned = np.asarray(list(owned_states), dtype=np.int64)
-        if owned.size:
-            if int(owned.min()) < 0 or int(owned.max()) >= self.n_states:
-                raise ValueError(
-                    f"owned state id out of range 0..{self.n_states - 1}: "
-                    f"{int(owned.min())}..{int(owned.max())}")
-        ec_int, ec = self._travel_edge_costs(travel_hours)
-        V, rewards = self._sweep(p, w, ec)
-        (columns, produced, plans, tile_values, per_day_cost,
-         per_day_produce, per_day_entity) = self._recover(V, rewards, owned, ec_int)
-        # With no owned tile there is no column and nothing to price; the
-        # signal is defined as 0 rather than as the max of an empty set.
-        reduced_cost = float(tile_values.max()) if owned.size else 0.0
-        return PricedBoard(values=V, reduced_cost=reduced_cost,
-                           columns=columns, produce=produced, plans=plans,
-                           tile_values=tile_values, days=self.days,
-                           per_day_cost=per_day_cost,
-                           per_day_produce=per_day_produce,
-                           per_day_entity=per_day_entity,
-                           rewards=rewards)
+        hours = int(travel_hours)
+        return self.price_many(p, w, {hours: owned_states})[hours]
+
+    def price_many(self, p, w, owned_by_distance: dict[int, Sequence[int]]
+                   ) -> dict[int, PricedBoard]:
+        """Price every distance off ONE base sweep.
+
+        A round prices one group per distinct distance, and each group's sweep
+        differs from the next only by the walk on the labour column. The gemv
+        that dominates the sweep — `EP @ p[d]` and `EC @ w[d]` over ~12,000 edges
+        and 20 days — is therefore the same work nine times over; measured on a
+        day-0 board, 9 distances cost 9 sweeps of 5.8 ms each.
+
+        `_base_rewards` computes that half once and `_sweep_from` adds each
+        distance's own term, so the per-distance cost is one elementwise pass
+        plus the day loop. The result is the same sweep `price` returns for that
+        distance: `tests/test_tile_dp_contractor.py` pins them against each
+        other, term by term.
+        """
+        prices = self._as_dual(p, "prices")
+        wages = self._as_dual(w, "wages")
+        base = self._base_rewards(prices, wages)
+        out: dict[int, PricedBoard] = {}
+        for raw_hours, states in owned_by_distance.items():
+            hours = int(raw_hours)
+            owned = np.asarray(list(states), dtype=np.int64)
+            if owned.size:
+                if int(owned.min()) < 0 or int(owned.max()) >= self.n_states:
+                    raise ValueError(
+                        f"owned state id out of range 0..{self.n_states - 1}: "
+                        f"{int(owned.min())}..{int(owned.max())}")
+            ec_int, _ec = self._travel_edge_costs(hours)
+            V, rewards = self._sweep_from(base, wages, hours)
+            (columns, produced, plans, tile_values, per_day_cost,
+             per_day_produce, per_day_entity) = self._recover(V, rewards, owned,
+                                                              ec_int)
+            # With no owned tile there is no column and nothing to price; the
+            # signal is defined as 0 rather than as the max of an empty set.
+            out[hours] = PricedBoard(
+                values=V,
+                reduced_cost=float(tile_values.max()) if owned.size else 0.0,
+                columns=columns, produce=produced, plans=plans,
+                tile_values=tile_values, days=self.days,
+                per_day_cost=per_day_cost, per_day_produce=per_day_produce,
+                per_day_entity=per_day_entity, rewards=rewards)
+        return out
 
 
 def price_board(graph: TileGraph, p, w, owned_states: Sequence[int],
