@@ -632,7 +632,12 @@ def walk_start_turn(turn: int, moves: int) -> int:
 
     The writer (`compile_route`) and the reader that works out where the units stand after the first
     turn (`_settled_after_first_turn`) both go through here, so "the unit's first op is a move" and
-    "the walk starts at turn 0" cannot become two different questions.
+    "the walk starts at turn 0" cannot become two different questions. The rewrite that introduced
+    this layer answered the reader's half with a guess at the gap between the walk and the task while
+    the writer kept starting walks at the earliest free turn; the two disagreed wherever a first task
+    had slack, which moved every hand's door (F040) and made the day the engine ran a different day.
+    The pre-rewrite `plan_day` had it right by reading the compiled route's first op; this is that
+    reading, spelled once.
     """
     return int(turn) - int(moves)
 

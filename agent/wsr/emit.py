@@ -106,6 +106,8 @@ def compile_route(day: Day, tasks: TaskArray, result: Result, *,
             # exactly the ones the model counted when it priced the day. Writing it early instead
             # moved a unit off its door in turn 0 while the model had it standing there - and a unit
             # that leaves its door in the first turn moves where every hand after it lands (F040).
+            # That was the rewrite's regression, not the old layer's rule: `walk_start_turn` is the
+            # reading the pre-rewrite `plan_day` took from the compiled route.
             _room(task_id, worker, turn, len(moves), last[worker] + 1)
             _write(ops[worker], walk_start_turn(turn, len(moves)), moves)
             ops[worker][turn] = tasks.ops[row]
