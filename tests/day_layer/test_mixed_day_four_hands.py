@@ -5,15 +5,14 @@ the rest of the quadrant, every item in the shed from hour one - with four hands
 five. One hand is the difference between a day the search carries and a day it does not, so this is
 where the pool's answer is pinned.
 
-What is asserted is the answer the layer gives when the pool is short:
+What is asserted is the answer the layer gives when the pool is short, and that the part it does
+hand back is the part it priced:
 
     four hands do not carry the day, and the search says so: a partial route, `complete=False`
     the shortfall is the POOL and not the clock: not `out_of_time`, not `can_improve`, not `infeasible`
     five hands carry the same day, so the hand the caller withheld is what the day was short of
     the partial route is still a legal route, which is what the caller is handed
-
-One thing does not hold yet, and it is marked rather than hidden: the partial route, compiled and
-replayed, is not the day it was priced as. The mark's reason names what was measured.
+    the partial route replays as the day it was priced as - on the engine's own counters
 """
 
 from __future__ import annotations
@@ -37,15 +36,6 @@ from tests.day_layer.test_mixed_day import (ANIMAL_TILES, AVAILABLE, ORDERS as F
 HANDS = 4
 #: The same market, with the hands the caller is willing to pay for.
 ORDERS = [order for order in FIVE_HAND_ORDERS if order[0] != "HIRE"] + [["HIRE"]] * HANDS
-
-_SETTLED_REASON = (
-    "the compiled day is not the day the search priced. `compile_route` writes a worker's first "
-    "walk at its earliest free turn, so a first task with slack moves the worker in turn 0, while "
-    "`_settled_after_first_turn` counts a turn-0 move only when the walk exactly fills the gap. On "
-    "this day the farmer's first task is one tile away and six turns out, so the compiler writes "
-    "WEST at turn 0 and the model has the farmer still on (4, 4) - which moves every hand's door by "
-    "one, and the board comes back with the animals unplaced and most of the wheat bare"
-)
 
 
 def _day(hands: int = HANDS):
@@ -113,15 +103,14 @@ def test_the_partial_route_is_still_a_legal_route(short) -> None:
     assert not complaints, f"the partial route breaks a rule the engine enforces: {complaints}"
 
 
-# A strict marker, not `pytest.xfail(...)`: that call reports xfail whatever would have happened, so
-# a mark that has gone stale can never say so. This one fails loudly when the day is fixed.
-@pytest.mark.xfail(strict=True, reason=_SETTLED_REASON)
 def test_the_partial_route_replays_as_the_day_it_was_priced_as(short) -> None:
     """The day the caller keeps is the day the search priced - asserted on the engine's counters.
 
     The plantings the route planned have to land, and the animal tiles have to hold their species:
     the engine refuses a misplaced op in silence (F047), so this is the only place the difference
-    between a day that was carried out and a day that was merely written down shows up.
+    between a day that was carried out and a day that was merely written down shows up. It was the
+    mark that used to sit here: the search priced the day from doors the compiler then did not write,
+    and the board came back with the animals unplaced and most of the wheat bare.
     """
     day, tasks, result = short
     plan = to_plan(compile_route(day, tasks, result))
@@ -135,3 +124,38 @@ def test_the_partial_route_replays_as_the_day_it_was_priced_as(short) -> None:
     for cell, _ops, entity in ANIMAL_TILES:
         assert board.get(cell, {}).get("animal") == entity, (
             f"{cell} was built for {entity} and holds {board.get(cell, {}).get('animal')!r}")
+
+
+def test_the_remaining_capacity_is_the_day_the_compiler_wrote(short) -> None:
+    """The spare the search reports, against the PASS turns in the compiled day.
+
+    The two are counted from opposite sides - the search from the route it placed, the compiler from
+    the ops it writes - so this is where the accounting is checked rather than assumed. A manager
+    reads `spare` to decide whether to lay more work on the same hands, and a number that does not
+    match the day it will actually dispatch is worse than no number at all.
+    """
+    day, tasks, result = short
+    ops = compile_route(day, tasks, result)
+    # A row is the whole horizon long, so a hand's row carries the turns before its own hour as PASS
+    # too - turn 0 is not part of a day that begins at hour 1. The comparison starts where the day
+    # does.
+    hours = B._start_hours(day, result.pool)
+    idle = [sum(1 for op in row[int(hours[w]):] if op == ("PASS",))
+            for w, row in enumerate(ops.units)]
+    assert B.remaining_turns(day, tasks, result) == idle, (
+        "the search's remaining capacity and the compiler's PASS turns disagree: "
+        f"{B.remaining_turns(day, tasks, result)} against {idle}")
+    assert result.spare == sum(idle), (
+        f"the answer reports {result.spare} unspent turns and the day holds {sum(idle)}")
+
+
+def test_one_more_hand_leaves_more_of_the_day_unspent(short) -> None:
+    """The pool, read from the other side: a hand more is a day with more room left in it.
+
+    Without this the spare could be a constant and the first test would still pass.
+    """
+    _day_, _tasks, result = short
+    day, tasks = _day(hands=HANDS + 1)
+    bigger = B.search(day, tasks, beam=64, hands=HANDS + 1, max_hands=HANDS + 1)
+    assert bigger.spare > result.spare, (
+        f"{HANDS + 1} hands leave {bigger.spare} turns unspent, {HANDS} leave {result.spare}")
