@@ -33,7 +33,6 @@ from agent.wsr.routing import walk
 from agent.wsr.tasks import DISTANCE, NO_ITEM, SHED_INDEX, TaskArray
 
 Cell = tuple[int, int]
-MAX_HANDS = 16
 
 #: What one step of the search is allowed to cost, as `beam x workers x tasks`. A step's arrays are
 #: that product wide, so a fixed width makes a hundred tiles cost fifty times a quadrant. This is the
@@ -163,6 +162,17 @@ def lower_bound(day: Day, tasks: TaskArray) -> int:
     return len(day.units) + hired
 
 
+def ceiling_for(day: Day, tasks: TaskArray) -> int:
+    """The largest pool worth asking about: the tasks, plus the units already on the field.
+
+    Every unit does at least one task, so a pool larger than the number of tasks cannot be the
+    smallest carrying one - which makes this a ceiling by argument rather than by guess. The tighter
+    candidates are guesses: a tour of the tiles bounds the BEST walking, and the search's own route
+    can walk more than it, so a tour-derived ceiling cuts days that would carry.
+    """
+    return tasks.n + len(day.units)
+
+
 def walking_tour(tasks: TaskArray) -> int:
     """A nearest-first walk from the shed over every tile the day works.
 
@@ -205,7 +215,7 @@ def predicted_pool(day: Day, tasks: TaskArray) -> int:
 
 
 def search(day: Day, tasks: TaskArray, *, beam: int | None = None,
-           hands: int | None = None, max_hands: int = MAX_HANDS,
+           hands: int | None = None, max_hands: int | None = None,
            budget_s: float | None = None, warm: Result | None = None) -> Result:
     """The day, searched with `beam` routes in parallel.
 
@@ -250,7 +260,10 @@ def search(day: Day, tasks: TaskArray, *, beam: int | None = None,
         start = max(floor, predicted_pool(day, tasks) - len(day.units) - 1)
     else:
         start = int(hands)
-    ceiling = min(int(max_hands), MAX_HANDS)
+    # A caller's ceiling is theirs to set and may be tighter than the day's own bound - the corpus
+    # test asks for no more hands than the game paid, which is exactly that.
+    bound = ceiling_for(day, tasks)
+    ceiling = bound if max_hands is None else min(int(max_hands), bound)
     deadline = None if budget_s is None else time.perf_counter() + float(budget_s)
     if start > ceiling:
         return Result(ceiling, [], False, infeasible=True)
