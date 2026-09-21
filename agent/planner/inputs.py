@@ -31,6 +31,17 @@ from agent.world.rules import ANIMAL_RULES, CROP_RULES, hire_cost
 #: not over the day.
 HOURS_PER_HAND = 23
 
+#: The floor price of the FARMER's own hour (#87 item 1). The old floor —
+#: the marginal hand's 1-coin hire over 23 hours, 0.043/h — made destroying
+#: and rebuilding a pasture free, because at that price nothing the farm
+#: owns is worth preserving. The farmer's hour is what a chain first
+#: consumes, and its honest floor is what one working day of his produces
+#: for the farm's own pipeline: one MILK (the cheapest animal product,
+#: ~160 at season quotes) over the 24·(1−0.35) ≈ 15.6 working hours the
+#: overhead model grants. ~10.3/h. Not the answer — the floor the master's
+#: tâtonnement starts from.
+FARMER_HOUR_FLOOR: float = 160.0 / (24.0 * (1.0 - 0.35))
+
 GRAPH_PATH = artifact_path("tile_graph", ".npz")
 
 
@@ -100,6 +111,17 @@ def dual_stand_in(obs: Any, days: int = HORIZON_DAYS) -> tuple[np.ndarray, np.nd
     # fertilizer dose cost is the price they are bought back at.
     w[:, RESOURCE_ID["WHEAT"]] = float(prices.get("WHEAT", 0.0))
     w[:, RESOURCE_ID["FERTILIZER"]] = float(prices.get("FERTILIZER", 0.0))
-    w[:, RESOURCE_ID["LABOR"]] = (
-        float(hire_cost(int(farm.get("hires_today", 0)))) / HOURS_PER_HAND)
+    # The farmer's own hour is the farm's real first labour unit: he stands
+    # on the field at no marginal hire, and his 23 working hours (F040) are
+    # what a chain first consumes. Pricing his hour at the marginal hand's
+    # 1-coin hire (0.043/h) made tearing up and rebuilding a pasture free —
+    # the replay behaviour #87 opens with. The farmer's hour is priced at
+    # the value of what his hour produces for the farm's OWN pipeline: one
+    # MILK (~160 at the season's quotes) over the ~15.6 working hours the
+    # overhead model gives, floored at the marginal hand so hiring never
+    # looks cheaper than the man already there. This is the FLOOR, not the
+    # answer: the master's tâtonnement moves the internal prices off it.
+    w[:, RESOURCE_ID["LABOR"]] = np.maximum(
+        float(hire_cost(int(farm.get("hires_today", 0)))) / HOURS_PER_HAND,
+        FARMER_HOUR_FLOOR)
     return p, w
