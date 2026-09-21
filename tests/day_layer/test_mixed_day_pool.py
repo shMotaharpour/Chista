@@ -1,16 +1,13 @@
-"""The mixed day with one hand fewer: what the pool decides, and where the partial route stops.
+"""The mixed day with fewer hands than it needs: what the pool decides, and where the partial route stops.
 
 The same day as `test_mixed_day.py` - a cow, a sheep and a goose on the shed's column, wheat across
-the rest of the quadrant, every item in the shed from hour one - with four hands offered instead of
-five. One hand is the difference between a day the search carries and a day it does not, so this is
-where the pool's answer is pinned.
+the rest of the quadrant, every item in the shed from hour one - with three hands offered instead of
+five, and the four-hand day beside it. The pool is what decides whether the day is carried, so this
+is where the boundary between the two answers is pinned:
 
-What is asserted is the answer the layer gives when the pool is short, and that the part it does
-hand back is the part it priced:
-
-    four hands do not carry the day, and the search says so: a partial route, `complete=False`
+    three hands do not carry the day, and the search says so: a partial route, `complete=False`
+    four hands do carry it, so the hand the caller withheld is what the day was short of
     the shortfall is the POOL and not the clock: not `out_of_time`, not `can_improve`, not `infeasible`
-    five hands carry the same day, so the hand the caller withheld is what the day was short of
     the partial route is still a legal route, which is what the caller is handed
     the partial route replays as the day it was priced as - on the engine's own counters
 """
@@ -33,7 +30,7 @@ from agent.wsr.emit import check_route, compile_route, to_plan
 from tests.day_layer.test_mixed_day import (ANIMAL_TILES, AVAILABLE, ORDERS as FIVE_HAND_ORDERS,
                                             TILES, _board, _replay)
 
-HANDS = 4
+HANDS = 3
 #: The same market, with the hands the caller is willing to pay for.
 ORDERS = [order for order in FIVE_HAND_ORDERS if order[0] != "HIRE"] + [["HIRE"]] * HANDS
 
@@ -48,20 +45,20 @@ def _day(hands: int = HANDS):
 
 @pytest.fixture(scope="module")
 def short():
-    """The four-hand search: the day it was given, and the answer it gives back."""
+    """The short-pool search: the day it was given, and the answer it gives back."""
     day, tasks = _day()
     result = B.search(day, tasks, beam=64, hands=HANDS, max_hands=HANDS)
     return day, tasks, result
 
 
-def test_four_hands_do_not_carry_the_day(short) -> None:
+def test_three_hands_do_not_carry_the_day(short) -> None:
     """The pool is short and the search says so, with a route rather than with silence.
 
     `complete=False` is the honest answer about the pool; an empty route would be the answer that
     threw the work away, and the two are different decisions for the caller.
     """
     _day_, tasks, result = short
-    assert not result.complete, f"four hands carried the day after all: {len(result.route)} tasks"
+    assert not result.complete, f"three hands carried the day after all: {len(result.route)} tasks"
     assert 0 < len(result.route) < tasks.n, (
         f"the partial route is {len(result.route)} of {tasks.n} tasks - not partial, or not a route")
     assert result.pool == HANDS, f"the answer was searched with {result.pool} hands, not {HANDS}"
@@ -116,10 +113,16 @@ def test_the_partial_route_replays_as_the_day_it_was_priced_as(short) -> None:
     plan = to_plan(compile_route(day, tasks, result))
     board = _board(_replay(plan, ORDERS))
 
-    planned = sum(1 for _hour, task_id, _worker in result.route if task_id.endswith("_plant"))
-    planted = sum(1 for record in board.values() if record.get("kind") == "PLANT")
-    assert planted == planned, (
-        f"the partial route planned {planned} plantings and the board holds {planted}")
+    # What a planting leaves on the board: the crop, or a weed when the day never reached its water -
+    # an unwatered planting is what the engine turns to weed. Either is the plant op having landed; a
+    # bare tile is one that did not.
+    planned = {tuple(int(v) for v in tasks.cells[tasks.ids.index(task_id)])
+               for _hour, task_id, _worker in result.route if task_id.endswith("_plant")}
+    grown = {cell for cell, record in board.items() if record.get("kind") in ("PLANT", "WEED")}
+    assert grown == planned, (
+        f"the partial route planned {len(planned)} plantings and the board holds {len(grown)} tiles "
+        f"that grew something: {sorted(planned - grown)} planned but bare, "
+        f"{sorted(grown - planned)} grown but never planned")
 
     for cell, _ops, entity in ANIMAL_TILES:
         assert board.get(cell, {}).get("animal") == entity, (

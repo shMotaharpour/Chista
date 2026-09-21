@@ -358,19 +358,39 @@ def _fixed_point(day: Day, tasks: TaskArray, beam: int, pool: int,
     and the pickups are charged here, because the charge changes which route the search finds and the
     route changes the charge.
 
-    The route is only returned once its own bags are no more than the charge it was priced with, its
-    doors match the derivation, and `compile_route` can write it - so the compiler, which writes the
-    pickups from the route, always finds the room it needs. The day-wide count is the fallback: it is
-    a ceiling on any worker's bag, so a search that never settles still hands back a day that compiles.
+    The charge is a ceiling: a route priced with fewer turns at its door than its own bags need cannot
+    be written (the compiler puts the pickups there), so the ceiling may only grow, and it grows to
+    whatever the last route asked for. A route that asks for LESS than it was charged is a route with
+    turns nobody spends - its workers wait at their doors for pickups they never make - so once the
+    ceiling stops moving, the pass is repeated with the route's own bags: priced with exactly the
+    pickups it makes, or not returned at all.
+
+    The most complete consistent route of the passes is the answer. Charging the day's whole
+    distinct-good count to every worker is the fallback (a ceiling on any worker's bag, so it always
+    compiles), and it is what the first pass prices with when nothing is known about the route yet.
     """
     conservative = _settle(day, tasks, beam, pool, deadline, warm)
     charge = bags_of(day, tasks, conservative)
-    for _attempt in range(CHARGE_PASSES):
+    best: Result | None = None
+    best_key = (0, 0)
+    tightened = False
+    for _attempt in range(CHARGE_PASSES + 1):
         candidate = _settle(day, tasks, beam, pool, deadline, warm, charge=charge)
+        bags = bags_of(day, tasks, candidate)
         if _consistent(day, tasks, candidate):
-            return candidate
-        charge = [max(charged, bag)
-                  for charged, bag in zip(charge, bags_of(day, tasks, candidate))]
+            key = (len(candidate.route), int(bags == charge))
+            if key > best_key:
+                best, best_key = candidate, key
+        grown = [max(charged, bag) for charged, bag in zip(charge, bags)]
+        if grown != charge:
+            charge = grown
+            continue
+        if tightened:
+            break
+        tightened = True
+        charge = bags
+    if best is not None:
+        return best
     return conservative
 
 
