@@ -246,6 +246,17 @@ ROUND_BUDGET_MS = 65.0
 # TODO(#14): replace with the realised fraction the day reports.
 HOURS_OVERHEAD = 0.35
 
+# The labour dead zone (#87). The tile DP's answer is identically the idle
+# chain above ~147 coins/hour on this graph (measured sweep on the day-0
+# board: bare-tile value 420 at w=100, 60 at 140, 15 at 145, 0 at 147 — the clamp
+# sits at the last live price (145), the edge itself is ~146's hourly profit). A published wage beyond
+# that edge cannot move any tile: the farm freezes with 16-18 of 25 tiles
+# idle and the purse never rises (the #87 season table). The guard CLAMPS
+# the published labour dual to the last live price and records the clamp,
+# so a diverging tâtonnement degrades to the busiest legal wage instead of
+# silently freezing the board.
+LABOUR_DEAD_EDGE: float = 145.0
+
 
 @dataclass(frozen=True)
 class CouplingSupply:
@@ -313,6 +324,10 @@ class MasterResult:
     stopped: str = ""              # why the loop ended, when it was not certified
     bound: float = float("inf")    # the best Lagrangian bound seen
     gap: float = float("inf")      # (bound - objective) / bound
+    #: (days, hours) cells the #87 dead-zone clamp pulled under the edge.
+    #: A nonzero count says the raw tâtonnement wanted a wage the DP cannot
+    #: answer — the season then runs on the busiest legal wage instead.
+    labour_clamped_cells: int = 0
 
 
 def published_duals(w_coupling: np.ndarray, days: int,
@@ -710,6 +725,17 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
         result.duals = state["w"]
         result.mu = cg.solve.mu
     converged = cg.certified
+
+    # #87's dead-zone clamp, on the COUPLING dual before the publish map:
+    # a published labour wage past the DP's dead edge (~147 on this graph)
+    # cannot move any tile, and the season table showed the tâtonnement
+    # reaching 947-2131 there. Clamping degrades to the busiest legal wage
+    # and records how often the raw loop wanted past it.
+    lab_ix = COUPLING_IDS.index(LABOR_ID)
+    clamped = int(np.sum(w_cur[:, lab_ix] > LABOUR_DEAD_EDGE))
+    w_cur = w_cur.copy()
+    w_cur[:, lab_ix] = np.minimum(w_cur[:, lab_ix], LABOUR_DEAD_EDGE)
+    result.labour_clamped_cells = clamped
 
     result.converged = converged
     result.w = published_duals(w_cur, days, result.cash_duals, supply.quotes)
