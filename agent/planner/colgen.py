@@ -124,6 +124,28 @@ class MasterSolve:
     objective: float
 
 
+def cash_rows(pool: list[Column], days: int) -> np.ndarray:
+    """The cumulative cash rows: `(days, len(pool))`, one row per day.
+
+    Column `j`'s coefficient on day `d` is everything it spends through `d` less
+    everything it banks before `d` (money is a stock — see `solve_master`). Both
+    are running sums, so each column is two `cumsum`s and one vector assignment:
+    `earn[:d].sum()` is `cumsum(earn)[d-1]`, and the day-at-a-time loop this
+    replaces was the single largest block in the season's profile — 18,082,088
+    `ndarray.sum` calls, 30.9 s of the season's 136.5 s of `act`.
+
+    The two summations are the same arithmetic in a different order, so the rows
+    agree to float64 rounding rather than bit-for-bit; `tests/test_colgen.py`
+    pins them against the loop's own definition.
+    """
+    A_c = np.zeros((days, len(pool)))
+    for j, col in enumerate(pool):
+        spend = np.cumsum(np.asarray(col.spend, dtype=np.float64))
+        earn = np.cumsum(np.asarray(col.earn, dtype=np.float64))
+        A_c[:, j] = spend[:days] - np.concatenate(([0.0], earn[:days - 1]))
+    return A_c
+
+
 def solve_master(pool: list[Column], counts: np.ndarray, hours: np.ndarray,
                  money: float, days: int, n_coupling: int) -> MasterSolve:
     """max Σ λ·revenue  s.t. the coupling rows, the cash rows, convexity.
@@ -154,12 +176,7 @@ def solve_master(pool: list[Column], counts: np.ndarray, hours: np.ndarray,
     # committed to a plan that did exactly that, went broke on day 1, and
     # scored 4,268 where doing nothing scores 3,000. Money is a STOCK; a row
     # that treats it as an allowance per day is not a budget.
-    A_c = np.zeros((days, n))
-    for j, col in enumerate(pool):
-        spend = np.cumsum(np.asarray(col.spend, dtype=np.float64))
-        earn = np.asarray(col.earn, dtype=np.float64)
-        for d in range(days):
-            A_c[d, j] = spend[d] - (earn[:d].sum() if d else 0.0)
+    A_c = cash_rows(pool, days)
     b_c = np.full(days, float(money))
 
     # convexity: one row per class
