@@ -61,31 +61,42 @@ GOODS: tuple[str, ...] = PRODUCTS
 #: before the first online observation; the agent keeps counting on top of it.
 
 
-def _load_trained() -> dict[tuple[str, int, int], np.ndarray] | None:
-    """The corpus counts as {key: (n_bins,) float array}, or None."""
+def _load_trained() -> dict[tuple, np.ndarray] | None:
+    """The corpus counts as {key: (n_bins,) float array}, or None.
+
+    Keys are (good, day, price_bucket, activity); an artifact written
+    without the activity column reads as activity = -1 (the plain
+    3-tuple state, the pre-#65 shape).
+    """
     from agent.artifact import ARTIFACT_DIR
 
     npz = ARTIFACT_DIR / "opponent_counts.npz"
     if not npz.exists():
         return None
     with np.load(npz, allow_pickle=False) as data:
-        return {(str(g), int(d), int(b)): np.asarray(c, dtype=float)
-                for g, d, b, c in zip(data["goods"], data["days"],
-                                      data["buckets"], data["counts"],
-                                      strict=True)}
+        act = data["activity"] if "activity" in data.files else None
+        return {(str(g), int(d), int(b), int(a) if act is not None else -1):
+                np.asarray(c, dtype=float)
+                for g, d, b, a, c in zip(
+                    data["goods"], data["days"], data["buckets"],
+                    act if act is not None else [-1] * len(data["goods"]),
+                    data["counts"], strict=True)}
 
 
-def _load_trained_qty() -> dict[tuple[str, int, int], np.ndarray] | None:
+def _load_trained_qty() -> dict[tuple, np.ndarray] | None:
     from agent.artifact import ARTIFACT_DIR
 
     npz = ARTIFACT_DIR / "opponent_counts.npz"
     if not npz.exists():
         return None
     with np.load(npz, allow_pickle=False) as data:
-        return {(str(g), int(d), int(b)): np.asarray(q, dtype=float)
-                for g, d, b, q in zip(data["goods"], data["days"],
-                                      data["buckets"], data["qty_sum"],
-                                      strict=True)}
+        act = data["activity"] if "activity" in data.files else None
+        return {(str(g), int(d), int(b), int(a) if act is not None else -1):
+                np.asarray(q, dtype=float)
+                for g, d, b, a, q in zip(
+                    data["goods"], data["days"], data["buckets"],
+                    act if act is not None else [-1] * len(data["goods"]),
+                    data["qty_sum"], strict=True)}
 
 
 class OpponentModel:
@@ -107,8 +118,8 @@ class OpponentModel:
                  pretrained: bool = True) -> None:
         self.alpha = alpha
         self.n_bins = n_bins
-        self.counts: dict[tuple[str, int, int], np.ndarray] = {}
-        self.qty_sum: dict[tuple[str, int, int], np.ndarray] = {}
+        self.counts: dict[tuple, np.ndarray] = {}
+        self.qty_sum: dict[tuple, np.ndarray] = {}
         self._marginals: dict[str, np.ndarray] = {}
         self._marginal_dirty = True
         if pretrained:
@@ -142,6 +153,16 @@ class OpponentModel:
     def _key(self, good: str, step: int, price: int) -> tuple[str, int, int]:
         return (good, int(step // 24), self._bucket(price, MARKET_PARAMS[good]["base"]))
 
+    def _key_activity(self, good: str, step: int, price: int,
+                      activity: int) -> tuple[str, int, int, int]:
+        """The activity key (#65 follow-up): the 3-tuple with the rival's
+        own activity bucket APPENDED — (good, day, price_bucket, activity).
+        The activity regime is the rival's own recent behaviour, so it
+        rides on top of every per-good key shape without changing them.
+        """
+        base = self._key(good, step, price)
+        return base + (int(activity),)
+
     def _bin(self, qty: float) -> int:
         b = 0
         for edge in self.BINS:
@@ -162,7 +183,8 @@ class OpponentModel:
                 arr[-1] += 1.0            # the residual went negative: a net buy
         self._marginal_dirty = True
 
-    def policy(self, good: str, step: int, price: int) -> np.ndarray:
+    def policy(self, good: str, step: int, price: int,
+               activity: int | None = None) -> np.ndarray:
         """Action distribution for a state, hierarchically smoothed.
 
         `(counts + alpha + w * marginal) / (n + k*alpha + w)` with
@@ -170,9 +192,13 @@ class OpponentModel:
         gets ~8 pseudo-counts from its good's aggregate, a 5000-observation
         state gets 49 — the empirical state dominates where it has data,
         the good's own prior carries it where it does not. Unseen states
-        read the good's marginal directly.
+        read the good's marginal directly. With `activity`, the
+        activity-keyed table is used (see `expected_sell`).
         """
-        arr = self.counts.get(self._key(good, step, price))
+        key = (self._key_activity(good, step, price, activity)
+               if activity is not None
+               else self._key(good, step, price))
+        arr = self.counts.get(key)
         marg = self.good_marginal(good)
         if arr is None:
             return marg
@@ -182,16 +208,68 @@ class OpponentModel:
              + w * marg)
         return p / p.sum()
 
-    def expected_sell(self, good: str, step: int, price: int) -> float:
-        """Expected units the rival sells next turn in this state."""
+    def _activity_marginal(self, good: str, day: int, bucket: int
+                           ) -> tuple[np.ndarray, np.ndarray]:
+        """counts/qty_sum summed over the activity axis for one plain state.
+
+        This is the same CONSTRUCTION the pre-activity table was — the
+        bucket rows summed away — but not the same NUMBERS: the shipped
+        artifact was rebuilt on a wider corpus (337 keys / 17.8 M counts
+        before, 943 plain keys / 24.9 M after), and only 17 of the 281
+        keys the two share agree. So a caller without a bucket reads a
+        plain state again, in the shape the old table had, at this
+        corpus's values — WHEAT day 1 answers 2.52 where the old table
+        said 3.96, day 10 answers 4.51 against 6.92. Behaviour-preserving
+        in kind, not in quantity.
+        """
+        acc = np.zeros(self.n_bins)
+        acc_q = np.zeros(self.n_bins)
+        base = (good, day, bucket)
+        for key, arr in self.counts.items():
+            if key[:3] == base:
+                acc += np.asarray(arr, dtype=float)
+                acc_q += np.asarray(self.qty_sum.get(key,
+                                                     np.zeros(self.n_bins)),
+                                    dtype=float)
+        return acc, acc_q
+
+    def expected_sell(self, good: str, step: int, price: int,
+                      activity: int | None = None) -> float:
+        """Expected units the rival sells next turn in this state.
+
+        `activity` (the rival's own sell bucket over the last 24 turns,
+        from `tracker.MarketTracker.activity_bucket`) selects the
+        activity-keyed table; a silent rival's row answers near-pure
+        hold, which is what makes a PASS rival predictable (measured:
+        1,230 phantom units over 10 days without it, 0 with it). Without
+        a bucket the plain state is the ACTIVITY MARGINAL — all bucket
+        rows summed — which is how the pre-activity table was built, over
+        this artifact's own (rebuilt, wider) corpus rather than that one's
+        numbers. See `_activity_marginal`.
+        """
+        if activity is not None:
+            key = self._key_activity(good, step, price, activity)
+            p = self.policy(good, step, price, activity=activity)
+            qs = self.qty_sum.get(key, np.zeros(self.n_bins))
+            counts = self.counts.get(key, np.zeros(self.n_bins))
+            mean_qty = np.where(counts > 0, qs / np.maximum(counts, 1.0), 0.0)
+            return float(p @ mean_qty)
+        acc, acc_q = self._activity_marginal(
+            good, int(step // TURNS_PER_DAY),
+            self._bucket(price, MARKET_PARAMS[good]["base"]))
         key = self._key(good, step, price)
-        p = self.policy(good, step, price)
-        qs = self.qty_sum.get(key, np.zeros(self.n_bins))
-        counts = self.counts.get(key, np.zeros(self.n_bins))
-        mean_qty = np.where(counts > 0, qs / np.maximum(counts, 1.0), 0.0)
+        marg = self.good_marginal(good)
+        if float(acc.sum()) <= 0.0 and key not in self.counts:
+            return float(marg[0] * 0.0)      # an unseen plain state: hold
+        n = float(acc.sum())
+        w = self.SHRINK_TOPUP * n / (n + self.SHRINK_TOPUP)
+        p = (acc + self.alpha + w * marg)
+        p = p / p.sum()
+        mean_qty = np.where(acc > 0, acc_q / np.maximum(acc, 1.0), 0.0)
         return float(p @ mean_qty)
 
-    def expected_sell_day(self, obs: Any) -> dict[str, float]:
+    def expected_sell_day(self, obs: Any,
+                          activity: int | None = None) -> dict[str, float]:
         """The rival's expected sell volume PER DAY for every good, from the
         observation alone — the `residual` forecast() consumes.
 
@@ -200,6 +278,11 @@ class OpponentModel:
         day's 24 turns (the same turn shape the forecast's walk applies it
         in). This is step 1 of #65: the wire between the trained model and
         the price path.
+
+        `activity` selects the activity-keyed table (the rival's own
+        24-turn sell bucket, from `activity_bucket(tracker)`); without it
+        the plain states answer, which the activity artifact does not
+        carry — callers wire the tracker's bucket or get zeros.
         """
         market = field_of(obs, "market", {}) or {}
         raw_inv = dict(field_of(market, "inventory", {}) or {})
@@ -210,7 +293,8 @@ class OpponentModel:
             price = int(field_of(market, "prices", {}) and
                         dict(field_of(market, "prices", {})).get(g, 0)
                         or price_of(g, inv))
-            per_turn = self.expected_sell(g, day_start, price)
+            per_turn = self.expected_sell(g, day_start, price,
+                                          activity=activity)
             out[g] = float(per_turn * TURNS_PER_DAY)
         return out
 

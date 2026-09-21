@@ -112,6 +112,41 @@ def test_mid_day_forecast_row0_is_the_observation_itself() -> None:
             item, float(obs["market"]["inventory"][item])), item
 
 
+def test_mid_day_hour_row_is_the_snapshot_at_hour_now() -> None:
+    """The #71 guard: at hour_now = h, hour h's OWN quote is the snapshot,
+    and the ladder moves land at the hours the walk says.
+
+    Row 0 is trivially the snapshot under ANY labeling (rows init to 0),
+    so asserting row 0 proved nothing — the mid-day defect #67 fixed
+    (hours h..23 carrying the quote h hours EARLY) survived it. On a
+    fixture where the walk actually moves (seed 1, day 4: the town's shop
+    drain steps STRAWBERRY every 4 walk-rows), the two labelings differ,
+    and this guard pins the correct one: the defect table shifts every
+    move 5 hours early.
+    """
+    sim, PASS = _sim(1)
+    while int(sim.observations()[0]["step"]) < 4 * 24 + 5:
+        sim.step([PASS, PASS])               # day 4, hour 5
+    obs = sim.observations()[0]
+    hour_now = int(obs["step"]) % 24
+    fc = forecast(obs, days=2)
+    H = hourly_prices(fc)
+    g = M_PRODUCTS.index("STRAWBERRY")
+    # hour hour_now's own quote IS the snapshot (its market has not run):
+    assert H[hour_now, g] == K.market_price(
+        "STRAWBERRY", float(obs["market"]["inventory"]["STRAWBERRY"]))
+    # and each 4-row ladder step lands at the hour the walk says: the
+    # snapshot (row 0) + 4 walk rows = hour hour_now + 4
+    expected_moves = [(hour_now + 4, 1), (hour_now + 8, 3),
+                      (hour_now + 12, 4), (hour_now + 16, 5),
+                      (hour_now + 20, 7)]
+    for h, q in expected_moves:
+        assert int(H[h, g]) == 150 + q, (
+            f"hour {h}: {int(H[h, g])} != {150 + q}; the mid-day rows are "
+            "labeled off the walk (the #67 defect shifts each move 5 "
+            "hours early and this assertion fires)")
+
+
 def main() -> int:
     tests = [(k, v) for k, v in sorted(globals().items())
              if k.startswith("test_") and callable(v)]

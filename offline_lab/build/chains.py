@@ -38,8 +38,8 @@ from pathlib import Path
 from agent.artifact import artifact_path, write_info
 from agent.tile_dp import chains as base
 from agent.tile_dp.chains import (BUILD_OF_STRUCTURE, NO_ACTION, TILE_OPS, chain_name, entity_code_of)
-from offline_lab.build.ledger import (ANIMAL_RES, PRODUCT_RES, SEED_RES)
-from agent.tile_dp.contract import (engine_fingerprint)
+from offline_lab.build.ledger import (ANIMAL_RES, PRODUCT_RES, SEED_RES, chain_steps)
+from agent.tile_dp.contract import (engine_fingerprint, fingerprint_chains)
 from agent.world.model import (ANIMALS, CROPS, RESOURCE_NAMES, Structure, TileKind,
                                UnitAction)
 from agent.world.rules import ANIMAL_RULES, CROP_RULES, TURNS_PER_DAY
@@ -52,7 +52,7 @@ TABLE_PATH = artifact_path(NAME, ".data.json")
 def registry_fingerprint(chains: tuple[tuple[str, ...], ...]) -> str:
     """Fingerprint of the chains THIS build produced (the agent's own one hashes the
     registry it loaded, which does not exist yet while this runs)."""
-    return base.fingerprint_chains(chains)
+    return fingerprint_chains(chains)
 
 
 def contract_of(chains: tuple[tuple[str, ...], ...]) -> str:
@@ -352,7 +352,7 @@ def write_table(contract: str, chains=None) -> Path:
     chains, so the two artifacts are one build.
     """
     chains = tuple(registry() if chains is None else chains)
-    overlong = [c for c in chains if base.chain_steps(c) > TURNS_PER_DAY]
+    overlong = [c for c in chains if chain_steps(c) > TURNS_PER_DAY]
     if overlong:
         raise AssertionError(f"chains needing more than {TURNS_PER_DAY} steps: {overlong}")
     TABLE_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -370,7 +370,7 @@ def write_table(contract: str, chains=None) -> Path:
                                                  for c in chains]}) + "\n")
     return write_info(NAME, kind="tile_chains", file=TABLE_PATH.name,
                       contract=contract,
-                      engine=base.engine_fingerprint(),
+                      engine=engine_fingerprint(),
                       registry=registry_fingerprint(chains),
                       stats={"chains": len(chains),
                              "no_action": chain_name(NO_ACTION),

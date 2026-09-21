@@ -2,12 +2,12 @@
   "name": "tile_graph",
   "kind": "tile_graph",
   "file": "tile_graph.npz",
-  "contract": "tile-dp/reg=d847851eca5c0625+eng=a2278746+tpd=24+pb=30+bld=30030004+chn=aaf1cd2d",
+  "contract": "tile-dp/reg=b45e4290980711cc+eng=a2278746+tpd=24+pb=30",
   "engine": "a2278746",
   "registry": "b45e4290980711cc",
   "stats": {
     "states": 703,
-    "edges": 11942,
+    "edges": 11946,
     "kinds": {
       "NONE": 1,
       "PLANT": 420,
@@ -17,17 +17,17 @@
       "WEED": 1
     },
     "edges_per_entity": {
+      "TILE": 3,
       "WHEAT": 1530,
       "CARROT": 1464,
       "TOMATO": 1895,
       "STRAWBERRY": 2524,
       "MELON": 1914,
-      "GOOSE": 247,
-      "COW": 991,
-      "SHEEP": 1376,
-      "TILE": 1
+      "GOOSE": 248,
+      "COW": 992,
+      "SHEEP": 1376
     }
   },
   "source": "offline_lab.build.graph:build_graph",
-  "created_utc": "2026-09-18T17:12:34Z"
+  "created_utc": "2026-09-21T09:51:15Z"
 }
