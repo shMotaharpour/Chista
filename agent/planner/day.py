@@ -19,6 +19,7 @@ This is M4. Nothing here decides anything: it asks, and it reports.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 
 import numpy as np
@@ -175,7 +176,8 @@ def _better(candidate: "DayPlan", best: "DayPlan") -> bool:
 
 def plan(obs, contractor, supply, *, class_of_tile, iter_cap: int = 200,
          hands: int = 0, budget_s: float | None = None,
-         rounds: int = 3, tolerance: float = 0.02) -> DayPlan:
+         rounds: int = 3, tolerance: float = 0.02,
+         pool: list | None = None, deadline: float | None = None) -> DayPlan:
     """Master, assign, ask wsr, correct the hours, repeat.
 
     **wsr is a feasibility oracle here, not a calibration source, and that is
@@ -213,7 +215,8 @@ def plan(obs, contractor, supply, *, class_of_tile, iter_cap: int = 200,
             wheat_feed_stock=supply.wheat_feed_stock, money=supply.money,
             quotes=supply.quotes)
         result = M.equilibrate(object(), obs, contractor, current,
-                               iter_cap=iter_cap)
+                               iter_cap=iter_cap, pool=pool,
+                               deadline=deadline)
         mixes = M.to_mixes(result, contractor.days)
         choices = C.assign_by_quota(class_of_tile, mixes)
         chains = day_chains(choices, mixes, result.pool)
@@ -231,7 +234,12 @@ def plan(obs, contractor, supply, *, class_of_tile, iter_cap: int = 200,
         best = DayPlan(best.master, best.choices, best.mixes, best.day,
                        best.rounds, best.overhead, solves=spent)
 
+        # Each correction round re-solves from the pool the last one left, so
+        # a second solve is cheap even when the first was not.
+        pool = list(result.pool)
         if fitted.complete or not chains:
+            return candidate
+        if deadline is not None and time.perf_counter() >= deadline:
             return candidate
         if fitted.reason == "budget":
             # wsr ran out of time, not out of hours. Shrinking the supply on

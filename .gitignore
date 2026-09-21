@@ -13,3 +13,7 @@ artifacts/
 .hermes/
 .docs_diff.py
 .docs_watch_state.json
+
+# The tuned numbers ship beside the agent; they come out of the ignore
+# list once they stop moving (agent/config.py has the committed defaults).
+agent/artifact/config.json

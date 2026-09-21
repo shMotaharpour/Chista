@@ -437,7 +437,9 @@ def _product_price_path(obs, days: int, p_flat: np.ndarray,
 def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
                 w_warm: np.ndarray | None = None,
                 iter_cap: int = ITER_CAP_DEFAULT,
-                poll=None, owned: list[int] | None = None) -> MasterResult:
+                poll=None, owned: list[int] | None = None,
+                pool: list | None = None,
+                deadline: float | None = None) -> MasterResult:
     """Tâtonnement to (approximate) equilibrium; always publishable.
 
     The loop is a true Dantzig-Wolfe round: at the current duals the
@@ -484,9 +486,16 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
     # prices and SAYS so.
     if not HAS_SCIPY:
         return _fallback("scipy unavailable: linprog not importable")
-    deadline = getattr(runtime, "_deadline", None)
-    t_end = (time.perf_counter() + deadline.remaining_ms() / 1000.0 - 0.020
-             if deadline is not None else None)
+    # The rung's own deadline object, if it handed one over. It is NOT the
+    # `deadline` argument — that is a wall-clock instant the caller already
+    # computed, and this line used to assign over it, so a caller that passed
+    # one got the rung's None instead and the loop ran to its natural end. A
+    # season had 25 turns over a 965 ms budget, the worst at 2.7 s.
+    rung = getattr(runtime, "_deadline", None)
+    t_end = (time.perf_counter() + rung.remaining_ms() / 1000.0 - 0.020
+             if rung is not None else None)
+    if deadline is not None:
+        t_end = deadline if t_end is None else min(t_end, deadline)
 
     # ---- the column-generation loop -------------------------------------
     # One subproblem per CLASS, not per tile: tiles in the same graph state
@@ -498,7 +507,7 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
     result.classes = (reps, counts, of_tile)
     idle = [colgen.Column(cls=c, cost=np.zeros((days, N_COUPLING)),
                           spend=np.zeros(days), earn=np.zeros(days),
-                          revenue=0.0, key=("idle",))
+                          revenue=0.0, cls_key=tuple(reps[c]), key=("idle",))
             for c in range(len(reps))]
 
     w_cur = w_lag
@@ -564,7 +573,8 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
             hours = cost[i].copy()
             hours[:, 0] += (hours[:, 0] > 0.0) * float(dist)
             columns.append(colgen.Column(
-                cls=c, cost=hours, spend=spend[i], earn=earn[i],
+                cls=c, cls_key=(state_id, dist),
+                cost=hours, spend=spend[i], earn=earn[i],
                 revenue=float(earn[i].sum()),
                 chains=tuple(board.plans[i]) if i < len(board.plans) else (),
                 entities=_entities(board, i, days),
@@ -586,7 +596,9 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
     try:
         cg = colgen.generate(price, supply.hours, supply.money, counts, days,
                              N_COUPLING, idle, rounds=max(1, iter_cap),
-                             poll=poll, deadline=t_end)
+                             poll=poll,
+                             deadline=t_end,
+                             warm=pool)
     except RuntimeError as exc:
         return _fallback(str(exc)[:200])
     except Exception as exc:                    # noqa: BLE001 - degraded, not dead

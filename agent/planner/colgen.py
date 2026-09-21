@@ -34,6 +34,7 @@ scalar price can produce it because both are priced at the same prices.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -54,11 +55,17 @@ RC_TOL = 1e-6
 class Column:
     """One class's plan over the horizon, as the master sees it."""
 
-    cls: int                      # which class this plan belongs to
+    cls: int                      # which class this plan belongs to, by INDEX
     cost: np.ndarray              # (days, N_COUPLING) coupling consumption
     spend: np.ndarray             # (days,) coins paid to the market
     earn: np.ndarray              # (days,) coins banked
     revenue: float                # total, at the published product prices
+    #: The class's KEY — `(graph state, distance)`. The index above is
+    #: positional and means nothing on another board: tomorrow's class 3 is not
+    #: today's. A warm pool is matched on this and remapped, or a plan for an
+    #: empty field arrives as a plan for a grown crop and the master prices a
+    #: fiction it will then commit tiles to.
+    cls_key: tuple = ()
     chains: tuple = ()            # (day, state, chain_id) — for columns.py
     #: What each day's chosen edge CONSTRUCTS, by name: the crop a PLANT sows,
     #: the animal a PLACE puts down, None for a day that builds nothing. wsr
@@ -204,7 +211,7 @@ def column_key(board, tile: int, days: int) -> tuple:
 
 def generate(price, supply_hours, money, counts, days, n_coupling,
              idle_columns, *, rounds: int = 12, poll=None,
-             deadline=None) -> ColgenResult:
+             deadline=None, warm: list | None = None) -> ColgenResult:
     """The loop: master over every column so far, price, add, repeat.
 
     `price(y, cash)` is the caller's pricing step: it publishes the duals to
@@ -219,14 +226,42 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
     §4.1, verified live there: a master born only of profit-maximal columns is
     INFEASIBLE and scipy hands back `marginals: None`.
     """
-    import time
 
+    # `warm` is a pool from an earlier call on almost this instance. The
+    # columns are plans, and a plan is still a plan when the prices move — so
+    # carrying them means the first master solve already has something to
+    # combine instead of only the idle columns, and the pricing step spends its
+    # rounds on what is MISSING rather than on rediscovering what is not.
+    # Columns for classes this instance does not have are dropped: a class
+    # index is an index into THIS board's classes and means nothing in another.
     result = ColgenResult(pool=list(idle_columns))
+    index_of = {c.cls_key: c.cls for c in result.pool if c.cls_key}
+    for column in (warm or []):
+        target = index_of.get(column.cls_key)
+        if target is None or column.cost.shape != (days, n_coupling):
+            continue                 # a class this board does not have
+        result.pool.append(
+            column if column.cls == target
+            else Column(cls=target, cost=column.cost, spend=column.spend,
+                        earn=column.earn, revenue=column.revenue,
+                        chains=column.chains, entities=column.entities,
+                        cls_key=column.cls_key, key=column.key))
     seen = {(c.cls, c.key) for c in result.pool}
 
+    spent = 0.0
     for _ in range(max(1, rounds)):
         if poll is not None:
             poll()
+        # A round costs about what the last one cost, so one that starts with
+        # less than that left runs PAST the deadline rather than up to it —
+        # the caller's turn is a second and the overrun draws on a bank meant
+        # for something else. Checking only at the END of the round is what
+        # put 25 turns of a season over a 965 ms budget, the worst at 2.7 s.
+        # (wsr reached the same rule for its own budget, in #70.)
+        if deadline is not None and time.perf_counter() + spent >= deadline:
+            result.stopped = "budget"
+            return result
+        started = time.perf_counter()
         result.solve = solve_master(result.pool, counts, supply_hours, money,
                                     days, n_coupling)
         result.rounds += 1
@@ -254,6 +289,7 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
             result.pool.append(col)
             added += 1
 
+        spent = max(spent, time.perf_counter() - started)
         if added == 0:
             # Every improving column was already in the pool. That is NOT a
             # proof: the pricing step says a plan beats what the master pays
@@ -264,9 +300,7 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
             # reported as a stall and the caller is told the mix is unproven.
             result.stopped = f"stalled: rc {float(np.max(rc)):.6g} on a column the pool holds"
             return result
-        if deadline is not None and time.perf_counter() >= deadline:
-            result.stopped = "budget"
-            return result
+
 
     result.stopped = "round cap"
     return result
