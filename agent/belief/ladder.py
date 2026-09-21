@@ -130,11 +130,24 @@ def split_days(good: str, inventory: int, lot: int, drains: np.ndarray
                ) -> tuple[np.ndarray, int]:
     """The exact best day split of a `lot`, drains between the days.
 
-    State = units sold before the day; the day's inventory is then
-    `inventory + m - W[d]` (W = the drains of the days before d). The
-    transition matrix is the ladder window per state, so one matmul-shaped
-    max per day — O(D * lot^2) with no Python loop over units.
+    Engine order inside a day is units, market, town (F037): day d's sale
+    quotes the inventory BEFORE that day's drain. Day d starts at
+    `inventory - n - W[d]`, where `n` = units sold on the days before d
+    and `W[d]` = the drains of the days before d — both subtract. Selling
+    `k = j - n` units that day fetches `c(inv - n + k) - c(inv - n)` in
+    cumsum terms (the ladder moves as the shared inventory falls), which
+    is the transition the DP maxes per day — O(D * lot^2), no Python loop
+    over units.
     Returns (per-day units, total coins).
+
+    History: the pre-fix state added `n` instead of subtracting it AND
+    reused the day-0 cumsum window for every state (A[m, j] - A[m, m]),
+    which priced day d's sale as if the whole day-d basket moved down one
+    shared ladder — the two errors cancelled only when the plan sold
+    nothing early. Found by enumerating every split of a 12-lot and
+    pricing each through `sell_coins`; the DP deferred everything to the
+    last day and paid 2,646 where 2,696 was available (MILK, 9,950, 5
+    days, drain 1/day).
     """
     i = _IX[good]
     drains = np.asarray(drains, dtype=np.int64)
@@ -146,12 +159,17 @@ def split_days(good: str, inventory: int, lot: int, drains: np.ndarray
     choice = np.zeros((D, lot + 1), dtype=np.int64)
     n = np.arange(lot + 1)
     for d in range(D):
-        start = int(inventory) + n - int(W[d])         # start inventory per state
+        start = int(inventory) - n - int(W[d])         # sold + drained subtract
+        # c(x) at cumsum index; selling k units from `start` fetches
+        # c(start + k) - c(start). A[j, k] = c(start_j + k) - c(start_j).
         A = np.stack([S[i, s - G_LO: s - G_LO + lot + 1] - S[i, s - G_LO]
-                      for s in start])                 # A[m, j]: m-th state's cumsum
+                      for s in start])                 # A[j, k]: j sold so far
+        # transition: from state n=m to n=j (> m), sell k = j - m TODAY:
+        # coins = c(start_m + k) - c(start_m) = A[m, k] with k = j - m.
         B = np.full((lot + 1, lot + 1), -np.inf)
         for m in range(lot + 1):
-            B[m, m:] = A[m, m:] - A[m, m]              # sell k-m from state m
+            k = np.arange(0, lot + 1 - m)              # sell k today
+            B[m, m:] = A[m, k]                         # A indexed by TODAY's units
         cand = dp[:, None] + B
         choice[d] = np.argmax(cand, axis=0)
         dp = cand.max(axis=0)
@@ -162,3 +180,31 @@ def split_days(good: str, inventory: int, lot: int, drains: np.ndarray
         xs[d] = m - pm
         m = pm
     return xs, int(dp[lot])
+
+
+def plan_coins(good: str, inventory: int, plan: "np.ndarray | list[int]",
+               drains: np.ndarray) -> int:
+    """Coins a SPECIFIC multi-day sell plan fetches — the manager's what-if.
+
+    `plan[d]` is the units to sell on day d (engine order per day: the
+    sale quotes the inventory before that day's drain, F037). This is the
+    evaluator side of `split_days`: the DP returns the optimal plan, this
+    prices ANY plan — 3/day vs 1/day differ here because the ladder moves
+    with the shared inventory and the town drains between the days.
+    Guards: `plan_coins` on `split_days`' own output equals its reported
+    total, and a deferring shape (all on the last day) prices BELOW the
+    optimum on a drained board.
+    """
+    i = _IX[good]
+    drains = np.asarray(drains, dtype=np.int64)
+    plan = [int(k) for k in plan]
+    if len(plan) != len(drains):
+        raise ValueError(
+            f"plan has {len(plan)} days against {len(drains)} drains")
+    coins = 0
+    inv = int(inventory)
+    for d, k in enumerate(plan):
+        k = max(0, min(k, inv))
+        coins += sell_coins(good, inv, k)
+        inv = inv - k - max(0, int(drains[d]))
+    return coins

@@ -153,7 +153,7 @@ def _rival_scenarios(model: OpponentModel, good: str, step: int, price: int,
         key, qs, counts = base, acc_q, acc
     qs = np.asarray(qs, dtype=float)
     counts = np.asarray(counts, dtype=float)
-    bin_means = np.where(counts > 0, qs / np.maximum(counts, 1.0), 0.0)
+    bin_means = model._mean_volume(counts, qs, good, buy=False)
     # the rival's day volume in the model's expected-sell scale
     day_volume = float(model.expected_sell(good, step, price,
                                            activity=activity)) * TURNS_PER_DAY
@@ -162,8 +162,9 @@ def _rival_scenarios(model: OpponentModel, good: str, step: int, price: int,
     weights: list[float] = []
     # bin 0 = hold: the rival does nothing
     scenarios.append(np.zeros(HOURS)); weights.append(float(p[0]))
-    # sell bins 1..n-2: the bin's share of the day volume, 3 placements
-    for b in range(1, model.n_bins - 1):
+    # sell bins 1..3: the bin's share of the day volume, 3 placements
+    # (bin 4 is the dual goods' net-buy bin — never a sell schedule)
+    for b in range(1, model.BUY_BIN):
         share = float(p[b])
         if share <= 0:
             continue
@@ -176,7 +177,7 @@ def _rival_scenarios(model: OpponentModel, good: str, step: int, price: int,
         weights += [w, w, w]
     # net-buy bin (dual goods): no sell volume to place
     scenarios.append(np.zeros(HOURS))
-    weights.append(float(p[-1]) if model.n_bins > 3 else 0.0)
+    weights.append(float(p[model.BUY_BIN]))
     S = np.array(scenarios)
     W = np.array(weights)
     return S, W / W.sum()
