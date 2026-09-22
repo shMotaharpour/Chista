@@ -205,7 +205,6 @@ def remaining_turns(day: Day, tasks: TaskArray, result: Result) -> list[int]:
     from these, `compile_route` writes it from the same rule.
     """
     hours = _start_hours(day, result.pool)
-    arrival = first_arrival(tasks)
     starts = _start_positions(day, result.pool, result.settled, result.doors)
     per: dict[int, list[tuple[int, str]]] = {}
     for turn, task_id, worker in result.route:
@@ -216,7 +215,11 @@ def remaining_turns(day: Day, tasks: TaskArray, result: Result) -> list[int]:
         entries = sorted(per.get(worker, []))
         bag = _bag(tasks, entries)
         here = (int(starts[worker][0]), int(starts[worker][1]))
-        spent = first_walk_turn(hours[worker], arrival, len(bag)) - int(hours[worker])
+        # The pickups themselves, and not the wait for the goods to reach the shed: the compiler
+        # writes one PICKUP op per good at `max(hour, arrival)` and every turn before that is a PASS,
+        # so charging the wait as spent under-reports the room by the gap - measured at one turn on
+        # the mixed day, where the farmer begins at hour 0 and the shed opens at hour 1.
+        spent = len(bag)
         for _turn, task_id in entries:
             row = tasks.ids.index(task_id)
             target = (int(tasks.cells[row][0]), int(tasks.cells[row][1]))

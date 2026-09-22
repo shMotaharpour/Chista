@@ -242,6 +242,7 @@ def _apply_sells(inv: dict[str, float], item: str, units: float,
 def forecast(obs: Any, *, days: int = 30,
              our_sells: Mapping[int, Mapping[str, int]] | None = None,
              residual: Mapping[str, float] | None = None,
+             rival_supply: np.ndarray | None = None,
              unlock_policy: str = "mean",
              config: Any = None,
              market_params: Any = None,
@@ -254,8 +255,12 @@ def forecast(obs: Any, *, days: int = 30,
     quote table indexed at the walked rows — no per-turn Python loop.
 
     `our_sells` is `{absolute_step: {item: units}}`; `residual` is the
-    opponent's sell pressure in units per day (#16 owns the estimate).
-    Named assumptions (all of them are on the returned object):
+    opponent's sell pressure in units per day (#16 owns the estimate), and
+    `rival_supply` is that same pressure DATED — `(days, 9)` units per day per
+    good, as `belief/rival_calendar.supply_curve` builds it from their public
+    board. The dated form is what makes the timing real; `residual` remains the
+    input for a caller that has no calendar. Named assumptions (all of them are
+    on the returned object):
     future sells are only modelled when passed in, the town's shop set
     only grows under `unlock_policy`, and nothing here models the
     `marketParams` override unless the caller passes one.
@@ -327,7 +332,23 @@ def forecast(obs: Any, *, days: int = 30,
                 if it in n:
                     our[t, n[it]] += float(units)
     res_vec = np.array([res.get(it, 0.0) for it in PRODUCTS])
-    rival = np.repeat(res_vec[None, :] / TURNS_PER_DAY, len(turns), axis=0)
+    if rival_supply is None:
+        # The flat estimate: the opponent's pressure spread evenly over the
+        # horizon. Kept as the caller's own input (the same path, a different
+        # vector) because `residual` is what a caller without a calendar has.
+        rival = np.repeat(res_vec[None, :] / TURNS_PER_DAY, len(turns), axis=0)
+    else:
+        # The dated curve (`belief/rival_calendar.supply_curve`): units per DAY
+        # per good. A rival tile that pays out on day 7 pushes the price down on
+        # day 7, not on every day — which is the whole difference between a
+        # residual and a calendar, and the half of the board a path that assumes
+        # no rival supply ignores.
+        curve = np.asarray(rival_supply, dtype=np.float64)
+        if curve.shape != (horizon, len(PRODUCTS)):
+            raise ValueError(
+                f"rival_supply: expected shape ({horizon}, {len(PRODUCTS)}), "
+                f"got {curve.shape}")
+        rival = curve[day_of_turn] / TURNS_PER_DAY
 
     # --- inventory walk: cumsum of (rival + our - drain), per TURN ----------
     # both seats' sales ADD supply (+1 per unit, engine `_commit_unit`); the
