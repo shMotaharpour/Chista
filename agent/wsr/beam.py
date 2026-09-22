@@ -309,7 +309,6 @@ def remaining_turns(day: Day, tasks: TaskArray, result: Result) -> list[int]:
     from these, `compile_route` writes it from the same rule.
     """
     hours = _start_hours(day, result.pool)
-    arrival = first_arrival(tasks)
     starts = _start_positions(day, result.pool, result.settled, result.doors)
     per: dict[int, list[tuple[int, str]]] = {}
     for turn, task_id, worker in result.route:
@@ -325,9 +324,10 @@ def remaining_turns(day: Day, tasks: TaskArray, result: Result) -> list[int]:
         # so charging the wait as spent under-reports the room by the gap - measured at one turn on
         # the mixed day, where the farmer begins at hour 0 and the shed opens at hour 1.
         spent = len(bag)
-        for _turn, row, fetch in legs(tasks, entries):
-            target = leg_target(tasks, row, here)
-            spent += len(leg_moves(here, target, fetch)) + 1
+        for _turn, task_id in entries:
+            row = tasks.ids.index(task_id)
+            target = (int(tasks.cells[row][0]), int(tasks.cells[row][1]))
+            spent += len(walk(here, target)) + 1
             here = target
         out.append(int(day.horizon) - int(hours[worker]) - spent)
     return out
