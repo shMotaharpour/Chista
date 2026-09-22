@@ -510,7 +510,8 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
                 poll=None, owned: list[int] | None = None,
                 pool: list | None = None,
                 deadline: float | None = None,
-                forecast_obj=None) -> MasterResult:
+                forecast_obj=None,
+                smoothing: float = 0.0) -> MasterResult:
     """Column generation over the tile classes; always publishable.
 
     One round is one Dantzig-Wolfe round (lesson 1.9): the LP solves over EVERY
@@ -715,7 +716,8 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
                              N_COUPLING, idle, rounds=max(1, iter_cap),
                              poll=poll,
                              deadline=t_end,
-                             warm=_repriced_pool(pool, p_mkt, days))
+                             warm=_repriced_pool(pool, p_mkt, days),
+                             smoothing=smoothing)
     except RuntimeError as exc:
         return _fallback(str(exc)[:200])
     except Exception as exc:                    # noqa: BLE001 - degraded, not dead
