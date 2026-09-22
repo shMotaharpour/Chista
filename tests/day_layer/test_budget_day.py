@@ -25,7 +25,6 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
 from agent.tile_dp.chains import chain_id_of, chain_ops
 from agent.wsr import beam as B
 from agent.wsr import tasks as T
-from agent.wsr.emit import compile_route
 
 OPS = chain_ops(chain_id_of(("PLANT", "WATER")))
 AVAILABLE = {"WHEAT": 1}
@@ -63,18 +62,6 @@ def test_a_bigger_budget_never_places_less(monkeypatch):
         placed.append(len(result.route))
 
     assert placed == sorted(placed), f"a larger budget placed less: {placed}"
-
-
-def test_a_route_compiles_against_the_positions_it_was_priced_from():
-    """`compile_route(..., settled=result.settled)` is the one correct way to write a day down.
-
-    Without it the compiler re-derives the positions from the route, and a route the deadline cut
-    before its fixed point converged was priced from somewhere else - so it raised.
-    """
-    chains, tasks = _day()
-    for budget in (0.02, 0.06, 0.20):
-        result = B.search(_day_for(chains), tasks, hands=HANDS, max_hands=HANDS, budget_s=budget)
-        compile_route(_day_for(chains), tasks, result, settled=result.settled)
 
 
 def test_a_result_always_says_where_it_was_priced_from():

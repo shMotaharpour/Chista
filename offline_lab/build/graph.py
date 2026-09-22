@@ -56,6 +56,7 @@ from kaggle_environments.envs.kaggriculture import kaggriculture as K
 from offline_lab.fast_sim import FastSim
 
 from agent.artifact import artifact_path, write_info
+from offline_lab.build.fingerprint import stamp as builder_stamp
 from agent.world.model import UnitAction
 from agent.world.rules import ANIMAL_RULES, CROP_RULES, TURNS_PER_DAY
 from offline_lab.build.chains import (chain_id_of, chain_ops, chains_for,
@@ -808,7 +809,12 @@ def main() -> int:
                       registry=g._registry_tag(),
                       stats={"states": g.n_states, "edges": g.n_edges,
                              "kinds": g.report.kinds,
-                             "edges_per_entity": by_entity},
+                             "edges_per_entity": by_entity,
+                             # What RECIPE made this. `contract` carries the
+                             # vocabulary (registry, engine); this carries the
+                             # code that walks it, which the contract cannot
+                             # see and which a stale artifact is stale against.
+                             "builder": builder_stamp()},
                       source="offline_lab.build.graph:build_graph")
     # The chains are the graph's own action index, so they are written BY this run, under
     # the same contract: the agent loads the graph and the chains together and the two can

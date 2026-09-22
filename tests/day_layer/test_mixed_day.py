@@ -41,11 +41,13 @@ SHEEP_CHAIN = ("BUILD_PASTURE", "PLACE", "FEED", "CARE")
 GOOSE_CHAIN = ("BUILD_COOP", "PLACE", "FEED", "CARE")
 WHEAT_CHAIN = ("PLANT", "WATER")
 
-#: The three animal tiles, on the column beside the shed's north-west door.
+#: The three animal tiles, on the column beside the shed's north-west door: the coop one step from
+#: the door and the sheep's pasture two. The reference 3-hand day runs them in this order - the farmer
+#: builds the coop first, then the pasture - and the fixture had the two swapped.
 ANIMAL_TILES = [
     ((4, 4), COW_CHAIN, "COW"),
-    ((4, 3), SHEEP_CHAIN, "SHEEP"),
-    ((4, 2), GOOSE_CHAIN, "GOOSE"),
+    ((4, 3), GOOSE_CHAIN, "GOOSE"),
+    ((4, 2), SHEEP_CHAIN, "SHEEP"),
 ]
 #: The rest of the first quadrant - the land the farm holds on day zero - planted with wheat.
 WHEAT_TILES = [((x, y), WHEAT_CHAIN, "WHEAT")

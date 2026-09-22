@@ -1,8 +1,8 @@
 # wsr/
 
 The day layer: the planner's chains become the ops a worker-day is made of. A chain per tile
-arrives from the DP, becomes a task array, a beam search decides which worker does what and
-when, and the compiler writes the ops the engine reads.
+arrives from the planner (`day_chains`), becomes a task array, a beam search decides which worker
+does what and when, and the compiler writes the ops the engine reads.
 
 | file | what it holds |
 |---|---|
@@ -15,53 +15,54 @@ when, and the compiler writes the ops the engine reads.
 Nothing here prices anything and nothing here touches the market. What a day costs is the
 planner's business; what it can pay for is the market's.
 
-**This layer is not connected to the runtime.** The rest of this file is what an agent needs
-to connect it.
+**This layer is on the runtime path**: `agent/manager/core.py` -> `agent/planner/day.py` -> here.
+§1 is the call site; the rest of the file is what a caller has to hand it.
 
 ---
 
-## 1. The call site, and why nothing calls it
+## 1. The call site
 
-`agent/replan.py:278` builds the day and asks for a plan:
+`agent/manager/core.py` asks the planner, and the planner asks this layer
+(`agent/planner/day.py`):
 
 ```python
-plan = plan_day(tiles, unit_positions(view), new_hands=hires,
-                bags=view.private.inventories, shed=view.private.shed,
-                money=float(view.me.money), hires_today=view.me.hires_today,
-                sells=sells, yields=yields,
-                values=[float(v) for v in board.tile_values],
-                prices=view.market_prices)
-runtime._day_plan = plan
-return plan.as_plan()
+# fit(): does the master's first day actually walk?
+tasks  = T.build(chains, available=available)
+day    = B.Day(chains=tuple(chains), available=available, hire_times=(1,) * max(1, hands))
+result = B.search(day, tasks, beam=beam, hands=..., max_hands=...,
+                  budget_s=budget_s, warm=warm)
+if result.complete and check_route(day, tasks, result, result.settled):
+    return DayFit(...)          # the day fits, and what it spent
+
+# plan(): the day the caller dispatches
+ops = compile_route(day, tasks, result, horizon=TURNS_PER_DAY, settled=result.settled)
+return to_plan(ops, market=market.rows)
 ```
 
-`plan_day` is not in this layer. It is on `origin/main` (`agent/wsr/routing.py:387`), and the
-branch that rewrote `routing.py` (`7a91345`) dropped it. So `agent/replan.py` and
-`agent/planner/master.py` cannot even import, and the plan rung never fires:
+`fit()` asks a question the master cannot answer itself: its labour row charges each worked day the
+ops it runs plus the walk to reach the tile, which is a lower bound by construction, so the master's
+answer is an upper bound on what the farm can do. `DayFit.overhead` is the correction — what the
+route spent over what the row charged (`agent/planner/day.py`).
 
-```
-runtime.py:134   CHISTA_REPLAN    default off   -> self.replanner is None
-runtime.py:139   CHISTA_MARKET    default off   -> the market layer is off
-runtime.py:213   _rung_greedy     <- what answers today
-```
-
-The default entry point (`agent/main.py`) is the greedy rung. Everything merged above it —
-the master's prices, the contractor's chains, this layer, the market layer — is off the path.
+`agent/replan.py` is the rung this replaced, and it cannot import: it asks
+`agent.wsr.routing.plan_day` for the day, and `routing.py` holds the walk only. Nothing reaches it —
+`tests/test_planner_reachable.py` keeps it in its `forbidden` tuple and `tests/test_agent_runtime.py`
+keeps it out of the spine — so the file is a record of the old path, not a path.
 
 ## 2. What the day layer has to provide
 
-Four pieces. Three are missing here and exist on `origin/main`; the middle one is this layer.
+Four pieces. One is this layer; the other three live in `agent/planner/`.
 
 **(a) The needs** — what the day's chains must buy, and the last turn each may land.
-One `Need` per buy: `(order, latest_hour)` where the order is `("BUY_SEED", crop, 1)` or
-`("BUY_ANIMAL", species, 1)` or a product. On main: `Need` (`routing.py:72`), `buy_order`
-(`:114`), `needs_cost` (`:314`).
+`agent/planner/market.py`: `needs` (`:34`) counts what the chains consume, `availability`
+(`:73`) says the hour each good is in the shed, and `buy_orders` (`:101`) turns the two into
+the engine's own orders.
 
-**(b) The market queue** — `merge_market(sells, needs, shed, capacity, hires)` returns one
-row per turn, in the engine's own settle order. On main: `merge_market` (`:333`),
-`hire_cost` (`:328`).
+**(b) The market queue** — one row per turn, in the engine's own settle order:
+`agent/planner/market.py:build` (`:221`), over `merge` (`:200`), `hire_orders` (`:137`) and
+`sell_rows` (`:151`).
 
-**(c) The day itself** — this layer, and the only part that is new. The whole contract is two
+**(c) The day itself** — this layer. The whole contract is two
 calls and two objects:
 
 ```python
@@ -77,7 +78,7 @@ The input:
 
 | name | what it is |
 |---|---|
-| `chains` | one `(cell, chain_ops, entity)` per priced tile — the same `tiles` `agent/replan.py:262` builds. `chain_ops` is the expanded chain; this layer never reads the DP's registry. |
+| `chains` | one `(cell, chain_ops, entity)` per priced tile, as `agent/planner/day.py:day_chains` (`:58`) builds them from the master's choices. `chain_ops` is the expanded chain; this layer never reads the DP's registry. |
 | `available` | the hour each good is in the shed. A buy at hour 0 is in the shed at hour 1, and a task that consumes a good cannot run before it. |
 | `hire_times` | the hour each offered hand may begin. A hand hired in turn 0 acts from hour 1 (F040). |
 | `drop_by` | one entry per chain: the latest hour that chain's harvest must be banked, or `None` to leave it for the night. |
@@ -96,7 +97,7 @@ The output:
 | `Result.complete` | whether that pool carried the whole day |
 | `Result.out_of_time` | a deadline stopped it before it ran out of work to place |
 | `Result.infeasible` | the arithmetic floor is above the ceiling, so no allowed pool can carry it |
-| `Result.can_improve` | whether more budget would plausibly find more — the deadline flag under the name of the decision |
+| `Result.can_improve` | whether more budget would plausibly place more WORK — the deadline flag under the name of the decision |
 | `DayOps.units` | the ops per worker, indexed by turn, PASS-padded |
 | `DayOps.arrivals` | `(hour, item, units)` per drop — what the day's market may actually sell today |
 
@@ -104,9 +105,9 @@ The output:
 allowed pool carries the day the best partial route comes back with `complete=False`, so the
 caller keeps the part of the day that works rather than getting nothing.
 
-**(d) The assembly** — `DayPlan(units, market, needs, hires, ...)` with `as_plan()` returning
-`{"units": [...], "market": [...]}`, which is what `agent/dispatch.py` slices. On main:
-`DayPlan` (`:296`).
+**(d) The assembly** — `agent/planner/day.py:DayPlan` (`:174`) holds the master's solve, its
+assignment and the `DayFit`; `agent/wsr/emit.py:to_plan` (`:136`) writes it as
+`{"units": [...], "market": [...]}`, which is what `agent/dispatch.py` slices.
 
 ## 2b. The drop, and the pool
 
@@ -124,7 +125,10 @@ the sell side.
 returns the best route it has, `out_of_time=True`. `search(..., warm=<a previous Result>)` starts the
 beam from that route, so a caller that re-asks after a small change repairs instead of restarting -
 it applies at the pool the route was searched with. `Result.can_improve` is that deadline flag under
-the name of the decision: False means no budget would find more, so spend the turns elsewhere.
+the name of the decision, and it is about WORK: a carried day has nothing left to place, and a day
+too big for any pool has no better route however long the search runs, so only an incomplete route
+that was cut short has more to find. A caller that wants to polish a carried day's makespan is
+asking a different question, and the flag says so rather than pretending to answer it.
 
 **The day's input is the planner's, and only the planner's.** `Day(chains, available, hire_times)` -
 no units: the engine resets every day to the farmer on the shed's corner door with no hands, so where
@@ -132,22 +136,24 @@ the units stand is not a decision the planner has. The hands' own positions are 
 route, from the spawn rule and where the units before them walked.
 
 **The pool.** `search(hands=None)` halving-searches the smallest pool that carries the day,
-between `lower_bound` and `max_hands`; `hands=` asks for the scan instead. A day whose arithmetic
-floor is above the ceiling comes back `infeasible=True` with an empty route rather than raising -
-a hundred tiles on a five-op chain needs 21 workers against a ceiling of 16, and that is an answer.
+between `lower_bound` and `max_hands`; `hands=` asks for the scan instead. The planner does not use
+the halving search: it fixes the pool itself, because the halving costs several times a turn and the
+hands are already priced by the master it is answering (`agent/planner/day.py`). A day whose
+arithmetic floor is above the ceiling comes back `infeasible=True` with an empty route rather than
+raising - a hundred tiles on a five-op chain needs more workers than the ceiling allows, and that is
+an answer.
 
 ---
 
-## 3. The seam worth knowing before you wire it
+## 3. The seam worth knowing: the plan's market rows
 
-The market queue has two builders, and they compose rather than duplicate:
-
-- `merge_market` puts the day's buys **and** the sells into the plan's rows.
-- `agent/market_layer.py:155` then drops the plan's `SELL` rows and appends its own:
-  `others = [o for o in given if not (o and o[0] == "SELL")]`.
-
-So buys come from the day plan and sells come from the market layer. A plan whose sells are
-silently discarded looks exactly like a plan with none.
+`agent/planner/market.py:build` writes the plan's rows - the day's buys, its hires and its sells - in
+the engine's own settle order, capped per turn (F031). `agent/market_layer.py` is the rung that used
+to take those rows over: it drops the plan's `SELL` rows and appends its own
+(`others = [o for o in given if not (o and o[0] == "SELL")]`). It is off the spine now
+(`tests/test_agent_runtime.py` keeps it out), so the buys and the sells both come from the planner -
+but if it is ever attached again, a plan whose sells are silently discarded looks exactly like a plan
+with none.
 
 ## 4. The engine facts that bite in silence
 
@@ -169,23 +175,19 @@ without a word (F047), so a wrong day reports success and leaves the board empty
 ## 5. How to prove it, and what to measure first
 
 Only the board can tell a silent refusal apart from a plan that worked, so a day is replayed
-against the real harness (`offline_lab.kaggle_env`) and asserted on what the engine did. Two
-days are already written that way:
+against the real harness (`offline_lab.kaggle_env`) and asserted on what the engine did. The days
+are in `tests/day_layer/`, over the recorded corpus (`tests/day_layer/corpus/real_days.json`, built
+by `corpus/build_real_days.py`): the mixed day with its pool and second-day variants, the animal-drop
+day, the drop and in-bag days, the land-image day, and the bounds, budget and spare-turn days.
 
-- `tests/day_layer/test_quadrant_day.py` — 25 tiles, 5 hands, 50 plantings.
-- `tests/day_layer/test_corners_day.py` — two pastures at the board's ends, a goose beside
-  each, an empty barn each, one hand hired and the second quadrant bought.
-
-Both assert on the board's own counters, not on the compiler's intent. Re-introduce the bug
-and watch the guard go red before trusting it (R007).
-
-**Measure before turning it on.** The search is priced on a quadrant (24–53 ms) and on a
-94-task day (370 ms). It has never been run on a 100-tile board, and the plan rung gets one
-turn's budget, once a day.
+They assert on the board's own counters, not on the compiler's intent. Re-introduce the bug and watch
+the guard go red before trusting it (R007). `tests/day_layer/test_solve_time_day.py` is where the
+search's own cost is measured; it is not asserted in milliseconds, because that is a property of the
+machine and not of the plan.
 
 ## 6. What is deliberately not here
 
 - Prices. The contractor and the master own them; the day takes them as given.
-- The market. `merge_market` builds the queue from what it is handed.
+- The market. `agent/planner/market.py` builds the queue from what it is handed.
 - `BUY_LAND`. Quadrants unlock in a fixed order at fixed prices (`LAND_PRICES`), so it is a
   day-level decision the planner owns, not a per-tile one.

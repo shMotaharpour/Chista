@@ -60,9 +60,12 @@ def compile_route(day: Day, tasks: TaskArray, result: Result, *,
     the day it writes is not the day that was searched.
     """
     horizon = int(horizon if horizon is not None else day.horizon)
+    # An explicit `settled` is the caller placing the hands itself; the result's own doors are used
+    # when it lets the result decide, which is the only way the day is written as it was priced.
+    doors = result.doors if settled is None else None
     if settled is None:
-        settled = _settled_after_first_turn(day, tasks, result)
-    starts = _start_positions(day, result.pool, settled)
+        settled = result.settled or _settled_after_first_turn(day, tasks, result)
+    starts = _start_positions(day, result.pool, settled, doors)
     hours = _start_hours(day, result.pool)
     m = int(starts.shape[0])
 
@@ -161,9 +164,10 @@ def check_route(day: Day, tasks: TaskArray, result: Result, settled=None) -> lis
     trusting: this names what is wrong, and an empty list means nothing is.
     """
     complaints: list[str] = []
+    doors = result.doors if settled is None else None
     if settled is None:
-        settled = _settled_after_first_turn(day, tasks, result)
-    starts = _start_positions(day, result.pool, settled)
+        settled = result.settled or _settled_after_first_turn(day, tasks, result)
+    starts = _start_positions(day, result.pool, settled, doors)
     hours = _start_hours(day, result.pool)
 
     turns: dict[int, list[tuple[int, str]]] = {}
@@ -173,7 +177,10 @@ def check_route(day: Day, tasks: TaskArray, result: Result, settled=None) -> lis
     # A drop with an empty bag is written at turn -1: it is done, it has no turn, and asking it to
     # precede anything would be asking a turn that does not exist.
     when = {task_id: int(turn) for turn, task_id, _w in result.route if int(turn) >= 0}
-    placed = {t for t, _i, _w in result.route}
+    # The tasks the route places, by id: `when` is keyed by task id and `turns` by worker, and the
+    # rules below ask by id. Built from the route's turns it was a set of ints, so `row not in placed`
+    # was always true and the two checks under it never ran.
+    placed = {task_id for _turn, task_id, _w in result.route}
     for worker, entries in turns.items():
         for turn, task_id in entries:
             if turn < 0:
