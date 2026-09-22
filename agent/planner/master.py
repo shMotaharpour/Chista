@@ -129,10 +129,17 @@ except ImportError:                     # scipy is optional at import time
 
 from agent.planner import colgen
 from agent.planner.inputs import dual_stand_in
-from agent.world.model import (ANIMALS, CROPS, N_RESOURCE, RESOURCE_ID,
-                               RES_LABOR)
+from agent.world.model import (ANIMALS, CROPS, N_RESOURCE, PRODUCTS,
+                               RESOURCE_ID, RES_LABOR, SHED_ITEMS)
 from agent.tile_dp.contractor import PricedBoard
-from agent.world.rules import ANIMAL_RULES, CROP_RULES
+from agent.planner.colgen import _resource_of
+
+#: The shed items the market sells, as INDICES into `SHED_ITEMS` — the products
+#: come first in that tuple, and only they can be sold (the species are placed,
+#: never sold). The master's sell variables are laid out in this order.
+SELLABLE: tuple[int, ...] = tuple(range(len(PRODUCTS)))
+from agent.world.rules import (ANIMAL_RULES, CROP_RULES, SHED_CAPACITY,
+                               TURNS_PER_DAY)
 
 LABOR_ID = RESOURCE_ID[RES_LABOR]
 FERT_ID = RESOURCE_ID["FERTILIZER"]
@@ -290,11 +297,28 @@ class CouplingSupply:
     #: down inside `column_cash`, and the fallback would report it as a
     #: pricing failure rather than as the missing field it is.
     quotes: np.ndarray = None     # (len(PURCHASE_IDS),) float
+    #: The shed's own counts, in `PRODUCTS + ANIMALS` order (12 items). The
+    #: engine's shed holds exactly those (`_new_private`: `PRODUCTS +
+    #: list(ANIMALS)`), the cap counts ALL of them together (`sum(shed.values())`
+    #: at the DROP, the buy and the night flush), and seeds are separate
+    #: (`private["seeds"]`, they never pass through the shed). This is the
+    #: opening balance of the inventory rows the master prices the sell timing
+    #: against — a plan that cannot see the animals already in the shed
+    #: over-estimates the free room and schedules drops and sells the engine
+    #: refuses or discards.
+    shed_stock: np.ndarray = None      # (len(PRODUCTS) + len(ANIMALS),) int
+    #: The shed's capacity, from the world's own constant (the engine's
+    #: `shedCapacity`, default 100, and the run's config can override it).
+    shed_capacity: float = float(SHED_CAPACITY)
 
     def __post_init__(self) -> None:
         if self.quotes is None:
             object.__setattr__(self, "quotes",
                                np.zeros(len(PURCHASE_IDS), dtype=np.float64))
+        if self.shed_stock is None:
+            object.__setattr__(
+                self, "shed_stock",
+                np.zeros(len(PRODUCTS) + len(ANIMALS), dtype=np.int64))
 
 
 @dataclass
@@ -313,6 +337,12 @@ class MasterResult:
     p_source: str = ""            # where the product price path came from
     history: list = field(default_factory=list)   # per-round max dual move
     cash_duals: np.ndarray = None  # (days,) shadow price of a coin per day
+    #: (days, len(SHED_ITEMS)) the BALANCE rows' duals the LP solved with — what
+    #: one unit of a good sitting in the shed is worth. It is the master's own
+    #: price for a plan's OUTPUT (the produce feeds the stock and the stock is
+    #: sold later), so it is the price `to_mixes` values a plan at. Empty without
+    #: a shed.
+    sigma: np.ndarray = None
     #: The columns `lam` weights, and the classes they belong to. A mix is
     #: useless without them: `columns.assign_tiles` has to know WHICH plan each
     #: weight is for, and re-pricing at the published duals gives a different
@@ -334,7 +364,9 @@ class MasterResult:
 
 def published_duals(w_coupling: np.ndarray, days: int,
                     cash_dual: np.ndarray | None = None,
-                    quotes: np.ndarray | None = None) -> np.ndarray:
+                    quotes: np.ndarray | None = None,
+                    sigma: np.ndarray | None = None,
+                    market: tuple[int, ...] = ()) -> np.ndarray:
     """`(days, N_COUPLING)` duals -> the `(days, N_RESOURCE)` wage matrix
     the contractor consumes: duals on their resource columns, zeros
     elsewhere (market-priced products are NOT input-priced to tiles —
@@ -366,7 +398,73 @@ def published_duals(w_coupling: np.ndarray, days: int,
             # WHEAT and FERTILIZER are both a quantity row and purchasable:
             # the dearer of the two prices is the one a tile faces.
             out[:, rid] = np.maximum(out[:, rid], float(quotes[i]) * scale)
+    if sigma is not None and len(market):
+        # A stored good is an INPUT to the plan that consumes it — feed, a dose,
+        # an animal going out to its plot — and with a shed its worth is the
+        # balance row's dual, not the market quote. This is the PUBLISH map: what
+        # the rest of the agent reads a stored unit at.
+        #
+        # It is deliberately NOT what the pricing step charges, and the two are
+        # not the same statement: a plan's consumption is bought from the market
+        # and charged to the cash row at its quote, so a subproblem that pays σ
+        # for it as well pays twice, comes back with a class value below the
+        # LP's own value of a column the pool already holds, and takes the
+        # Lagrangian bound below the objective it bounds (measured: rc −12.93 /
+        # −62.10 / −162.38 on the three working classes of a real board).
+        sig = np.asarray(sigma, dtype=np.float64)[:days]
+        for gi, ii in enumerate(market):
+            rid = _resource_of(SHED_ITEMS[ii])
+            if rid is not None:
+                out[:, rid] = np.maximum(out[:, rid], sig[:, ii])
     return np.maximum(out, 0.0)
+
+
+def _sell_cap(obs, days: int) -> np.ndarray:
+    """`(1, len(PRODUCTS))`: how much the town will buy over the horizon.
+
+    ONE number per good, because the town eats that much over the whole horizon
+    and the sales may land on any day of it — belief's `drain_forecast` is
+    already that total, and dividing it by the days was a wrong scale (it turned
+    16 units a day into 54). The rival's share comes off it: a unit the rival
+    pours into the same town is a unit the shops do not buy from us, and the same
+    `supply_curve` the price path carries is where that is known.
+
+    The rival's side is read through a guard, and its absence is not an error.
+    `supply_curve` decodes the opponent's farm out of the observation, and a
+    board with one farm in it (every fixture that prices a single farm, and any
+    harness that hands the master a hand-built observation) has no rival to
+    decode — measured: `IndexError: list index out of range` out of
+    `decode_world`, which reached `equilibrate`'s fallback and left the master
+    reporting a pricing failure it did not have. Without a rival the town's own
+    drain IS the appetite: the rival's supply is a subtraction, not the model.
+    """
+    from agent.belief.opponent import drain_forecast
+
+    horizon = max(1, int(days)) * TURNS_PER_DAY
+    drain, _sd = drain_forecast(obs, horizon)
+    total = np.asarray(drain, dtype=np.float64)[None, :len(PRODUCTS)]
+    try:
+        from agent.belief.rival_calendar import supply_curve
+        rival = np.asarray(supply_curve(obs, PRODUCTS, days), dtype=np.float64)
+    except Exception:                              # noqa: BLE001 - no rival
+        return np.maximum(total, 0.0)
+    if rival.ndim == 2 and rival.shape[1] == total.shape[1]:
+        total = total - rival.sum(axis=0)[None, :]
+    return np.maximum(total, 0.0)
+
+
+def _shed_capacity(obs) -> int:
+    """The shed's capacity: the run's own override, else the world's constant.
+
+    The engine reads `configuration["shedCapacity"]` (default 100, world rules
+    `SHED_CAPACITY`). The observation does not normally carry the configuration,
+    so the constant is the answer in practice; a harness that does put it there
+    is honoured.
+    """
+    config = obs.get("configuration") if isinstance(obs, dict) else None
+    if isinstance(config, dict) and "shedCapacity" in config:
+        return int(config["shedCapacity"])
+    return int(SHED_CAPACITY)
 
 
 def supply_from_obs(obs) -> CouplingSupply:
@@ -402,7 +500,12 @@ def supply_from_obs(obs) -> CouplingSupply:
                           fert_stock=float(shed.get("FERTILIZER", 0)),
                           wheat_feed_stock=float(shed.get("WHEAT", 0)),
                           money=float(farm.get("money", 0.0)),
-                          quotes=quotes)
+                          quotes=quotes,
+                          shed_stock=np.array(
+                              [int(shed.get(item, 0))
+                               for item in PRODUCTS + ANIMALS],
+                              dtype=np.int64),
+                          shed_capacity=float(_shed_capacity(obs)))
 
 
 def column_cash(board: PricedBoard, supply: CouplingSupply, days: int
@@ -599,7 +702,7 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
     w_cur = w_lag
     state = {"w": w_lag, "cash": np.zeros(days), "failed": None}
 
-    def price(y, cash):
+    def price(y, cash, shed=None):
         """The subproblem: price each class at the master's OWN duals.
 
         Exactly those duals, not damped ones and not raised onto a floor. The
@@ -637,7 +740,40 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
         ahead = np.cumsum(cash_arr[::-1])[::-1]
         later = np.concatenate([ahead[1:], [0.0]])
         p_eff = p.copy()
-        p_eff[:days, list(MARKET_IDS)] *= (1.0 + later[:days])[:, None]
+        if shed is None:
+            p_eff[:days, list(MARKET_IDS)] *= (1.0 + later[:days])[:, None]
+        else:
+            # With a shed the produce is worth what a unit IN THE SHED is worth,
+            # not what the market pays on the day it is harvested — the balance
+            # row's dual. That dual already carries the timing: it is the price
+            # of the same LP whose cash rows the `later` term was standing in
+            # for, and it carries the cap as well, which no scalar could.
+            # σ arrives already clamped onto the non-negative orthant by the
+            # caller: the tile graph is dominance-pruned and that pruning is
+            # optimality-preserving only while every price is >= 0 (R006). A good
+            # worth less than nothing is worth nothing to a plan that can only
+            # choose to produce it. The clamp is applied ONCE, where the duals
+            # are handed to the pricing, so the bound is computed at the same
+            # multipliers the pricing used — clamping here alone would price the
+            # tiles at one σ and bound them at another, and the bound would come
+            # out below the objective it bounds.
+            sig = np.asarray(shed[0], dtype=np.float64)[:days]
+            for gi, ii in enumerate(SELLABLE):
+                rid = _resource_of(SHED_ITEMS[ii])
+                if rid is not None:
+                    p_eff[:days, rid] = sig[:, ii]
+        # `exact` is the price a plan PAYS for what it consumes, and it is
+        # deliberately NOT given σ. σ is the price of a unit in the shed, and a
+        # plan's produce is credited at σ through `p_eff` above — but what the
+        # plan EATS is bought from the market and charged to the cash row at its
+        # quote, which is `quote·ahead`. Passing σ in here made the DP pay
+        # `max(quote·(1+ahead), σ) − quote` for feed and doses while the LP
+        # charged the cash row alone, so the subproblem over-charged, the class
+        # value came back below the LP's own value of a column the pool already
+        # held, and the bound came out below the objective it bounds (measured on
+        # a real board: rc −12.93 / −62.10 / −162.38 on the three working classes
+        # and a bound 325 under the objective; with the charge removed every
+        # class's rc is 0 and the bound equals the objective).
         exact = published_duals(y, days, ahead, supply.quotes)
         # The Lagrangian subproblem's own prices. The cash row prices SPENDING
         # at `ahead` — not at the quote — so a purchasable input reaches the
@@ -716,6 +852,10 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
                              N_COUPLING, idle, rounds=max(1, iter_cap),
                              poll=poll,
                              deadline=t_end,
+                             shed=(supply.shed_stock, supply.shed_capacity),
+                             prices=p_mkt,
+                             market=SELLABLE,
+                             sell_cap=_sell_cap(obs, days),
                              warm=_repriced_pool(pool, p_mkt, days),
                              smoothing=smoothing)
     except RuntimeError as exc:
@@ -737,6 +877,7 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
         result.objective = cg.solve.objective
         result.duals = state["w"]
         result.mu = cg.solve.mu
+        result.sigma = cg.solve.sigma
     converged = cg.certified
 
     # #87's dead-zone clamp, on the COUPLING dual before the publish map:
@@ -759,10 +900,10 @@ def to_mixes(result: "MasterResult", days: int) -> dict[int, "object"]:
     """`MasterResult` -> the `ClassMix` per class that `columns.py` rounds.
 
     Keyed by CLASS INDEX. A packed tile key stopped identifying a class the
-    moment the distance to the shed joined the key: a board has many tiles of
-    one state at many distances, and they are different classes because they
-    cost different hours to reach. `result.classes[2]` is the class of every
-    owned tile, in board order, which is what `assign_by_quota` consumes.
+    moment the distance to the shed joined the key: a board has many tiles of one
+    state at many distances, and they are different classes because they cost
+    different hours to reach. `result.classes[2]` is the class of every owned
+    tile, in board order, which is what `assign_by_quota` consumes.
 
     Only `labour` and `cash_out` carry real numbers. `wheat_net`, `fert_net`
     and `stored` are zeros and say so here rather than in a surprise: the first
@@ -770,6 +911,15 @@ def to_mixes(result: "MasterResult", days: int) -> dict[int, "object"]:
     `stored` has never existed because a column carries no SELL decision.
     `columns.violations` skips a row it has no capacity for, so a zero row is
     inert rather than a lie the repair acts on.
+
+    The VALUE of a plan is what the master's own objective credits its output
+    with, and with a shed that is σ — the balance row's dual — and not the
+    market quote. The produce feeds the stock and the stock is sold, so a unit
+    produced on a cheap day and sold on a dear one is worth the dear price, and
+    a plan valued at its production day's quote is valued below what the LP
+    actually earns from it. Measured on the seeded day-0 board: the mix's own
+    plans sum to 34,538 at the quotes against an LP objective of 39,942, and the
+    #13 gap built on those numbers read 15 % for a rounding that had lost 2 %.
     """
     from agent.planner.columns import DAYS, ClassMix, Plan
 
@@ -779,12 +929,39 @@ def to_mixes(result: "MasterResult", days: int) -> dict[int, "object"]:
         out[:n] = np.asarray(row, dtype=np.float64)[:n]
         return tuple(float(v) for v in out)
 
+    sigma = np.asarray(result.sigma if result.sigma is not None else [],
+                       dtype=np.float64)
+    # A degenerate LP has NO internal price: with every balance row slack HiGHS
+    # hands back σ = 0, and valuing every plan at zero would leave the day layer
+    # nothing to choose between them (ties fall to the lowest plan index, which
+    # is the idle column). The pricing step prices at the market path in exactly
+    # that case (`colgen._seed_sigma`), so the value falls back to the revenue
+    # that path produces — the plan's own `revenue` at the day it is produced.
+    if sigma.ndim != 2 or not sigma.any():
+        sigma = np.zeros((0, 0), dtype=np.float64)
+    rids = [_resource_of(item) for item in SHED_ITEMS]
+
+    def plan_value(col) -> float:
+        """The column's output at the master's own prices, or its revenue."""
+        produce = getattr(col, "produce", None)
+        if produce is None or sigma.ndim != 2 or not sigma.size:
+            return float(col.revenue)
+        produced = np.asarray(produce, dtype=np.float64)[:days]
+        total = 0.0
+        for ii, rid in enumerate(rids):
+            if (rid is None or ii >= sigma.shape[1]
+                    or rid >= produced.shape[1]):
+                continue
+            total += float((sigma[:produced.shape[0], ii]
+                            * produced[:, rid]).sum())
+        return total
+
     lam = np.asarray(result.lam, dtype=np.float64)
     reps, counts, _of_tile = result.classes
     by_class: dict[int, list[tuple[object, float]]] = {c: [] for c in range(len(reps))}
     for j, col in enumerate(result.pool):
         plan = Plan(chains=tuple(int(ch) for _d, _st, ch in col.chains),
-                    value=float(col.revenue),
+                    value=plan_value(col),
                     rows={"labour": pad(col.cost[:, 0]),
                           "cash_out": pad(col.spend),
                           "wheat_net": pad(np.zeros(days)),
