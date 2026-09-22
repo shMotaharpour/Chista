@@ -129,7 +129,8 @@ class Manager:
                           budget_s=self.cfg.search_budget_s,
                           rounds=self.cfg.fit_rounds,
                           pool=self.pool, deadline=deadline,
-                          forecast_obj=forecast_obj)
+                          forecast_obj=forecast_obj,
+                          smoothing=self.cfg.smoothing)
         self.pool = list(self.day.master.pool)
         self.duals = self.day.master.w
         self.certified = bool(self.day.master.certified)

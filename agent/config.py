@@ -90,6 +90,16 @@ class Config:
     search_budget_s: float = 0.25
     #: Master solves one `plan` may spend correcting the hours it committed.
     fit_rounds: int = 2
+    #: Wentges dual-price smoothing (#87 follow-up sweep, 2026-09-22): the
+    #: pricing step is fed `alpha*centre + (1-alpha)*LP`, where centre is the
+    #: best-bound incumbent. Measured on the day-0 board with the exact
+    #: pricer: alpha 0.0 = 75 rounds / 1720 ms; 0.5 = 60 / 1350; 0.7 = 55 /
+    #: 1165 (-32% rounds and wall); 1.0 = 60 / 1289. Objective and bound are
+    #: identical (35,772, gap 0.0000%) at every alpha — smoothing changes
+    #: HOW FAST the certificate arrives, never WHAT it certifies. 0.7 is the
+    #: sweep's pick. In-season (warm pool, day 3) the round count is 9-10
+    #: either way, so the win is concentrated on cold/certifying solves.
+    smoothing: float = 0.7
 
     # --- the market --------------------------------------------------------
     #: Orders per turn the engine accepts (F031). A cap, not a target.

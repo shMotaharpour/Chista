@@ -201,7 +201,7 @@ def plan(obs, contractor, supply, *, class_of_tile, iter_cap: int = 200,
          rounds: int = 3, tolerance: float = 0.02,
          pool: list | None = None, deadline: float | None = None,
          max_hands: int | None = None, w_warm=None,
-         forecast_obj=None) -> DayPlan:
+         forecast_obj=None, smoothing: float = 0.0) -> DayPlan:
     """Enumerate the pool of hands, and keep the day worth the most net of it.
 
     **Hiring is a decision, and it was not one.** `supply.hours` came from
@@ -263,7 +263,7 @@ def plan(obs, contractor, supply, *, class_of_tile, iter_cap: int = 200,
     for offer in range(max(0, ceiling), -1, -1):
         current = _solve_at(obs, contractor, supply, class_of_tile, offer,
                             iter_cap, budget_s, rounds, tolerance, carried,
-                            deadline, w_warm, forecast_obj)
+                            deadline, w_warm, forecast_obj, smoothing)
         carried = list(current.master.pool)
         if chosen is None or current.net > chosen.net:
             chosen = current
@@ -274,7 +274,7 @@ def plan(obs, contractor, supply, *, class_of_tile, iter_cap: int = 200,
 
 def _solve_at(obs, contractor, supply, class_of_tile, hands, iter_cap,
               budget_s, rounds, tolerance, pool, deadline, w_warm=None,
-              forecast_obj=None) -> DayPlan:
+              forecast_obj=None, smoothing: float = 0.0) -> DayPlan:
     """One pool size: solve, assign, ask wsr, and price the hands."""
     from agent.planner import columns as C
     from agent.planner import master as M
@@ -293,7 +293,8 @@ def _solve_at(obs, contractor, supply, class_of_tile, hands, iter_cap,
             quotes=supply.quotes)
         result = M.equilibrate(object(), obs, contractor, current,
                                w_warm=w_warm, iter_cap=iter_cap, pool=pool,
-                               deadline=deadline, forecast_obj=forecast_obj)
+                               deadline=deadline, forecast_obj=forecast_obj,
+                               smoothing=smoothing)
         mixes = M.to_mixes(result, contractor.days)
         choices = C.assign_by_quota(class_of_tile, mixes)
         # The LP's λ is fractional and fits; rounding it to whole tiles need
