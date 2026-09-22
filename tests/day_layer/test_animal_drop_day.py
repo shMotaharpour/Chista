@@ -97,20 +97,24 @@ def test_each_drop_is_on_the_worker_that_took_the_good() -> None:
     assert seen, "no pool placed a drop at all, so nothing was banked"
 
 
-def test_the_farmer_alone_and_one_hand_come_up_short() -> None:
-    """Neither pool banks all three drops, and the shortfall is the clock rather than the pool.
+def test_the_farmer_alone_carries_the_day() -> None:
+    """The whole day is carried with no hands at all - and it is the portfolio that finds it.
 
-    A pool too small would say more hands find more; a clock says the turns are there and the hour is
-    not. `spare` is what tells the two apart: the answer has turns left over.
+    The day's own arithmetic says one worker: twelve tasks, seventeen turns with the walks, and the
+    fertilizer can be banked in one drop because the bag carries all three animals' fertilizer. The
+    earliest-finish ranking alone does not find it (it places 11 of 12 and lets the last drop go
+    past its hour); the deadline rankings do.
     """
-    for hands in (0, 1):
-        _day_, tasks, result = _search(hands)
-        assert not result.complete, f"{hands} hands carried the day after all"
-        assert len(result.route) < tasks.n, f"{hands} hands placed the whole day"
-        assert result.spare > 0, (
-            f"{hands} hands have no turns left, so this is not the clock's shortfall: "
-            f"spare={result.spare}")
-        assert not result.out_of_time, "the search stopped at its own budget, not at the day's hour"
+    _day_, tasks, result = _search(0)
+    assert result.complete, f"the farmer alone placed {len(result.route)} of {tasks.n}"
+    assert result.spare > 0, "the day was carried with nothing to spare, which cannot be right"
+
+    day, _tasks, _result = _build(hands=0)
+    arrivals = compile_route(day, tasks, result).arrivals
+    late = [(hour, item, n) for hour, item, n in arrivals if int(hour) > DEADLINE]
+    assert not late, f"these arrivals are after hour {DEADLINE}: {late}"
+    assert sum(n for _hour, item, n in arrivals if item == "FERTILIZER") == len(ANIMALS), (
+        "the day does not bank one fertilizer per animal")
 
 
 def test_two_hands_carry_the_whole_day() -> None:
