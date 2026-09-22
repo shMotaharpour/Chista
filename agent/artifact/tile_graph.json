@@ -26,6 +26,15 @@
       "GOOSE": 248,
       "COW": 992,
       "SHEEP": 1376
+    },
+    "builder": {
+      "fingerprint": "1b117a3ef4efc287",
+      "sources": [
+        "offline_lab/build/graph.py",
+        "offline_lab/build/chains.py",
+        "offline_lab/build/ledger.py",
+        "offline_lab/fast_sim.py"
+      ]
     }
   },
   "source": "offline_lab.build.graph:build_graph",
