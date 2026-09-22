@@ -58,11 +58,12 @@ def compile_route(day: Day, tasks: TaskArray, result: Result, *,
     start cell and made the planner's day uncompilable (#162).
     """
     horizon = int(horizon if horizon is not None else day.horizon)
-    # wsr owns WHERE a hand lands (F040): it is computed here from the day's own route,
-    # never handed in. `doors` still wins inside `_start_positions`, so the searched
-    # doors are never smothered - that was #162's bug, and it stays fixed.
-    settled = result.settled or _settled_after_first_turn(day, tasks, result)
-    starts = _start_positions(day, result.pool, settled, result.doors)
+    # An explicit `settled` is the caller placing the hands itself; the result's own doors are used
+    # when it lets the result decide, which is the only way the day is written as it was priced.
+    doors = result.doors if settled is None else None
+    if settled is None:
+        settled = result.settled or _settled_after_first_turn(day, tasks, result)
+    starts = _start_positions(day, result.pool, settled, doors)
     hours = _start_hours(day, result.pool)
     m = int(starts.shape[0])
 
@@ -159,11 +160,10 @@ def check_route(day: Day, tasks: TaskArray, result: Result) -> list[str]:
     trusting: this names what is wrong, and an empty list means nothing is.
     """
     complaints: list[str] = []
-    # wsr owns WHERE a hand lands (F040): it is computed here from the day's own route,
-    # never handed in. `doors` still wins inside `_start_positions`, so the searched
-    # doors are never smothered - that was #162's bug, and it stays fixed.
-    settled = result.settled or _settled_after_first_turn(day, tasks, result)
-    starts = _start_positions(day, result.pool, settled, result.doors)
+    doors = result.doors if settled is None else None
+    if settled is None:
+        settled = result.settled or _settled_after_first_turn(day, tasks, result)
+    starts = _start_positions(day, result.pool, settled, doors)
     hours = _start_hours(day, result.pool)
 
     turns: dict[int, list[tuple[int, str]]] = {}
