@@ -1,4 +1,14 @@
-"""Replanner: the day's plan, priced by the contractor (issue #11 §6).
+"""Replanner: the rung the day layer replaced. **It cannot import, and nothing reaches it.**
+
+`plan_day` is not in `agent.wsr.routing` any more - that module holds the walk - so
+`import agent.replan` raises ImportError. The live path is
+`agent/manager/core.py` -> `agent/planner/day.py` -> `agent.wsr`, and this module is
+kept out of it deliberately: `tests/test_planner_reachable.py` holds it in a
+`forbidden` tuple and `tests/test_agent_runtime.py` keeps it out of the spine.
+
+Everything below is the record of what the rung was for and what it measured, kept
+because the measurements are the reason the day layer exists at all. Its figures
+predate the day layer; they are not the current ones.
 
 The first heavy rung of the fallback ladder, and the socket `agent/runtime.py`
 already had (`_rung_plan` dispatches `self.plan` when it is not None).
