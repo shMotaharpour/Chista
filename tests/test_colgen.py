@@ -66,7 +66,7 @@ def _pricer(counts, flip=False):
     """The subproblem: each class picks its best plan at the published duals."""
     specs = _plans()
 
-    def price(y, cash):
+    def price(y, cash, shed=None):
         values, columns = [], []
         for c in range(counts.size):
             best, best_col = -np.inf, None
