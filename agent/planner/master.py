@@ -130,8 +130,14 @@ except ImportError:                     # scipy is optional at import time
 from agent.planner import colgen
 from agent.planner.inputs import dual_stand_in
 from agent.world.model import (ANIMALS, CROPS, N_RESOURCE, PRODUCTS,
-                               RESOURCE_ID, RES_LABOR)
+                               RESOURCE_ID, RES_LABOR, SHED_ITEMS)
 from agent.tile_dp.contractor import PricedBoard
+from agent.planner.colgen import _resource_of
+
+#: The shed items the market sells, as INDICES into `SHED_ITEMS` — the products
+#: come first in that tuple, and only they can be sold (the species are placed,
+#: never sold). The master's sell variables are laid out in this order.
+SELLABLE: tuple[int, ...] = tuple(range(len(PRODUCTS)))
 from agent.world.rules import ANIMAL_RULES, CROP_RULES, SHED_CAPACITY
 
 LABOR_ID = RESOURCE_ID[RES_LABOR]
@@ -351,7 +357,9 @@ class MasterResult:
 
 def published_duals(w_coupling: np.ndarray, days: int,
                     cash_dual: np.ndarray | None = None,
-                    quotes: np.ndarray | None = None) -> np.ndarray:
+                    quotes: np.ndarray | None = None,
+                    sigma: np.ndarray | None = None,
+                    market: tuple[int, ...] = ()) -> np.ndarray:
     """`(days, N_COUPLING)` duals -> the `(days, N_RESOURCE)` wage matrix
     the contractor consumes: duals on their resource columns, zeros
     elsewhere (market-priced products are NOT input-priced to tiles —
@@ -383,6 +391,18 @@ def published_duals(w_coupling: np.ndarray, days: int,
             # WHEAT and FERTILIZER are both a quantity row and purchasable:
             # the dearer of the two prices is the one a tile faces.
             out[:, rid] = np.maximum(out[:, rid], float(quotes[i]) * scale)
+    if sigma is not None and len(market):
+        # A stored good is an INPUT to the plan that consumes it — feed, a dose,
+        # an animal going out to its plot — and with a shed its worth is the
+        # balance row's dual, not the market quote. Without this the DP would
+        # treat a stored unit as free (the quote is only added for the two
+        # purchasable goods) and every chain that eats one would look cheaper
+        # than it is.
+        sig = np.asarray(sigma, dtype=np.float64)[:days]
+        for gi, ii in enumerate(market):
+            rid = _resource_of(SHED_ITEMS[ii])
+            if rid is not None:
+                out[:, rid] = np.maximum(out[:, rid], sig[:, ii])
     return np.maximum(out, 0.0)
 
 
@@ -634,7 +654,7 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
     w_cur = w_lag
     state = {"w": w_lag, "cash": np.zeros(days), "failed": None}
 
-    def price(y, cash):
+    def price(y, cash, shed=None):
         """The subproblem: price each class at the master's OWN duals.
 
         Exactly those duals, not damped ones and not raised onto a floor. The
@@ -672,8 +692,27 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
         ahead = np.cumsum(cash_arr[::-1])[::-1]
         later = np.concatenate([ahead[1:], [0.0]])
         p_eff = p.copy()
-        p_eff[:days, list(MARKET_IDS)] *= (1.0 + later[:days])[:, None]
-        exact = published_duals(y, days, ahead, supply.quotes)
+        if shed is None:
+            p_eff[:days, list(MARKET_IDS)] *= (1.0 + later[:days])[:, None]
+        else:
+            # With a shed the produce is worth what a unit IN THE SHED is worth,
+            # not what the market pays on the day it is harvested — the balance
+            # row's dual. That dual already carries the timing: it is the price
+            # of the same LP whose cash rows the `later` term was standing in
+            # for, and it carries the cap as well, which no scalar could.
+            # σ is an EQUALITY dual and free in sign; the tile graph is
+            # dominance-pruned and that pruning is optimality-preserving only
+            # while every price is >= 0 (R006). A good worth less than nothing
+            # is worth nothing to a plan that can only choose to produce it, so
+            # the clamp is the modelling statement, not a convenience.
+            sig = np.maximum(np.asarray(shed[0], dtype=np.float64)[:days], 0.0)
+            for gi, ii in enumerate(SELLABLE):
+                rid = _resource_of(SHED_ITEMS[ii])
+                if rid is not None:
+                    p_eff[:days, rid] = sig[:, ii]
+        exact = published_duals(y, days, ahead, supply.quotes,
+                                sigma=None if shed is None else shed[0],
+                                market=SELLABLE if shed is not None else ())
         # The Lagrangian subproblem's own prices. The cash row prices SPENDING
         # at `ahead` — not at the quote — so a purchasable input reaches the
         # tiles at `quote·ahead`, and the base quote stays in the row where it
@@ -751,6 +790,9 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
                              N_COUPLING, idle, rounds=max(1, iter_cap),
                              poll=poll,
                              deadline=t_end,
+                             shed=(supply.shed_stock, supply.shed_capacity),
+                             prices=p_mkt,
+                             market=SELLABLE,
                              warm=_repriced_pool(pool, p_mkt, days))
     except RuntimeError as exc:
         return _fallback(str(exc)[:200])

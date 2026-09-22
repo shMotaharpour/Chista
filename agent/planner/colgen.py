@@ -39,6 +39,21 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from agent.world.model import RESOURCE_ID, SHED_ITEMS
+
+
+def _resource_of(item: str) -> int | None:
+    """The resource column a shed item occupies, or None if it has none.
+
+    The shed's vocabulary and a plan's are the same goods under two spellings:
+    `private["shed"]` is keyed by `SHED_ITEMS` (products + the species names),
+    while the columns a plan is priced over call the species `ANIMAL_GOOSE`
+    and so on (world/model.py:146-172, kaggriculture.py:171).
+    """
+    if item in RESOURCE_ID:
+        return RESOURCE_ID[item]
+    return RESOURCE_ID.get("ANIMAL_" + item)
+
 try:
     from scipy import sparse
     from scipy.optimize import _highspy
@@ -123,6 +138,19 @@ class MasterSolve:
     cash: np.ndarray              # (days,) shadow price of a coin ≥ 0
     mu: np.ndarray                # (n_classes,) convexity duals, FREE in sign
     objective: float
+    #: (days, n_items) the BALANCE rows' duals — what one unit of a good sitting
+    #: in the shed is worth. FREE in sign (the rows are equalities) and the
+    #: internal price the contractor is credited at. Empty without a shed.
+    sigma: np.ndarray = None
+    #: (days,) the CAP rows' duals ≥ 0 — what one unit of shed room is worth.
+    tau: np.ndarray = None
+    #: (n_goods, days) what the master decided to SELL, in `market` order.
+    sells: np.ndarray = None
+
+    def __post_init__(self) -> None:
+        for name in ("sigma", "tau", "sells"):
+            if getattr(self, name) is None:
+                object.__setattr__(self, name, np.zeros((0,)))
 
 
 def cash_rows(pool: list[Column], days: int) -> np.ndarray:
@@ -204,16 +232,55 @@ class MasterLP:
         self._highs = _highspy._core._Highs()
         self._highs.setOptionValue("output_flag", False)
         self._basis = None
+        #: The row LAYOUT the stored basis was built for. A warm start is only a
+        #: warm start if the rows are in the same order: the old basis's row
+        #: statuses are positions, so handing them to a model that inserted the
+        #: balance and cap rows before the convexity rows puts every convexity
+        #: status on a balance row. That is not a worse start, it is a WRONG one
+        #: (HiGHS took it and the loop stopped certifying), so the basis is kept
+        #: only while the layout matches.
+        self._layout = None
 
     def solve(self, pool: list[Column], counts: np.ndarray, hours: np.ndarray,
-              money: float, days: int, n_coupling: int) -> MasterSolve:
+              money: float, days: int, n_coupling: int,
+              shed_stock: np.ndarray | None = None,
+              shed_capacity: float = 0.0,
+              prices: np.ndarray | None = None,
+              market: tuple[int, ...] = ()) -> MasterSolve:
+        """The restricted master over the pool, with the SHED as a stock.
+
+        Variables: `lambda_j >= 0` per column, then per day the sells, the stock
+        and the waste — `sell[g,d]`, `stock[i,d]`, `waste[i,d]` over the shed's
+        own items (`PRODUCTS + ANIMALS`, the engine's own order). Rows: the
+        coupling rows (labour), then the BALANCE rows
+
+            stock[i,d+1] − stock[i,d] − Σ_j λ_j·produce_j[d,i] + sell[i,d]
+            + waste[i,d] = 0
+
+        with `stock[i,0]` FIXED at the opening shed, the cap rows
+        `Σ_i stock[i,d] <= capacity`, the cumulative cash rows, and the
+        convexity rows. The objective is `Σ p[i,d]·sell[i,d]`: a column earns
+        nothing directly — what it produces feeds the stock, and the stock's
+        dual σ is the internal price of a good (`published_duals` reads it).
+
+        This is the point of the change. The master used to credit each day's
+        production at THAT day's market price, so holding had no value, a day of
+        delay was free, the contractor tied between working and waiting, and the
+        tie-break (lowest edge index = the idle chain) made the farm do nothing
+        all season. `waste` is what keeps the cap row feasible: the engine
+        discards the night flush's overflow, so the LP must be able to as well.
+        """
+        names = SHED_ITEMS
+        items = len(names) if shed_stock is not None else 0
+        rids = [_resource_of(n) for n in names]
+        n_goods = len(market)
         n = len(pool)
         n_classes = int(counts.size)
         revenue = np.array([c.revenue for c in pool], dtype=np.float64)
         # quantity rows: (n_coupling·days, n)
         A_q = np.stack([c.cost.T.reshape(-1) for c in pool], axis=1) if n else \
             np.zeros((n_coupling * days, 0))
-        b_q = np.tile(hours[:days], n_coupling)   # LABOR is the only row today
+        b_q = np.tile(hours[:days], n_coupling)   # LABOUR is the only row today
 
         # Cash rows, CUMULATIVE: everything spent up to and including day d, less
         # everything banked before it, against one purse.
@@ -226,6 +293,9 @@ class MasterLP:
         # committed to a plan that did exactly that, went broke on day 1, and
         # scored 4,268 where doing nothing scores 3,000. Money is a STOCK; a row
         # that treats it as an allowance per day is not a budget.
+        #
+        # The earnings come from the SELLS now, not from the columns' own `earn`:
+        # the same coins counted twice would make the purse look twice as deep.
         A_c = cash_rows(pool, days)
         b_c = np.full(days, float(money))
 
@@ -234,23 +304,119 @@ class MasterLP:
         for j, col in enumerate(pool):
             A_e[col.cls, j] = 1.0
 
+        # --- the shed: sells, stock, waste, and their rows --------------------
+        # Layout: [lambda (n) | sell (n_goods·days) | stock (items·days)
+        #          | waste (items·days)]
+        block = n_goods * days
+        stock0 = n + block
+        waste0 = stock0 + items * days
+        n_cols = waste0 + items * days
+
+        def col_sell(gi: int, d: int) -> int:
+            return n + gi * days + d
+
+        def col_stock(ii: int, d: int) -> int:
+            return stock0 + ii * days + d
+
+        def col_waste(ii: int, d: int) -> int:
+            return waste0 + ii * days + d
+
+        cost = np.zeros(n_cols)
+        if not items:
+            # No shed: the model is the one that was here before, where a column
+            # earns its own revenue on the day it produces. WITH a shed a column
+            # earns nothing directly — its produce feeds the stock and the stock's
+            # dual prices it — so leaving the revenue in would count the same
+            # coins twice, once at production and once at the sale.
+            cost[:n] = -revenue
+        lower = np.zeros(n_cols)
+        upper = np.full(n_cols, np.inf)
+        if items:
+            px = np.asarray(prices, dtype=np.float64)
+            for gi, ii in enumerate(market):
+                for d in range(days):
+                    cost[col_sell(gi, d)] = -float(px[d, ii])   # max p·sell
+            # `stock[i, 0]` is the opening shed: fixed, not a decision.
+            for ii in range(items):
+                j = col_stock(ii, 0)
+                lower[j] = upper[j] = float(shed_stock[ii])
+
+        # balance rows: one per (item, day)
+        bal = np.zeros((items * days, n_cols))
+        for ii in range(items):
+            sellable = market.index(ii) if ii in market else -1
+            for d in range(days):
+                row = ii * days + d
+                bal[row, col_stock(ii, d)] = -1.0
+                if d + 1 < days:
+                    bal[row, col_stock(ii, d + 1)] = 1.0
+                # What is left on the last day has nowhere to go: the season ends
+                # there and the goods are worth nothing after it, so it leaves
+                # through the waste variable rather than by magic.
+                bal[row, col_waste(ii, d)] = 1.0
+                if sellable >= 0:
+                    bal[row, col_sell(sellable, d)] = 1.0
+        if items:
+            prod = np.zeros((items * days, n))
+            for j, col in enumerate(pool):
+                if col.produce is None:
+                    continue
+                produced = np.asarray(col.produce, dtype=np.float64)
+                for ii, rid in enumerate(rids):
+                    if rid is None or rid >= produced.shape[1]:
+                        continue
+                    for d in range(min(days, produced.shape[0])):
+                        prod[ii * days + d, j] = float(produced[d, rid])
+            bal[:, :n] -= prod
+
+        # cap rows: one per day, Σ_i stock[i, d] <= capacity
+        cap = np.zeros((days, n_cols))
+        for ii in range(items):
+            for d in range(days):
+                cap[d, col_stock(ii, d)] = 1.0
+
+        # The cash rows earn from the sells: a sale on day d' is money in the
+        # purse from d' onward. Same convention as the columns' own spend — the
+        # coin is available the day AFTER it is earned, which is what the
+        # original cumulative row did and what the engine does.
+        if items and n_goods:
+            A_c = np.hstack([A_c, np.zeros((days, n_cols - n))])
+            px = np.asarray(prices, dtype=np.float64)
+            for gi, ii in enumerate(market):
+                for d in range(days):
+                    A_c[d:, col_sell(gi, d)] = -float(px[d, ii])
+
         target = counts.astype(np.float64)
-        rows = np.vstack([A_q, A_c, A_e])
-        n_ineq = n_coupling * days + days
+        if n_cols > n:
+            # The coupling and convexity rows only involve the columns; the shed
+            # variables enter through the balance, the cap and the cash rows.
+            pad = n_cols - n
+            A_q = np.hstack([A_q, np.zeros((A_q.shape[0], pad))])
+            A_e = np.hstack([A_e, np.zeros((n_classes, pad))])
+        rows = np.vstack([A_q, A_c, bal, cap, A_e])
+        n_ineq = n_coupling * days + days + items * days + days
         csc = sparse.csc_matrix(rows)
 
         lp = _highspy._core.HighsLp()
-        lp.num_col_ = n
+        lp.num_col_ = n_cols
         lp.num_row_ = int(rows.shape[0])
-        lp.col_cost_ = -revenue
-        lp.col_lower_ = np.zeros(n)
-        lp.col_upper_ = np.full(n, np.inf)
-        lp.row_lower_ = np.concatenate([np.full(n_ineq, -np.inf), target])
-        lp.row_upper_ = np.concatenate([b_q, b_c, target])
+        lp.col_cost_ = cost
+        lp.col_lower_ = lower
+        lp.col_upper_ = upper
+        lp.row_lower_ = np.concatenate([
+            np.full(n_coupling * days + days, -np.inf),   # labour, cash
+            np.full(items * days, 0.0),                   # balance: equality
+            np.full(days, -np.inf),                       # cap: <=
+            target])
+        lp.row_upper_ = np.concatenate([
+            b_q, b_c,
+            np.zeros(items * days),
+            np.full(days, float(shed_capacity)),
+            target])
         lp.sense_ = _highspy._core.ObjSense.kMinimize
         matrix = _highspy._core.HighsSparseMatrix()
         matrix.format_ = _highspy._core.MatrixFormat.kColwise
-        matrix.num_col_ = n
+        matrix.num_col_ = n_cols
         matrix.num_row_ = lp.num_row_
         matrix.start_ = csc.indptr.astype(np.int32)
         matrix.index_ = csc.indices.astype(np.int32)
@@ -258,8 +424,10 @@ class MasterLP:
         lp.a_matrix_ = matrix
 
         self._highs.passModel(lp)
-        if self._basis is not None:
-            self._highs.setBasis(_extended_basis(self._basis, n, lp.num_row_))
+        layout = (n_coupling, days, items, n_goods, n_classes)
+        if self._basis is not None and self._layout == layout:
+            self._highs.setBasis(_extended_basis(self._basis, n_cols,
+                                                 lp.num_row_))
         self._highs.run()
         status = self._highs.getModelStatus()
         if status != _highspy._core.HighsModelStatus.kOptimal:
@@ -269,19 +437,30 @@ class MasterLP:
         basis = self._highs.getBasis()
         if basis.valid:
             self._basis = basis
+            self._layout = layout
 
         # HiGHS's ≤-row duals are ≤ 0 in min form; the shadow prices are −them,
         # clamped onto R006's orthant before anything downstream sees them.
         marg = np.asarray(solution.row_dual, dtype=np.float64)
         y = np.maximum(-marg[:n_coupling * days], 0.0).reshape(n_coupling, days).T
-        cash = np.maximum(-marg[n_coupling * days:n_ineq], 0.0)
+        off = n_coupling * days
+        cash = np.maximum(-marg[off:off + days], 0.0)
+        # The balance rows are EQUALITIES: their duals are FREE in sign, because
+        # a good in the shed is worth what it can be sold for later — and that is
+        # the internal price the contractor is credited at. The cap rows' duals
+        # are ≥ 0 (a ≤ row) and say what a unit of shed room is worth.
+        sigma = np.asarray(marg[off + days:off + days + items * days],
+                           dtype=np.float64).reshape(items, days).T
+        tau = np.maximum(-marg[off + days + items * days:n_ineq], 0.0)
         # The convexity duals are EQUALITY marginals and are free in sign: a class
         # whose tiles are worth having carries a negative one. Clamping them would
         # break the reduced-cost test, which is the only reason they are read.
         mu = np.asarray(marg[n_ineq:], dtype=np.float64)
-        return MasterSolve(np.asarray(solution.col_value, dtype=np.float64),
-                           y, cash, mu,
-                           -float(self._highs.getObjectiveValue()))
+        values = np.asarray(solution.col_value, dtype=np.float64)
+        return MasterSolve(lam=values[:n], y=y, cash=cash, mu=mu,
+                           objective=-float(self._highs.getObjectiveValue()),
+                           sigma=sigma, tau=tau,
+                           sells=values[n:n + block].reshape(n_goods, days))
 
 
 def solve_master(pool: list[Column], counts: np.ndarray, hours: np.ndarray,
@@ -304,7 +483,8 @@ def reduced_costs(values: np.ndarray, mu: np.ndarray) -> np.ndarray:
 
 def lagrangian_bound(solve: MasterSolve, values: np.ndarray,
                      counts: np.ndarray, hours: np.ndarray, money: float,
-                     days: int, n_coupling: int) -> float:
+                     days: int, n_coupling: int,
+                     shed: tuple | None = None) -> float:
     """`L(y) = y·b + Σ_c N_c · v_c(y)` — an UPPER bound on the master's optimum.
 
     Relax the coupling rows with their duals and the problem separates into
@@ -323,6 +503,19 @@ def lagrangian_bound(solve: MasterSolve, values: np.ndarray,
     cash = np.asarray(solve.cash, dtype=np.float64)
     rhs = float((y[:days, :n_coupling].sum(axis=1) * hours[:days]).sum()
                 + cash[:days].sum() * float(money))
+    if shed is not None:
+        # The shed's rows enter the bound too, or it stops being a bound. The
+        # balance rows are equalities relaxed with the free σ, the cap rows are
+        # ≤ rows relaxed with τ ≥ 0, and the stock telescopes over the days: what
+        # survives is the OPENING stock at σ on day 0 and the capacity at τ. The
+        # sells, the produce, the waste and the end-of-season stock all drop out
+        # at the LP's own duals — σ ≥ p makes every sell non-positive in the
+        # relaxation, and σ[last] ≥ 0 makes the leftover stock one.
+        opening, capacity, sigma, tau = shed
+        sig = np.asarray(sigma, dtype=np.float64)
+        rhs += float((sig[0] * np.asarray(opening, dtype=np.float64)).sum())
+        rhs += float((np.asarray(tau, dtype=np.float64)[:days].sum()
+                      * float(capacity)))
     return rhs + float((np.asarray(counts, dtype=np.float64)
                         * np.asarray(values, dtype=np.float64)).sum())
 
@@ -411,7 +604,9 @@ def column_key(board, tile: int, days: int) -> tuple:
 def generate(price, supply_hours, money, counts, days, n_coupling,
              idle_columns, *, rounds: int = 12, poll=None,
              deadline=None, warm: list | None = None,
-             smoothing: float = 0.0) -> ColgenResult:
+             smoothing: float = 0.0, shed: tuple | None = None,
+             prices: np.ndarray | None = None,
+             market: tuple[int, ...] = ()) -> ColgenResult:
     """The loop: master over every column so far, price, add, repeat.
 
     `price(y, cash)` is the caller's pricing step: it publishes the duals to
@@ -497,8 +692,11 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
             result.stopped = "budget"
             return result
         started = time.perf_counter()
-        result.solve = solver.solve(result.pool, counts, supply_hours, money,
-                                    days, n_coupling)
+        result.solve = solver.solve(
+            result.pool, counts, supply_hours, money, days, n_coupling,
+            shed_stock=None if shed is None else shed[0],
+            shed_capacity=0.0 if shed is None else float(shed[1]),
+            prices=prices, market=market)
         result.rounds += 1
 
         exact = (result.solve.y, result.solve.cash, result.solve.mu)
@@ -517,12 +715,17 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
             used = (tuple(alpha * np.asarray(c) + (1.0 - alpha) * np.asarray(e)
                           for c, e in zip(centre, exact))
                     if smoothed else exact)
-            values, columns = price(used[0], used[1])
+            values, columns = price(used[0], used[1],
+                                    None if shed is None
+                                    else (result.solve.sigma, result.solve.tau))
             bound = lagrangian_bound(
                 MasterSolve(result.solve.lam, np.asarray(used[0]),
                             np.asarray(used[1]), np.asarray(used[2]),
                             result.solve.objective),
-                values, counts, supply_hours, money, days, n_coupling)
+                values, counts, supply_hours, money, days, n_coupling,
+                shed=(None if shed is None else
+                      (shed[0], float(shed[1]), result.solve.sigma,
+                       result.solve.tau)))
             if bound < result.bound:
                 result.bound, centre = bound, used
             rc = reduced_costs(values, used[2])
