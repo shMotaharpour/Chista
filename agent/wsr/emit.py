@@ -60,9 +60,12 @@ def compile_route(day: Day, tasks: TaskArray, result: Result, *,
     the day it writes is not the day that was searched.
     """
     horizon = int(horizon if horizon is not None else day.horizon)
+    # An explicit `settled` is the caller placing the hands itself; the result's own doors are used
+    # when it lets the result decide, which is the only way the day is written as it was priced.
+    doors = result.doors if settled is None else None
     if settled is None:
-        settled = _settled_after_first_turn(day, tasks, result)
-    starts = _start_positions(day, result.pool, settled)
+        settled = result.settled or _settled_after_first_turn(day, tasks, result)
+    starts = _start_positions(day, result.pool, settled, doors)
     hours = _start_hours(day, result.pool)
     m = int(starts.shape[0])
 
@@ -161,9 +164,10 @@ def check_route(day: Day, tasks: TaskArray, result: Result, settled=None) -> lis
     trusting: this names what is wrong, and an empty list means nothing is.
     """
     complaints: list[str] = []
+    doors = result.doors if settled is None else None
     if settled is None:
-        settled = _settled_after_first_turn(day, tasks, result)
-    starts = _start_positions(day, result.pool, settled)
+        settled = result.settled or _settled_after_first_turn(day, tasks, result)
+    starts = _start_positions(day, result.pool, settled, doors)
     hours = _start_hours(day, result.pool)
 
     turns: dict[int, list[tuple[int, str]]] = {}
