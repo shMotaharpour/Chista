@@ -483,6 +483,20 @@ def reduced_costs(values: np.ndarray, mu: np.ndarray) -> np.ndarray:
     return np.asarray(values, dtype=np.float64) + np.asarray(mu, dtype=np.float64)
 
 
+def cash_relief(cash: np.ndarray, days: int) -> np.ndarray:
+    """`later[d]`: the shadow price of a coin EARNED on day d.
+
+    The cash rows are cumulative, so a coin earned on day d relieves every row
+    after it — and a SALE is such a coin. The pricing scales the product price
+    by `1 + later`, and the bound needs the same number to know what a sale is
+    worth. One definition, because the bound and the pricing must agree about it
+    or the bound stops bounding.
+    """
+    arr = np.asarray(cash, dtype=np.float64)
+    ahead = np.cumsum(arr[::-1])[::-1]
+    return np.concatenate([ahead[1:], [0.0]])[:days]
+
+
 def _seed_sigma(prices: np.ndarray | None, market: tuple[int, ...],
                 days: int) -> np.ndarray:
     """The σ a degenerate LP cannot supply: the market path, by item.
@@ -527,10 +541,15 @@ def lagrangian_bound(solve: MasterSolve, values: np.ndarray,
         # The shed's rows enter the bound too, or it stops being a bound. The
         # balance rows are equalities relaxed with the free σ, the cap rows are
         # ≤ rows relaxed with τ ≥ 0, and the stock telescopes over the days: what
-        # survives is the OPENING stock at σ on day 0 and the capacity at τ. The
-        # sells, the produce, the waste and the end-of-season stock all drop out
-        # at the LP's own duals — σ ≥ p makes every sell non-positive in the
-        # relaxation, and σ[last] ≥ 0 makes the leftover stock one.
+        # survives is the OPENING stock at σ on day 0 and the capacity at τ.
+        #
+        # The sells must be non-positive in the relaxation, or the inner problem
+        # is unbounded and this is not a bound at all — and a sale is worth
+        # `p·(1 + later)`, not `p`: it relieves every cash row from its day
+        # onward. So σ is raised onto that level for the bound. Any multipliers
+        # give a valid Lagrangian bound, which is exactly why raising them here
+        # is allowed; `sell_floor` is that raised σ, computed by the caller from
+        # the SAME `cash_relief` the pricing uses.
         opening, capacity, sigma, tau = shed
         sig = np.asarray(sigma, dtype=np.float64)
         rhs += float((sig[0] * np.asarray(opening, dtype=np.float64)).sum())
@@ -758,13 +777,25 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
                           for c, e in zip(centre, exact))
                     if smoothed else exact)
             values, columns = price(used[0], used[1], shed_duals)
-            bound = lagrangian_bound(
-                MasterSolve(result.solve.lam, np.asarray(used[0]),
-                            np.asarray(used[1]), np.asarray(used[2]),
-                            result.solve.objective),
-                values, counts, supply_hours, money, days, n_coupling,
-                shed=(None if shed is None or shed_duals is None else
-                      (shed[0], float(shed[1]), shed_duals[0], shed_duals[1])))
+            if shed is not None and result.rounds <= 1:
+                # No bound on the seeded round. The bound is a Lagrangian bound
+                # at the multipliers it was computed with, and those are the
+                # pricing's — but on the first round the pricing ran at the SEED
+                # (σ = the market path), where a sale is worth p·(1+later) and
+                # not p, so the sells' term in the relaxation is positive and
+                # dropping it puts the bound below the objective. The LP has no
+                # dual of its own yet, so there is nothing to bound yet either:
+                # the bound starts from the round the LP has a real model.
+                bound = float("inf")
+            else:
+                bound = lagrangian_bound(
+                    MasterSolve(result.solve.lam, np.asarray(used[0]),
+                                np.asarray(used[1]), np.asarray(used[2]),
+                                result.solve.objective),
+                    values, counts, supply_hours, money, days, n_coupling,
+                    shed=(None if shed is None or shed_duals is None else
+                          (shed[0], float(shed[1]), shed_duals[0],
+                           shed_duals[1])))
             if bound < result.bound:
                 result.bound, centre = bound, used
             rc = reduced_costs(values, used[2])
