@@ -176,6 +176,95 @@ def test_the_spare_leaves_the_wait_for_the_goods_as_room() -> None:
     assert B.remaining_turns(day, tasks, result) == passes
 
 
+#: A three-hand day for this fixture: built by hand, run on the engine, and read back off its replay.
+#: Every op lands and the three animals are housed, so it is a day the day itself allows - and the
+#: search does not find it (measured: 53 of 54 on its own, 54 of 54 when warmed with this).
+REFERENCE_ROUTE = [
+    (0, 'd0_build_pasture', 0),
+    (3, 'd24_plant', 1),
+    (4, 'd23_plant', 2),
+    (4, 'd24_water', 1),
+    (5, 'd0_place', 0),
+    (5, 'd23_water', 2),
+    (6, 'd20_plant', 1),
+    (6, 'd22_plant', 3),
+    (7, 'd19_plant', 2),
+    (7, 'd1_build_coop', 0),
+    (7, 'd20_water', 1),
+    (7, 'd22_water', 3),
+    (8, 'd19_water', 2),
+    (8, 'd1_place', 0),
+    (9, 'd16_plant', 1),
+    (9, 'd18_plant', 3),
+    (9, 'd1_feed', 0),
+    (10, 'd15_plant', 2),
+    (10, 'd16_water', 1),
+    (10, 'd18_water', 3),
+    (10, 'd1_care', 0),
+    (11, 'd15_water', 2),
+    (12, 'd11_plant', 1),
+    (12, 'd14_plant', 3),
+    (12, 'd2_build_pasture', 0),
+    (13, 'd10_plant', 2),
+    (13, 'd11_water', 1),
+    (13, 'd14_water', 3),
+    (13, 'd2_place', 0),
+    (14, 'd10_water', 2),
+    (14, 'd2_feed', 0),
+    (15, 'd13_plant', 3),
+    (15, 'd2_care', 0),
+    (15, 'd6_plant', 1),
+    (16, 'd13_water', 3),
+    (16, 'd6_water', 1),
+    (16, 'd9_plant', 2),
+    (17, 'd12_plant', 0),
+    (17, 'd9_water', 2),
+    (18, 'd12_water', 0),
+    (18, 'd17_plant', 3),
+    (18, 'd5_plant', 1),
+    (19, 'd17_water', 3),
+    (19, 'd5_water', 1),
+    (19, 'd8_plant', 2),
+    (20, 'd7_plant', 0),
+    (20, 'd8_water', 2),
+    (21, 'd21_plant', 3),
+    (21, 'd4_plant', 1),
+    (21, 'd7_water', 0),
+    (22, 'd21_water', 3),
+    (22, 'd3_plant', 2),
+    (22, 'd4_water', 1),
+    (23, 'd3_water', 2),
+]
+
+
+def test_the_reference_three_hand_day_is_a_day_the_rules_allow() -> None:
+    """The hand-built three-hand day is legal, and the search takes it when it is handed over.
+
+    Two separate facts: `check_route` says no rule is broken, and a search warmed with the route comes
+    back carrying all 54 - which is what makes the day's own allowance the answer and the search the
+    thing that is short.
+    """
+    day, tasks = _day()
+    route = [(turn, task_id, worker) for turn, task_id, worker in REFERENCE_ROUTE]
+    assert len(route) == tasks.n, f"the reference covers {len(route)} of the day's {tasks.n} tasks"
+    reference = B.Result(pool=HANDS, route=route, complete=True)
+
+    assert not check_route(day, tasks, reference), "the reference breaks a rule the engine enforces"
+    warmed = B.search(day, tasks, hands=HANDS, max_hands=HANDS, warm=reference)
+    assert warmed.complete, (
+        f"warmed with the reference the search placed {len(warmed.route)} of {tasks.n}")
+
+
+@pytest.mark.xfail(strict=True, reason=(
+    "the search does not find the three-hand day on its own - it places 53 of 54 where the "
+    "hand-built route on the same day places all 54, so the shortfall is the search's"))
+def test_the_search_finds_the_three_hand_day_by_itself() -> None:
+    """Three hands are enough for this day - the reference proves it - so the search has to find it."""
+    day, tasks = _day()
+    result = B.search(day, tasks, beam=64, hands=HANDS, max_hands=HANDS)
+    assert result.complete, f"the search placed {len(result.route)} of {tasks.n}"
+
+
 def test_the_remaining_capacity_is_the_day_the_compiler_wrote(short) -> None:
     """The spare the search reports, against the PASS turns in the compiled day.
 
