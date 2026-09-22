@@ -449,10 +449,14 @@ class MasterLP:
         cash = np.maximum(-marg[off:off + days], 0.0)
         # The balance rows are EQUALITIES: their duals are FREE in sign, because
         # a good in the shed is worth what it can be sold for later — and that is
-        # the internal price the contractor is credited at. The cap rows' duals
-        # are ≥ 0 (a ≤ row) and say what a unit of shed room is worth.
-        sigma = np.asarray(marg[off + days:off + days + items * days],
-                           dtype=np.float64).reshape(items, days).T
+        # the internal price the contractor is credited at. Negated like every
+        # other HiGHS marginal: they are read from a MINIMISATION, and the price
+        # this module publishes is the maximisation one. Left unnegated it comes
+        # out negative, the orthant clamp in the caller flattens it to zero, and
+        # the produce is credited nothing (measured: 180 negative entries, the
+        # clamp to 0, every class priced at 0, the loop dead).
+        sigma = -np.asarray(marg[off + days:off + days + items * days],
+                            dtype=np.float64).reshape(items, days).T
         tau = np.maximum(-marg[off + days + items * days:n_ineq], 0.0)
         # The convexity duals are EQUALITY marginals and are free in sign: a class
         # whose tiles are worth having carries a negative one. Clamping them would
@@ -747,19 +751,19 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
         # seeded σ in the bound too, which stays a bound because a Lagrangian
         # bound is valid at ANY multipliers, not only at the optimal ones.
         shed_duals = None
+        seeded = False
         if shed is not None:
             sig = np.asarray(result.solve.sigma, dtype=np.float64)
-            if result.rounds <= 1:
-                # The FIRST LP has only do-nothing columns, so it is entirely
-                # zero and its dual is not unique — HiGHS returns σ = 0 (or a
-                # meaningless negative) and the pricing would credit every plan
-                # nothing, so no working column is ever generated and the loop
-                # sits at zero for good. Price the first round at the market path
-                # instead: that generates the working columns, and from round 2
-                # the LP has a real model and its own σ is used. The bound is
-                # computed with the SAME σ, and stays a bound, because a
-                # Lagrangian bound holds at any multipliers, not only optimal.
+            if result.rounds <= 1 or not np.any(sig):
+                # A degenerate LP has NO unique dual — and this one comes out
+                # exactly zero even once working columns are in the pool (the
+                # balance rows are slack, so a unit of stock carries no shadow
+                # price). Pricing at σ = 0 credits every plan nothing, no column
+                # is ever generated again, and the loop stalls at zero. Price at
+                # the market path instead in that case — the job the old `p_eff`
+                # factor did — and mark the round: no bound is computed on it.
                 sig = _seed_sigma(prices, market, days)
+                seeded = True
             shed_duals = (np.maximum(sig, 0.0), result.solve.tau)
         # The reduced-cost tolerance for THIS board: an absolute floor, raised to
         # the pricer's own precision on the objective's scale (see RC_REL_TOL).
@@ -777,7 +781,7 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
                           for c, e in zip(centre, exact))
                     if smoothed else exact)
             values, columns = price(used[0], used[1], shed_duals)
-            if shed is not None and result.rounds <= 1:
+            if shed is not None and seeded:
                 # No bound on the seeded round. The bound is a Lagrangian bound
                 # at the multipliers it was computed with, and those are the
                 # pricing's — but on the first round the pricing ran at the SEED
@@ -821,7 +825,15 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
                       f"lab={_lab:.1f} cash={_csh:.1f} sig0={_sg:.1f} "
                       f"tau={_tp:.1f} Nv={_nc:.1f} Nrc={_rc:.1f} "
                       f"bound={bound:.1f} "
-                      f"check={bound - _M.objective - _rc:.2f}")
+                      f"check={bound - _M.objective - _rc:.2f} "
+                      f"| sig_max={0.0 if shed_duals is None else float(np.max(shed_duals[0])):.3f} "
+                      f"sig_mean={0.0 if shed_duals is None else float(np.mean(shed_duals[0])):.3f} "
+                      f"y_max={float(np.max(_y)):.3f} v_max={float(np.max(values)):.3f} "
+                      f"sells_tot={float(np.sum(result.solve.sells)):.1f} "
+                      f"sells_d0={float(np.sum(result.solve.sells[:, 0])):.1f} "
+                      f"sells_d1={float(np.sum(result.solve.sells[:, 1])):.1f} "
+                      f"sells_d9={float(np.sum(result.solve.sells[:, 9])):.1f} "
+                      f"sig_nz={int(np.count_nonzero(result.solve.sigma))}")
             rc = reduced_costs(values, used[2])
 
             added = 0
