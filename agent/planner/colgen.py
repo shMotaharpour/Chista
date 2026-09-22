@@ -798,6 +798,30 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
                            shed_duals[1])))
             if bound < result.bound:
                 result.bound, centre = bound, used
+            import os as _os
+            if _os.environ.get("CHISTA_DEBUG_BOUND") and result.rounds <= 2:
+                _M = MasterSolve(result.solve.lam, np.asarray(used[0]),
+                                 np.asarray(used[1]), np.asarray(used[2]),
+                                 result.solve.objective)
+                _y = np.asarray(_M.y)
+                _c = np.asarray(_M.cash)
+                _lab = float((_y[:days, :n_coupling].sum(axis=1)
+                              * supply_hours[:days]).sum())
+                _csh = float(_c[:days].sum() * float(money))
+                _nc = float((np.asarray(counts) * np.asarray(values)).sum())
+                _rc = float((np.asarray(counts)
+                             * reduced_costs(values, _M.mu)).sum())
+                _sg = _tp = 0.0
+                if shed_duals is not None:
+                    _sg = float((np.asarray(shed_duals[0])[0]
+                                 * np.asarray(shed[0])).sum())
+                    _tp = float(np.asarray(shed_duals[1])[:days].sum()
+                                * float(shed[1]))
+                print(f"[bound] r={result.rounds} obj={_M.objective:.1f} "
+                      f"lab={_lab:.1f} cash={_csh:.1f} sig0={_sg:.1f} "
+                      f"tau={_tp:.1f} Nv={_nc:.1f} Nrc={_rc:.1f} "
+                      f"bound={bound:.1f} "
+                      f"check={bound - _M.objective - _rc:.2f}")
             rc = reduced_costs(values, used[2])
 
             added = 0
