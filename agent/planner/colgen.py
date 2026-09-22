@@ -760,7 +760,7 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
                 # computed with the SAME σ, and stays a bound, because a
                 # Lagrangian bound holds at any multipliers, not only optimal.
                 sig = _seed_sigma(prices, market, days)
-            shed_duals = (sig, result.solve.tau)
+            shed_duals = (np.maximum(sig, 0.0), result.solve.tau)
         # The reduced-cost tolerance for THIS board: an absolute floor, raised to
         # the pricer's own precision on the objective's scale (see RC_REL_TOL).
         tol = rc_tolerance(result.solve.objective)

@@ -700,12 +700,16 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
             # row's dual. That dual already carries the timing: it is the price
             # of the same LP whose cash rows the `later` term was standing in
             # for, and it carries the cap as well, which no scalar could.
-            # σ is an EQUALITY dual and free in sign; the tile graph is
-            # dominance-pruned and that pruning is optimality-preserving only
-            # while every price is >= 0 (R006). A good worth less than nothing
-            # is worth nothing to a plan that can only choose to produce it, so
-            # the clamp is the modelling statement, not a convenience.
-            sig = np.maximum(np.asarray(shed[0], dtype=np.float64)[:days], 0.0)
+            # σ arrives already clamped onto the non-negative orthant by the
+            # caller: the tile graph is dominance-pruned and that pruning is
+            # optimality-preserving only while every price is >= 0 (R006). A good
+            # worth less than nothing is worth nothing to a plan that can only
+            # choose to produce it. The clamp is applied ONCE, where the duals
+            # are handed to the pricing, so the bound is computed at the same
+            # multipliers the pricing used — clamping here alone would price the
+            # tiles at one σ and bound them at another, and the bound would come
+            # out below the objective it bounds.
+            sig = np.asarray(shed[0], dtype=np.float64)[:days]
             for gi, ii in enumerate(SELLABLE):
                 rid = _resource_of(SHED_ITEMS[ii])
                 if rid is not None:
