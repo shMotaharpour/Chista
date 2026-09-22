@@ -58,7 +58,11 @@ def compile_route(day: Day, tasks: TaskArray, result: Result, *,
     start cell and made the planner's day uncompilable (#162).
     """
     horizon = int(horizon if horizon is not None else day.horizon)
-    starts = _start_positions(day, result.pool, result.doors)
+    # wsr owns WHERE a hand lands (F040): it is computed here from the day's own route,
+    # never handed in. `doors` still wins inside `_start_positions`, so the searched
+    # doors are never smothered - that was #162's bug, and it stays fixed.
+    settled = result.settled or _settled_after_first_turn(day, tasks, result)
+    starts = _start_positions(day, result.pool, settled, result.doors)
     hours = _start_hours(day, result.pool)
     m = int(starts.shape[0])
 
@@ -155,7 +159,11 @@ def check_route(day: Day, tasks: TaskArray, result: Result) -> list[str]:
     trusting: this names what is wrong, and an empty list means nothing is.
     """
     complaints: list[str] = []
-    starts = _start_positions(day, result.pool, result.doors)
+    # wsr owns WHERE a hand lands (F040): it is computed here from the day's own route,
+    # never handed in. `doors` still wins inside `_start_positions`, so the searched
+    # doors are never smothered - that was #162's bug, and it stays fixed.
+    settled = result.settled or _settled_after_first_turn(day, tasks, result)
+    starts = _start_positions(day, result.pool, settled, result.doors)
     hours = _start_hours(day, result.pool)
 
     turns: dict[int, list[tuple[int, str]]] = {}

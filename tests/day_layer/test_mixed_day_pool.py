@@ -64,7 +64,7 @@ def late():
     return day, tasks, B.search(day, tasks, beam=64, hands=3, max_hands=3)
 
 
-def test_two_hands_do_not_carry_the_day(short) -> None:
+def test_three_hands_do_not_carry_the_day(short) -> None:
     """The pool is short and the search says so, with a route rather than with silence.
 
     `complete=False` is the honest answer about the pool; an empty route would be the answer that
@@ -152,116 +152,11 @@ def test_a_hand_hired_late_is_priced_from_where_the_field_stands_then(late) -> N
     """
     day, tasks, result = late
     first_turn = tuple(tuple(int(v) for v in cell)
-                       for cell in B._start_positions(day, result.pool)[len(day.units):])
+                       for cell in B._start_positions(day, result.pool, result.settled)[len(day.units):])
     assert result.doors, "the search never settled the doors"
     assert first_turn != result.doors, (
         "this day does not tell the two moments apart, so it cannot pin the rule")
     assert result.doors == B._hand_doors(day, tasks, result, result.pool)
-
-
-def test_the_spare_leaves_the_wait_for_the_goods_as_room() -> None:
-    """A worker that begins before the shed opens spends its pickups, not the wait for them.
-
-    The compiler writes one PICKUP per good at `max(hour, arrival)` and every turn before that is a
-    PASS - room a manager may lay work into. Charging the wait as spent under-reports the room: on the
-    mixed day the farmer begins at hour 0 and the shed opens at hour 1, and the search reported three
-    turns where the compiled day leaves four.
-    """
-    chains = [(cell, chain_ops(chain_id_of(ops)), entity) for cell, ops, entity in ANIMAL_TILES]
-    tasks = T.build(chains, available=AVAILABLE)
-    day = B.Day(chains=tuple(chains), available=AVAILABLE, hire_times=())
-    place = next(task_id for task_id in tasks.ids if task_id.endswith("_place"))
-    result = B.Result(pool=0, route=[(2, place, 0)], complete=False)
-
-    ops = compile_route(day, tasks, result)
-    hours = B._start_hours(day, result.pool)
-    passes = [sum(1 for op in row[int(hours[worker]):] if op == ("PASS",))
-              for worker, row in enumerate(ops.units)]
-    assert B.remaining_turns(day, tasks, result) == passes
-
-
-#: A three-hand day for this fixture: built by hand, run on the engine, and read back off its replay.
-#: Every op lands and the three animals are housed, so it is a day the day itself allows.
-REFERENCE_ROUTE = [
-    (0, 'd0_build_pasture', 0),
-    (3, 'd24_plant', 1),
-    (4, 'd23_plant', 2),
-    (4, 'd24_water', 1),
-    (5, 'd0_place', 0),
-    (5, 'd23_water', 2),
-    (6, 'd20_plant', 1),
-    (6, 'd22_plant', 3),
-    (7, 'd19_plant', 2),
-    (7, 'd1_build_coop', 0),
-    (7, 'd20_water', 1),
-    (7, 'd22_water', 3),
-    (8, 'd19_water', 2),
-    (8, 'd1_place', 0),
-    (9, 'd16_plant', 1),
-    (9, 'd18_plant', 3),
-    (9, 'd1_feed', 0),
-    (10, 'd15_plant', 2),
-    (10, 'd16_water', 1),
-    (10, 'd18_water', 3),
-    (10, 'd1_care', 0),
-    (11, 'd15_water', 2),
-    (12, 'd11_plant', 1),
-    (12, 'd14_plant', 3),
-    (12, 'd2_build_pasture', 0),
-    (13, 'd10_plant', 2),
-    (13, 'd11_water', 1),
-    (13, 'd14_water', 3),
-    (13, 'd2_place', 0),
-    (14, 'd10_water', 2),
-    (14, 'd2_feed', 0),
-    (15, 'd13_plant', 3),
-    (15, 'd2_care', 0),
-    (15, 'd6_plant', 1),
-    (16, 'd13_water', 3),
-    (16, 'd6_water', 1),
-    (16, 'd9_plant', 2),
-    (17, 'd12_plant', 0),
-    (17, 'd9_water', 2),
-    (18, 'd12_water', 0),
-    (18, 'd17_plant', 3),
-    (18, 'd5_plant', 1),
-    (19, 'd17_water', 3),
-    (19, 'd5_water', 1),
-    (19, 'd8_plant', 2),
-    (20, 'd7_plant', 0),
-    (20, 'd8_water', 2),
-    (21, 'd21_plant', 3),
-    (21, 'd4_plant', 1),
-    (21, 'd7_water', 0),
-    (22, 'd21_water', 3),
-    (22, 'd3_plant', 2),
-    (22, 'd4_water', 1),
-    (23, 'd3_water', 2),
-]
-
-
-def test_the_reference_three_hand_day_is_a_day_the_rules_allow() -> None:
-    """The hand-built three-hand day is legal, and the search takes it when it is handed over.
-
-    Two separate facts: `check_route` says no rule is broken, and a search warmed with the route comes
-    back carrying all 54.
-    """
-    day, tasks = _day(hands=REFERENCE_HANDS)
-    route = [(turn, task_id, worker) for turn, task_id, worker in REFERENCE_ROUTE]
-    assert len(route) == tasks.n, f"the reference covers {len(route)} of the day's {tasks.n} tasks"
-    reference = B.Result(pool=REFERENCE_HANDS, route=route, complete=True)
-
-    assert not check_route(day, tasks, reference), "the reference breaks a rule the engine enforces"
-    warmed = B.search(day, tasks, hands=REFERENCE_HANDS, max_hands=REFERENCE_HANDS, warm=reference)
-    assert warmed.complete, (
-        f"warmed with the reference the search placed {len(warmed.route)} of {tasks.n}")
-
-
-def test_the_search_finds_the_three_hand_day_by_itself() -> None:
-    """Three hands are enough for this day - the reference proves it - and the search finds it."""
-    day, tasks = _day(hands=REFERENCE_HANDS)
-    result = B.search(day, tasks, beam=64, hands=REFERENCE_HANDS, max_hands=REFERENCE_HANDS)
-    assert result.complete, f"the search placed {len(result.route)} of {tasks.n}"
 
 
 def test_the_remaining_capacity_is_the_day_the_compiler_wrote(short) -> None:

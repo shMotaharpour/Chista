@@ -150,6 +150,11 @@ class Result(NamedTuple):
     #: True when a deadline stopped the search before it ran out of tasks to place. A route that is
     #: neither complete nor out of time is the search's own answer: the pool could not carry it.
     out_of_time: bool = False
+    #: Where each hand is spawned from, as the search priced it: the cells the units already on
+    #: the field occupy when the hand's own hire moment comes (F040). wsr computes this from its
+    #: own route - it is never handed in, because WHERE a hand lands is the search's answer, while
+    #: WHEN it appears is the hourly layer's input (`Day.hire_times`). Always a tuple, never None.
+    settled: tuple[Cell, ...] = ()
     #: The door the engine gives each hand, hand by hand, as the search priced it (`_hand_doors`):
     #: the least-occupied shed-access tile at THAT hand's own hire moment, not at the first turn.
     #: This is the one statement of where the hands start - `compile_route`, `check_route` and
@@ -304,7 +309,8 @@ def remaining_turns(day: Day, tasks: TaskArray, result: Result) -> list[int]:
     from these, `compile_route` writes it from the same rule.
     """
     hours = _start_hours(day, result.pool)
-    starts = _start_positions(day, result.pool, result.doors)
+    arrival = first_arrival(tasks)
+    starts = _start_positions(day, result.pool, result.settled, result.doors)
     per: dict[int, list[tuple[int, str]]] = {}
     for turn, task_id, worker in result.route:
         per.setdefault(int(worker), []).append((int(turn), task_id))
@@ -541,7 +547,10 @@ def _consistent(day: Day, tasks: TaskArray, result: Result) -> bool:
     """
     from agent.wsr.emit import check_route, compile_route   # emit imports this module: late
 
-    if tuple(result.doors) != _hand_doors(day, tasks, result, result.pool):
+    if result.doors:
+        if tuple(result.doors) != _hand_doors(day, tasks, result, result.pool):
+            return False
+    elif tuple(result.settled) != tuple(_settled_after_first_turn(day, tasks, result)):
         return False
     if check_route(day, tasks, result):
         return False
@@ -668,7 +677,7 @@ def _warm_row(tasks: TaskArray, warm: Result, done, when, who, free, where, trav
 
 
 def _run(day: Day, tasks: TaskArray, *, hands: int, beam: int,
-         doors=None, deadline: float | None = None,
+         settled=None, doors=None, deadline: float | None = None,
          warm: Result | None = None, charge=None) -> Result:
     """One pool size: search the day, and report how much of it the pool could carry.
 
@@ -677,7 +686,7 @@ def _run(day: Day, tasks: TaskArray, *, hands: int, beam: int,
     and the answer carries those doors so what it was priced from is never implicit.
     """
     n = tasks.n
-    start_pos = _start_positions(day, hands, doors)          # (m, 2)
+    start_pos = _start_positions(day, hands, settled, doors)   # (m, 2)
     first_hand = len(day.units)                              # workers before this index are units
 
     # The warmed route gets a row of its own ON TOP of the beam, so a caller handing over a route
@@ -732,7 +741,8 @@ def _run(day: Day, tasks: TaskArray, *, hands: int, beam: int,
     route = [(int(when_best[i]), tasks.ids[i], int(who_best[i]))
              for i in np.argsort(when_best) if done_best[i]]
     return Result(hands, route, complete, out_of_time=cut,
-                  doors=tuple((int(c[0]), int(c[1])) for c in start_pos[first_hand:]))
+                  settled=tuple(day.units) if settled is None else tuple(settled),
+                  doors=() if doors is None else tuple(doors))
 
 
 def _snapshot(done, when, who, free, travel, first_hand, start_hours):
@@ -793,7 +803,7 @@ def _hand_doors(day: Day, tasks: TaskArray, result: Result, hands: int) -> tuple
     """
     from agent.world.rules import spawn_cell
 
-    hire = [int(h) for h in _start_hours(day, hands)[len(day.units):]]
+    hire = [max(1, int(day.hire_times[k])) if k < len(day.hire_times) else 1 for k in range(hands)]
     routes: dict[int, list] = {}
     for turn, task_id, worker in result.route:
         routes.setdefault(int(worker), []).append((int(turn), task_id))
@@ -812,7 +822,7 @@ def _hand_doors(day: Day, tasks: TaskArray, result: Result, hands: int) -> tuple
     return tuple(cell for _index, cell in sorted(placed))
 
 
-def _start_positions(day: Day, hands: int, doors=None) -> np.ndarray:
+def _start_positions(day: Day, hands: int, settled=None, doors=None) -> np.ndarray:
     """Who is on the field and where each stands.
 
     Two different questions, and conflating them is what put crops on the wrong tiles:
@@ -830,9 +840,11 @@ def _start_positions(day: Day, hands: int, doors=None) -> np.ndarray:
     from agent.world.rules import spawn_cell
     out = [(int(c[0]), int(c[1])) for c in day.units]
     if doors:
+        # The doors the engine gives, hand by hand, each at its own hire moment (`_hand_doors`).
+        # Empty means the search never settled them, and then the positions below decide.
         out.extend((int(c[0]), int(c[1])) for c in doors)
         return np.asarray(out, dtype=np.int16)
-    occupied = list(out)
+    occupied = list(out if settled is None else [(int(c[0]), int(c[1])) for c in settled])
     for _ in range(hands):
         cell = spawn_cell(occupied)
         out.append((int(cell[0]), int(cell[1])))
