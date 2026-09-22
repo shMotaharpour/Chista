@@ -47,6 +47,13 @@ MIN_BEAM, MAX_BEAM = 8, 64
 #: distinct-good count, so this is a ceiling on an iteration that has usually settled by the first.
 CHARGE_PASSES = 3
 
+#: The rankings the selection keeps its beam under, each with a beam of its own. No single key is
+#: right: the earliest finish keeps the most work placed and is blind to an hour that is nearly gone,
+#: the least slack sees only the hour, and the deadline count chases the tasks that must land by one.
+#: A narrow beam loses work (the mixed day: 50 of 54 tasks at a third of the width, 53 at two
+#: thirds, 54 at the full one), so the rankings do not share a width - they each keep one.
+RANKINGS: tuple[str, ...] = ("finish", "slack", "bound")
+
 
 def beam_for(tasks: TaskArray, workers: int) -> int:
     """The width to search a day of this size with this many workers."""
@@ -542,7 +549,7 @@ def _run(day: Day, tasks: TaskArray, *, hands: int, beam: int,
     # that no longer fits the day costs the search nothing: the beam below it is as wide as it would
     # have been. The selection still keeps `beam` rows, so from the second generation on the seed
     # competes for a slot like any other route.
-    rows = beam + (1 if warm is not None else 0)
+    rows = beam * len(_rankings_for(tasks)) + (1 if warm is not None else 0)
     done = np.zeros((rows, n), dtype=bool)
     when = np.zeros((rows, n), dtype=np.int16)               # the turn each done task occupies
     who = np.full((rows, n), -1, dtype=np.int16)             # and the worker that did it
@@ -883,6 +890,52 @@ def _expand(day: Day, tasks: TaskArray, done, when, who, free, where, travel, li
                 idle=idle, index=index, count=count)
 
 
+def _rankings_for(tasks: TaskArray) -> tuple[str, ...]:
+    """The rankings a day is worth searching under.
+
+    The extra keys chase an hour. A day with no deadline-bound task - nothing whose `latest` is
+    before the horizon - has no hour to chase, and the whole portfolio would be paid for nothing:
+    the mixed day is one of those, and a third of its beam is three tasks.
+    """
+    if (tasks.latest < int(tasks.latest.max())).any():
+        return RANKINGS
+    return ("finish",)
+
+
+def _shares(width: int, parts: int) -> list[int]:
+    """The slots each ranking keeps: the WHOLE width each, not a slice of it.
+
+    Sharing the width out buys diversity with the one thing the search needs - see `RANKINGS`. The
+    cost is the expansion, which is linear in the rows, so a day costs about `parts` times as much.
+    """
+    return [width] * parts
+
+
+def _rank_keys(tasks: TaskArray, child_done, child_free, travel, makespan, hands_used, dead):
+    """Each ranking's sort keys, in `np.lexsort` order - the LAST key is the primary one.
+
+    No single key is right, which is why there is more than one. The earliest finish keeps the most
+    work placed and is blind to an hour that is nearly gone; the least slack sees only the hour and
+    gives away work to do it; the deadline count chases the tasks that have to land by an hour at the
+    cost of everything else. Measured on the animals' day with the farmer alone: the finish key places
+    11 of 12, the slack key 10 of 12, and the day is carryable with 12.
+    """
+    #: The tasks with an hour of their own - a deadline. `latest` is the horizon for everything else,
+    #: and the horizon is not a deadline: nothing has to be done by the last turn of the day.
+    bound_rows = np.flatnonzero(tasks.latest < int(tasks.latest.max()))
+    # The slack: how many turns are left before the nearest hour passes, over the tasks not yet done.
+    # A done task cannot be late, so it is masked out of the minimum.
+    slack = tasks.latest[None, :].astype(np.int32) - child_free.min(axis=1)[:, None]
+    slack = np.where(child_done, np.int32(1 << 14), slack).min(axis=1)
+    placed_bound = (child_done[:, bound_rows].sum(axis=1) if bound_rows.size
+                    else np.zeros(child_done.shape[0], dtype=np.int16))
+    return {
+        "finish": (travel, makespan, hands_used, dead),
+        "slack": (travel, makespan, hands_used, dead, slack),
+        "bound": (travel, makespan, hands_used, dead, -placed_bound),
+    }
+
+
 def _select(expanded, tasks: TaskArray, beam: int, first_hand: int, start_hours):
     """Keep the best `beam` children, ranked BEFORE they are built.
 
@@ -899,6 +952,7 @@ def _select(expanded, tasks: TaskArray, beam: int, first_hand: int, start_hours)
     width = index.size
     count = expanded["count"]
     rows = expanded["rows"]
+    active = _rankings_for(tasks)
     done, when, who = expanded["done"], expanded["when"], expanded["who"]
     free = expanded["free"]
     where, travel, hop = expanded["where"], expanded["travel"], expanded["hop"]
@@ -906,16 +960,17 @@ def _select(expanded, tasks: TaskArray, beam: int, first_hand: int, start_hours)
 
     legal = np.flatnonzero(flat_hour < BIG)
     if legal.size == 0:
-        return (_empty_like(done, beam), _empty_like(when, beam), _empty_like(who, beam),
-                _empty_like(free, beam), _empty_like(where, beam),
-                np.zeros((beam,), dtype=np.int16), np.zeros((beam,), dtype=bool),
-                np.zeros((beam, tasks.n), dtype=np.int16))
+        empty = beam * len(_rankings_for(tasks))
+        return (_empty_like(done, empty), _empty_like(when, empty), _empty_like(who, empty),
+                _empty_like(free, empty), _empty_like(where, empty),
+                np.zeros((empty,), dtype=np.int16), np.zeros((empty,), dtype=bool),
+                np.zeros((empty, tasks.n), dtype=np.int16))
 
     # The shortlist is a few percent of the field - `beam x tasks` candidates - and among candidates
     # whose finish hour ties, which of them it keeps was arbitrary. Too narrow, and the states that
     # would carry the day are cut before the ranking ever sees them: at `beam * 4` a width of 50
     # placed 86 of a real day's 93 tasks, and at `beam * 16` it placed 93.
-    budget = min(legal.size, beam * 16)
+    budget = min(legal.size, beam * len(active) * 16)
     if legal.size > budget:
         shortlist = legal[np.argpartition(flat_hour[legal], budget - 1)[:budget]]
     else:
@@ -973,16 +1028,22 @@ def _select(expanded, tasks: TaskArray, beam: int, first_hand: int, start_hours)
     dead = ((tasks.latest[None, :] < child_free.min(axis=1)[:, None]) & ~child_done).sum(axis=1)
     hands_used = (child_free[:, first_hand:] > start_hours[first_hand:]).sum(axis=1)
     makespan = child_free.max(axis=1)
-    order = np.lexsort((child_travel, makespan, hands_used, dead))[:beam]
+    # The portfolio: `_expand` ran once and every candidate is shared, so another ranking costs a sort
+    # and a copy rather than an expansion. Each keeps a beam of its own, so a state one key prunes is
+    # still examined under another.
+    keys = _rank_keys(tasks, child_done, child_free, child_travel, makespan, hands_used, dead)
+    shares = _shares(beam, len(active))
+    order = np.concatenate([np.lexsort(keys[rank])[:take]
+                            for rank, take in zip(active, shares)])
 
-    out_done = _empty_like(child_done, beam)
-    out_when = _empty_like(child_when, beam)
-    out_who = _empty_like(child_who, beam)
-    out_free = _empty_like(child_free, beam)
-    out_where = _empty_like(child_where, beam)
-    out_travel = np.zeros((beam,), dtype=np.int16)
-    out_live = np.zeros((beam,), dtype=bool)
-    out_count = np.zeros((beam, tasks.n), dtype=np.int16)
+    out_done = _empty_like(child_done, sum(shares))
+    out_when = _empty_like(child_when, sum(shares))
+    out_who = _empty_like(child_who, sum(shares))
+    out_free = _empty_like(child_free, sum(shares))
+    out_where = _empty_like(child_where, sum(shares))
+    out_travel = np.zeros((sum(shares),), dtype=np.int16)
+    out_live = np.zeros((sum(shares),), dtype=bool)
+    out_count = np.zeros((sum(shares), tasks.n), dtype=np.int16)
     k = order.size
     out_done[:k], out_when[:k] = child_done[order], child_when[order]
     out_who[:k] = child_who[order]
