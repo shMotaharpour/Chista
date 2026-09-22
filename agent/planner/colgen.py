@@ -481,6 +481,25 @@ def reduced_costs(values: np.ndarray, mu: np.ndarray) -> np.ndarray:
     return np.asarray(values, dtype=np.float64) + np.asarray(mu, dtype=np.float64)
 
 
+def _seed_sigma(prices: np.ndarray | None, market: tuple[int, ...],
+                days: int) -> np.ndarray:
+    """The σ a degenerate LP cannot supply: the market path, by item.
+
+    `prices` is the `(days, N_RESOURCE)` path and `market` the sellable items as
+    indices into `SHED_ITEMS`; the resource of each is looked up the same way the
+    balance rows do it. Anything not sellable seeds at zero.
+    """
+    out = np.zeros((days, len(SHED_ITEMS)), dtype=np.float64)
+    if prices is None:
+        return out
+    px = np.asarray(prices, dtype=np.float64)
+    for gi, ii in enumerate(market):
+        rid = _resource_of(SHED_ITEMS[ii])
+        if rid is not None and rid < px.shape[1]:
+            out[:, ii] = px[:days, rid]
+    return out
+
+
 def lagrangian_bound(solve: MasterSolve, values: np.ndarray,
                      counts: np.ndarray, hours: np.ndarray, money: float,
                      days: int, n_coupling: int,
@@ -700,6 +719,28 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
         result.rounds += 1
 
         exact = (result.solve.y, result.solve.cash, result.solve.mu)
+        # A degenerate first LP has NO unique dual: with an empty shed and only
+        # do-nothing columns the whole model is zero and HiGHS hands back σ = 0,
+        # so the pricing credits every plan nothing, no working column is ever
+        # generated, and the loop sits at zero for good. Seed σ from the market
+        # path in that case — the same job the old `p_eff` did — and use the
+        # seeded σ in the bound too, which stays a bound because a Lagrangian
+        # bound is valid at ANY multipliers, not only at the optimal ones.
+        shed_duals = None
+        if shed is not None:
+            sig = np.asarray(result.solve.sigma, dtype=np.float64)
+            if result.rounds <= 1:
+                # The FIRST LP has only do-nothing columns, so it is entirely
+                # zero and its dual is not unique — HiGHS returns σ = 0 (or a
+                # meaningless negative) and the pricing would credit every plan
+                # nothing, so no working column is ever generated and the loop
+                # sits at zero for good. Price the first round at the market path
+                # instead: that generates the working columns, and from round 2
+                # the LP has a real model and its own σ is used. The bound is
+                # computed with the SAME σ, and stays a bound, because a
+                # Lagrangian bound holds at any multipliers, not only optimal.
+                sig = _seed_sigma(prices, market, days)
+            shed_duals = (sig, result.solve.tau)
         # The reduced-cost tolerance for THIS board: an absolute floor, raised to
         # the pricer's own precision on the objective's scale (see RC_REL_TOL).
         tol = rc_tolerance(result.solve.objective)
@@ -715,17 +756,14 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
             used = (tuple(alpha * np.asarray(c) + (1.0 - alpha) * np.asarray(e)
                           for c, e in zip(centre, exact))
                     if smoothed else exact)
-            values, columns = price(used[0], used[1],
-                                    None if shed is None
-                                    else (result.solve.sigma, result.solve.tau))
+            values, columns = price(used[0], used[1], shed_duals)
             bound = lagrangian_bound(
                 MasterSolve(result.solve.lam, np.asarray(used[0]),
                             np.asarray(used[1]), np.asarray(used[2]),
                             result.solve.objective),
                 values, counts, supply_hours, money, days, n_coupling,
-                shed=(None if shed is None else
-                      (shed[0], float(shed[1]), result.solve.sigma,
-                       result.solve.tau)))
+                shed=(None if shed is None or shed_duals is None else
+                      (shed[0], float(shed[1]), shed_duals[0], shed_duals[1])))
             if bound < result.bound:
                 result.bound, centre = bound, used
             rc = reduced_costs(values, used[2])
