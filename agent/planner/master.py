@@ -129,10 +129,10 @@ except ImportError:                     # scipy is optional at import time
 
 from agent.planner import colgen
 from agent.planner.inputs import dual_stand_in
-from agent.world.model import (ANIMALS, CROPS, N_RESOURCE, RESOURCE_ID,
-                               RES_LABOR)
+from agent.world.model import (ANIMALS, CROPS, N_RESOURCE, PRODUCTS,
+                               RESOURCE_ID, RES_LABOR)
 from agent.tile_dp.contractor import PricedBoard
-from agent.world.rules import ANIMAL_RULES, CROP_RULES
+from agent.world.rules import ANIMAL_RULES, CROP_RULES, SHED_CAPACITY
 
 LABOR_ID = RESOURCE_ID[RES_LABOR]
 FERT_ID = RESOURCE_ID["FERTILIZER"]
@@ -290,11 +290,28 @@ class CouplingSupply:
     #: down inside `column_cash`, and the fallback would report it as a
     #: pricing failure rather than as the missing field it is.
     quotes: np.ndarray = None     # (len(PURCHASE_IDS),) float
+    #: The shed's own counts, in `PRODUCTS + ANIMALS` order (12 items). The
+    #: engine's shed holds exactly those (`_new_private`: `PRODUCTS +
+    #: list(ANIMALS)`), the cap counts ALL of them together (`sum(shed.values())`
+    #: at the DROP, the buy and the night flush), and seeds are separate
+    #: (`private["seeds"]`, they never pass through the shed). This is the
+    #: opening balance of the inventory rows the master prices the sell timing
+    #: against — a plan that cannot see the animals already in the shed
+    #: over-estimates the free room and schedules drops and sells the engine
+    #: refuses or discards.
+    shed_stock: np.ndarray = None      # (len(PRODUCTS) + len(ANIMALS),) int
+    #: The shed's capacity, from the world's own constant (the engine's
+    #: `shedCapacity`, default 100, and the run's config can override it).
+    shed_capacity: float = float(SHED_CAPACITY)
 
     def __post_init__(self) -> None:
         if self.quotes is None:
             object.__setattr__(self, "quotes",
                                np.zeros(len(PURCHASE_IDS), dtype=np.float64))
+        if self.shed_stock is None:
+            object.__setattr__(
+                self, "shed_stock",
+                np.zeros(len(PRODUCTS) + len(ANIMALS), dtype=np.int64))
 
 
 @dataclass
@@ -369,6 +386,20 @@ def published_duals(w_coupling: np.ndarray, days: int,
     return np.maximum(out, 0.0)
 
 
+def _shed_capacity(obs) -> int:
+    """The shed's capacity: the run's own override, else the world's constant.
+
+    The engine reads `configuration["shedCapacity"]` (default 100, world rules
+    `SHED_CAPACITY`). The observation does not normally carry the configuration,
+    so the constant is the answer in practice; a harness that does put it there
+    is honoured.
+    """
+    config = obs.get("configuration") if isinstance(obs, dict) else None
+    if isinstance(config, dict) and "shedCapacity" in config:
+        return int(config["shedCapacity"])
+    return int(SHED_CAPACITY)
+
+
 def supply_from_obs(obs) -> CouplingSupply:
     """The farm's day-0 coupling supply from the observation (R005).
 
@@ -402,7 +433,12 @@ def supply_from_obs(obs) -> CouplingSupply:
                           fert_stock=float(shed.get("FERTILIZER", 0)),
                           wheat_feed_stock=float(shed.get("WHEAT", 0)),
                           money=float(farm.get("money", 0.0)),
-                          quotes=quotes)
+                          quotes=quotes,
+                          shed_stock=np.array(
+                              [int(shed.get(item, 0))
+                               for item in PRODUCTS + ANIMALS],
+                              dtype=np.int64),
+                          shed_capacity=float(_shed_capacity(obs)))
 
 
 def column_cash(board: PricedBoard, supply: CouplingSupply, days: int

@@ -146,6 +146,34 @@ def _supply(days: int = 30, hours: float | None = None,
 
 # --- tests ---------------------------------------------------------------
 
+def test_the_shed_balance_is_read_from_the_observation() -> None:
+    """The inventory rows' opening balance: every item the shed holds, and the cap.
+
+    The engine's shed is `PRODUCTS + list(ANIMALS)` (12 items), the cap counts
+    all of them together (`sum(shed.values())`, at the DROP, at a buy and at the
+    night flush), and seeds are separate (`private["seeds"]`). A supply that saw
+    only the market goods would over-estimate the free room — so the vector is
+    read in the engine's own order and the animals are in it.
+    """
+    from agent.world.model import ANIMALS, PRODUCTS
+    from agent.world.rules import SHED_CAPACITY
+
+    shed = {"WHEAT": 7, "MELON": 3, "FERTILIZER": 12, "COW": 2, "GOOSE": 1}
+    obs = _obs(_bare_ids(2), _contractor().graph)
+    obs["private"] = {"shed": dict(shed), "seeds": {"WHEAT": 5},
+                      "inventories": [{"WHEAT": 1}]}
+    supply = supply_from_obs(obs)
+
+    items = list(PRODUCTS) + list(ANIMALS)
+    assert len(supply.shed_stock) == len(items) == 12
+    assert [int(n) for n in supply.shed_stock] == [int(shed.get(i, 0))
+                                                   for i in items]
+    assert supply.shed_stock[items.index("COW")] == 2      # animals are in it
+    assert supply.shed_capacity == float(SHED_CAPACITY) == 100.0
+    # the seed purse is NOT in the shed vector (F001: seeds bypass it)
+    assert supply.shed_stock[items.index("WHEAT")] == 7
+
+
 def test_zero_supply_zero_activity() -> None:
     """Every coupling row at zero: the paid plans cannot be afforded, the
     LP's mix collapses onto the free chain, and the published w is legal."""

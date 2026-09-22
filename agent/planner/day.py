@@ -290,7 +290,8 @@ def _solve_at(obs, contractor, supply, class_of_tile, hands, iter_cap,
             hours=hours, seed_stock=supply.seed_stock,
             animal_stock=supply.animal_stock, fert_stock=supply.fert_stock,
             wheat_feed_stock=supply.wheat_feed_stock, money=supply.money,
-            quotes=supply.quotes)
+            quotes=supply.quotes, shed_stock=supply.shed_stock,
+            shed_capacity=supply.shed_capacity)
         result = M.equilibrate(object(), obs, contractor, current,
                                w_warm=w_warm, iter_cap=iter_cap, pool=pool,
                                deadline=deadline, forecast_obj=forecast_obj)
