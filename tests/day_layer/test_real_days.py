@@ -10,10 +10,17 @@ The two questions the archive can answer are the two that matter:
   the land conversion   every op the game ran on every tile is placed by the route, and nothing else
   the hands             the pool the layer chooses is no larger than the game's own count
 
-`KNOWN_SHORT` names the days that do not, marked with a strict `xfail` so that closing the gap turns
-the mark into a failure saying to take it out. Every task those days miss is plain time - none is
-blocked by the timetable - and what has been measured and ruled out is in the commit messages, which
-is where measurements belong.
+Two samples answer them, because who played the day decides how hard the question is. `real_days.json`
+is the archive's spread - player-0 of an episode, chosen by episode id and a seed, whoever played it -
+and most of its days belong to ordinary players, with player-0 the losing side more often than not.
+`strong_days.json` is the competitive half: the winner's side of episodes a cumulative top-10 player
+won, built by `corpus/build_strong_days.py`, each entry naming the player and its win count. The layer
+carries fewer of those, which is the number worth knowing before a submission.
+
+`KNOWN_SHORT` names the days of each sample that do not, marked with a strict `xfail` so that closing
+the gap turns the mark into a failure saying to take it out. Every task those days miss is plain time -
+none is blocked by the timetable - and what has been measured and ruled out is in the commit messages,
+which is where measurements belong.
 """
 import collections
 import json
@@ -29,6 +36,8 @@ from agent.wsr import tasks as T
 
 CORPUS = pathlib.Path(__file__).parent / "corpus" / "real_days.json"
 REAL_DAYS = json.loads(CORPUS.read_text())
+STRONG_CORPUS = pathlib.Path(__file__).parent / "corpus" / "strong_days.json"
+STRONG_DAYS = json.loads(STRONG_CORPUS.read_text())
 
 #: The days the preload's per-worker charge costs tasks on. Strict: if the charge is ever made exact
 #: these fail, which is the reminder to take the marks out.
@@ -46,11 +55,39 @@ KNOWN_SHORT = {
     ("2026-08-24", 98009264, 18),
 }
 
+#: The strong sample's own short days, same rule. Every one is a late day of a big farm - the days a
+#: top-10 player had the most land and the same handful of hands - and each misses a few tasks.
+KNOWN_SHORT_STRONG = {
+    ("2026-08-06", 90539649, 20),
+    ("2026-08-11", 91807542, 20),
+    ("2026-08-11", 91807542, 25),
+    ("2026-08-16", 93459927, 20),
+    ("2026-08-23", 97204025, 5),
+    ("2026-08-31", 103687742, 15),
+    ("2026-09-05", 105864228, 15),
+    ("2026-09-05", 105864228, 20),
+    ("2026-09-05", 105864228, 25),
+    ("2026-09-10", 107289135, 15),
+    ("2026-09-15", 109086888, 15),
+    ("2026-09-15", 109086888, 20),
+    ("2026-09-15", 109086888, 25),
+    ("2026-09-20", 111016701, 15),
+    ("2026-09-20", 111016701, 20),
+    ("2026-09-20", 111016701, 25),
+}
+
 _SHORT_REASON = (
     "the model's turn cost is higher than the game's on these days and the cause is not yet found. "
     "The preload's per-worker charge was the suspect and is NOT it: turning it off changes nothing "
     "(87 of 102 either way). The missing tasks are all plain time - none is blocked by the timetable "
     "- so something in the walk or the trip model costs more than the game spent"
+)
+
+_STRONG_SHORT_REASON = (
+    "the same shortfall as the spread's own days, on the days a top-10 player had a big farm: the "
+    "pool the game paid is what the search is given, and the search settles a few tasks short of the "
+    "day's work. No deadline is missed and the search was not cut short - it says the pool cannot "
+    "carry the day - so this is the layout, not the timetable"
 )
 
 
@@ -64,33 +101,8 @@ def _pair(task_id: str) -> tuple[int, str]:
     return int(tile[1:]), rest.rstrip("0123456789")
 
 
-def test_the_corpus_has_a_spread_of_days():
-    """A regression that only ever sees one shape of day is a regression for one shape of day."""
-    hands = [entry["hands"] for entry in REAL_DAYS]
-    tiles = [len(entry["chains"]) for entry in REAL_DAYS]
-    ops = [sum(len(c[1]) for c in entry["chains"]) for entry in REAL_DAYS]
-    dumps = {entry["dump"] for entry in REAL_DAYS}
-    season = {entry["day"] for entry in REAL_DAYS}
-    late = [entry for entry in REAL_DAYS if max(entry["hire_times"], default=1) > 1]
-
-    assert len(REAL_DAYS) >= 102, "the corpus is the archive's spread, not a sample of one"
-    assert len(dumps) >= 30, f"the days come from too few dumps: {len(dumps)}"
-    assert min(hands) <= 2 and max(hands) >= 14, f"the hand counts do not spread: {hands}"
-    assert min(tiles) <= 10 and max(tiles) >= 60, f"the field sizes do not spread: {tiles}"
-    assert min(ops) <= 20 and max(ops) >= 150, f"the days' work does not spread: {ops}"
-    assert len(season) >= 20, f"the season does not spread: {sorted(season)}"
-    assert late, "no day has a hand that began after hour 1, which is not the archive's own spread"
-
-
-# A strict marker, not `pytest.xfail(...)`: that call stops the test and reports xfail whatever would
-# have happened, so a mark that has gone stale can never say so.
-@pytest.mark.parametrize(
-    "entry",
-    [pytest.param(e, marks=pytest.mark.xfail(strict=True, reason=_SHORT_REASON))
-     if _key(e) in KNOWN_SHORT else e for e in REAL_DAYS],
-    ids=[f"{e['dump']}-{e['episode']}-d{e['day']}" for e in REAL_DAYS])
-def test_a_real_day_is_carried_as_the_game_carried_it(entry):
-    """The land conversion is the game's, and the pool is no larger than what the game paid."""
+def _carried_as_the_game(entry) -> None:
+    """The two questions, on one day: the game's own land conversion, and no more hands than it paid."""
     grid = [(tuple(cell), tuple(ops), entity) for cell, ops, entity in entry["chains"]]
     available = {good: int(hour) for good, hour in entry["available"].items()}
     tasks = T.build(grid, available=available)
@@ -122,3 +134,60 @@ def test_a_real_day_is_carried_as_the_game_carried_it(entry):
         f"placed {sum(placed.values())} of the day's {sum(asked.values())} tile ops; "
         f"missing {(asked - placed).most_common(3)}, extra {(placed - asked).most_common(3)}"
     )
+
+
+def test_the_corpus_has_a_spread_of_days():
+    """A regression that only ever sees one shape of day is a regression for one shape of day."""
+    hands = [entry["hands"] for entry in REAL_DAYS]
+    tiles = [len(entry["chains"]) for entry in REAL_DAYS]
+    ops = [sum(len(c[1]) for c in entry["chains"]) for entry in REAL_DAYS]
+    dumps = {entry["dump"] for entry in REAL_DAYS}
+    season = {entry["day"] for entry in REAL_DAYS}
+    late = [entry for entry in REAL_DAYS if max(entry["hire_times"], default=1) > 1]
+
+    assert len(REAL_DAYS) >= 102, "the corpus is the archive's spread, not a sample of one"
+    assert len(dumps) >= 30, f"the days come from too few dumps: {len(dumps)}"
+    assert min(hands) <= 2 and max(hands) >= 14, f"the hand counts do not spread: {hands}"
+    assert min(tiles) <= 10 and max(tiles) >= 60, f"the field sizes do not spread: {tiles}"
+    assert min(ops) <= 20 and max(ops) >= 150, f"the days' work does not spread: {ops}"
+    assert len(season) >= 20, f"the season does not spread: {sorted(season)}"
+    assert late, "no day has a hand that began after hour 1, which is not the archive's own spread"
+
+
+def test_the_strong_corpus_says_who_it_is_built_from():
+    """The sample is only worth having if it can say whose days these are: the whole point of it is
+    that they are not anonymous. A player, its win count, and the opponent it beat, on every entry."""
+    dumps = {entry["dump"] for entry in STRONG_DAYS}
+    players = {entry["agent"] for entry in STRONG_DAYS}
+    ops = [sum(len(c[1]) for c in entry["chains"]) for entry in STRONG_DAYS]
+
+    assert len(STRONG_DAYS) >= 100, f"the sample is too small to measure anything: {len(STRONG_DAYS)}"
+    assert len(dumps) >= 30, f"the days come from too few dumps: {len(dumps)}"
+    assert len(players) >= 5, f"the days come from too few players: {sorted(players)}"
+    assert min(ops) <= 60 and max(ops) >= 140, f"the days' work does not spread: {min(ops)}..{max(ops)}"
+    for entry in STRONG_DAYS:
+        assert entry["agent"] and int(entry["wins"]) > 0, entry
+        assert entry["opponent"] and entry["opponent"] != entry["agent"], entry
+
+
+# A strict marker, not `pytest.xfail(...)`: that call stops the test and reports xfail whatever would
+# have happened, so a mark that has gone stale can never say so.
+@pytest.mark.parametrize(
+    "entry",
+    [pytest.param(e, marks=pytest.mark.xfail(strict=True, reason=_SHORT_REASON))
+     if _key(e) in KNOWN_SHORT else e for e in REAL_DAYS],
+    ids=[f"{e['dump']}-{e['episode']}-d{e['day']}" for e in REAL_DAYS])
+def test_a_real_day_is_carried_as_the_game_carried_it(entry):
+    """The land conversion is the game's, and the pool is no larger than what the game paid."""
+    _carried_as_the_game(entry)
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [pytest.param(e, marks=pytest.mark.xfail(strict=True, reason=_STRONG_SHORT_REASON))
+     if _key(e) in KNOWN_SHORT_STRONG else e for e in STRONG_DAYS],
+    ids=[f"{e['agent']}-{e['dump']}-d{e['day']}" for e in STRONG_DAYS])
+def test_a_strong_players_day_is_carried(entry):
+    """The same two questions on the days a top-10 player won, which is the competitive target."""
+    _carried_as_the_game(entry)
+
