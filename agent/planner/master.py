@@ -929,6 +929,14 @@ def to_mixes(result: "MasterResult", days: int) -> dict[int, "object"]:
 
     sigma = np.asarray(result.sigma if result.sigma is not None else [],
                        dtype=np.float64)
+    # A degenerate LP has NO internal price: with every balance row slack HiGHS
+    # hands back σ = 0, and valuing every plan at zero would leave the day layer
+    # nothing to choose between them (ties fall to the lowest plan index, which
+    # is the idle column). The pricing step prices at the market path in exactly
+    # that case (`colgen._seed_sigma`), so the value falls back to the revenue
+    # that path produces — the plan's own `revenue` at the day it is produced.
+    if sigma.ndim != 2 or not sigma.any():
+        sigma = np.zeros((0, 0), dtype=np.float64)
     rids = [_resource_of(item) for item in SHED_ITEMS]
 
     def plan_value(col) -> float:
