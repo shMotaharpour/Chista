@@ -146,14 +146,37 @@ class Manager:
         `market_queue` builds its own when it is not handed one, so a failure
         here costs the duplicate work and nothing else — the degrade is the
         behaviour that shipped, not a second policy.
+
+        The rival's own supply goes in DATED (`_rival_supply`): their board is
+        public, so the days their planted tiles pay out are derivable, and a
+        price path that assumes no rival supply is a path that ignores half the
+        board.
         """
         try:
             from agent.belief.market import forecast
             from agent.belief.shed import SEASON_DAYS
             day = int(obs.get("day", 0)) if isinstance(obs, dict) else 0
             horizon = max(self.contractor.days, SEASON_DAYS - day)
-            return forecast(obs, days=horizon, config=config)
+            return forecast(obs, days=horizon, config=config,
+                            rival_supply=self._rival_supply(obs, horizon))
         except Exception:                      # noqa: BLE001 - belief is optional
+            return None
+
+    def _rival_supply(self, obs, horizon):
+        """The rival's dated supply curve, or None when it cannot be read.
+
+        `(horizon, 9)` units per day per good, from their packed tile states
+        (`belief/rival_calendar.supply_curve`). Measured 0.55 ms against the
+        forecast's own 0.70 ms, so it goes on the per-turn path as it is.
+
+        None is not a second policy: `forecast` then falls back to its flat
+        `residual` input, which is what a caller without a calendar has.
+        """
+        try:
+            from agent.belief.market import PRODUCTS
+            from agent.belief.rival_calendar import supply_curve
+            return supply_curve(obs, tuple(PRODUCTS), horizon)
+        except Exception:                      # noqa: BLE001 - the flat path stands
             return None
 
     def _watch(self, obs) -> None:
