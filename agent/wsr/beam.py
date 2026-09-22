@@ -471,6 +471,13 @@ def _settle(day: Day, tasks: TaskArray, beam: int, pool: int,
         result = _run(day, tasks, hands=pool, beam=beam, doors=doors, deadline=deadline,
                       warm=warm, charge=charge)
         spent = time.perf_counter() - started
+    # A door fixed point that oscillates: the two configurations are each other's derivation, so the
+    # last attempt was priced from doors the day does not have. What the compiler has to write from is
+    # the doors the ENGINE gives the route it is writing (`_hand_doors`) - the one derivation the day
+    # itself agrees with - so the answer carries those, not the doors the pass went in with.
+    final = _hand_doors(day, tasks, result, pool)
+    if tuple(result.doors) != final:
+        result = result._replace(doors=final)
     return result
 
 
