@@ -24,38 +24,23 @@ from agent.belief.market import PRODUCTS, forecast
 from offline_lab.kaggle_env import new_environment
 
 
-def plan_supply_sells(produce: np.ndarray, lam: np.ndarray,
-                      days: int) -> dict[str, dict[int, int]]:
-    """The chosen mix's projected sells, as `forecast(our_sells=)` reads.
-
-    `produce` is the pool's `(n, days, N_RESOURCE)` output, `lam` the
-    LP's fractional mix per column — the expected sells per day per
-    product are `Σ_j lam_j · produce_j[d, good]`. Fractional units are
-    kept as ints by rounding; a fraction of a melon does not move a
-    3-units-per-coin ladder.
-    """
-    out: dict[str, dict[int, int]] = {}
-    if produce is None or not len(produce):
-        return out
-    prod = np.asarray(produce, dtype=np.float64)
-    weights = np.asarray(lam, dtype=np.float64)[: prod.shape[0]]
-    expected = np.tensordot(weights, prod[:, :days, :], axes=(0, 0))
-    for d in range(min(days, expected.shape[0])):
-        for g, name in enumerate(PRODUCTS):
-            units = int(round(float(expected[d, g])))
-            if units > 0:
-                out.setdefault(name, {})[d] = units
-    return out
+from agent.planner.plan_supply import plan_supply_sells
 
 
 def test_plan_supply_sells_shapes_the_forecast_input() -> None:
-    """The converter's output is exactly `forecast(our_sells=)`'s shape."""
-    produce = np.zeros((2, 5, 9))
-    produce[0, :5, 4] = 10.0            # melon index 4, 10/day, column 0
-    produce[1, :5, 4] = 4.0             # column 1
-    sells = plan_supply_sells(produce, np.array([0.5, 0.5]), 5)
-    assert set(sells) == {"MELON"}
-    assert all(sells["MELON"][d] == 7 for d in range(5)), sells
+    """The converter's output is exactly `forecast(our_sells=)`'s shape.
+
+    `produce` arrives in RESOURCE space (n, days, N_RESOURCE=18); the
+    melon column is RESOURCE_ID['MELON']=13."""
+    from agent.world.model import RESOURCE_ID
+    melon = RESOURCE_ID["MELON"]
+    produce = np.zeros((2, 5, 18))
+    produce[0, :5, melon] = 10.0        # 10 melons/day, column 0
+    produce[1, :5, melon] = 4.0         # column 1
+    sells = plan_supply_sells(produce, np.array([0.5, 0.5]), 5, 0)
+    steps = [d * 24 for d in range(5)]
+    assert set(sells) == set(steps)
+    assert all(sells[s] == {"MELON": 7} for s in steps), sells
 
 
 def test_plan_aware_forecast_prices_the_ladder_move() -> None:
