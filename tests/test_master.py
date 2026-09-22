@@ -308,18 +308,27 @@ def test_fallback_fires_on_solver_error() -> None:
     obs = _obs(_bare_ids(2), c.graph)
 
     # The LP moved into `agent/planner/colgen.py` when the master became a
-    # real column-generation loop; the fallback contract did not move.
+    # real column-generation loop; the fallback contract did not move. The
+    # double has to be the symbol the LOOP resolves: it holds a `MasterLP`
+    # for the day and calls `solve` on it, so patching the module-level
+    # `solve_master` (which only a cold one-off call goes through) would leave
+    # this guard green while the real solver path was never broken.
     from agent.planner import colgen as CG
-    real_solve = CG.solve_master
+    real_lp = CG.MasterLP
 
-    def _boom(*a, **k):
-        raise RuntimeError("master LP failed: simulated HiGHS error on the grader")
+    class _Boom:
+        def __init__(self, *a, **k):
+            pass
 
-    CG.solve_master = _boom
+        def solve(self, *a, **k):
+            raise RuntimeError(
+                "master LP failed: simulated HiGHS error on the grader")
+
+    CG.MasterLP = _Boom
     try:
         res = equilibrate(rt, obs, c, _supply())
     finally:
-        CG.solve_master = real_solve
+        CG.MasterLP = real_lp
     assert res.used_fallback
     assert res.fallback_reason
     assert res.w.min() >= 0.0 and res.w.shape[0] == c.days   # publishable
