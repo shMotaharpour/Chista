@@ -66,6 +66,7 @@ def extract(con, dump: str, episode: int, day: int):
     """).df()
 
     chains: dict[tuple[int, int], list[str]] = {}
+    op_hours: dict[tuple[int, int], list[int]] = {}
     for row in submitted.itertuples():
         if not isinstance(row.op, str) or row.op in MOVES:
             continue
@@ -73,6 +74,7 @@ def extract(con, dump: str, episode: int, day: int):
         if (cell[0], cell[1], int(row.hour)) not in happened:
             continue                       # the engine refused it: it never happened
         chains.setdefault(cell, []).append(row.op)
+        op_hours.setdefault(cell, []).append(int(row.hour))
 
     # The crop or the animal the tile ended the day with, for the layer's entity.
     last = con.sql(f"""
@@ -117,6 +119,11 @@ def extract(con, dump: str, episode: int, day: int):
         "available": available,
         "chains": [[list(cell), ops, entity.get(cell)]
                    for cell, ops in sorted(chains.items())],
+        # The hour the GAME ran each op, in the same order as that cell's ops. The layer is charged
+        # for its walks, its trips and its pickups, and this is the only record of what those cost
+        # the agent that actually played the day - so a day the layer cannot carry can be read
+        # against the day the game did, op by op, instead of argued about.
+        "op_hours": [[list(cell), op_hours[cell]] for cell, _ops in sorted(chains.items())],
     }
 
 
