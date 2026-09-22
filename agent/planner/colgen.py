@@ -40,10 +40,11 @@ from dataclasses import dataclass, field
 import numpy as np
 
 try:
-    from scipy.optimize import linprog
-    HAS_SCIPY = True
+    from scipy import sparse
+    from scipy.optimize import _highspy
+    HAS_HIGHS = True
 except Exception:                                  # noqa: BLE001
-    HAS_SCIPY = False
+    HAS_HIGHS = False
 
 #: A reduced cost must clear this to be worth a column. Below it the plan is
 #: within solver noise of the ones already in the pool, and adding it fattens
@@ -155,62 +156,138 @@ def cash_rows(pool: list[Column], days: int) -> np.ndarray:
     return spend.T - np.concatenate([lead, earn[:, :days - 1]], axis=1).T
 
 
+def _extended_basis(basis, n_cols: int, n_rows: int):
+    """The previous basis, with the new columns nonbasic at their lower bound.
+
+    A round's pool is the round before's plus the columns the pricer just found,
+    in that order (`generate` only ever appends), so the old basis still
+    describes the old columns. The new ones enter at 0, their lower bound.
+    """
+    out = _highspy._core.HighsBasis()
+    cols = list(basis.col_status) if basis is not None else []
+    rows = list(basis.row_status) if basis is not None else []
+    cols += [_highspy._core.HighsBasisStatus.kLower] * max(0, n_cols - len(cols))
+    rows += [_highspy._core.HighsBasisStatus.kBasic] * max(0, n_rows - len(rows))
+    out.col_status = cols[:n_cols]
+    out.row_status = rows[:n_rows]
+    out.valid = True
+    return out
+
+
+class MasterLP:
+    """The master's LP, kept across a day's rounds so its basis carries.
+
+    max Σ λ·revenue s.t. the coupling rows, the cash rows, one convexity row PER
+    CLASS with the class's tile count on the right — not one global row: a global
+    row lets a plan of class A absorb the weight class B could not use, which is
+    not a plan any tile can run.
+
+    A round solves almost the same LP as the round before. The pool only grows,
+    the carried columns keep their order, and the right-hand side moves with the
+    duals — so the previous round's basis is a warm start, and HiGHS is where it
+    lives. Measured by replaying a real day's round sequence (every round's own
+    pool/counts/hours/money captured out of `generate`, then solved three ways):
+    a day-0 board, 6 rounds and 9-54 columns — `linprog` 21.3 ms, HiGHS cold
+    6.6 ms, HiGHS with the previous basis 3.0 ms, 7.00x; a day-9 board, 40 rounds
+    and 15-464 columns — 406 / 240 / 91 ms, 4.48x, and the gap GROWS with the
+    pool (at 464 columns: 16.0 / 13.2 / 3.2 ms). The objectives agree to 1.1e-08.
+
+    The solver is scipy's own HiGHS — the one `linprog(method="highs")` wraps —
+    so there is no new dependency and no version to drift from, and
+    `tests/test_colgen.py` pins the solution AND the three duals against
+    `linprog` on the same matrices.
+    """
+
+    def __init__(self) -> None:
+        if not HAS_HIGHS:
+            raise RuntimeError("column generation needs scipy's HiGHS")
+        self._highs = _highspy._core._Highs()
+        self._highs.setOptionValue("output_flag", False)
+        self._basis = None
+
+    def solve(self, pool: list[Column], counts: np.ndarray, hours: np.ndarray,
+              money: float, days: int, n_coupling: int) -> MasterSolve:
+        n = len(pool)
+        n_classes = int(counts.size)
+        revenue = np.array([c.revenue for c in pool], dtype=np.float64)
+        # quantity rows: (n_coupling·days, n)
+        A_q = np.stack([c.cost.T.reshape(-1) for c in pool], axis=1) if n else \
+            np.zeros((n_coupling * days, 0))
+        b_q = np.tile(hours[:days], n_coupling)   # LABOR is the only row today
+
+        # Cash rows, CUMULATIVE: everything spent up to and including day d, less
+        # everything banked before it, against one purse.
+        #
+        #     Σ_{d' ≤ d} spend[d']  −  Σ_{d' < d} earn[d']  ≤  money
+        #
+        # Per-day rows were the bug that broke a season. `spend[d] ≤ money` on
+        # every day independently says the farm may spend its whole purse on day
+        # 0, and again on day 1, and again on day 2 — twenty times over. It
+        # committed to a plan that did exactly that, went broke on day 1, and
+        # scored 4,268 where doing nothing scores 3,000. Money is a STOCK; a row
+        # that treats it as an allowance per day is not a budget.
+        A_c = cash_rows(pool, days)
+        b_c = np.full(days, float(money))
+
+        # convexity: one row per class
+        A_e = np.zeros((n_classes, n))
+        for j, col in enumerate(pool):
+            A_e[col.cls, j] = 1.0
+
+        target = counts.astype(np.float64)
+        rows = np.vstack([A_q, A_c, A_e])
+        n_ineq = n_coupling * days + days
+        csc = sparse.csc_matrix(rows)
+
+        lp = _highspy._core.HighsLp()
+        lp.num_col_ = n
+        lp.num_row_ = int(rows.shape[0])
+        lp.col_cost_ = -revenue
+        lp.col_lower_ = np.zeros(n)
+        lp.col_upper_ = np.full(n, np.inf)
+        lp.row_lower_ = np.concatenate([np.full(n_ineq, -np.inf), target])
+        lp.row_upper_ = np.concatenate([b_q, b_c, target])
+        lp.sense_ = _highspy._core.ObjSense.kMinimize
+        matrix = _highspy._core.HighsSparseMatrix()
+        matrix.format_ = _highspy._core.MatrixFormat.kColwise
+        matrix.num_col_ = n
+        matrix.num_row_ = lp.num_row_
+        matrix.start_ = csc.indptr.astype(np.int32)
+        matrix.index_ = csc.indices.astype(np.int32)
+        matrix.value_ = csc.data
+        lp.a_matrix_ = matrix
+
+        self._highs.passModel(lp)
+        if self._basis is not None:
+            self._highs.setBasis(_extended_basis(self._basis, n, lp.num_row_))
+        self._highs.run()
+        status = self._highs.getModelStatus()
+        if status != _highspy._core.HighsModelStatus.kOptimal:
+            raise RuntimeError(
+                f"master LP failed: {self._highs.modelStatusToString(status)}")
+        solution = self._highs.getSolution()
+        basis = self._highs.getBasis()
+        if basis.valid:
+            self._basis = basis
+
+        # HiGHS's ≤-row duals are ≤ 0 in min form; the shadow prices are −them,
+        # clamped onto R006's orthant before anything downstream sees them.
+        marg = np.asarray(solution.row_dual, dtype=np.float64)
+        y = np.maximum(-marg[:n_coupling * days], 0.0).reshape(n_coupling, days).T
+        cash = np.maximum(-marg[n_coupling * days:n_ineq], 0.0)
+        # The convexity duals are EQUALITY marginals and are free in sign: a class
+        # whose tiles are worth having carries a negative one. Clamping them would
+        # break the reduced-cost test, which is the only reason they are read.
+        mu = np.asarray(marg[n_ineq:], dtype=np.float64)
+        return MasterSolve(np.asarray(solution.col_value, dtype=np.float64),
+                           y, cash, mu,
+                           -float(self._highs.getObjectiveValue()))
+
+
 def solve_master(pool: list[Column], counts: np.ndarray, hours: np.ndarray,
                  money: float, days: int, n_coupling: int) -> MasterSolve:
-    """max Σ λ·revenue  s.t. the coupling rows, the cash rows, convexity.
-
-    One convexity row PER CLASS, with the class's tile count on the right —
-    not one global row. A global row lets a plan of class A absorb the weight
-    class B could not use, which is not a plan any tile can run.
-    """
-    if not HAS_SCIPY:
-        raise RuntimeError("column generation needs scipy.optimize.linprog")
-    n = len(pool)
-    n_classes = int(counts.size)
-
-    revenue = np.array([c.revenue for c in pool], dtype=np.float64)
-    # quantity rows: (n_coupling·days, n)
-    A_q = np.stack([c.cost.T.reshape(-1) for c in pool], axis=1) if n else \
-        np.zeros((n_coupling * days, 0))
-    b_q = np.tile(hours[:days], n_coupling)       # LABOR is the only row today
-
-    # Cash rows, CUMULATIVE: everything spent up to and including day d, less
-    # everything banked before it, against one purse.
-    #
-    #     Σ_{d' ≤ d} spend[d']  −  Σ_{d' < d} earn[d']  ≤  money
-    #
-    # Per-day rows were the bug that broke a season. `spend[d] ≤ money` on
-    # every day independently says the farm may spend its whole purse on day
-    # 0, and again on day 1, and again on day 2 — twenty times over. It
-    # committed to a plan that did exactly that, went broke on day 1, and
-    # scored 4,268 where doing nothing scores 3,000. Money is a STOCK; a row
-    # that treats it as an allowance per day is not a budget.
-    A_c = cash_rows(pool, days)
-    b_c = np.full(days, float(money))
-
-    # convexity: one row per class
-    A_e = np.zeros((n_classes, n))
-    for j, col in enumerate(pool):
-        A_e[col.cls, j] = 1.0
-
-    res = linprog(-revenue,
-                  A_ub=np.vstack([A_q, A_c]),
-                  b_ub=np.concatenate([b_q, b_c]),
-                  A_eq=A_e, b_eq=counts.astype(np.float64),
-                  bounds=[(0.0, None)] * n, method="highs")
-    if not res.success:
-        raise RuntimeError(f"master LP failed: {res.message}")
-
-    # scipy's ≤-marginals are ≤ 0 in min form; the shadow prices are −them,
-    # clamped onto R006's orthant before anything downstream sees them.
-    marg = np.asarray(res.ineqlin.marginals)
-    y = np.maximum(-marg[:n_coupling * days], 0.0).reshape(n_coupling, days).T
-    cash = np.maximum(-marg[n_coupling * days:], 0.0)
-    # The convexity duals are EQUALITY marginals and are free in sign: a class
-    # whose tiles are worth having carries a negative one. Clamping them would
-    # break the reduced-cost test, which is the only reason they are read.
-    mu = np.asarray(res.eqlin.marginals, dtype=np.float64)
-    return MasterSolve(np.asarray(res.x), y, cash, mu, -float(res.fun))
+    """One LP, cold: the master's own path is the `MasterLP` in `generate`."""
+    return MasterLP().solve(pool, counts, hours, money, days, n_coupling)
 
 
 def reduced_costs(values: np.ndarray, mu: np.ndarray) -> np.ndarray:
@@ -411,6 +488,8 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
     centre = None                        # (y, cash, mu) at the best bound
     alpha = float(smoothing)
 
+    # One LP object for the whole day: the rounds share a basis (see MasterLP).
+    solver = MasterLP()
     for _ in range(max(1, rounds)):
         if poll is not None:
             poll()
@@ -418,7 +497,7 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
             result.stopped = "budget"
             return result
         started = time.perf_counter()
-        result.solve = solve_master(result.pool, counts, supply_hours, money,
+        result.solve = solver.solve(result.pool, counts, supply_hours, money,
                                     days, n_coupling)
         result.rounds += 1
 

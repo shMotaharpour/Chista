@@ -20,7 +20,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from agent.planner.colgen import (Column, cash_rows, classes_of, generate,
+from agent.planner.colgen import (Column, MasterLP, cash_rows, classes_of, generate,
                                   reduced_costs,
                                   solve_master)
 
@@ -129,6 +129,79 @@ def test_the_cash_rows_are_the_loop_they_replaced():
     assert got[1, -1] == 3.0         # 10 spent, 7 already in
     assert got[2, -1] == -8.0        # 10 spent, 18 banked: the row may go negative
     assert got[:, 0].tolist() == [0.0] * DAYS
+
+
+def test_the_master_LP_agrees_with_scipy_linprog_and_with_a_cold_solve():
+    """The same matrices, the same optimum, and the same three duals.
+
+    `MasterLP` drives HiGHS directly — the solver `linprog(method="highs")` wraps
+    — so a day's rounds can share a basis, measured 4.48x on a real round
+    sequence at 15-464 columns. This is the guard that the warm start did not
+    move the answer: the solution, the objective, the coupling duals `y`, the
+    cash duals and the class marginals `mu`, all against `linprog` on the very
+    same matrices, and then a second solve on a GROWN pool against a cold one —
+    which is the path a basis-carrying round takes.
+    """
+    from scipy.optimize import linprog
+
+    counts = np.array([4])
+    pool = [_idle(0)] + [_column(0, i, spec) for i, spec in enumerate(_plans())]
+    money = 300.0
+    A_q = np.stack([c.cost.T.reshape(-1) for c in pool], axis=1)
+    A_c = cash_rows(pool, DAYS)
+    b_c = np.full(DAYS, float(money))
+    A_e = np.zeros((1, len(pool)))
+    for j, col in enumerate(pool):
+        A_e[col.cls, j] = 1.0
+
+    def reference(hours):
+        """`linprog` on the same matrices — the path this replaced."""
+        b_q = np.tile(hours[:DAYS], N_COUPLING)
+        ref = linprog(-revenue, A_ub=np.vstack([A_q, A_c]),
+                      b_ub=np.concatenate([b_q, b_c]), A_eq=A_e,
+                      b_eq=counts.astype(np.float64),
+                      bounds=[(0.0, None)] * len(pool), method="highs")
+        marg = np.asarray(ref.ineqlin.marginals)
+        return ref, np.maximum(-marg[:N_COUPLING * DAYS], 0.0) \
+            .reshape(N_COUPLING, DAYS).T, \
+            np.maximum(-marg[N_COUPLING * DAYS:], 0.0), \
+            np.asarray(ref.eqlin.marginals)
+
+    revenue = np.array([c.revenue for c in pool], dtype=np.float64)
+    # Slack: the labour row has room to spare. Loose on purpose — a binding row
+    # is the case below.
+    mine = solve_master(pool, counts, np.full(DAYS, 20.0), money, DAYS, N_COUPLING)
+    ref, y_ref, cash_ref, mu_ref = reference(np.full(DAYS, 20.0))
+    assert np.allclose(mine.lam, ref.x, rtol=0.0, atol=1e-9)
+    assert abs(mine.objective - (-float(ref.fun))) <= 1e-6
+    assert np.allclose(mine.y, y_ref, rtol=0.0, atol=1e-9)
+    assert np.allclose(mine.cash, cash_ref, rtol=0.0, atol=1e-9)
+    assert np.allclose(mine.mu, mu_ref, rtol=0.0, atol=1e-9)
+
+    # Binding: three hours a day is exactly one rich plan's worth, so the row is
+    # tight, `y` is nonzero, and a sign error in the duals CAN fail this guard —
+    # with a slack row the duals are 0 and `np.maximum(±0, 0)` hides it.
+    tight = np.full(DAYS, 3.0)
+    bound_case = solve_master(pool, counts, tight, money, DAYS, N_COUPLING)
+    assert bound_case.y.max() > 0.0, "the tight case must bind, or it guards nothing"
+    ref, y_ref, cash_ref, mu_ref = reference(tight)
+    assert np.allclose(bound_case.lam, ref.x, rtol=0.0, atol=1e-9)
+    assert np.allclose(bound_case.y, y_ref, rtol=0.0, atol=1e-9)
+    assert np.allclose(bound_case.cash, cash_ref, rtol=0.0, atol=1e-9)
+    assert np.allclose(bound_case.mu, mu_ref, rtol=0.0, atol=1e-9)
+
+    # The basis-carrying path: one instance, two pools, the second grown.
+    roomy = np.full(DAYS, 20.0)
+    grower = MasterLP()
+    grower.solve(pool, counts, roomy, money, DAYS, N_COUPLING)
+    grown = pool + [_column(0, 9, (
+        np.array([2.0] * DAYS), np.array([5.0] + [0.0] * (DAYS - 1)),
+        np.array([0.0] * (DAYS - 1) + [80.0]), 80.0))]
+    warm = grower.solve(grown, counts, roomy, money, DAYS, N_COUPLING)
+    cold = MasterLP().solve(grown, counts, roomy, money, DAYS, N_COUPLING)
+    assert abs(warm.objective - cold.objective) <= 1e-6
+    assert np.allclose(warm.lam, cold.lam, rtol=0.0, atol=1e-8)
+    assert np.allclose(warm.mu, cold.mu, rtol=0.0, atol=1e-8)
 
 
 def test_the_pool_grows_and_the_master_mixes_plans():
