@@ -38,6 +38,7 @@ from agent.world.model import RES_FERTILIZER
 from agent.world.model import RES_LABOR
 from agent.world.model import RESOURCE_ID
 from agent.world.model import N_RESOURCE
+from agent.artifact import artifact_path
 from agent.tile_dp.graph import Edge, TileGraph
 from agent.tile_dp.tile_state import KIND_NONE, TileState, decode_tile
 
@@ -298,15 +299,33 @@ def test_chain_one_day_contract() -> None:
         assert int(sim.observations()[0]["day"]) == day0 + 1, ops
 
 
-_MERGED: TileGraph | None = None
+_SHIPPED: TileGraph | None = None
 
 
-def _merged() -> TileGraph:
-    """The merged tile graph (built once: ~40 s, shared by these tests)."""
-    global _MERGED
-    if _MERGED is None:
-        _MERGED = build_graph()
-    return _MERGED
+def _shipped() -> TileGraph:
+    """The merged graph the agent actually ships, loaded — not rebuilt.
+
+    These four guards are about the SHAPE of the merged graph: two int vectors
+    of `N_RESOURCE`, a FEED that eats a wheat without producing one, a
+    COLLECT_FERTILIZER that produces, and no CARE without a FEED beside it.
+    Every one of them is a property of the artifact, and the artifact is what
+    the agent loads at run time — so reading it is not a weaker check than
+    rebuilding, it is the check that matches what ships.
+
+    Rebuilding cost 235 s of a 563 s suite (42 % of the whole run) and bought
+    nothing these assertions could not make in 1.35 s, because nothing here
+    ever compared the rebuild against the artifact. The builder is still
+    covered: `test_build_is_deterministic`, the seed-invariance pair and the
+    calendars all drive `build_graph` directly, on the cheap per-entity graphs.
+
+    What is NOT covered by anything, before or after this change, is whether
+    the shipped artifact is what today's builder would produce. That needs a
+    test of its own and it is not this one.
+    """
+    global _SHIPPED
+    if _SHIPPED is None:
+        _SHIPPED = TileGraph.load(artifact_path("tile_graph", ".npz"))
+    return _SHIPPED
 
 
 def _all_edges(g: TileGraph):
@@ -316,7 +335,7 @@ def _all_edges(g: TileGraph):
 
 def test_merged_vectors_are_two_18_vectors() -> None:
     """The cost and produce vectors are separate, int, 18 entries long."""
-    g = _merged()
+    g = _shipped()
     assert g.edge_cost.shape == (g.n_edges, N_RESOURCE)
     assert g.edge_produce.shape == (g.n_edges, N_RESOURCE)
     assert g.edge_cost.dtype == np.int32
@@ -339,7 +358,7 @@ def test_an_edge_can_both_eat_and_harvest_wheat() -> None:
     crop and then builds on the freed tile can have. It is missing from the graph (#89),
     and this test is what caught it.
     """
-    g = _merged()
+    g = _shipped()
     wheat = RESOURCE_ID[RES_WHEAT]
     assert [e for e in _all_edges(g)
             if e.cost[wheat] > 0 and e.produce[wheat] > 0]
@@ -348,7 +367,7 @@ def test_an_edge_can_both_eat_and_harvest_wheat() -> None:
 def test_fert_collect_edges_survive() -> None:
     """F023: one COLLECT_FERTILIZER per animal per day is real produce, so the
     shipped graph must carry edges whose fertilizer produce is 1."""
-    g = _merged()
+    g = _shipped()
     fert = RESOURCE_ID[RES_FERTILIZER]
     collect = [e for e in _all_edges(g)
                if "COLLECT_FERTILIZER" in e.ops and e.produce[fert] > 0]
@@ -358,7 +377,7 @@ def test_fert_collect_edges_survive() -> None:
 
 def test_no_care_without_feed_in_graph() -> None:
     """No edge may run CARE without FEED in the same chain (a one-hour no-op)."""
-    g = _merged()
+    g = _shipped()
     bad = [e.ops for e in _all_edges(g)
            if "CARE" in e.ops and "FEED" not in e.ops]
     assert not bad, bad[:3]
