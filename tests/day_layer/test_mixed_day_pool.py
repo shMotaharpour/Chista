@@ -51,6 +51,15 @@ def short():
     return day, tasks, result
 
 
+@pytest.fixture(scope="module")
+def late():
+    """The same day with the third hand offered at hour three: the doors are decided twice."""
+    chains = [(cell, chain_ops(chain_id_of(ops)), entity) for cell, ops, entity in TILES]
+    tasks = T.build(chains, available=AVAILABLE)
+    day = B.Day(chains=tuple(chains), available=AVAILABLE, hire_times=(1, 1, 3))
+    return day, tasks, B.search(day, tasks, beam=64, hands=3, max_hands=3)
+
+
 def test_three_hands_do_not_carry_the_day(short) -> None:
     """The pool is short and the search says so, with a route rather than with silence.
 
@@ -127,6 +136,23 @@ def test_the_partial_route_replays_as_the_day_it_was_priced_as(short) -> None:
     for cell, _ops, entity in ANIMAL_TILES:
         assert board.get(cell, {}).get("animal") == entity, (
             f"{cell} was built for {entity} and holds {board.get(cell, {}).get('animal')!r}")
+
+
+def test_a_hand_hired_late_is_priced_from_where_the_field_stands_then(late) -> None:
+    """A hand hired at hour three lands from where the field stands at hour three (F040).
+
+    The engine settles each hire at its own moment, so a unit that walks off its door between the
+    first turn and a late hire leaves that door for the late hand. Pricing every hand from the first
+    turn's snapshot puts it a door out, and the engine - which refuses a misplaced op in silence -
+    then plays a day the search never priced.
+    """
+    day, tasks, result = late
+    first_turn = tuple(tuple(int(v) for v in cell)
+                       for cell in B._start_positions(day, result.pool, result.settled)[len(day.units):])
+    assert result.doors, "the search never settled the doors"
+    assert first_turn != result.doors, (
+        "this day does not tell the two moments apart, so it cannot pin the rule")
+    assert result.doors == B._hand_doors(day, tasks, result, result.pool)
 
 
 def test_the_remaining_capacity_is_the_day_the_compiler_wrote(short) -> None:

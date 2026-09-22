@@ -61,8 +61,8 @@ def compile_route(day: Day, tasks: TaskArray, result: Result, *,
     """
     horizon = int(horizon if horizon is not None else day.horizon)
     if settled is None:
-        settled = _settled_after_first_turn(day, tasks, result)
-    starts = _start_positions(day, result.pool, settled)
+        settled = result.settled or _settled_after_first_turn(day, tasks, result)
+    starts = _start_positions(day, result.pool, settled, result.doors)
     hours = _start_hours(day, result.pool)
     m = int(starts.shape[0])
 
@@ -162,8 +162,8 @@ def check_route(day: Day, tasks: TaskArray, result: Result, settled=None) -> lis
     """
     complaints: list[str] = []
     if settled is None:
-        settled = _settled_after_first_turn(day, tasks, result)
-    starts = _start_positions(day, result.pool, settled)
+        settled = result.settled or _settled_after_first_turn(day, tasks, result)
+    starts = _start_positions(day, result.pool, settled, result.doors)
     hours = _start_hours(day, result.pool)
 
     turns: dict[int, list[tuple[int, str]]] = {}
