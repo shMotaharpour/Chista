@@ -177,7 +177,10 @@ def check_route(day: Day, tasks: TaskArray, result: Result, settled=None) -> lis
     # A drop with an empty bag is written at turn -1: it is done, it has no turn, and asking it to
     # precede anything would be asking a turn that does not exist.
     when = {task_id: int(turn) for turn, task_id, _w in result.route if int(turn) >= 0}
-    placed = {t for t, _i, _w in result.route}
+    # The tasks the route places, by id: `when` is keyed by task id and `turns` by worker, and the
+    # rules below ask by id. Built from the route's turns it was a set of ints, so `row not in placed`
+    # was always true and the two checks under it never ran.
+    placed = {task_id for _turn, task_id, _w in result.route}
     for worker, entries in turns.items():
         for turn, task_id in entries:
             if turn < 0:
