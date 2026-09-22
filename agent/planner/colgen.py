@@ -412,6 +412,21 @@ class MasterLP:
             # dual prices it — so leaving the revenue in would count the same
             # coins twice, once at production and once at the sale.
             cost[:n] = -revenue
+        else:
+            # THE SPEND IS IN THE OBJECTIVE, not only in the cash row. The score is
+            # the final money, so a coin spent is a coin lost: this LP maximises
+            # `money + Σ p·sell − Σ spend` (money is a constant), and the cash rows
+            # keep only the TIMING — the purse must cover the spend on the day it
+            # happens. Priced through the cash row ALONE, a slack purse made every
+            # bought input free to the tiles: the DP's price for one is
+            # `quote · ahead`, and `ahead` is the cumulative cash dual, which is 0
+            # whenever the purse does not bind. Measured on the one-tile reduced
+            # process: wheat 25/29/34 and fertilizer 100 on days 0/2/8 with the DP
+            # charged 0.0000 for both, on all 30 days — while the engine charged
+            # the quotes for real (#142).
+            for j, col in enumerate(pool):
+                cost[j] = float(np.asarray(col.spend,
+                                           dtype=np.float64)[:days].sum())
         lower = np.zeros(n_cols)
         upper = np.full(n_cols, np.inf)
         # The appetite rows: ONE cumulative row per good, `Σ_d sell[g,d] ≤

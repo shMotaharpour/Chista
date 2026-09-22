@@ -337,6 +337,11 @@ class MasterResult:
     p_source: str = ""            # where the product price path came from
     history: list = field(default_factory=list)   # per-round max dual move
     cash_duals: np.ndarray = None  # (days,) shadow price of a coin per day
+    #: (days,) the LP's OWN cash-row duals at the final round — the raw marginals,
+    #: not the damped publish. `to_mixes` prices a plan's spend with them, because
+    #: they are what the pricing charged the tiles (`quote·(1+ahead)`), and the
+    #: #13 gap has to be measured in the same accounting as the objective (#142).
+    cash_lp: np.ndarray = None
     #: (days, len(SHED_ITEMS)) the BALANCE rows' duals the LP solved with — what
     #: one unit of a good sitting in the shed is worth. It is the master's own
     #: price for a plan's OUTPUT (the produce feeds the stock and the stock is
@@ -762,28 +767,36 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
                 rid = _resource_of(SHED_ITEMS[ii])
                 if rid is not None:
                     p_eff[:days, rid] = sig[:, ii]
-        # `exact` is the price a plan PAYS for what it consumes, and it is
-        # deliberately NOT given σ. σ is the price of a unit in the shed, and a
-        # plan's produce is credited at σ through `p_eff` above — but what the
+        # `exact` is the price a plan PAYS for what it consumes, and with a shed it
+        # is the WHOLE of `published_duals`: `quote·(1+ahead)` for a bought input,
+        # because the spend is in the objective now (see `MasterLP.solve`). With a
+        # slack purse that is the engine's own quote — 25 for wheat, 100 for
+        # fertilizer — instead of the 0 the row alone charged (#142).
+        #
+        # It is deliberately NOT given σ: σ is the price of a unit in the shed, and
+        # a plan's produce is credited at σ through `p_eff` above — but what the
         # plan EATS is bought from the market and charged to the cash row at its
-        # quote, which is `quote·ahead`. Passing σ in here made the DP pay
-        # `max(quote·(1+ahead), σ) − quote` for feed and doses while the LP
-        # charged the cash row alone, so the subproblem over-charged, the class
-        # value came back below the LP's own value of a column the pool already
-        # held, and the bound came out below the objective it bounds (measured on
-        # a real board: rc −12.93 / −62.10 / −162.38 on the three working classes
-        # and a bound 325 under the objective; with the charge removed every
-        # class's rc is 0 and the bound equals the objective).
+        # quote. Passing σ in here made the DP pay `max(quote·(1+ahead), σ) − quote`
+        # for feed and doses while the LP charged the cash row alone, so the
+        # subproblem over-charged, the class value came back below the LP's own
+        # value of a column the pool already held, and the bound came out below the
+        # objective it bounds (measured on a real board: rc −12.93 / −62.10 /
+        # −162.38 on the three working classes).
         exact = published_duals(y, days, ahead, supply.quotes)
-        # The Lagrangian subproblem's own prices. The cash row prices SPENDING
-        # at `ahead` — not at the quote — so a purchasable input reaches the
-        # tiles at `quote·ahead`, and the base quote stays in the row where it
-        # belongs. Charging `quote·(1+ahead)` here made the DP optimise a
-        # different objective than the master prices, so the class value
-        # underestimated its true Lagrangian value and the bound came out below
-        # the objective (measured: 35,026.9 against 35,048.8).
-        for i, rid in enumerate(PURCHASE_IDS):
-            exact[:, rid] = np.maximum(exact[:, rid] - float(supply.quotes[i]), 0.0)
+        if shed is None:
+            # The no-shed model credits a column its own revenue and charges the
+            # spend through the cash row alone, so the coin it spends is worth
+            # `quote·ahead`: the base quote stays in the row.
+            #
+            # The cash row prices SPENDING at `ahead` — not at the quote — so a
+            # purchasable input reaches the tiles at `quote·ahead`. Charging
+            # `quote·(1+ahead)` here made the DP optimise a different objective than
+            # the master prices, so the class value underestimated its true
+            # Lagrangian value and the bound came out below the objective
+            # (measured: 35,026.9 against 35,048.8).
+            for i, rid in enumerate(PURCHASE_IDS):
+                exact[:, rid] = np.maximum(exact[:, rid] - float(supply.quotes[i]),
+                                           0.0)
         state["w"] = np.maximum(
             np.maximum((1.0 - ALPHA) * state["w"] + ALPHA * y, 0.0), w_floor)
         state["cash"] = (1.0 - ALPHA) * state["cash"] + ALPHA * np.asarray(cash)
@@ -878,6 +891,7 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
         result.duals = state["w"]
         result.mu = cg.solve.mu
         result.sigma = cg.solve.sigma
+        result.cash_lp = cg.solve.cash
     converged = cg.certified
 
     # #87's dead-zone clamp, on the COUPLING dual before the publish map:
@@ -941,8 +955,26 @@ def to_mixes(result: "MasterResult", days: int) -> dict[int, "object"]:
         sigma = np.zeros((0, 0), dtype=np.float64)
     rids = [_resource_of(item) for item in SHED_ITEMS]
 
+    # The prices the PRICING charged a plan's spend: `quote·(1 + ahead)`, with
+    # `ahead[d]` the cumulative cash dual from d on. `plan_value` needs them to
+    # keep the #13 gap in the objective's accounting: with the spend in the
+    # objective (#142), a value that counted only the output read 39,806 against a
+    # 35,081 objective — the rounding looked 13 % BETTER than the LP, which is not
+    # a gap but a metric, and it would have hidden a real regression behind a
+    # `gap <= 0.03` that a negative number satisfies.
+    cash_lp = np.asarray(result.cash_lp if result.cash_lp is not None else [],
+                         dtype=np.float64)[:days]
+    ahead = np.zeros(days, dtype=np.float64)
+    if cash_lp.size:
+        ahead[:cash_lp.size] = np.cumsum(cash_lp[::-1])[::-1]
+
     def plan_value(col) -> float:
-        """The column's output at the master's own prices, or its revenue."""
+        """The column's contribution to the objective, in the master's prices.
+
+        Its output is credited at σ, and its spend is CHARGED at what the pricing
+        charged the tiles — `quote·(1 + ahead)` — because with a shed the objective
+        is `money + Σ p·sell − Σ spend` (#142).
+        """
         produce = getattr(col, "produce", None)
         if produce is None or sigma.ndim != 2 or not sigma.size:
             return float(col.revenue)
@@ -954,6 +986,9 @@ def to_mixes(result: "MasterResult", days: int) -> dict[int, "object"]:
                 continue
             total += float((sigma[:produced.shape[0], ii]
                             * produced[:, rid]).sum())
+        spend = np.asarray(col.spend, dtype=np.float64)[:days]
+        if spend.size:
+            total -= float((spend * (1.0 + ahead[:spend.size])).sum())
         return total
 
     lam = np.asarray(result.lam, dtype=np.float64)

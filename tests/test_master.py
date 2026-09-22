@@ -541,5 +541,44 @@ def main() -> int:
     return 0
 
 
+def test_a_bought_input_never_reaches_the_tiles_cheaper_than_its_quote() -> None:
+    """#142: the spend is in the objective, so a plan pays at least the quote.
+
+    Priced through the cash row alone the tiles paid `quote · ahead`, and a purse
+    that does not bind has `ahead = 0` — feed and doses were free to the planner
+    while the engine charged them for real (measured on a one-tile season: wheat
+    25/29/34 on days 0/2/8 and fertilizer 100, with the DP charged 0.0000 for
+    both on all 30 days). The guard reads the matrix the DP is handed, not the
+    formula that builds it.
+    """
+    from agent.planner.master import PURCHASE_IDS
+
+    rt = _RT()
+    obs = _obs(_bare_ids(4), rt._replan_resources[0])
+    supply = _supply(hours=8.0, seeds=2)
+    c = _contractor()
+    seen: list[np.ndarray] = []
+    real = c.price_many
+
+    def spy(p_eff, exact, groups):
+        seen.append(np.array(exact, dtype=float, copy=True))
+        return real(p_eff, exact, groups)
+
+    c.price_many = spy
+    try:
+        equilibrate(rt, obs, c, supply)
+    finally:
+        c.price_many = real
+
+    assert seen, "the master never priced the tiles"
+    quotes = np.asarray(supply.quotes, dtype=float)
+    for exact in seen:
+        for i, rid in enumerate(PURCHASE_IDS):
+            low = float(np.min(np.asarray(exact, dtype=float)[:, rid]))
+            assert low >= quotes[i] - 1e-9, (
+                f"{PURCHASE_IDS[i]} reaches the tiles at {low:.4f}, under its "
+                f"{quotes[i]:.4f} quote — the spend is not in the objective")
+
+
 if __name__ == "__main__":
     raise SystemExit(main())
