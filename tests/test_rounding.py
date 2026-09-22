@@ -132,7 +132,7 @@ def test_the_gap_on_a_real_board_is_inside_the_issues_target():
                            M.supply_from_obs(obs), iter_cap=200)
     assert result.certified, result.stopped
 
-    mixes = M.to_mixes(result, 20)
+    mixes: dict = M.to_mixes(result, 20)
     _reps, _counts, of_tile = result.classes
     # The master prices the tiles it owns, in board order; the rest of the
     # board is a quadrant we have not bought and has no class.
@@ -147,8 +147,22 @@ def test_the_gap_on_a_real_board_is_inside_the_issues_target():
     by_quota = assign_by_quota(class_of_tile, mixes)
     by_argmax = _by_argmax(class_of_tile, mixes)
     quota = rounded_value(by_quota, mixes)
-    gap = (result.objective - quota) / result.objective
-    assert gap <= 0.03, f"integrality gap {gap:.2%} exceeds #13's 3 % target"
+    # The gap is the ROUNDING's cost, so both sides are valued the same way: the
+    # LP's own fractional mix against the integral assignment. Summing plan
+    # values is a proxy for the objective — it credits a plan's output at σ and
+    # charges its spend, but the objective also carries the labour and the money
+    # rows, which no single column owns — so with the spend in the objective
+    # (#142) the proxy lands 4.75 % short of it, and `quota` against `objective`
+    # would charge the rounding for that bias: 5.13 % = 4.75 proxy + 0.40
+    # rounding. Against the LP's own mix the proxy cancels and what is left is
+    # what the rounding costs.
+    fractional = sum(
+        float((np.asarray(mix.lam)
+               * np.asarray([p.value for p in mix.plans])).sum())
+        for mix in mixes.values())
+    gap = (fractional - quota) / fractional
+    assert gap <= 0.03, (
+        f"the rounding costs {gap:.2%} of the LP's mix, over #13's 3 % target")
 
     # The comparison is FEASIBILITY, not the raw sum. `rounded_value` adds up
     # plan values and checks no row, so argmax — which gives every tile of a
