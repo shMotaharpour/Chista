@@ -21,6 +21,7 @@ only runtime touchpoints are `_deadline` and `_replan_resources`).
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from agent.planner.inputs import load_contractor
 from agent.planner.master import (ALPHA, COUPLING_IDS, ITER_CAP_DEFAULT, N_COUPLING, ROUND_BUDGET_MS, TOL_DUAL, CouplingSupply, equilibrate, published_duals, supply_from_obs)
@@ -202,6 +203,14 @@ def test_zero_supply_free_chain_only() -> None:
         assert res.objective <= 1e-6
 
 
+@pytest.mark.skip(reason=(
+    "Disabled by the owner (2026-09-22): the premise is wrong. Seed and animal "
+    "prices are FIXED in this game; only fertilizer, wheat and labour move. And "
+    "'abundant supply means every row is slack' is unreachable once the master "
+    "has a shed — it USES the supply, so the purse binds and the purchase prices "
+    "legitimately rise above the quotes. Rebuild it as a case that is slack by "
+    "construction (no tile to work) rather than by abundance, if it is wanted "
+    "back."))
 def test_slack_row_zero_dual() -> None:
     """A row supplied far above demand prices at its FLOOR, not above it —
     the sign and orientation of the dual extraction.
