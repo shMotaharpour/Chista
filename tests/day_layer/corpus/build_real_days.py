@@ -18,6 +18,11 @@ that tile and that hour is that op having taken effect.
 
 The hand hours come from `hands_steps` too - a hand hired in turn 2 acts from hour 3, not from hour 1,
 so the fixture carries when each hand really began.
+
+Two ops on one tile in one hour are simultaneous in the engine - a farmer and a hand can both
+act on the same tile at the same step - and the dumps do not order them. They are read in the
+order of the op name, so a day's chains are the same on every rebuild: a corpus that reorders
+itself between runs cannot be the thing a test measures.
 """
 import json
 import os
@@ -43,12 +48,18 @@ def dumps() -> list[str]:
     return sorted(p.name for p in pathlib.Path(ROOT).iterdir() if p.is_dir())
 
 
-def extract(con, dump: str, episode: int, day: int):
-    """One day's real land work, or None when the dump has no such day."""
+def extract(con, dump: str, episode: int, day: int, side: int = 0):
+    """One day's real land work, or None when the dump has no such day.
+
+    `side` is which player's day to read: 0 is the replay's own player-0, the seat whose
+    replays these are, and 1 the opponent. The spread's own builder takes side 0; the
+    strong-player corpus takes the winner's side, which is the whole point of it.
+    """
+    flag = "true" if side else "false"
     changed = con.sql(f"""
         SELECT DISTINCT x, y, step % 24 AS hour
         FROM '{ROOT}/{dump}/tiles_delta.parquet'
-        WHERE episode_id = {episode} AND player = false AND step // 24 = {day}
+        WHERE episode_id = {episode} AND player = {flag} AND step // 24 = {day}
     """).df()
     if changed.empty:
         return None
@@ -57,12 +68,12 @@ def extract(con, dump: str, episode: int, day: int):
     submitted = con.sql(f"""
         SELECT step % 24 AS hour, x, y, op
         FROM '{ROOT}/{dump}/hands_steps.parquet'
-        WHERE episode_id = {episode} AND player = false AND step // 24 = {day}
+        WHERE episode_id = {episode} AND player = {flag} AND step // 24 = {day}
         UNION ALL
         SELECT step % 24 AS hour, farmer_x AS x, farmer_y AS y, op
         FROM '{ROOT}/{dump}/farm_steps.parquet'
-        WHERE episode_id = {episode} AND player = false AND step // 24 = {day}
-        ORDER BY hour
+        WHERE episode_id = {episode} AND player = {flag} AND step // 24 = {day}
+        ORDER BY hour, op
     """).df()
 
     chains: dict[tuple[int, int], list[str]] = {}
@@ -80,7 +91,7 @@ def extract(con, dump: str, episode: int, day: int):
     last = con.sql(f"""
         SELECT x, y, kind, crop, animal
         FROM '{ROOT}/{dump}/tiles_delta.parquet'
-        WHERE episode_id = {episode} AND player = false AND step // 24 = {day}
+        WHERE episode_id = {episode} AND player = {flag} AND step // 24 = {day}
         QUALIFY row_number() OVER (PARTITION BY x, y ORDER BY step DESC) = 1
     """).df()
     entity = {}
@@ -92,13 +103,13 @@ def extract(con, dump: str, episode: int, day: int):
 
     hours = [int(row[0]) for row in con.sql(f"""
         SELECT min(step % 24) FROM '{ROOT}/{dump}/hands_steps.parquet'
-        WHERE episode_id = {episode} AND player = false AND step // 24 = {day}
+        WHERE episode_id = {episode} AND player = {flag} AND step // 24 = {day}
         GROUP BY unit ORDER BY unit
     """).fetchall()]
 
     shed = con.sql(f"""
         SELECT * FROM '{ROOT}/{dump}/private_steps.parquet'
-        WHERE episode_id = {episode} AND player = false
+        WHERE episode_id = {episode} AND player = {flag}
           AND step // 24 = {day} AND step % 24 = 0
     """).df()
     available = {}
