@@ -335,7 +335,9 @@ class MasterLP:
             px = np.asarray(prices, dtype=np.float64)
             for gi, ii in enumerate(market):
                 for d in range(days):
-                    cost[col_sell(gi, d)] = -float(px[d, ii])   # max p·sell
+                    # `prices` is the (days, len(market)) market path, so the
+                    # good's own index is `gi`, NOT the shed-item index `ii`.
+                    cost[col_sell(gi, d)] = -float(px[d, gi])   # max p·sell
             # `stock[i, 0]` is the opening shed: fixed, not a decision.
             for ii in range(items):
                 j = col_stock(ii, 0)
@@ -494,9 +496,8 @@ def _seed_sigma(prices: np.ndarray | None, market: tuple[int, ...],
         return out
     px = np.asarray(prices, dtype=np.float64)
     for gi, ii in enumerate(market):
-        rid = _resource_of(SHED_ITEMS[ii])
-        if rid is not None and rid < px.shape[1]:
-            out[:, ii] = px[:days, rid]
+        if gi < px.shape[1]:
+            out[:, ii] = px[:days, gi]
     return out
 
 
