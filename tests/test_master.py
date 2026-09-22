@@ -541,5 +541,55 @@ def main() -> int:
     return 0
 
 
+def test_a_bought_input_never_reaches_the_tiles_cheaper_than_its_quote() -> None:
+    """#142: the spend is in the objective, so a plan pays at least the quote.
+
+    Priced through the cash row alone the tiles paid `quote · ahead`, and a purse
+    that does not bind has `ahead = 0` — feed and doses were free to the planner
+    while the engine charged them for real (measured on a one-tile season: wheat
+    25/29/34 on days 0/2/8 and fertilizer 100, with the DP charged 0.0000 for
+    both on all 30 days). This board's purse is slack by construction, so what a
+    plan is handed is exactly the market quote — read off the matrix the DP is
+    handed, not the formula that builds it. `_supply` leaves `quotes` at zero, so
+    they come from the observation; against zeros the assertion cannot fail.
+    """
+    from dataclasses import replace
+
+    from agent.planner.master import PURCHASE_IDS
+
+    rt = _RT()
+    obs = _obs(_bare_ids(4), rt._replan_resources[0])
+    # money slack, so `ahead` stays 0; quotes from the observation, because
+    # `_supply` leaves them at zero and against zeros nothing can fail.
+    supply = replace(_supply(hours=8.0, seeds=2),
+                     quotes=supply_from_obs(obs).quotes)
+    c = _contractor()
+    seen: list[np.ndarray] = []
+    real = c.price_many
+
+    def spy(p_eff, exact, groups):
+        seen.append(np.array(exact, dtype=float, copy=True))
+        return real(p_eff, exact, groups)
+
+    c.price_many = spy
+    try:
+        result = equilibrate(rt, obs, c, supply)
+    finally:
+        c.price_many = real
+
+    assert seen, "the master never priced the tiles"
+    assert not np.any(result.cash_lp), (
+        "the purse is no longer slack on this board, so the equality below is "
+        "not justified: with `ahead > 0` the price is `quote·(1 + ahead)`")
+    quotes = np.asarray(supply.quotes, dtype=float)
+    for exact in seen:
+        for i, rid in enumerate(PURCHASE_IDS):
+            got = np.asarray(exact, dtype=float)[:, rid]
+            assert np.allclose(got, quotes[i], rtol=0.0, atol=1e-9), (
+                f"{PURCHASE_IDS[i]} reaches the tiles at {float(got.min()):.4f} "
+                f"on a slack purse, not at its {quotes[i]:.2f} quote — the "
+                f"spend is not in the objective")
+
+
 if __name__ == "__main__":
     raise SystemExit(main())
