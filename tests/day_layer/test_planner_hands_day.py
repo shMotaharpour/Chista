@@ -59,8 +59,22 @@ def test_compile_with_no_hands_writes_one_unit_and_hires_nobody() -> None:
     assert not hires, f"a plan with no hands hires {len(hires)}"
 
 
-def test_a_day_s_hands_start_at_the_engine_s_own_hours() -> None:
-    day = B.Day(chains=CHAINS, available=AVAILABLE, hands=MAX_ORDERS_PER_TURN + 2)
-    assert day.hire_times == tuple(hire_hour(k) for k in range(MAX_ORDERS_PER_TURN + 2))
-    assert day.hire_times[0] == 1 and day.hire_times[-1] == 2, day.hire_times
-    assert B.Day(chains=CHAINS, available=AVAILABLE, hands=0).hire_times == ()
+def test_the_hours_are_the_callers_and_the_tuple_is_the_count() -> None:
+    """`Day` derives nothing: the tuple IS the day's labour.
+
+    One source. Its length is the count, each entry is the hour that hand is
+    AVAILABLE, and a caller that knows better (the hourly layer) passes its own
+    hours straight through. The engine's earliest is a bound the CALLER asks for,
+    which is why it is built out here and not inside `Day`.
+    """
+    from agent.world.rules import earliest_hire_times
+
+    bound = earliest_hire_times(MAX_ORDERS_PER_TURN + 2)
+    day = B.Day(chains=CHAINS, available=AVAILABLE, hire_times=bound)
+    assert day.hire_times == bound
+    assert day.hands == len(bound) == MAX_ORDERS_PER_TURN + 2
+    assert bound[0] == 1 and bound[-1] == 2, bound      # ten orders a turn (F031)
+    empty = B.Day(chains=CHAINS, available=AVAILABLE)
+    assert empty.hire_times == () and empty.hands == 0  # the farmer walks alone
+    assert B.Day(chains=CHAINS, available=AVAILABLE,
+                 hire_times=(5, 5, 1)).hands == 3       # a caller's own hours survive

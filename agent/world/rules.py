@@ -212,6 +212,16 @@ def hire_hour(k: int) -> int:
     return int(k) // MAX_ORDERS_PER_TURN + 1
 
 
+def earliest_hire_times(hands: int) -> tuple[int, ...]:
+    """The OPTIMISTIC timetable: every hand starts at the earliest hour allowed.
+
+    A bound, not a decision. It assumes the whole of each turn's order budget goes
+    to hires, so it says nothing about when a real queue will settle them; the
+    hourly layer owns the real tuple (the settlement hour plus one, F040).
+    """
+    return tuple(hire_hour(k) for k in range(max(0, int(hands))))
+
+
 #: The engine's names for the four shed-access tiles, in the same order as `SHED_ACCESS`.
 SHED_ACCESS_NAMES: tuple[str, ...] = ("NW", "NE", "SW", "SE")
 

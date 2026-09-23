@@ -98,25 +98,27 @@ class Day:
     chains: tuple[tuple[Cell, tuple[str, ...], str | None], ...]
     available: dict[str, int]
     horizon: int = TURNS_PER_DAY
-    hire_times: tuple[int, ...] = ()        # the hour each offered hand may begin; engine default
-    hands: int | None = None                # the hands offered; len(hire_times) when not given
+    hire_times: tuple[int, ...] = ()        # the hour each hand is AVAILABLE to act
 
     def __post_init__(self) -> None:
-        from agent.world.rules import hire_hour
-
+        # ONE source for the day's labour: this tuple. Its length is the count, and
+        # each entry is the hour that hand is AVAILABLE — the hour the HOURLY layer
+        # says its HIRE settles plus one (F040), not the turn the order is queued in
+        # and not a number the engine can be asked for.
+        #
+        # No hours are derived here on purpose: a default computed inside `Day`
+        # hides where the day's hands came from, and the engine's own earliest
+        # (`rules.earliest_hire_times`) is an optimistic BOUND that belongs at the
+        # call site, where the hourly layer will replace it.
         times = tuple(int(t) for t in self.hire_times)
-        if self.hands is None:
-            hands = len(times)
-        else:
-            hands = int(self.hands)
-            if hands < 0:
-                raise ValueError(f"hands must be >= 0, got {hands}")
-            if times and len(times) != hands:
-                raise ValueError(f"{hands} hands offered with {len(times)} hire times")
-            if not times:
-                times = tuple(hire_hour(k) for k in range(hands))
+        if any(t < 0 for t in times):
+            raise ValueError(f"hire hours must be >= 0, got {times}")
         object.__setattr__(self, "hire_times", times)
-        object.__setattr__(self, "hands", hands)
+
+    @property
+    def hands(self) -> int:
+        """How many hands the day is priced with — the tuple's own length."""
+        return len(self.hire_times)
 
     @property
     def units(self) -> tuple[Cell, ...]:

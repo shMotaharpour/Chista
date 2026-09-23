@@ -131,7 +131,10 @@ def fit(chains, *, hands: int, available: dict | None = None,
     tasks = T.build(chains, available=available)
     # `hands` is the offer the master priced, and zero is an offer: the farmer walks alone. The
     # hours each hand starts at are the engine's (`rules.hire_hour`), which `Day` fills in.
-    day = B.Day(chains=tuple(chains), available=available, hands=hands)
+    from agent.world.rules import earliest_hire_times
+
+    day = B.Day(chains=tuple(chains), available=available,
+                hire_times=earliest_hire_times(hands))
     floor = max(0, B.lower_bound(day, tasks) - len(day.units))
     result = B.search(day, tasks, beam=beam,
                       hands=min(floor, hands), max_hands=hands,
@@ -381,7 +384,10 @@ def compile(day_plan: "DayPlan", obs, *, hands: int | None = None,
 
     available = availability(obs, fitted.chains)
     tasks = T.build(fitted.chains, available=available)
-    day = B.Day(chains=tuple(fitted.chains), available=available, hands=pool)
+    from agent.world.rules import earliest_hire_times
+
+    day = B.Day(chains=tuple(fitted.chains), available=available,
+                hire_times=earliest_hire_times(pool))
     result = B.search(day, tasks, hands=pool, max_hands=pool)
     # The plan is PRICED for `pool` hands and the search is held to exactly those: the market
     # hires what the day was costed with, and a route may leave some of them idle.
