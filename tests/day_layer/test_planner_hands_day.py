@@ -78,3 +78,19 @@ def test_the_hours_are_the_callers_and_the_tuple_is_the_count() -> None:
     assert empty.hire_times == () and empty.hands == 0  # the farmer walks alone
     assert B.Day(chains=CHAINS, available=AVAILABLE,
                  hire_times=(5, 5, 1)).hands == 3       # a caller's own hours survive
+
+
+def test_a_complete_day_reports_the_hands_it_needs_not_the_offer() -> None:
+    """Offer 5, use 1: wsr's own number, and no second search to find it.
+
+    The search starts at the arithmetic floor and grows to the offer
+    (`hands=min(floor, hands)`), so a complete answer's `pool` already IS the
+    least it carried the day with. The manager reads it instead of paying for
+    another search per hand.
+    """
+    from agent.planner import day as D
+
+    fitted = D.fit(CHAINS, hands=5, available=AVAILABLE)
+    assert fitted.complete, fitted.reason
+    assert fitted.pool < 5, "the answer echoed the offer instead of the need"
+    assert 0 <= fitted.floor <= fitted.pool, (fitted.floor, fitted.pool)

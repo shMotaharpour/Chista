@@ -51,6 +51,11 @@ class DayFit:
     #: stop here — but it is the number the manager needs to decide whether to lay
     #: more on the day, hire more, or confirm.
     spare: int = 0
+    #: The arithmetic floor on hands the day's own work needs (`B.lower_bound`
+    #: less the farmer): the MINIMUM a shortfall is measured against, so the
+    #: manager can decide to offer it or lay less on the day instead of walking
+    #: up one hand at a time and paying for a search each step.
+    floor: int = 0
     #: How many extra hands the day needed before it was carried, 0 when the
     #: priced pool was enough. The number the manager decides on: hire them, lay
     #: less on the day, or accept a day that does not fit.
@@ -163,12 +168,12 @@ def fit(chains, *, hands: int, available: dict | None = None,
         # checked here rather than discovered inside `compile_route`).
         return DayFit(tuple(chains), len(result.route), tasks.n, result.pool,
                       False, hours, hours_committed, "unstable",
-                      spare=int(result.spare))
+                      spare=int(result.spare), floor=int(floor))
     reason = "" if result.complete else ("budget" if result.can_improve
                                          else "hours")
     return DayFit(tuple(chains), len(result.route), tasks.n, result.pool,
                   bool(result.complete), hours, hours_committed, reason,
-                  spare=int(result.spare))
+                  spare=int(result.spare), floor=int(floor))
 
 
 def hours_for(hands: int, days: int, overhead: float = 0.35) -> np.ndarray:
@@ -344,28 +349,24 @@ def _solve_at(obs, contractor, supply, class_of_tile, hands, iter_cap,
                      available=availability(obs, chains),
                      hours_committed=committed)
         if not fitted.complete and fitted.reason == "hours":
-            short = 0
-            while (not fitted.complete and fitted.reason == "hours"
-                   and short < MAX_HANDS_SHORT):
-                short += 1
-                again = fit(chains, hands=int(hands) + short, budget_s=budget_s,
+            # wsr's OWN number, not a count of retries: `floor` is the arithmetic
+            # minimum the day's work needs, and the search already started there
+            # (`hands=min(floor, hands)`, day.py:150). So ONE ask at the floor
+            # answers "what is the least I could give it" - walking up one hand at
+            # a time would buy the same answer for a search per step.
+            #
+            # "budget" is never re-asked: more hands do not buy more time.
+            fitted = replace(fitted, short=max(0, int(fitted.floor) - int(hands)))
+            if int(fitted.floor) > int(hands):
+                again = fit(chains, hands=int(fitted.floor), budget_s=budget_s,
                             available=availability(obs, chains),
                             hours_committed=committed)
-                if again.complete or int(again.pool) > int(fitted.pool):
+                if again.complete:
                     fitted = again
-            if short:
-                fitted = replace(fitted, short=int(short))
-        elif fitted.complete and int(fitted.spare) > 0 and int(fitted.pool) > 0:
-            # The mirror of the ask above, and what `spare` is FOR: the day is
-            # carried and the hands are not full, so the same route with one hand
-            # fewer costs one hire bill less. The pool is the bill's own input
-            # (day.py:327) and `compile` hires exactly it, so a leaner complete
-            # answer is strictly cheaper for the same work.
-            leaner = fit(chains, hands=int(fitted.pool) - 1, budget_s=budget_s,
-                         available=availability(obs, chains),
-                         hours_committed=committed)
-            if leaner.complete:
-                fitted = leaner
+        # A complete answer needs no second ask for a leaner pool: the search
+        # STARTS at the floor and grows (`min(floor, hands)`, day.py:150), so
+        # `result.pool` already IS the least it carried the day with - offering 5
+        # and using 1 reports 1, and the bill follows it.
         # The hands are hired again every morning (F039), so their wage is a
         # cost on every day of the horizon and not a one-off.
         # The bill follows the pool that actually carries the day (`fitted.pool`
