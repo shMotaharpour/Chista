@@ -22,9 +22,9 @@ from __future__ import annotations
 from typing import NamedTuple
 
 from agent.wsr.beam import (Day, Result, _bag, _settled_after_first_turn, _start_hours,
-                            _start_positions, first_arrival, first_walk_turn, preload_turns,
-                            walk_start_turn)
-from agent.wsr.routing import nearest_shed, walk
+                            _start_positions, first_arrival, first_walk_turn, leg_moves, legs,
+                            preload_turns, walk_start_turn)
+from agent.wsr.routing import nearest_shed
 from agent.wsr.tasks import ITEM_CODE, TaskArray
 
 PASS = ("PASS",)
@@ -96,14 +96,16 @@ def compile_route(day: Day, tasks: TaskArray, result: Result, *,
             last[worker] = first_walk_turn(hours[worker], arrival, len(bag)) - 1
 
     for worker, entries in by_worker.items():
-        for turn, task_id in sorted(entries):
+        for turn, row, fetch in legs(tasks, entries):
             if turn < 0:
                 # A drop with an empty bag: the bag was already handed over, so there is no op to
                 # write and no turn to spend. The route carries it so the day is complete.
                 continue
-            row = tasks.ids.index(task_id)
+            task_id = tasks.ids[row]
             target = (int(tasks.cells[row][0]), int(tasks.cells[row][1]))
-            moves = walk(at[worker], target)
+            # A good used after the worker's own DROP is fetched again on the way: the drop took the
+            # load from the door with it (`legs`), and the leg walks through the nearest door.
+            moves = leg_moves(at[worker], target, fetch)
             # The walk ENDS at the task's turn, not at the first turn the worker is free: a worker
             # with slack waits where it stands and then walks, so the turns the walk occupies are
             # exactly the ones the model counted when it priced the day. Writing it early instead

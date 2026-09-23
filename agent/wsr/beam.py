@@ -29,10 +29,23 @@ import numpy as np
 
 from agent.world.board import MOVE_DELTA, SPAWN
 from agent.world.rules import BOARD_SIZE, TURNS_PER_DAY
-from agent.wsr.routing import walk
-from agent.wsr.tasks import DISTANCE, NO_ITEM, SHED_INDEX, TaskArray, day_walking
+from agent.wsr.routing import nearest_shed, walk
+from agent.wsr.tasks import (DISTANCE, ITEM_CODE, NO_ITEM, SHED_INDEX, TaskArray, day_walking,
+                             index_of)
 
 Cell = tuple[int, int]
+
+ITEM_NAME: dict[int, str] = {code: item.name for item, code in ITEM_CODE.items()}
+
+#: The door a worker fetches through, per cell: `nearest_shed`, the rule the compiler walks by.
+DOOR_OF: np.ndarray = np.asarray(
+    [index_of(nearest_shed((i // BOARD_SIZE, i % BOARD_SIZE))) for i in range(BOARD_SIZE ** 2)],
+    dtype=np.int32)
+#: From the door to every cell - the leg after a refetch's PICKUP.
+DOOR_TO: np.ndarray = DISTANCE[DOOR_OF, :]
+#: A refetch leg's walk, cell to cell: out to the worker's nearest door, then on to the task.
+REFETCH: np.ndarray = (DISTANCE[np.arange(BOARD_SIZE ** 2), DOOR_OF][:, None]
+                       + DOOR_TO).astype(np.int16)
 
 #: What one step of the search is allowed to cost, as `beam x workers x tasks`. A step's arrays are
 #: that product wide, so a fixed width makes a hundred tiles cost fifty times a quadrant. This is the
@@ -172,13 +185,62 @@ def lower_bound(day: Day, tasks: TaskArray) -> int:
 
 
 def _bag(tasks: TaskArray, entries: list[tuple[int, str]]) -> dict[int, int]:
-    """How much of each good one worker's day uses, so one trip can carry all of it."""
+    """How much of each good one worker loads at its door before the walk.
+
+    Only the goods used before the worker's first DROP: the engine's DROP empties the whole bag
+    (`kaggriculture.py:343-356`), so what is still in it goes to the shed with the harvest, and every
+    use after the drop is fetched again (`legs`).
+    """
     bag: dict[int, int] = {}
-    for _turn, task_id in entries:
-        good = int(tasks.items[tasks.ids.index(task_id)])
+    for turn, task_id in sorted(entries):
+        row = tasks.ids.index(task_id)
+        if int(turn) >= 0 and bool(tasks.is_drop[row]):
+            break
+        good = int(tasks.items[row])
         if good >= 0:
             bag[good] = bag.get(good, 0) + 1
     return bag
+
+
+def legs(tasks: TaskArray, entries: list[tuple[int, str]]) -> list[tuple[int, int, tuple | None]]:
+    """One worker's day as `(turn, row, fetch)`, where `fetch` is `(good, n)` or None.
+
+    A DROP hands over the whole bag, so a good used after it is no longer carried: the first use of
+    each good after a drop walks through the nearest door on the way and picks up `n` - every use
+    of that good until the next drop. A good the worker has taken off a tile since the drop is in
+    the bag, as before. The search prices this trip and the compiler writes it from here, so the
+    two cannot disagree on it.
+    """
+    rows = [(int(turn), tasks.ids.index(task_id)) for turn, task_id in sorted(entries)]
+    out: list[tuple[int, int, tuple | None]] = []
+    dropped = False
+    held: set[int] = set()
+    for k, (turn, row) in enumerate(rows):
+        fetch = None
+        need = int(tasks.items[row])
+        if turn >= 0 and bool(tasks.is_drop[row]):
+            dropped, held = True, set()
+        elif turn >= 0 and dropped and need >= 0 and need not in held:
+            n = 0
+            for later_turn, later in rows[k:]:
+                if later_turn >= 0 and bool(tasks.is_drop[later]):
+                    break
+                n += int(tasks.items[later]) == need
+            fetch = (need, n)
+        for good in (need, int(tasks.yields[row])):
+            if good >= 0:
+                held.add(good)
+        out.append((turn, row, fetch))
+    return out
+
+
+def leg_moves(here: Cell, target: Cell, fetch) -> list[tuple]:
+    """The ops that carry a worker to its task: the walk, or the walk through a door and a PICKUP."""
+    if fetch is None:
+        return walk(here, target)
+    door = nearest_shed(here)
+    fetched = ("PICKUP", ITEM_NAME[int(fetch[0])], int(fetch[1]))
+    return walk(here, door) + [fetched] + walk(door, target)
 
 
 def bags_of(day: Day, tasks: TaskArray, result: Result) -> list[int]:
@@ -220,10 +282,9 @@ def remaining_turns(day: Day, tasks: TaskArray, result: Result) -> list[int]:
         # so charging the wait as spent under-reports the room by the gap - measured at one turn on
         # the mixed day, where the farmer begins at hour 0 and the shed opens at hour 1.
         spent = len(bag)
-        for _turn, task_id in entries:
-            row = tasks.ids.index(task_id)
+        for _turn, row, fetch in legs(tasks, entries):
             target = (int(tasks.cells[row][0]), int(tasks.cells[row][1]))
-            spent += len(walk(here, target)) + 1
+            spent += len(leg_moves(here, target, fetch)) + 1
             here = target
         out.append(int(day.horizon) - int(hours[worker]) - spent)
     return out
@@ -648,10 +709,9 @@ def _stand_after(tasks: TaskArray, route, start, turn: int) -> Cell:
     route with the writer's own rule is what makes this exact rather than a guess about idle turns.
     """
     pos = (int(start[0]), int(start[1]))
-    for task_turn, task_id in route:
-        row = tasks.ids.index(task_id)
+    for task_turn, row, fetch in legs(tasks, route):
         target = (int(tasks.cells[row][0]), int(tasks.cells[row][1]))
-        moves = walk(pos, target)
+        moves = leg_moves(pos, target, fetch)
         began = walk_start_turn(task_turn, len(moves))
         if turn < began:
             return pos
@@ -659,8 +719,9 @@ def _stand_after(tasks: TaskArray, route, start, turn: int) -> Cell:
             pos = target
             continue
         for step in moves[: turn - began + 1]:
-            dx, dy = MOVE_DELTA[step[0]]
-            pos = (pos[0] + int(dx), pos[1] + int(dy))
+            if step[0] in MOVE_DELTA:          # a refetch's PICKUP is a turn in place
+                dx, dy = MOVE_DELTA[step[0]]
+                pos = (pos[0] + int(dx), pos[1] + int(dy))
         return pos
     return pos
 
@@ -888,6 +949,12 @@ def _expand(day: Day, tasks: TaskArray, done, when, who, free, where, travel, li
     # No cast: the table is int16, the width the arithmetic runs in, so the gather is the answer.
     hop = DISTANCE[here[:, :, None], tasks.cell_index[index][None, None, :]]
 
+    # Each worker's last DROP, per route. The engine's DROP empties the whole bag, the goods loaded
+    # at the door included, so after it a consumer's good is fetched again on the way (`legs`).
+    drop_rows = tasks.drop_rows
+    last_drop = (_last_drop(done, when, who, drop_rows, m) if drop_rows.size
+                 else np.full((b, m), -1, dtype=np.int16))
+
     # The trip a consumer makes when its good is not in the bag: to a door, the pickup, and on. One
     # door, not two minima - the nearest door to the worker and the nearest to the tile can be
     # different doors, and the compiler would then walk a trip the search never priced.
@@ -896,21 +963,25 @@ def _expand(day: Day, tasks: TaskArray, done, when, who, free, where, travel, li
     trip = np.zeros(hop.shape, dtype=bool)
     needs = tasks.items[index] >= 0
     if needs.any():
-        carried = _carried(done, who, tasks, m)              # (b, m, goods)
+        carried = _carried(done, who, tasks, m, when, last_drop)  # (b, m, goods)
         has = np.where(needs[None, None, :], carried[:, :, tasks.items[index].clip(0)], True)
         trip = ~has
+        # After a drop the load at the door is gone, so the trip is a real walk: out to the
+        # worker's nearest door, the PICKUP, and on to the tile - the leg `leg_moves` writes.
+        refetch = trip & (last_drop >= 0)[:, :, None]
+        if refetch.any():
+            hop = np.where(refetch, REFETCH[here[:, :, None],
+                                            tasks.cell_index[index][None, None, :]], hop)
 
     # The drops. A worker that has already dropped since the harvest a drop banks has an empty bag,
     # so that drop hands over nothing: no trip, no turn, and nobody moves. This is what lets one
     # drop bank several harvests instead of one apiece.
     idle = np.zeros(hop.shape, dtype=bool)
-    drop_rows = tasks.drop_rows
     if drop_rows.size:
         # Which of the day's drops are on the frontier, and where they sit in the beam's width.
         local = np.searchsorted(index, drop_rows)
         inside = (local < width) & (index[np.minimum(local, width - 1)] == drop_rows)
         if inside.any():
-            last_drop = _last_drop(done, when, who, drop_rows, m)        # (b, m)
             held = when[:, tasks.banks[drop_rows].clip(0)]               # (b, d) each harvest's turn
             idle[:, :, local[inside]] = (
                 last_drop[:, :, None] > held[:, None, :])[:, :, inside]
@@ -1207,12 +1278,15 @@ def _flat(where: np.ndarray) -> np.ndarray:
     return (where[:, :, 0].astype(np.int32) * BOARD_SIZE + where[:, :, 1].astype(np.int32))
 
 
-def _carried(done, who, tasks: TaskArray, workers: int) -> np.ndarray:
+def _carried(done, who, tasks: TaskArray, workers: int, when=None, last_drop=None) -> np.ndarray:
     """Whether each worker's bag holds each good, per route - (batch, workers, goods).
 
     Derived from the route rather than tracked: a worker holds a good exactly when it has done a
     task that consumes it, because the trip that brought it is the same worker's. Two arrays that
     cannot disagree are worth more than one kept in step by hand.
+
+    `last_drop` is each worker's last DROP turn (`_last_drop`). The engine's DROP empties the whole
+    bag (`kaggriculture.py:343-356`), so only what a worker did AFTER its last drop is still in it.
     """
     batch = who.shape[0]
     # A bag holds a good when the worker did a task that NEEDED it - the trip that brought it - or
@@ -1228,6 +1302,9 @@ def _carried(done, who, tasks: TaskArray, workers: int) -> np.ndarray:
     # harmless - the cell is a boolean and every write sets it the same way.
     worker = who[:, consuming]
     live = done[:, consuming] & (worker >= 0)
+    if last_drop is not None:
+        since = np.take_along_axis(last_drop, np.where(worker >= 0, worker, 0), axis=1)
+        live &= when[:, consuming] > since
     if live.any():
         rows = np.arange(batch)[:, None]
         index = ((rows * workers) + np.where(live, worker, 0)) * n_goods + goods[consuming]
