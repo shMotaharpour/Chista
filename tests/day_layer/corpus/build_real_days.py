@@ -8,134 +8,26 @@ interpreter that has duckdb - the analyses repo's own venv has one - and point
     KAGGLE_REPLAYS_PARQUET=/path/to/replays_parquet \\
       python tests/day_layer/corpus/build_real_days.py
 
-**An op is kept only if the tile it was aimed at actually changed at that hour.** `hands_steps.op` is
-what the agent ASKED for, and the engine refuses a malformed action in silence (F047) - so a
-submitted op is not a fact. One day of one dump submits water, harvest and fertilize on a tile the
-archive says was never harvested, and the tile is planted four times over the day because the agent
-kept trying. `tiles_delta` records the tiles that changed, so the two together say which asks
-happened: a unit submits one op a turn and the engine runs it on the unit's own tile, so a change at
-that tile and that hour is that op having taken effect.
-
-The hand hours come from `hands_steps` too - a hand hired in turn 2 acts from hour 3, not from hour 1,
-so the fixture carries when each hand really began.
-
-Two ops on one tile in one hour are simultaneous in the engine - a farmer and a hand can both
-act on the same tile at the same step - and the dumps do not order them. They are read in the
-order of the op name, so a day's chains are the same on every rebuild: a corpus that reorders
-itself between runs cannot be the thing a test measures.
+The extractor itself lives in `offline_lab/bench/corpus.py`, next to the benchmark that reads the same
+archive: one reader, not two. Its docstring says why an op is kept only when the tile it was aimed at
+actually changed at that hour (F047), and why the hand hours come from `hands_steps`.
 """
 import json
-import os
 import pathlib
 import random
+import sys
 
 import duckdb
-import pandas as pd
 
-ROOT = os.environ.get(
-    "KAGGLE_REPLAYS_PARQUET",
-    "/chista/Chista/kaggriculture-episodes-analyses/data/replays_parquet",
-)
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[3]))
+
+from offline_lab.bench.corpus import ROOT, dumps, extract  # noqa: E402
+
 OUT = pathlib.Path(__file__).parent / "real_days.json"
-MOVES = {"NORTH", "SOUTH", "EAST", "WEST", "PASS", "PICKUP", "DROP"}
 PER_SET = 30
 SEED = 20260920
 MID_DAY = 5
 FIRST_DUMP, FIRST_DAYS, FIRST_EPISODES = "2026-09-16", (1, 3, 6, 10), 3
-
-
-def dumps() -> list[str]:
-    return sorted(p.name for p in pathlib.Path(ROOT).iterdir() if p.is_dir())
-
-
-def extract(con, dump: str, episode: int, day: int, side: int = 0):
-    """One day's real land work, or None when the dump has no such day.
-
-    `side` is which player's day to read: 0 is the replay's own player-0, the seat whose
-    replays these are, and 1 the opponent. The spread's own builder takes side 0; the
-    strong-player corpus takes the winner's side, which is the whole point of it.
-    """
-    flag = "true" if side else "false"
-    changed = con.sql(f"""
-        SELECT DISTINCT x, y, step % 24 AS hour
-        FROM '{ROOT}/{dump}/tiles_delta.parquet'
-        WHERE episode_id = {episode} AND player = {flag} AND step // 24 = {day}
-    """).df()
-    if changed.empty:
-        return None
-    happened = {(int(r.x), int(r.y), int(r.hour)) for r in changed.itertuples()}
-
-    submitted = con.sql(f"""
-        SELECT step % 24 AS hour, x, y, op
-        FROM '{ROOT}/{dump}/hands_steps.parquet'
-        WHERE episode_id = {episode} AND player = {flag} AND step // 24 = {day}
-        UNION ALL
-        SELECT step % 24 AS hour, farmer_x AS x, farmer_y AS y, op
-        FROM '{ROOT}/{dump}/farm_steps.parquet'
-        WHERE episode_id = {episode} AND player = {flag} AND step // 24 = {day}
-        ORDER BY hour, op
-    """).df()
-
-    chains: dict[tuple[int, int], list[str]] = {}
-    op_hours: dict[tuple[int, int], list[int]] = {}
-    for row in submitted.itertuples():
-        if not isinstance(row.op, str) or row.op in MOVES:
-            continue
-        cell = (int(row.x), int(row.y))
-        if (cell[0], cell[1], int(row.hour)) not in happened:
-            continue                       # the engine refused it: it never happened
-        chains.setdefault(cell, []).append(row.op)
-        op_hours.setdefault(cell, []).append(int(row.hour))
-
-    # The crop or the animal the tile ended the day with, for the layer's entity.
-    last = con.sql(f"""
-        SELECT x, y, kind, crop, animal
-        FROM '{ROOT}/{dump}/tiles_delta.parquet'
-        WHERE episode_id = {episode} AND player = {flag} AND step // 24 = {day}
-        QUALIFY row_number() OVER (PARTITION BY x, y ORDER BY step DESC) = 1
-    """).df()
-    entity = {}
-    for row in last.itertuples():
-        if row.crop is not None and row.crop is not pd.NA:
-            entity[(int(row.x), int(row.y))] = row.crop
-        elif row.animal is not None and row.animal is not pd.NA:
-            entity[(int(row.x), int(row.y))] = row.animal
-
-    hours = [int(row[0]) for row in con.sql(f"""
-        SELECT min(step % 24) FROM '{ROOT}/{dump}/hands_steps.parquet'
-        WHERE episode_id = {episode} AND player = {flag} AND step // 24 = {day}
-        GROUP BY unit ORDER BY unit
-    """).fetchall()]
-
-    shed = con.sql(f"""
-        SELECT * FROM '{ROOT}/{dump}/private_steps.parquet'
-        WHERE episode_id = {episode} AND player = {flag}
-          AND step // 24 = {day} AND step % 24 = 0
-    """).df()
-    available = {}
-    if not shed.empty:
-        row = shed.iloc[0]
-        for column in row.index:
-            if column.startswith("shed_") and int(row[column]) > 0:
-                available[column[5:]] = 1
-
-    if not chains:
-        return None
-    return {
-        "dump": dump,
-        "episode": int(episode),
-        "day": int(day),
-        "hands": len(hours),
-        "hire_times": sorted(hours),
-        "available": available,
-        "chains": [[list(cell), ops, entity.get(cell)]
-                   for cell, ops in sorted(chains.items())],
-        # The hour the GAME ran each op, in the same order as that cell's ops. The layer is charged
-        # for its walks, its trips and its pickups, and this is the only record of what those cost
-        # the agent that actually played the day - so a day the layer cannot carry can be read
-        # against the day the game did, op by op, instead of argued about.
-        "op_hours": [[list(cell), op_hours[cell]] for cell, _ops in sorted(chains.items())],
-    }
 
 
 def main() -> None:
