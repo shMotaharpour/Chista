@@ -24,7 +24,8 @@ from agent.world.model import RESOURCE_ID
 
 
 def plan_supply_sells(produce: np.ndarray, lam: np.ndarray,
-                      days: int, first_day: int = 0) -> dict:
+                      days: int, first_day: int = 0,
+                      hours: "dict[str, int] | None" = None) -> dict:
     """The chosen mix's projected sells as `forecast(our_sells=)` reads.
 
     `produce`: per-column (days, N_RESOURCE) outputs stacked to
@@ -39,16 +40,24 @@ def plan_supply_sells(produce: np.ndarray, lam: np.ndarray,
     weights = np.asarray(lam, dtype=np.float64)[: prod.shape[0]]
     expected = np.tensordot(weights, prod, axes=(0, 0))
     for d in range(min(days, expected.shape[0])):
-        step = (first_day + d) * 24
+        day = first_day + d
         for name in PRODUCTS:
             units = int(round(float(expected[d, RESOURCE_ID[name]])))
-            if units > 0:
-                out.setdefault(step, {})[name] = units
+            if units <= 0:
+                continue
+            # The HOUR the plan's own market orders use, when the caller knows it:
+            # a sell at hour 14 lands its supply at hour 14, and pricing it at hour
+            # 0 makes the walk blind to our own intra-day supply (the hours after
+            # it are quoted on a market we never sold into).
+            hour = 0 if hours is None else int(hours.get(name, 0))
+            step = day * 24 + max(0, min(23, hour))
+            out.setdefault(step, {})[name] = units
     return out
 
 
 def plan_supply_sells_from_pool(pool, lam: np.ndarray,
-                                days: int, first_day: int) -> dict:
+                                days: int, first_day: int,
+                                hours: "dict[str, int] | None" = None) -> dict:
     """Same, from the master's pool (columns carry `produce`; idle ones
     carry None and drop out — they project zero sells anyway)."""
     if pool is None or not len(lam):
@@ -63,4 +72,4 @@ def plan_supply_sells_from_pool(pool, lam: np.ndarray,
                         for c in cols])
     produce = produce[:, :days, :]
     weights = np.asarray(lam, dtype=np.float64)[: len(pool)][: len(produce)]
-    return plan_supply_sells(produce, weights, days, first_day)
+    return plan_supply_sells(produce, weights, days, first_day, hours)

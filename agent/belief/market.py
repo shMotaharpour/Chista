@@ -243,6 +243,7 @@ def forecast(obs: Any, *, days: int = 30,
              our_sells: Mapping[int, Mapping[str, int]] | None = None,
              residual: Mapping[str, float] | None = None,
              rival_supply: np.ndarray | None = None,
+             rival_sells: Mapping[int, Mapping[str, int]] | None = None,
              unlock_policy: str = "mean",
              config: Any = None,
              market_params: Any = None,
@@ -254,7 +255,12 @@ def forecast(obs: Any, *, days: int = 30,
     enter as cumulative ladders (`belief/ladder.py`), and the prices are the
     quote table indexed at the walked rows — no per-turn Python loop.
 
-    `our_sells` is `{absolute_step: {item: units}}`; `residual` is the
+    `our_sells` and `rival_sells` are both `{absolute_step: {item: units}}`.
+    `rival_sells` is the DATED form of the rival's pressure — the hours their
+    supply actually lands in — and it REPLACES `rival_supply`'s day-level total
+    on every day it names, because a caller that knows the hours and also passes
+    the day's total would count the same units twice. A day it does not name
+    keeps the calendar's own number. `residual` is the
     opponent's sell pressure in units per day (#16 owns the estimate), and
     `rival_supply` is that same pressure DATED — `(days, 9)` units per day per
     good, as `belief/rival_calendar.supply_curve` builds it from their public
@@ -349,6 +355,29 @@ def forecast(obs: Any, *, days: int = 30,
                 f"rival_supply: expected shape ({horizon}, {len(PRODUCTS)}), "
                 f"got {curve.shape}")
         rival = curve[day_of_turn] / TURNS_PER_DAY
+    if rival_sells:
+        # The rival's supply at the HOUR it lands, not spread over the day. The
+        # days it names lose the calendar's own total for that day: the dated
+        # units are what the tracker and the opponent model know, and adding both
+        # would push the same supply into the walk twice.
+        touched = set()
+        for abs_step, basket in rival_sells.items():
+            t = int(abs_step) - step
+            if 0 <= t < len(turns):
+                touched.add(int(abs_step) // TURNS_PER_DAY - first_day)
+                for it, units in basket.items():
+                    if it in n:
+                        rival[t, n[it]] += float(units)
+        for rel in touched:
+            if 0 <= rel < horizon:
+                rival[day_of_turn == rel, :] = 0.0
+                for abs_step, basket in rival_sells.items():
+                    t = int(abs_step) - step
+                    if (0 <= t < len(turns)
+                            and int(abs_step) // TURNS_PER_DAY - first_day == rel):
+                        for it, units in basket.items():
+                            if it in n:
+                                rival[t, n[it]] += float(units)
 
     # --- inventory walk: cumsum of (rival + our - drain), per TURN ----------
     # both seats' sales ADD supply (+1 per unit, engine `_commit_unit`); the
@@ -402,6 +431,58 @@ def forecast(obs: Any, *, days: int = 30,
                           assumptions=tuple(assumptions))
 
 
+def _walk_rows(fc: MarketForecast) -> np.ndarray:
+    """The forecast's per-turn inventory walk, `(T+1, 9)`, row 0 = the snapshot."""
+    return np.asarray(fc.walk_inventory, dtype=np.float64)
+
+
+def _hourly_rows(fc: MarketForecast, horizon: int) -> list[int]:
+    """The walk row each (day, hour) of the hourly tables reads.
+
+    ONE definition, because `hourly_prices` and `hourly_inventory` must sample
+    the same row: a plan that prices a sale at one inventory and is filled at
+    another is pricing a market that does not exist.
+
+    Row indexing. The walk's row j is the inventory after turn (step+j-1);
+    row 0 is the snapshot ("now", mid-day). Hour h of the CURRENT day:
+      - h < hour  : already played — the table shows the snapshot (the walk
+                    has no earlier rows; history is not re-quoted);
+      - h >= hour : the quote a SELL at that hour sees = the walk row after
+                    the turns up to it = row (h - hour) — hour `hour`'s own
+                    quote is the snapshot (its market has not run yet).
+    Later days start at walk row (24d) + h.
+    """
+    walk = _walk_rows(fc)
+    step = int(fc.walk_step)
+    hour_now = step % TURNS_PER_DAY
+    rows = [0] * TURNS_PER_DAY                       # day 0, past hours
+    for h in range(hour_now, TURNS_PER_DAY):
+        rows[h] = h - hour_now                       # 0 = the snapshot itself
+    for d in range(1, horizon):
+        base = (fc.first_day + d) * TURNS_PER_DAY - step
+        rows.extend([base + h for h in range(TURNS_PER_DAY)])
+    rows = rows[:horizon * TURNS_PER_DAY]
+    return [min(r, walk.shape[0] - 1) for r in rows]
+
+
+def hourly_inventory(fc: MarketForecast, days: int | None = None,
+                     items: Iterable[str] | None = None,
+                     ) -> np.ndarray:
+    """The market's INVENTORY per hour: (days*24, 9), the rows the prices read.
+
+    `hourly_prices` samples the walk for the QUOTE; a depth read (what a lot
+    fetches) needs the inventory behind that quote, at the same turn — the
+    ladder is a function of it. One walk, two readings, the same rows.
+    """
+    horizon = fc.horizon_days if days is None else max(1, int(days))
+    wanted = (PRODUCTS if items is None else tuple(items))
+    ix = [_PROD_INDEX[g] for g in wanted]
+    walk = _walk_rows(fc)
+    rows = _hourly_rows(fc, horizon)
+    return np.asarray([[int(walk[r][i2]) for i2 in ix] for r in rows],
+                      dtype=np.int64)
+
+
 def hourly_prices(fc: MarketForecast, days: int | None = None,
                   items: Iterable[str] | None = None,
                   ) -> np.ndarray:
@@ -419,37 +500,14 @@ def hourly_prices(fc: MarketForecast, days: int | None = None,
     own snapshot; a mid-day forecast starts with its stub and the remaining
     hours of that day follow, so the table's length stays days*24.
     """
-    walk = np.asarray(fc.walk_inventory, dtype=np.float64)
-    step = int(fc.walk_step)
     horizon = fc.horizon_days if days is None else max(1, int(days))
     wanted = (PRODUCTS if items is None else tuple(items))
     ix = [_PROD_INDEX[g] for g in wanted]
-
-    stub = TURNS_PER_DAY - (step % TURNS_PER_DAY)
-    if stub == TURNS_PER_DAY:
-        stub = 0
-    # Row indexing. The walk's row j is the inventory after turn (step+j-1);
-    # row 0 is the snapshot ("now", mid-day). Hour h of the CURRENT day:
-    #   - h < hour  : already played — the table shows the snapshot (the walk
-    #                 has no earlier rows; history is not re-quoted);
-    #   - h >= hour : the quote a SELL at that hour sees = the walk row after
-    #                 the turns up to it = row (h - hour) — hour `hour`'s own
-    #                 quote is the snapshot (its market has not run yet).
-    # Later days start at walk row (stub + 24d) + (h) as before.
-    hour_now = step % TURNS_PER_DAY
-    rows = [0] * TURNS_PER_DAY                       # day 0, past hours
-    for h in range(hour_now, TURNS_PER_DAY):
-        rows[h] = h - hour_now                       # 0 = the snapshot itself
-    # day d >= 1: its hour-0 quote is the walk row after the whole previous
-    # day = row (stub + 24d - hour_now)... in walk terms the turn at absolute
-    # step (first_day + d)*24 - 1 sits at row (first_day + d)*24 - step:
-    for d in range(1, horizon):
-        base = (fc.first_day + d) * TURNS_PER_DAY - step
-        rows.extend([base + h for h in range(TURNS_PER_DAY)])
-    rows = rows[:horizon * TURNS_PER_DAY]
+    walk = _walk_rows(fc)
+    rows = _hourly_rows(fc, horizon)
     out = np.zeros((horizon * TURNS_PER_DAY, len(wanted)), dtype=np.int64)
     for i, r in enumerate(rows):
-        inv = walk[min(r, walk.shape[0] - 1)]
+        inv = walk[r]
         out[i] = [K.market_price(PRODUCTS[i2], float(inv[i2])) for i2 in ix]
     return out
 

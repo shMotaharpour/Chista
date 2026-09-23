@@ -61,6 +61,23 @@ from agent.world.rules import TURNS_PER_DAY
 
 IDLE_PLAN = {"units": [[["PASS"]] * TURNS_PER_DAY], "market": []}
 
+
+def _sell_hours(plan) -> dict:
+    """`{good: hour}` from the committed plan's own market orders.
+
+    The FIRST hour a good is sold in is the one that matters for the walk: the
+    units are in the market from then on. A plan with no sells for a good leaves
+    it out, and the projection then lands that good at hour 0 — the behaviour
+    that shipped.
+    """
+    hours: dict[str, int] = {}
+    market = (plan or {}).get("market") or []
+    for hour, orders in enumerate(market[:TURNS_PER_DAY]):
+        for order in orders or []:
+            if order and str(order[0]) == "SELL" and str(order[1]) not in hours:
+                hours[str(order[1])] = int(hour)
+    return hours
+
 #: The pretrained rival model, loaded ONCE per process (#95).
 #:
 #: `OpponentModel(pretrained=True)` reads `agent/artifact/opponent_counts.npz`
@@ -236,9 +253,65 @@ class Manager:
             horizon = M.season_horizon(obs)
             return forecast(obs, days=horizon, config=config,
                             our_sells=self.own_sells or None,
-                            rival_supply=self._rival_supply(obs, horizon))
+                            rival_supply=self._rival_supply(obs, horizon),
+                            rival_sells=self._rival_hours(obs, horizon) or None)
         except Exception:                      # noqa: BLE001 - belief is optional
             return None
+
+    def _rival_hours(self, obs, horizon: int) -> dict:
+        """The rival's DATED supply: what they sold, then what the model expects.
+
+        `_rival_supply` is the calendar — which days they pay out, not which
+        hour — so the walk dated all of it at hour 0 and the rest of the day was
+        quoted on a market they never sold into (#16). Two sources know the hour:
+        the tracker's inferred `rival_sales` for the turns already recorded, and
+        the opponent model's `expected_sell` for the rest, evaluated at the
+        quotes in hand.
+
+        A failure here leaves the calendar's daily curve standing: one degrade,
+        never a second policy.
+        """
+        from agent.belief.market import PRODUCTS
+        try:
+            out: dict[int, dict[str, int]] = {}
+            tracker = self.tracker
+            if tracker is not None:
+                for rec in getattr(tracker, "records", ()) or ():
+                    units = np.asarray(rec.rival_sales, dtype=np.float64)
+                    for i, good in enumerate(PRODUCTS):
+                        n = int(round(float(units[i])))
+                        if n > 0:
+                            out.setdefault(int(rec.step), {})[good] = n
+            model = self.opponent
+            if model is not None and getattr(model, "counts", None):
+                activity = self._activity()
+                quotes = (obs.get("market") or {}).get("prices") or {}
+                step0 = int(obs.get("step", int(obs.get("day", 0))
+                                     * TURNS_PER_DAY))
+                # The gate: the model only says WHICH HOUR of a day that the
+                # board already says has goods. On a day the calendar is empty
+                # there is nothing to date, and the model's priors would invent
+                # a rival who sells — measured at 4,058 coins against a seat
+                # that does nothing.
+                calendar = np.asarray(self._rival_supply(obs, horizon),
+                                      dtype=np.float64)
+                for d in range(max(1, int(horizon))):
+                    if float(calendar[d].sum()) <= 0.0:
+                        continue
+                    for h in range(TURNS_PER_DAY):
+                        step = step0 + d * TURNS_PER_DAY + h
+                        for good in PRODUCTS:
+                            price = int(quotes.get(good, 0))
+                            if price <= 0:
+                                continue
+                            n = int(round(float(
+                                model.expected_sell(good, step, price,
+                                                    activity=activity))))
+                            if n > 0:
+                                out.setdefault(step, {})[good] = n
+            return out
+        except Exception:                      # noqa: BLE001 - the calendar stands
+            return {}
 
     def _rival_supply(self, obs, horizon):
         """The rival's dated supply curve, or None when it cannot be read.
@@ -280,7 +353,8 @@ class Manager:
                 self.own_sells = {}
                 return
             self.own_sells = plan_supply_sells_from_pool(
-                pool, lam, self.contractor.days, day)
+                pool, lam, self.contractor.days, day,
+                hours=_sell_hours(self.plan))
         except Exception:                      # noqa: BLE001 - flat path stands
             self.own_sells = {}
 

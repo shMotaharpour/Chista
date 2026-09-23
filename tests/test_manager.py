@@ -146,7 +146,8 @@ def test_a_carried_column_is_matched_by_class_KEY_not_by_index():
     stale = [column(1, (7, 0), 5.0), column(0, (9, 3), 7.0),
              column(0, (4, 4), 9.0)]          # a class this board does not have
 
-    def price(y, cash):
+    def price(duals):                      # the one-argument contract
+        y, cash = duals.y, duals.cash
         return np.zeros(2), [column(0, (7, 0), 0.0), column(1, (9, 3), 0.0)]
 
     out = generate(price, np.full(2, 10.0), 100.0, np.array([1, 1]), 2, 1,
