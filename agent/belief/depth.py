@@ -174,8 +174,35 @@ def geometric_edges(cap: int, blocks: int) -> tuple[int, ...]:
     return tuple(edges)
 
 
+def day_envelope(fc: MarketForecast, goods, first_day: int, days: int
+                 ) -> tuple[np.ndarray, np.ndarray]:
+    """The best hour of each day per good: `(prices, hours)`, `(n_goods, days)`.
+
+    The daily layer's one insight into a day: what the best hour of that day
+    pays, and which hour it is. It never CHOOSES the hour — the hourly layer
+    does, and it can only do better than this number, never worse. Prices come
+    from `hourly_prices` (the walk sampled per turn), so this is a read of the
+    same surface the hourly layer will use, not a second forecast.
+    """
+    from agent.belief.market import TURNS_PER_DAY, hourly_prices
+    n_goods = len(goods)
+    prices = np.zeros((n_goods, max(1, int(days))), dtype=np.int64)
+    hours = np.zeros((n_goods, max(1, int(days))), dtype=np.int64)
+    for gi, good in enumerate(goods):
+        table = hourly_prices(fc, days=max(1, int(days)), items=(good,))
+        for d in range(max(1, int(days))):
+            row = table[d * TURNS_PER_DAY:(d + 1) * TURNS_PER_DAY, 0]
+            if not len(row):
+                continue
+            h = int(np.argmax(row))
+            hours[gi, d] = h
+            prices[gi, d] = int(row[h])
+    return prices, hours
+
+
 def sell_blocks(fc: MarketForecast, goods, first_day: int, days: int,
-                cap: int, blocks: int = 5, *, hour: int | None = None
+                cap: int, blocks: int = 5, *, hour: int | None = None,
+                hours: np.ndarray | None = None
                 ) -> tuple[np.ndarray, np.ndarray]:
     """The depth curve of every good and day as LP blocks.
 
@@ -197,10 +224,15 @@ def sell_blocks(fc: MarketForecast, goods, first_day: int, days: int,
     for gi, good in enumerate(goods):
         for d in range(days):
             day = int(first_day) + d
+            # The hour this good's sale can reach that day: the envelope's own
+            # best hour when one is handed in, the caller's fixed hour otherwise.
+            h = hour
+            if hours is not None:
+                h = int(np.asarray(hours)[gi, d])
             prev = 0
             for b, end in enumerate(edges):
-                coins = (depth_coins(fc, good, day, end, hour=hour)
-                         - depth_coins(fc, good, day, prev, hour=hour))
+                coins = (depth_coins(fc, good, day, end, hour=h)
+                         - depth_coins(fc, good, day, prev, hour=h))
                 k = int(end) - prev
                 units[gi, d, b] = k
                 prices[gi, d, b] = (coins / k) if k > 0 else 0.0

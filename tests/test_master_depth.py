@@ -121,15 +121,25 @@ def test_the_curve_lowers_the_internal_price_below_the_peak() -> None:
     flat, _ = _solve(obs, supply, reps, counts, horizon, depth=False)
     deep, fc = _solve(obs, supply, reps, counts, horizon, depth=True)
     assert fc is not None
-    peak = {g: max(fc.price_of(g, d) for d in range(horizon)) for g in PRODUCTS}
+    # The ceiling is the market's own peak, and the day-start rows are no longer
+    # it: the model prices a day at the best hour that day can reach, so the
+    # reference has to be the hourly surface's maximum, not `price_of`.
+    from agent.belief.market import hourly_prices
+    H = hourly_prices(fc, days=horizon)
+    # Two references, because the two arms price on different surfaces: the
+    # shipped flat model on the day-start rows, the depth model on each day's
+    # best hour (so its ceiling is the hourly maximum).
+    peak_rows = {g: max(fc.price_of(g, d) for d in range(horizon))
+                 for g in PRODUCTS}
+    peak = {g: int(H[:, PRODUCTS.index(g)].max()) for g in PRODUCTS}
     sig_flat = np.asarray(flat.sigma, dtype=np.float64)
     sig_deep = np.asarray(deep.sigma, dtype=np.float64)
     # the shipped model credits the PEAK on every day, for the goods it sells
     for good in ("CARROT", "TOMATO"):
         i = PRODUCTS.index(good)
-        assert np.isclose(sig_flat[:, i].max(), peak[good], rtol=1e-9), (
-            f"{good}: the flat model should credit the peak {peak[good]}, "
-            f"got {sig_flat[:, i].max():.2f}")
+        assert np.isclose(sig_flat[:, i].max(), peak_rows[good], rtol=1e-9), (
+            f"{good}: the flat model should credit the day-start peak "
+            f"{peak_rows[good]}, got {sig_flat[:, i].max():.2f}")
         assert sig_deep[:, i].max() < peak[good], (
             f"{good}: the curve must price below the peak {peak[good]}, "
             f"got {sig_deep[:, i].max():.2f}")

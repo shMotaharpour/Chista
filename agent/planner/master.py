@@ -966,11 +966,17 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
     depth = None
     if forecast_obj is not None:
         try:
-            from agent.belief.depth import sell_blocks
+            from agent.belief.depth import day_envelope, sell_blocks
             goods = [SHED_ITEMS[ii] for ii in SELLABLE]
+            # The day's ENVELOPE, not its hour-0 row: goods already in the shed
+            # can reach any hour of the day, so the day is worth what its best
+            # hour pays — and the hourly layer, which owns the hour, can only do
+            # better than this number, never worse.
+            _env_price, env_hour = day_envelope(forecast_obj, goods,
+                                                int(obs.get("day", 0)), days)
             depth = sell_blocks(forecast_obj, goods, int(obs.get("day", 0)),
                                 days, int(supply.shed_capacity),
-                                blocks=SELL_BLOCKS)
+                                blocks=SELL_BLOCKS, hours=env_hour)
         except Exception:                       # noqa: BLE001 - the flat tier stands
             depth = None
 
