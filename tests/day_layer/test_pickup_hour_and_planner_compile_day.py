@@ -128,3 +128,17 @@ def test_the_planners_compile_writes_the_day_the_search_priced(hands) -> None:
     tiles = played["farms"][0]["tiles"]
     dry = [(x, y) for (x, y) in BOARD if not tiles[y][x]["watered_today"]]
     assert not dry, f"hands={hands}: {len(dry)} of {len(BOARD)} tiles not watered: {dry[:5]}"
+
+
+@pytest.mark.parametrize("hands", [1, 2, 3])
+def test_the_compiled_day_hires_exactly_the_hands_it_priced(hands) -> None:
+    """One source: the market hires the tuple's own length, not a second count.
+
+    `Day.hire_times` is the day's whole labour and `compile` hires `result.pool` —
+    the same number, because the tuple IS that pool's timetable. A compile that
+    hired a different count would dispatch hands the day was never costed with,
+    which is the mismatch the hours were given one home to prevent.
+    """
+    plan = D.compile(_day_plan(hands), _obs(), hands=hands)
+    hires = sum(1 for hour in plan["market"] for o in hour if o and o[0] == "HIRE")
+    assert hires == hands, f"priced {hands} hands, hired {hires}"
