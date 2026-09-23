@@ -9,9 +9,10 @@ claimed and did not have. Measured: 60 ms placed 40 tasks where 80 ms placed 8. 
 a re-run that came back empty. The fix is the reserve: an attempt costs about what the last one cost,
 so one that cannot be finished is not started.
 
-And `Result` carried no settled positions, so a caller holding one could not compile it: the compiler
+And `Result` carried no positions, so a caller holding one could not compile it: the compiler
 re-derived them from the route, which agrees with the search only when the fixed point converged.
-Cut short, it raised in the agent's hot path - one season in four.
+Cut short, it raised in the agent's hot path - one season in four. A Result now carries each hand's
+door (`Result.doors`).
 
 The clock here is the test's own. A real deadline that lands between two attempts is a race, and a
 test that fails for the hardware is worth less than no test: each call to the clock costs one unit,
@@ -24,6 +25,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
 
 from agent.tile_dp.chains import chain_id_of, chain_ops
 from agent.wsr import beam as B
+from agent.wsr import emit as E
 from agent.wsr import tasks as T
 
 OPS = chain_ops(chain_id_of(("PLANT", "WATER")))
@@ -62,6 +64,16 @@ def test_a_bigger_budget_never_places_less(monkeypatch):
         placed.append(len(result.route))
 
     assert placed == sorted(placed), f"a larger budget placed less: {placed}"
+
+
+def test_a_result_always_says_where_it_was_priced_from():
+    """A search cut short still names every hand's door, so a caller holding it can compile it."""
+    chains, tasks = _day()
+    result = B.search(_day_for(chains), tasks, hands=HANDS, max_hands=HANDS, budget_s=0.001)
+
+    assert len(result.doors) == result.pool, (
+        f"a Result must carry the door of each of its {result.pool} hands; it carries {result.doors}")
+    E.compile_route(_day_for(chains), tasks, result)
 
 
 def test_a_carried_day_does_not_ask_to_be_ground():
