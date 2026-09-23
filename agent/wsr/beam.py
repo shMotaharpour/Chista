@@ -183,7 +183,7 @@ def lower_bound(day: Day, tasks: TaskArray) -> int:
 
 
 def _bag(tasks: TaskArray, entries: list[tuple[int, str]]) -> dict[int, int]:
-    """How much of each good one worker loads at its door before the walk.
+    """How much of each good one worker loads at its door (`door_load`, `loads_before`).
 
     Only the goods used before the worker's first DROP: the engine's DROP empties the whole bag
     (`kaggriculture.py:343-356`), so what is still in it goes to the shed with the harvest, and every
@@ -261,8 +261,8 @@ def leg_moves(here: Cell, target: Cell, fetch) -> list[tuple]:
 def bags_of(day: Day, tasks: TaskArray, result: Result) -> list[frozenset[int]]:
     """The goods each worker's own day loads at its door: the distinct goods in its own bag.
 
-    The compiler writes one PICKUP per good, at the worker's door, before its walk, each at its own
-    good's hour (`pickup_turns`) - so this is what the search has to charge that worker, and it is a
+    The compiler writes one PICKUP per good, at the worker's door, before its first task that is
+    not door work (`loads_before`), each at its own good's hour (`pickup_turns`) - so this is what the search has to charge that worker, and it is a
     property of the route rather than of the day. `_fixed_point` iterates it; `compile_route` writes
     from the same bags.
     """
@@ -860,8 +860,8 @@ def pickup_turns(hour: int, goods, arrival: dict[int, int]) -> list[tuple[int, i
 def walk_start_turn(turn: int, moves: int) -> int:
     """The turn the compiler writes a walk in: it ENDS at the task's turn.
 
-    The writer (`compile_route`) and the reader that works out where the units stand after the first
-    turn (`_settled_after_first_turn`) both go through here, so "the unit's first op is a move" and
+    The writer (`compile_route`) and the reader that works out where a unit stands at a turn
+    (`_stand_after`) both go through here, so "the unit's first op is a move" and
     "the walk starts at turn 0" cannot become two different questions. The rewrite that introduced
     this layer answered the reader's half with a guess at the gap between the walk and the task while
     the writer kept starting walks at the earliest free turn; the two disagreed wherever a first task
@@ -876,7 +876,8 @@ def first_walk_turn(hour: int, goods, arrival: dict[int, int]) -> int:
     """The turn the compiler writes a worker's first walk in - `compile_route`'s `last + 1`.
 
     A worker with an empty bag walks from the turn its own day begins; one that carries goods loads
-    them at its door first (`pickup_turns`) and walks after the last one. The compiler writes the ops
+    them at its door first (`pickup_turns`) and walks after the last one - unless its first task is
+    door work before its goods land (`loads_before`), which is done first. The compiler writes the ops
     with this rule and the model counts where the units stand after the first turn with it, so the
     day that is written and the day that was priced cannot disagree.
     """
@@ -903,7 +904,7 @@ def door_work(tasks: TaskArray) -> np.ndarray:
     PICKUP is taken (`kaggriculture.py:138-139`, `:358-375`), so it can load there whenever it needs
     to. Doing such a task first only pays in the turns before the worker's goods are in the shed -
     goods bought in turn 0 are there from hour 1, and the farmer's hour 0 is free - so it counts as
-    door work only at a turn before the worker's first good lands (`DoorLoad.first`); at any later
+    door work only at a turn before the day's first good lands (`day_first_good`); at any later
     turn it loads first, as every other task does.
     """
     on_door = np.isin(tasks.cell_index, SHED_INDEX)
@@ -921,7 +922,8 @@ class DoorLoad(NamedTuple):
     arrival: dict[int, int]
     #: (n,): the tasks a worker may do before it loads (`door_work`).
     before: np.ndarray
-    #: (workers,): the hour the worker's first good lands; door work before it does not load.
+    #: (workers,): the hour the day's first good lands (`day_first_good`); door work before it does
+    #: not load.
     first: np.ndarray
     #: (workers,): the hour each worker may first act (`_start_hours`), before any pickup.
     hour: np.ndarray
@@ -957,16 +959,21 @@ def door_load(tasks: TaskArray, charge, hour: np.ndarray) -> DoorLoad:
         charge = [preload_turns(tasks)] * workers
     arrival = good_hours(tasks)
     held = np.zeros((workers, n_goods), dtype=bool)
-    first = np.full(workers, BIG, dtype=np.int16)
+    # The day's first good, not the worker's: the compiler knows the worker's bag and not the charge
+    # it was searched with, so one number both sides can read (`loads_before`).
+    first = np.full(workers, day_first_good(tasks), dtype=np.int16)
     order = []
     for worker, load in enumerate(charge):
         for good in load:
             held[worker, int(good)] = True
         order.append([good for _turn, good in pickup_turns(0, load, arrival)])
-        if order[-1]:
-            first[worker] = arrival.get(order[-1][0], 0)
     return DoorLoad(held, order, arrival, door_work(tasks), first,
                     np.asarray(hour, dtype=np.int16))
+
+
+def day_first_good(tasks: TaskArray) -> int:
+    """The hour the day's first consumed good is in the shed; door work before it does not load."""
+    return min(good_hours(tasks).values(), default=int(BIG))
 
 
 def loads_before(before: bool, turn: int, first: int) -> bool:
@@ -1088,8 +1095,8 @@ def _expand(day: Day, tasks: TaskArray, done, when, who, free, where, travel, li
     # The trip a consumer makes when its good is not in the bag: to a door, the pickup, and on. One
     # door, not two minima - the nearest door to the worker and the nearest to the tile can be
     # different doors, and the compiler would then walk a trip the search never priced.
-    # The trip: one turn for the pickup, taken at the door before the day's walk. The worker does
-    # not move for it, because it is already standing where the good is when it takes it.
+    # The door load itself is paid before the worker's first task that is not door work
+    # (`start_hours`, `door_load`); a trip here is the refetch after a DROP.
     trip = np.zeros(hop.shape, dtype=bool)
     needs = tasks.items[index] >= 0
     if needs.any():

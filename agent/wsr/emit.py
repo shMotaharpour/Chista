@@ -21,8 +21,8 @@ from __future__ import annotations
 
 from typing import NamedTuple
 
-from agent.wsr.beam import (Day, Result, _bag, _start_hours, _start_positions, door_work,
-                            first_walk_turn, good_hours, leg_moves, leg_target, legs,
+from agent.wsr.beam import (Day, Result, _bag, _start_hours, _start_positions, day_first_good,
+                            door_work, first_walk_turn, good_hours, leg_moves, leg_target, legs,
                             loads_before, pickup_turns, walk_start_turn)
 from agent.wsr.tasks import ITEM_CODE, TaskArray
 
@@ -83,7 +83,7 @@ def compile_route(day: Day, tasks: TaskArray, result: Result, *,
     for worker, entries in by_worker.items():
         bag = _bag(tasks, entries)
         loaded = not bag
-        first = min((arrival.get(good, 0) for good in bag), default=0)
+        first = day_first_good(tasks)
         for turn, row, fetch in legs(tasks, entries):
             if not loaded and loads_before(bool(before[row]), turn, first):
                 for pick, good in pickup_turns(last[worker] + 1, bag, arrival):
