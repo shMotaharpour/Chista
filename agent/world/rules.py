@@ -119,9 +119,18 @@ HIRE_SEQUENCE: tuple[int, ...] = (1, 1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233
                                   377, 610, 987, 1597, 2584, 4181, 6765)
 
 
+#: The engine's multiplier on the hire sequence: `FARM_HAND_COST_MULT`
+#: (kaggriculture.py:101), which an episode may override as `farmHandCostMult`
+#: (:552). ZERO for now, by the owner's order (2026-09-23): the planner is not
+#: given a labour-cost model yet, so it must not price a bill it cannot reason
+#: about. When that model lands the environment is set to the same number.
+HAND_COST_MULT: int = 0
+
+
 def hire_cost(n_already_today: int) -> int:
     """The price of the next hire, kaggriculture.py:698-699 (`_fib` indexed at 1)."""
-    return HIRE_SEQUENCE[min(n_already_today, len(HIRE_SEQUENCE) - 1)]
+    return HAND_COST_MULT * HIRE_SEQUENCE[
+        min(n_already_today, len(HIRE_SEQUENCE) - 1)]
 
 
 # --- the town ---------------------------------------------------------------- #
