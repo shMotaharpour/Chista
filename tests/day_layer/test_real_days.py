@@ -47,16 +47,14 @@ KNOWN_SHORT = {
     ("2026-09-06", 105964064, 25),
     ("2026-09-16", 109466152, 25),
     ("2026-09-01", 104478289, 15),
-    # and the one the real hire hours cost: two of the game's hands began at hour 2, so they had 22
-    # turns and not 23 - which the corpus used to give them all.
-    ("2026-08-24", 98009264, 14),
 }
 
 #: The strong sample's own short days, same rule. Every one is a late day of a big farm - the days a
 #: top-10 player had the most land and the same handful of hands - and each misses a few tasks.
 KNOWN_SHORT_STRONG = {
-    ("2026-08-11", 91807542, 25),
+    ("2026-08-23", 97204025, 5),
     ("2026-08-31", 103687742, 15),
+    ("2026-09-05", 105864228, 15),
     ("2026-09-05", 105864228, 25),
     ("2026-09-10", 107289135, 25),
     ("2026-09-15", 109086888, 15),

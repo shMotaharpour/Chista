@@ -670,9 +670,11 @@ def _run(day: Day, tasks: TaskArray, *, hands: int, beam: int,
     who = np.full((rows, n), -1, dtype=np.int16)             # and the worker that did it
     # Every worker starts at its own hour: the farmer at the day's first, a hand at the hour the
     # planner offered it. Starting them all together would hand the search turns the engine will
-    # not give, which is how a day gets called feasible that the harness then truncates.
+    # not give, which is how a day gets called feasible that the harness then truncates. The door
+    # load is charged before the first walk (`start_hours`), except for door work before the goods
+    # land (`door_load`, `_expand`).
     hours = start_hours(day, tasks, hands, charge)
-    loaded = door_load(tasks, charge, len(hours))
+    load = door_load(tasks, charge, _start_hours(day, hands))
     free = np.tile(hours[None, :], (rows, 1)).astype(np.int16)
     where = np.tile(start_pos[None, :, :], (rows, 1, 1))
     travel = np.zeros((rows,), dtype=np.int16)
@@ -694,7 +696,7 @@ def _run(day: Day, tasks: TaskArray, *, hands: int, beam: int,
         if deadline is not None and not (_step & 7) and time.perf_counter() >= deadline:
             cut = True
             break
-        expanded = _expand(day, tasks, done, when, who, free, where, travel, live, count, loaded)
+        expanded = _expand(day, tasks, done, when, who, free, where, travel, live, count, load)
         if expanded is None:
             break
         done, when, who, free, where, travel, live, count = _select(
@@ -894,13 +896,45 @@ def grow_charge(hour: int, charged, bag, arrival: dict[int, int]):
     return bag
 
 
+def door_work(tasks: TaskArray) -> np.ndarray:
+    """The tasks a worker may do before it loads its goods: work on a shed-access tile that needs none.
+
+    A worker that has only worked the four shed-access tiles is still standing at the shed, where any
+    PICKUP is taken (`kaggriculture.py:138-139`, `:358-375`), so it can load there whenever it needs
+    to. Doing such a task first only pays in the turns before the worker's goods are in the shed -
+    goods bought in turn 0 are there from hour 1, and the farmer's hour 0 is free - so it counts as
+    door work only at a turn before the worker's first good lands (`DoorLoad.first`); at any later
+    turn it loads first, as every other task does.
+    """
+    on_door = np.isin(tasks.cell_index, SHED_INDEX)
+    return on_door & (tasks.items < 0) & ~tasks.is_drop
+
+
+class DoorLoad(NamedTuple):
+    """Each worker's door load: what it puts in the bag, the order it is taken in, and when."""
+
+    #: (workers, goods): the goods each worker's load puts in its bag until its first DROP.
+    held: np.ndarray
+    #: Per worker, the goods in the order they are picked up (`pickup_turns`).
+    order: list[list[int]]
+    #: The hour each good is in the shed (`good_hours`).
+    arrival: dict[int, int]
+    #: (n,): the tasks a worker may do before it loads (`door_work`).
+    before: np.ndarray
+    #: (workers,): the hour the worker's first good lands; door work before it does not load.
+    first: np.ndarray
+    #: (workers,): the hour each worker may first act (`_start_hours`), before any pickup.
+    hour: np.ndarray
+
+
 def start_hours(day: Day, tasks: TaskArray, hands: int, charge=None) -> np.ndarray:
     """The hour each worker's WALK may begin: its own hour, the goods, and the pickups before it.
 
     `charge` is the goods each worker's own day loads at its door. That is a property of the route
     (which worker does what), so the search iterates it (`_fixed_point`) and this is where the
     iteration lands. Without it every worker is charged the day's whole set of goods: a ceiling that
-    is always safe and costs the search the turns nobody uses.
+    is always safe and costs the search the turns nobody uses. The one exception is door work before
+    the goods land (`door_work`), priced from the worker's own hour in `_expand`.
     """
     hours = _start_hours(day, hands)
     if charge is None:
@@ -910,22 +944,78 @@ def start_hours(day: Day, tasks: TaskArray, hands: int, charge=None) -> np.ndarr
                       dtype=np.int16)
 
 
-def door_load(tasks: TaskArray, charge, workers: int) -> np.ndarray:
-    """Which goods each worker already holds when its walk begins: (workers, goods).
+def door_load(tasks: TaskArray, charge, hour: np.ndarray) -> DoorLoad:
+    """The door load each worker's `charge` names - `preload_turns` for every worker when None.
 
-    `start_hours` has already spent a turn at the door for every good in the charge, so a consumer of
-    one of them finds it in the bag - until the worker's first DROP empties it. The same charge, read
-    by both, so a pickup is paid for once.
+    `hour` is each worker's own first hour (`_start_hours`). A consumer of a good in the load finds
+    it in the bag until the worker's first DROP.
     """
+    workers = len(hour)
     goods = np.where(tasks.yields >= 0, tasks.yields, tasks.items)
     n_goods = max(int(goods.max()) + 1, 1) if goods.size else 1
     if charge is None:
         charge = [preload_turns(tasks)] * workers
-    out = np.zeros((workers, n_goods), dtype=bool)
-    for worker, held in enumerate(charge):
-        for good in held:
-            out[worker, int(good)] = True
+    arrival = good_hours(tasks)
+    held = np.zeros((workers, n_goods), dtype=bool)
+    first = np.full(workers, BIG, dtype=np.int16)
+    order = []
+    for worker, load in enumerate(charge):
+        for good in load:
+            held[worker, int(good)] = True
+        order.append([good for _turn, good in pickup_turns(0, load, arrival)])
+        if order[-1]:
+            first[worker] = arrival.get(order[-1][0], 0)
+    return DoorLoad(held, order, arrival, door_work(tasks), first,
+                    np.asarray(hour, dtype=np.int16))
+
+
+def loads_before(before: bool, turn: int, first: int) -> bool:
+    """Whether a worker that has not loaded yet loads before a task: the one rule, search and writer.
+
+    It does unless the task is door work at a turn before its first good lands (`door_work`).
+    """
+    return not (before and int(turn) < int(first))
+
+
+def _load_ready(free: np.ndarray, load: DoorLoad) -> np.ndarray:
+    """The turn each worker is free again after loading from `free`: (batch, workers).
+
+    One turn per good, each no earlier than the good is in the shed - `pickup_turns` from `free`.
+    """
+    out = free.astype(np.int16).copy()
+    for worker, goods in enumerate(load.order):
+        for good in goods:
+            out[:, worker] = np.maximum(out[:, worker], load.arrival.get(good, 0)) + 1
     return out
+
+
+def done_by_worker(done, who, workers: int) -> np.ndarray:
+    """Whether each worker has done any task at all, per route: (batch, workers)."""
+    batch = who.shape[0]
+    live = done & (who >= 0)
+    out = np.zeros(batch * workers, dtype=bool)
+    index = np.arange(batch)[:, None] * workers + np.where(who >= 0, who, 0)
+    out[index[live]] = True
+    return out.reshape(batch, workers)
+
+
+def _door_first(done, who, when, load: DoorLoad, workers: int) -> np.ndarray:
+    """Whether each worker's day so far is door work before its goods landed: (batch, workers).
+
+    Such a worker has not loaded yet: it is still at the shed, and its next task that is not door work
+    before the goods land pays the pickups (`_expand`). A worker with no task yet is not in this
+    state - its pickups are already in its start (`start_hours`). An idle drop (turn -1) is no leg.
+    """
+    batch = who.shape[0]
+    live = done & (who >= 0) & (when >= 0)
+    worker = np.where(who >= 0, who, 0)
+    early = load.before[None, :] & (when < load.first[worker])
+    any_task = np.zeros(batch * workers, dtype=bool)
+    loaded = np.zeros(batch * workers, dtype=bool)
+    index = np.arange(batch)[:, None] * workers + worker
+    any_task[index[live]] = True
+    loaded[index[live & ~early]] = True
+    return (any_task & ~loaded).reshape(batch, workers)
 
 
 def _start_hours(day: Day, hands: int) -> np.ndarray:
@@ -947,7 +1037,7 @@ def _start_hours(day: Day, hands: int) -> np.ndarray:
 
 
 def _expand(day: Day, tasks: TaskArray, done, when, who, free, where, travel, live, count,
-            loaded=None):
+            load: DoorLoad | None = None):
     """One task added to every live route: the vectorised step.
 
     For each route and each task, the earliest hour any worker could finish it: walk from where that
@@ -957,8 +1047,9 @@ def _expand(day: Day, tasks: TaskArray, done, when, who, free, where, travel, li
     A task that consumes a good its worker does not yet hold pays for the trip: out to a door, the
     pickup, and on to the tile. The second feeding of the same good on the same worker pays nothing
     extra, because the good is already in that worker's bag - which is the saving a day makes when
-    it fetches once and eats twice. A good in the worker's door load (`loaded`, `door_load`) is in
-    the bag from the start of its walk until its first DROP: `start_hours` already paid its pickup.
+    it fetches once and eats twice. A good in the worker's door load (`door_load`) is in the bag
+    until its first DROP; the load's pickups are paid by the first task that is not `door_work`,
+    from the turn the worker is free (`_load_ready`), so work on a shed-access tile can come first.
     """
     n = tasks.n
     b, m = free.shape
@@ -1003,9 +1094,9 @@ def _expand(day: Day, tasks: TaskArray, done, when, who, free, where, travel, li
     needs = tasks.items[index] >= 0
     if needs.any():
         carried = _carried(done, who, tasks, m, when, last_drop)  # (b, m, goods)
-        if loaded is not None:
+        if load is not None:
             # The door load is in the bag until the worker's first DROP.
-            carried = carried | (loaded[None, :, :carried.shape[2]]
+            carried = carried | (load.held[None, :, :carried.shape[2]]
                                  & (last_drop < 0)[:, :, None])
         has = np.where(needs[None, None, :], carried[:, :, tasks.items[index].clip(0)], True)
         trip = ~has
@@ -1034,6 +1125,22 @@ def _expand(day: Day, tasks: TaskArray, done, when, who, free, where, travel, li
     ready = ready_all[:, index]                              # (b, w): every predecessor done
     earliest_here = tasks.earliest[index]
     latest_here = tasks.latest[index]
+    if load is not None and any(load.order):
+        # Door work before the goods land (`loads_before`): a worker that has done nothing yet may
+        # take it from its own hour, not after its pickups - it is still on the door.
+        fresh = ~done_by_worker(done, who, m)
+        own = np.maximum(load.hour[None, :], 0)[:, :, None] + hop
+        bare = np.maximum(np.maximum(own, released[:, None, :]), earliest_here[None, None, :])
+        early = (fresh[:, :, None] & load.before[index][None, None, :]
+                 & (bare < load.first[None, :, None]))
+        arrive = np.where(early, own, arrive)
+        # A worker whose day so far is that door work has not loaded yet: its next task that is not
+        # door work before the goods land pays the pickups from the turn it is free.
+        waiting = _door_first(done, who, when, load, m)[:, :, None]
+        if waiting.any():
+            bare = np.maximum(np.maximum(arrive, released[:, None, :]), earliest_here[None, None, :])
+            still = load.before[index][None, None, :] & (bare < load.first[None, :, None])
+            arrive = np.where(waiting & ~still, _load_ready(free, load)[:, :, None] + hop, arrive)
 
     start = np.maximum(arrive, released[:, None, :])
     start = np.maximum(start, earliest_here[None, None, :])
