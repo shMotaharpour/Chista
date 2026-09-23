@@ -142,3 +142,22 @@ def test_a_warmed_row_stands_where_its_route_ends(searched) -> None:
         f"hands={hands}: the warmed row stands at {where[0].tolist()} and the route ends at {ends}")
     assert int(travel[0]) == moves, (
         f"hands={hands}: the warmed row is charged {int(travel[0])} steps and the ops walk {moves}")
+
+
+def test_a_farmer_who_walks_in_turn_0_is_not_a_reason_to_refuse_a_route() -> None:
+    """The consistency check asks whether the HANDS start where the day says; the farmer's own start
+    is not a choice. It used to compare the farmer's start cell with where it stands after turn 0,
+    so every candidate on a day whose farmer walks in turn 0 was refused - measured on twelve
+    waterings, farmer alone: 0 of 2 tightened candidates accepted, against 2 of 2 now."""
+    import json
+
+    board = json.loads((pathlib.Path(__file__).parent / "corpus" / "mixed_second_day.json")
+                       .read_text())
+    waters = [(tuple(c), tuple(o), e) for c, o, e in board["chains"] if o == ["WATER"]][:12]
+    tasks = T.build(waters, available={})
+    day = B.Day(chains=tuple(waters), available={}, hire_times=())
+    result = B.search(day, tasks, hands=0, max_hands=0, budget_s=20.0)
+    ops = compile_route(day, tasks, result)
+    assert ops.units[0][0][0] in MOVE, "the premise: the farmer walks off its door in turn 0"
+    assert B._consistent(day, tasks, result), (
+        "a route the compiler writes and the rules accept is refused because the farmer walks")
