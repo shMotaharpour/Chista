@@ -15,8 +15,8 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
 from agent.wsr import beam as B
 from tests.day_layer import test_mixed_day_pool as P
 
-#: Measured: the count rule (before the charge became a set) placed 53 of 54 at beam 64, and the
-#: union placed 47. The reference is 54 and still out of reach (the strict xfail in the pool file).
+#: Measured: the count rule (before the charge became a set) placed 53 of 54 at beam 64 with three
+#: hands, and the union placed 47.
 MIXED_PLACED = 53
 
 
@@ -36,8 +36,8 @@ def test_the_charge_grows_by_the_later_walk_not_by_the_union_of_goods() -> None:
 
 
 def test_the_mixed_day_is_placed_as_far_as_the_count_rule_placed_it() -> None:
-    day, tasks = P._day()
-    result = B.search(day, tasks, beam=64, hands=P.HANDS, max_hands=P.HANDS)
+    day, tasks = P._day(hands=P.REFERENCE_HANDS)
+    result = B.search(day, tasks, beam=64, hands=P.REFERENCE_HANDS, max_hands=P.REFERENCE_HANDS)
     assert len(result.route) >= MIXED_PLACED, (
         f"the search placed {len(result.route)} of {tasks.n} where it placed {MIXED_PLACED} before "
         f"the charge became a set - a worker is charged a pickup turn nobody spends")

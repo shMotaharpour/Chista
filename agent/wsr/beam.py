@@ -445,14 +445,26 @@ def _fixed_point(day: Day, tasks: TaskArray, beam: int, pool: int,
     and a half-built attempt must never replace the fuller day the first pass found.
     """
     conservative = _settle(day, tasks, beam, pool, deadline, warm)
+    hours, arrival = _start_hours(day, pool), good_hours(tasks)
     if conservative.complete:
-        # The day-wide charge already carries the day, so the tightening pass has nothing to win on
-        # completeness - and it costs a search per pass, which on a real day is the budget the caller
-        # gave (F046). The day-wide charge is a ceiling, so the day it found is the day.
+        # The day-wide charge already carries the day, so there is nothing to win on completeness -
+        # but it charges every worker every good of the day, and a worker that loads fewer at its door
+        # (a good it only uses after its own DROP is fetched then, not at the door - `_bag`) starts
+        # every walk late for pickups it never makes. One pass with the route's own bags, and only when
+        # some worker was charged a later start than its bag needs: a day with no such worker costs
+        # nothing more (F046).
+        bags = bags_of(day, tasks, conservative)
+        full = preload_turns(tasks)
+        if all(first_walk_turn(h, bag, arrival) >= first_walk_turn(h, full, arrival)
+               for h, bag in zip(hours, bags)):
+            return conservative
+        candidate = _settle(day, tasks, beam, pool, deadline, warm, charge=bags)
+        if (candidate.complete and _consistent(day, tasks, candidate)
+                and not _better_route(conservative, candidate)):
+            return candidate
         return conservative
     best: Result = conservative
     charge = bags_of(day, tasks, conservative)
-    hours, arrival = _start_hours(day, pool), good_hours(tasks)
     tightened = False
     for _attempt in range(CHARGE_PASSES + 1):
         candidate = _settle(day, tasks, beam, pool, deadline, warm, charge=charge)
@@ -642,6 +654,7 @@ def _run(day: Day, tasks: TaskArray, *, hands: int, beam: int,
     # planner offered it. Starting them all together would hand the search turns the engine will
     # not give, which is how a day gets called feasible that the harness then truncates.
     hours = start_hours(day, tasks, hands, charge)
+    loaded = door_load(tasks, charge, len(hours))
     free = np.tile(hours[None, :], (rows, 1)).astype(np.int16)
     where = np.tile(start_pos[None, :, :], (rows, 1, 1))
     travel = np.zeros((rows,), dtype=np.int16)
@@ -663,7 +676,7 @@ def _run(day: Day, tasks: TaskArray, *, hands: int, beam: int,
         if deadline is not None and not (_step & 7) and time.perf_counter() >= deadline:
             cut = True
             break
-        expanded = _expand(day, tasks, done, when, who, free, where, travel, live, count)
+        expanded = _expand(day, tasks, done, when, who, free, where, travel, live, count, loaded)
         if expanded is None:
             break
         done, when, who, free, where, travel, live, count = _select(
@@ -879,6 +892,24 @@ def start_hours(day: Day, tasks: TaskArray, hands: int, charge=None) -> np.ndarr
                       dtype=np.int16)
 
 
+def door_load(tasks: TaskArray, charge, workers: int) -> np.ndarray:
+    """Which goods each worker already holds when its walk begins: (workers, goods).
+
+    `start_hours` has already spent a turn at the door for every good in the charge, so a consumer of
+    one of them finds it in the bag - until the worker's first DROP empties it. The same charge, read
+    by both, so a pickup is paid for once.
+    """
+    goods = np.where(tasks.yields >= 0, tasks.yields, tasks.items)
+    n_goods = max(int(goods.max()) + 1, 1) if goods.size else 1
+    if charge is None:
+        charge = [preload_turns(tasks)] * workers
+    out = np.zeros((workers, n_goods), dtype=bool)
+    for worker, held in enumerate(charge):
+        for good in held:
+            out[worker, int(good)] = True
+    return out
+
+
 def _start_hours(day: Day, hands: int) -> np.ndarray:
     """The hour each worker may first act.
 
@@ -897,7 +928,8 @@ def _start_hours(day: Day, hands: int) -> np.ndarray:
     return np.asarray(hours, dtype=np.int16)
 
 
-def _expand(day: Day, tasks: TaskArray, done, when, who, free, where, travel, live, count):
+def _expand(day: Day, tasks: TaskArray, done, when, who, free, where, travel, live, count,
+            loaded=None):
     """One task added to every live route: the vectorised step.
 
     For each route and each task, the earliest hour any worker could finish it: walk from where that
@@ -907,7 +939,8 @@ def _expand(day: Day, tasks: TaskArray, done, when, who, free, where, travel, li
     A task that consumes a good its worker does not yet hold pays for the trip: out to a door, the
     pickup, and on to the tile. The second feeding of the same good on the same worker pays nothing
     extra, because the good is already in that worker's bag - which is the saving a day makes when
-    it fetches once and eats twice.
+    it fetches once and eats twice. A good in the worker's door load (`loaded`, `door_load`) is in
+    the bag from the start of its walk until its first DROP: `start_hours` already paid its pickup.
     """
     n = tasks.n
     b, m = free.shape
@@ -947,6 +980,10 @@ def _expand(day: Day, tasks: TaskArray, done, when, who, free, where, travel, li
     needs = tasks.items[index] >= 0
     if needs.any():
         carried = _carried(done, who, tasks, m, when, last_drop)  # (b, m, goods)
+        if loaded is not None:
+            # The door load is in the bag until the worker's first DROP.
+            carried = carried | (loaded[None, :, :carried.shape[2]]
+                                 & (last_drop < 0)[:, :, None])
         has = np.where(needs[None, None, :], carried[:, :, tasks.items[index].clip(0)], True)
         trip = ~has
         # After a drop the load at the door is gone, so the trip is a real walk: out to the
