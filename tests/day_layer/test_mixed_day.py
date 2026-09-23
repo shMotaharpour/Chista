@@ -77,16 +77,20 @@ def _day():
     return day, tasks, chains
 
 
-def _replay(plan, orders):
+def _replay(plan, orders, *, weeds: bool = True):
     """Run the compiled day against the engine and return the board it left behind.
 
     `FastSim` wraps the same interpreter the harness drives (R003), so the board is the engine's own
     verdict - without the harness's schema validation, which is what makes spending a day to reach a
     later state affordable. The other seat passes: this day is the farm's own.
+
+    `weeds=False` sets the engine's own `weedSpawnChance` to zero: the night spawns weeds on empty
+    tiles at random (`kaggriculture.py:836-840`), and a board read after it cannot tell one from an
+    unwatered planting the night turned to weed.
     """
     from offline_lab.fast_sim import FastSim
 
-    sim = FastSim({"episodeSteps": 25})
+    sim = FastSim({"episodeSteps": 25} if weeds else {"episodeSteps": 25, "weedSpawnChance": 0.0})
     sim.reset()
     while not sim.done:
         obs = sim.observations()[0]

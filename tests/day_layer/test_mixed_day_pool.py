@@ -124,11 +124,11 @@ def test_the_partial_route_replays_as_the_day_it_was_priced_as(short) -> None:
     """
     day, tasks, result = short
     plan = to_plan(compile_route(day, tasks, result))
-    board = _board(_replay(plan, ORDERS))
+    board = _board(_replay(plan, ORDERS, weeds=False))
 
     # What a planting leaves on the board: the crop, or a weed when the day never reached its water -
     # an unwatered planting is what the engine turns to weed. Either is the plant op having landed; a
-    # bare tile is one that did not.
+    # bare tile is one that did not. The night's random weeds are switched off, so no other tile grows.
     planned = {tuple(int(v) for v in tasks.cells[tasks.ids.index(task_id)])
                for _hour, task_id, _worker in result.route if task_id.endswith("_plant")}
     grown = {cell for cell, record in board.items() if record.get("kind") in ("PLANT", "WEED")}
