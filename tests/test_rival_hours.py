@@ -71,3 +71,21 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+def test_a_model_present_dates_the_hours_the_tracker_has_not_seen() -> None:
+    """The trained model covers the horizon; dropping its branch empties this."""
+    m = _manager()
+    m.tracker = None                       # no records: the model alone
+    model = MC.opponent_model()
+    assert model is not None, "the pretrained opponent table must be present"
+    m.opponent = model
+    quotes = {"WHEAT": 25, "CARROT": 35, "TOMATO": 60, "STRAWBERRY": 120,
+              "MELON": 250, "EGG": 50, "MILK": 160, "WOOL": 200,
+              "FERTILIZER": 100}
+    obs = {"step": 0, "day": 0, "market": {"prices": quotes}}
+    hours = m._rival_hours(obs, 2)
+    assert hours, (
+        "with the model present the rival's hours must be dated; an empty dict "
+        "means the model branch is not running")
+    assert all(0 <= int(step) < 2 * 24 for step in hours), sorted(hours)
