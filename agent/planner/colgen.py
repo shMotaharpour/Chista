@@ -190,6 +190,13 @@ class MasterSolve:
     appetite: np.ndarray = None
     #: (n_goods, days) what the master decided to SELL, in `market` order.
     sells: np.ndarray = None
+    #: (days, items) what the plan drops by the last market hour of the day, and
+    #: what waits for the night flush. None when the entry row is off.
+    now: np.ndarray = None
+    defer: np.ndarray = None
+    #: (days, items) the entry rows' duals: the internal price of a harvested
+    #: unit, which is the pricing's produce credit when the entry row is on.
+    eta: np.ndarray = None
 
     def __post_init__(self) -> None:
         for name in ("sigma", "tau", "rho", "appetite", "sells"):
@@ -303,8 +310,8 @@ class MasterLP:
               prices: np.ndarray | None = None,
               market: tuple[int, ...] = (),
               sell_cap: np.ndarray | None = None,
-              depth: tuple[np.ndarray, np.ndarray] | None = None
-              ) -> MasterSolve:
+              depth: tuple[np.ndarray, np.ndarray] | None = None,
+              entry: bool = False) -> MasterSolve:
         """The restricted master over the pool, with the SHED as a stock.
 
         Variables: `lambda_j >= 0` per column, then per day the sells, the stock
@@ -400,7 +407,15 @@ class MasterLP:
         block = tiers * half
         stock0 = n + block
         waste0 = stock0 + items * days
-        n_cols = waste0 + items * days
+        now0 = waste0 + items * days
+        defer0 = now0 + items * days
+        n_cols = (defer0 + items * days) if entry else now0
+
+        def col_now(ii: int, d: int) -> int:
+            return now0 + ii * days + d
+
+        def col_defer(ii: int, d: int) -> int:
+            return defer0 + ii * days + d
 
         def col_sell(gi: int, d: int, b: int = 0) -> int:
             return n + b * half + gi * days + d
@@ -458,6 +473,11 @@ class MasterLP:
                                            dtype=np.float64)[:days].sum())
         lower = np.zeros(n_cols)
         upper = np.full(n_cols, np.inf)
+        if entry:
+            # No day after the season: what waits on the last day is destroyed by
+            # the night flush, so the LP may not leave anything there.
+            for ii in range(items):
+                upper[col_defer(ii, days - 1)] = 0.0
         # The appetite rows: ONE cumulative row per good, `Σ_d sell[g,d] ≤
         # appetite[g]`, never a per-day cap. The town eats so much over the
         # horizon and our sales may land on any day of it — belief's
@@ -523,8 +543,8 @@ class MasterLP:
                 if sellable >= 0:
                     for b in range(tiers):
                         bal[row, col_sell(sellable, d, b)] = 1.0
+        prod = np.zeros((items * days, n))
         if items:
-            prod = np.zeros((items * days, n))
             for j, col in enumerate(pool):
                 if col.produce is None:
                     continue
@@ -534,13 +554,35 @@ class MasterLP:
                         continue
                     for d in range(min(days, produced.shape[0])):
                         prod[ii * days + d, j] = float(produced[d, rid])
-            bal[:, :n] -= prod
+            if entry:
+                for ii in range(items):
+                    for d in range(days):
+                        bal[ii * days + d, col_now(ii, d)] = -1.0
+                        if d >= 1:
+                            bal[ii * days + d, col_defer(ii, d - 1)] = -1.0
+            else:
+                bal[:, :n] -= prod
 
         # cap rows: one per day, Σ_i stock[i, d] <= capacity
         cap = np.zeros((days, n_cols))
         for ii in range(items):
             for d in range(days):
                 cap[d, col_stock(ii, d)] = 1.0
+
+        # The SPLIT rows: `now + defer = produce`, an EQUALITY per (item, day).
+        # The harvest is a decision the tile DP already took, so none of it may
+        # vanish — the manager only chooses which way it reaches the shed. The
+        # row's dual is the internal price of a harvested unit, and it is what the
+        # pricing credits (`PricingDuals.eta`): with the entry row the columns no
+        # longer appear in the balance rows at all.
+        split = (np.zeros((items * days, n_cols)) if entry
+                 else np.zeros((0, n_cols)))
+        if entry:
+            for ii in range(items):
+                for d in range(days):
+                    split[ii * days + d, col_now(ii, d)] = 1.0
+                    split[ii * days + d, col_defer(ii, d)] = 1.0
+            split[:, :n] -= prod
 
         # The cash rows earn from the sells: a sale on day d' is money in the
         # purse from d' onward. Same convention as the columns' own spend — the
@@ -570,8 +612,9 @@ class MasterLP:
         # purpose: every offset below is positional, so a row inserted in the
         # middle silently re-labels τ as ρ and every price downstream is read off
         # the wrong constraint.
-        rows = np.vstack([A_q, A_c, bal, cap, appetite_row, A_e])
-        n_ineq = (n_coupling * days + days + items * days + days + n_goods)
+        rows = np.vstack([A_q, A_c, bal, cap, appetite_row, split, A_e])
+        n_ineq = (n_coupling * days + days + items * days + days + n_goods
+                  + (items * days if entry else 0))
         csc = sparse.csc_matrix(rows)
 
         lp = _highspy._core.HighsLp()
@@ -585,12 +628,14 @@ class MasterLP:
             np.full(items * days, 0.0),                   # balance: equality
             np.full(days, -np.inf),                       # cap: <=
             np.full(n_goods, -np.inf),                    # town appetite: <=
+            np.zeros(items * days if entry else 0),        # split: equality
             target])
         lp.row_upper_ = np.concatenate([
             b_q, b_c,
             np.zeros(items * days),
             np.full(days, float(shed_capacity)),
             appetite_rhs,
+            np.zeros(items * days if entry else 0),        # split: equality
             target])
         lp.sense_ = _highspy._core.ObjSense.kMinimize
         matrix = _highspy._core.HighsSparseMatrix()
@@ -641,7 +686,11 @@ class MasterLP:
         # numbers and a single `[:days]`-style slice over both would price one
         # constraint with the other's dual.
         tau = np.maximum(-marg[off + days + items * days:cap_end], 0.0)
-        rho = np.maximum(-marg[cap_end:n_ineq], 0.0)
+        rho_end = cap_end + n_goods
+        rho = np.maximum(-marg[cap_end:rho_end], 0.0)
+        eta = (-np.asarray(marg[rho_end:rho_end + items * days],
+                           dtype=np.float64).reshape(items, days).T
+               if entry else None)
         # The convexity duals are EQUALITY marginals and are free in sign: a class
         # whose tiles are worth having carries a negative one. Clamping them would
         # break the reduced-cost test, which is the only reason they are read.
@@ -654,10 +703,14 @@ class MasterLP:
         for b in range(tiers):
             start = n + b * half
             sells += values[start:start + half].reshape(n_goods, days)
+        now = (values[now0:defer0].reshape(items, days).T if entry else None)
+        defer = (values[defer0:defer0 + items * days].reshape(items, days).T
+                 if entry else None)
         return MasterSolve(lam=values[:n], y=y, cash=cash, mu=mu,
                            objective=-float(self._highs.getObjectiveValue()),
                            sigma=sigma, tau=tau, rho=rho,
-                           appetite=appetite_rhs, sells=sells)
+                           appetite=appetite_rhs, sells=sells,
+                           now=now, defer=defer, eta=eta)
 
 
 def solve_master(pool: list[Column], counts: np.ndarray, hours: np.ndarray,
@@ -960,8 +1013,8 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
              prices: np.ndarray | None = None,
              market: tuple[int, ...] = (),
              sell_cap: np.ndarray | None = None,
-             depth: tuple[np.ndarray, np.ndarray] | None = None
-             ) -> ColgenResult:
+             depth: tuple[np.ndarray, np.ndarray] | None = None,
+             entry: bool = False) -> ColgenResult:
     """The loop: master over every column so far, price, add, repeat.
 
     `price(y, cash)` is the caller's pricing step: it publishes the duals to
@@ -1052,7 +1105,7 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
             shed_stock=None if shed is None else shed[0],
             shed_capacity=0.0 if shed is None else float(shed[1]),
             prices=prices, market=market, sell_cap=sell_cap,
-            depth=depth)
+            depth=depth, entry=entry)
         result.rounds += 1
 
         exact = (result.solve.y, result.solve.cash, result.solve.mu)
@@ -1100,7 +1153,9 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
                           for c, e in zip(centre, exact))
                     if smoothed else exact)
             values, columns = price(PricingDuals(
-                y=used[0], cash=used[1], shed=shed_duals))
+                y=used[0], cash=used[1], shed=shed_duals,
+                eta=(result.solve.eta
+                     if (entry and result.solve is not None) else None)))
             if shed is not None and seeded:
                 # No bound on the seeded round. The bound is a Lagrangian bound
                 # at the multipliers it was computed with, and those are the

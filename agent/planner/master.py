@@ -353,6 +353,13 @@ class MasterResult:
     #: sold later), so it is the price `to_mixes` values a plan at. Empty without
     #: a shed.
     sigma: np.ndarray = None
+    #: (days, items) what the plan DROPS by the last market hour of the day, and
+    #: what waits for the night flush — the entry row's own decision.
+    now: np.ndarray = None
+    defer: np.ndarray = None
+    #: (days, items) the entry rows' duals: the internal price of a harvested
+    #: unit, which the pricing credits the tiles with when the entry row is on.
+    eta: np.ndarray = None
     #: The columns `lam` weights, and the classes they belong to. A mix is
     #: useless without them: `columns.assign_tiles` has to know WHICH plan each
     #: weight is for, and re-pricing at the published duals gives a different
@@ -683,7 +690,8 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
                 pool: list | None = None,
                 deadline: float | None = None,
                 forecast_obj=None,
-                smoothing: float = 0.0) -> MasterResult:
+                smoothing: float = 0.0,
+                entry: bool = False) -> MasterResult:
     """Column generation over the tile classes; always publishable.
 
     One round is one Dantzig-Wolfe round (lesson 1.9): the LP solves over EVERY
@@ -781,6 +789,7 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
 
     def price(duals):
         y, cash, shed = duals.y, duals.cash, duals.shed
+        eta = duals.eta
 
         """The subproblem: price each class at the master's OWN duals.
 
@@ -837,10 +846,18 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
             # tiles at one σ and bound them at another, and the bound would come
             # out below the objective it bounds.
             sig = np.asarray(shed[0], dtype=np.float64)[:days]
+            # With the entry row the columns appear in the SPLIT rows and not in
+            # the balance rows, so the produce's internal price is the split row's
+            # dual: crediting sigma would price the tiles at multipliers this LP
+            # does not use, the reduced-cost test would stop being about this LP,
+            # and the bound identity would break.
+            credit = sig
+            if entry and eta is not None:
+                credit = np.maximum(np.asarray(eta, dtype=np.float64), 0.0)
             for gi, ii in enumerate(SELLABLE):
                 rid = _resource_of(SHED_ITEMS[ii])
                 if rid is not None:
-                    p_eff[:days, rid] = sig[:, ii]
+                    p_eff[:days, rid] = credit[:days, ii]
         # `exact` is the price a plan PAYS for what it consumes, and with a shed it
         # is the WHOLE of `published_duals`: `quote·(1+ahead)` for a bought input,
         # because the spend is in the objective now (see `MasterLP.solve`). With a
@@ -961,6 +978,7 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
                              market=SELLABLE,
                              sell_cap=_sell_cap(obs, days),
                              depth=depth,
+                             entry=entry,
                              warm=_repriced_pool(pool, p_mkt, days),
                              smoothing=smoothing)
     except RuntimeError as exc:
@@ -984,6 +1002,9 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
         result.mu = cg.solve.mu
         result.sigma = cg.solve.sigma
         result.cash_lp = cg.solve.cash
+        result.now = getattr(cg.solve, "now", None)
+        result.defer = getattr(cg.solve, "defer", None)
+        result.eta = getattr(cg.solve, "eta", None)
     converged = cg.certified
 
     # #87's dead-zone clamp, on the COUPLING dual before the publish map:
