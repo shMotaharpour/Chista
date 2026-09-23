@@ -402,6 +402,58 @@ def forecast(obs: Any, *, days: int = 30,
                           assumptions=tuple(assumptions))
 
 
+def _walk_rows(fc: MarketForecast) -> np.ndarray:
+    """The forecast's per-turn inventory walk, `(T+1, 9)`, row 0 = the snapshot."""
+    return np.asarray(fc.walk_inventory, dtype=np.float64)
+
+
+def _hourly_rows(fc: MarketForecast, horizon: int) -> list[int]:
+    """The walk row each (day, hour) of the hourly tables reads.
+
+    ONE definition, because `hourly_prices` and `hourly_inventory` must sample
+    the same row: a plan that prices a sale at one inventory and is filled at
+    another is pricing a market that does not exist.
+
+    Row indexing. The walk's row j is the inventory after turn (step+j-1);
+    row 0 is the snapshot ("now", mid-day). Hour h of the CURRENT day:
+      - h < hour  : already played — the table shows the snapshot (the walk
+                    has no earlier rows; history is not re-quoted);
+      - h >= hour : the quote a SELL at that hour sees = the walk row after
+                    the turns up to it = row (h - hour) — hour `hour`'s own
+                    quote is the snapshot (its market has not run yet).
+    Later days start at walk row (24d) + h.
+    """
+    walk = _walk_rows(fc)
+    step = int(fc.walk_step)
+    hour_now = step % TURNS_PER_DAY
+    rows = [0] * TURNS_PER_DAY                       # day 0, past hours
+    for h in range(hour_now, TURNS_PER_DAY):
+        rows[h] = h - hour_now                       # 0 = the snapshot itself
+    for d in range(1, horizon):
+        base = (fc.first_day + d) * TURNS_PER_DAY - step
+        rows.extend([base + h for h in range(TURNS_PER_DAY)])
+    rows = rows[:horizon * TURNS_PER_DAY]
+    return [min(r, walk.shape[0] - 1) for r in rows]
+
+
+def hourly_inventory(fc: MarketForecast, days: int | None = None,
+                     items: Iterable[str] | None = None,
+                     ) -> np.ndarray:
+    """The market's INVENTORY per hour: (days*24, 9), the rows the prices read.
+
+    `hourly_prices` samples the walk for the QUOTE; a depth read (what a lot
+    fetches) needs the inventory behind that quote, at the same turn — the
+    ladder is a function of it. One walk, two readings, the same rows.
+    """
+    horizon = fc.horizon_days if days is None else max(1, int(days))
+    wanted = (PRODUCTS if items is None else tuple(items))
+    ix = [_PROD_INDEX[g] for g in wanted]
+    walk = _walk_rows(fc)
+    rows = _hourly_rows(fc, horizon)
+    return np.asarray([[int(walk[r][i2]) for i2 in ix] for r in rows],
+                      dtype=np.int64)
+
+
 def hourly_prices(fc: MarketForecast, days: int | None = None,
                   items: Iterable[str] | None = None,
                   ) -> np.ndarray:
@@ -419,37 +471,14 @@ def hourly_prices(fc: MarketForecast, days: int | None = None,
     own snapshot; a mid-day forecast starts with its stub and the remaining
     hours of that day follow, so the table's length stays days*24.
     """
-    walk = np.asarray(fc.walk_inventory, dtype=np.float64)
-    step = int(fc.walk_step)
     horizon = fc.horizon_days if days is None else max(1, int(days))
     wanted = (PRODUCTS if items is None else tuple(items))
     ix = [_PROD_INDEX[g] for g in wanted]
-
-    stub = TURNS_PER_DAY - (step % TURNS_PER_DAY)
-    if stub == TURNS_PER_DAY:
-        stub = 0
-    # Row indexing. The walk's row j is the inventory after turn (step+j-1);
-    # row 0 is the snapshot ("now", mid-day). Hour h of the CURRENT day:
-    #   - h < hour  : already played — the table shows the snapshot (the walk
-    #                 has no earlier rows; history is not re-quoted);
-    #   - h >= hour : the quote a SELL at that hour sees = the walk row after
-    #                 the turns up to it = row (h - hour) — hour `hour`'s own
-    #                 quote is the snapshot (its market has not run yet).
-    # Later days start at walk row (stub + 24d) + (h) as before.
-    hour_now = step % TURNS_PER_DAY
-    rows = [0] * TURNS_PER_DAY                       # day 0, past hours
-    for h in range(hour_now, TURNS_PER_DAY):
-        rows[h] = h - hour_now                       # 0 = the snapshot itself
-    # day d >= 1: its hour-0 quote is the walk row after the whole previous
-    # day = row (stub + 24d - hour_now)... in walk terms the turn at absolute
-    # step (first_day + d)*24 - 1 sits at row (first_day + d)*24 - step:
-    for d in range(1, horizon):
-        base = (fc.first_day + d) * TURNS_PER_DAY - step
-        rows.extend([base + h for h in range(TURNS_PER_DAY)])
-    rows = rows[:horizon * TURNS_PER_DAY]
+    walk = _walk_rows(fc)
+    rows = _hourly_rows(fc, horizon)
     out = np.zeros((horizon * TURNS_PER_DAY, len(wanted)), dtype=np.int64)
     for i, r in enumerate(rows):
-        inv = walk[min(r, walk.shape[0] - 1)]
+        inv = walk[r]
         out[i] = [K.market_price(PRODUCTS[i2], float(inv[i2])) for i2 in ix]
     return out
 

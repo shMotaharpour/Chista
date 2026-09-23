@@ -65,9 +65,13 @@ submission-closure rule; the agent only loads `agent/artifact/
 opponent_counts.npz`.
 """
 
+from agent.belief.depth import (
+    best_day_split, block_revenue, depth_blocks, depth_coins, inventory_at,
+    marginal_price,
+)
 from agent.belief.ladder import buy_coins, plan_coins, sell_coins, split_days
 from agent.belief.market import (
-    MarketForecast, forecast, hourly_prices, price_paths,
+    MarketForecast, forecast, hourly_inventory, hourly_prices, price_paths,
 )
 from agent.belief.opponent import (
     OpponentModel, drain_forecast, expected_price_curve, infer_rival_slot,
@@ -87,8 +91,10 @@ __all__ = [
     "CarryRequirement", "DaySchedule", "DropRequirement", "FlowRecord",
     "MarketForecast", "MarketState", "MarketTracker", "OpponentModel",
     "OrderBook", "PurchaseIntent", "SellIntent", "TileRequirement",
-    "buy_coins", "default_schedules", "drain_forecast", "expected_price_curve",
-    "forecast", "hourly_prices", "infer_rival_slot", "maximin_mixed_lp",
+    "best_day_split", "block_revenue", "buy_coins", "default_schedules",
+    "depth_blocks", "depth_coins", "drain_forecast", "expected_price_curve",
+    "forecast", "hourly_inventory", "hourly_prices", "infer_rival_slot",
+    "inventory_at", "marginal_price", "maximin_mixed_lp",
     "maximin_mixed_slsqp", "plan_coins", "price_paths",
     "quantile_price_floor", "round_tiles", "season_plan_maximin",
     "sell_coins", "slot_game_matrix", "split_days",
