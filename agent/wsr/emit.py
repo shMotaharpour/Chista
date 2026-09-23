@@ -21,8 +21,9 @@ from __future__ import annotations
 
 from typing import NamedTuple
 
-from agent.wsr.beam import (Day, Result, _bag, _start_hours, _start_positions, first_walk_turn,
-                            good_hours, leg_moves, legs, pickup_turns, walk_start_turn)
+from agent.wsr.beam import (Day, Result, _bag, _start_hours, _start_positions, day_first_good,
+                            door_work, first_walk_turn, good_hours, leg_moves, leg_target, legs,
+                            loads_before, pickup_turns, walk_start_turn)
 from agent.wsr.tasks import ITEM_CODE, TaskArray
 
 PASS = ("PASS",)
@@ -71,25 +72,26 @@ def compile_route(day: Day, tasks: TaskArray, result: Result, *,
     for turn, task_id, worker in result.route:
         by_worker.setdefault(int(worker), []).append((int(turn), task_id))
 
-    # The pickups: one turn each, at the door the worker starts on, carrying the whole day's use of
-    # that good. The second feeding of a day buys nothing, so it is not fetched again. Each worker's
-    # pickups begin at ITS own hour - a hand offered at hour 1 cannot pick anything up at hour 0 -
-    # and each good is taken no earlier than it is in the shed (`pickup_turns`): a PICKUP before its
-    # good has arrived is refused in silence (F047).
+    # The pickups: one turn each, at the door the worker stands on, carrying the whole day's use of
+    # that good. The second feeding of a day buys nothing, so it is not fetched again. They come
+    # before the worker's first task, unless that task is door work in the turns before its first
+    # good lands (`loads_before`, the search's own rule); each good is taken no earlier than it is in
+    # the shed (`pickup_turns`): a PICKUP before its good has arrived is refused in silence (F047).
     arrival = good_hours(tasks)
-    for worker in range(m):
-        bag = _bag(tasks, by_worker.get(worker, []))
-        # The walk then begins after the last of them, which is what `first_walk_turn` says and
-        # what the search charged this worker for.
-        for turn, good in pickup_turns(hours[worker], bag, arrival):
-            ops[worker][turn] = ("PICKUP", ITEM_NAME[good], bag[good])
-        if bag:
-            last[worker] = first_walk_turn(hours[worker], bag, arrival) - 1
+    before = door_work(tasks)
 
     for worker, entries in by_worker.items():
+        bag = _bag(tasks, entries)
+        loaded = not bag
+        first = day_first_good(tasks)
         for turn, row, fetch in legs(tasks, entries):
+            if not loaded and loads_before(bool(before[row]), turn, first):
+                for pick, good in pickup_turns(last[worker] + 1, bag, arrival):
+                    ops[worker][pick] = ("PICKUP", ITEM_NAME[good], bag[good])
+                last[worker] = first_walk_turn(last[worker] + 1, bag, arrival) - 1
+                loaded = True
             task_id = tasks.ids[row]
-            target = (int(tasks.cells[row][0]), int(tasks.cells[row][1]))
+            target = leg_target(tasks, row, at[worker])
             # A good used after the worker's own DROP is fetched again on the way: the drop took the
             # load from the door with it (`legs`), and the leg walks through the nearest door.
             moves = leg_moves(at[worker], target, fetch)
