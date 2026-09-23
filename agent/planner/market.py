@@ -220,8 +220,15 @@ def merge(sells: list, hires: list, buys: list, *, cap: int = 10,
 
 def build(obs, chains, *, hands: int, harvest_expected: int = 0,
           config=None, cap: int = 10, model=None, activity: int | None = None,
-          forecast_obj=None) -> DayMarket:
-    """The whole day's market side, from the committed chains."""
+          forecast_obj=None, wsr_check: bool = True) -> DayMarket:
+    """The whole day's market side, from the committed chains.
+
+    `wsr_check=False` lays the day out WITHOUT the hires. The HIRE orders ARE the
+    commitment — they spend the purse and put hands on the field — so a check must
+    not place them: the manager iterates on the check (wsr answers with its free
+    slots, or with how many hands short it is) and commits ONCE, with the hand
+    count wsr agreed to.
+    """
     private = obs.get("private", {}) if isinstance(obs, dict) else {}
     farms = obs.get("farms", []) if isinstance(obs, dict) else []
     player = int(obs.get("player", 0)) if isinstance(obs, dict) else 0
@@ -232,7 +239,8 @@ def build(obs, chains, *, hands: int, harvest_expected: int = 0,
                             dict(private.get("shed", {}) or {}), quotes)
     multiplier = int((config or {}).get("farmHandCostMult", 1) or 1) \
         if config is not None else 1
-    hires, hire_bill = hire_orders(hands, int(farm.get("hires_today", 0)),
+    hires, hire_bill = hire_orders(hands if wsr_check else 0,
+                                   int(farm.get("hires_today", 0)),
                                    multiplier)
     bill += hire_bill
     sells = sell_rows(obs, harvest_expected, float(bill), config,
