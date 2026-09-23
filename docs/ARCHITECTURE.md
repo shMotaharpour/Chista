@@ -122,9 +122,12 @@ All world changes land on **one branch** (`world/definition`); when the world is
 right, it goes to `main` in one PR. No piecemeal merges. Steps:
 
 1. `world/model.py` — names, the resource/product split, the market/worker split,
-   the compile table, and the named views (`Good`, `Crop`, `Species`, `Resource`,
-   `Product`, `Vector`, `Action`, `WorkerOp`, `MarketAction`, `ChainOp`). Guards:
-   `tests/test_model.py`. *(Done.)*
+   the compile table, and the named views. *(Done.)* The guards this step named
+   (`tests/test_model.py`) were written against that shape of the module; the module
+   was later rebuilt around the enums (`Product`, `Crop`, `Animal`, `Structure`,
+   `TileKind`, `UnitAction`, `MarketOrder`, `Move`, `Column`), every guard in that
+   file stopped importing, and the file was deleted rather than left red - the
+   vocabulary it measured no longer exists under those names.
 2. The compiler imports `compile_chain`; the duplicated expansions are deleted.
    *(Done: `agent/replan.py` lost `chain_turns`/`project_day`.)*
 3. The packages move: market and shed to `belief/`, routing and scheduling to
@@ -140,5 +143,6 @@ right, it goes to `main` in one PR. No piecemeal merges. Steps:
 6. The DP's op sets are computed views of `world/model.py`, and `PLACE_ANIMAL` is
    retired with the graph rebuild. *(Done.)*
 
-Each step ends with the full suite green, and the name ratchet in `tests/test_model.py`
-counts what is left to move.
+Each step ends with the full suite green. The name ratchet that counted what is left
+to move lived in `tests/test_model.py` and went with it: nothing measures hand-spelled
+good names now, and re-basing that count on the current names is a fresh measurement.
