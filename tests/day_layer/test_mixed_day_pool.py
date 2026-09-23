@@ -1,12 +1,13 @@
 """The mixed day with fewer hands than it needs: what the pool decides, and where the partial route stops.
 
 The same day as `test_mixed_day.py` - a cow, a sheep and a goose on the shed's column, wheat across
-the rest of the quadrant, every item in the shed from hour one - with three hands offered instead of
-five, and the four-hand day beside it. The pool is what decides whether the day is carried, so this
+the rest of the quadrant, every item in the shed from hour one - with two hands offered instead of
+five, and the three-hand day beside it. The pool is what decides whether the day is carried, so this
 is where the boundary between the two answers is pinned:
 
-    three hands do not carry the day, and the search says so: a partial route, `complete=False`
-    four hands do carry it, so the hand the caller withheld is what the day was short of
+    two hands do not carry the day, and the search says so: a partial route, `complete=False`
+    three hands do carry it, so the hand the caller withheld is what the day was short of
+    the search finds the three-hand day on its own, and a hand-built reference agrees it exists
     the shortfall is the POOL and not the clock: not `out_of_time`, not `can_improve`, not `infeasible`
     the partial route is still a legal route, which is what the caller is handed
     the partial route replays as the day it was priced as - on the engine's own counters
@@ -30,7 +31,10 @@ from agent.wsr.emit import check_route, compile_route, to_plan
 from tests.day_layer.test_mixed_day import (ANIMAL_TILES, AVAILABLE, ORDERS as FIVE_HAND_ORDERS,
                                             TILES, _board, _replay)
 
-HANDS = 3
+#: The short pool. Measured at beam 64: two hands place 43 of 54, three carry all 54.
+HANDS = 2
+#: The smallest pool that carries the day, and the pool the hand-built reference route is written for.
+REFERENCE_HANDS = HANDS + 1
 #: The same market, with the hands the caller is willing to pay for.
 ORDERS = [order for order in FIVE_HAND_ORDERS if order[0] != "HIRE"] + [["HIRE"]] * HANDS
 
@@ -60,14 +64,14 @@ def late():
     return day, tasks, B.search(day, tasks, beam=64, hands=3, max_hands=3)
 
 
-def test_three_hands_do_not_carry_the_day(short) -> None:
+def test_two_hands_do_not_carry_the_day(short) -> None:
     """The pool is short and the search says so, with a route rather than with silence.
 
     `complete=False` is the honest answer about the pool; an empty route would be the answer that
     threw the work away, and the two are different decisions for the caller.
     """
     _day_, tasks, result = short
-    assert not result.complete, f"three hands carried the day after all: {len(result.route)} tasks"
+    assert not result.complete, f"two hands carried the day after all: {len(result.route)} tasks"
     assert 0 < len(result.route) < tasks.n, (
         f"the partial route is {len(result.route)} of {tasks.n} tasks - not partial, or not a route")
     assert result.pool == HANDS, f"the answer was searched with {result.pool} hands, not {HANDS}"
@@ -120,11 +124,11 @@ def test_the_partial_route_replays_as_the_day_it_was_priced_as(short) -> None:
     """
     day, tasks, result = short
     plan = to_plan(compile_route(day, tasks, result))
-    board = _board(_replay(plan, ORDERS))
+    board = _board(_replay(plan, ORDERS, weeds=False))
 
     # What a planting leaves on the board: the crop, or a weed when the day never reached its water -
     # an unwatered planting is what the engine turns to weed. Either is the plant op having landed; a
-    # bare tile is one that did not.
+    # bare tile is one that did not. The night's random weeds are switched off, so no other tile grows.
     planned = {tuple(int(v) for v in tasks.cells[tasks.ids.index(task_id)])
                for _hour, task_id, _worker in result.route if task_id.endswith("_plant")}
     grown = {cell for cell, record in board.items() if record.get("kind") in ("PLANT", "WEED")}
@@ -177,8 +181,7 @@ def test_the_spare_leaves_the_wait_for_the_goods_as_room() -> None:
 
 
 #: A three-hand day for this fixture: built by hand, run on the engine, and read back off its replay.
-#: Every op lands and the three animals are housed, so it is a day the day itself allows - and the
-#: search does not find it (measured: 53 of 54 on its own, 54 of 54 when warmed with this).
+#: Every op lands and the three animals are housed, so it is a day the day itself allows.
 REFERENCE_ROUTE = [
     (0, 'd0_build_pasture', 0),
     (3, 'd24_plant', 1),
@@ -241,27 +244,23 @@ def test_the_reference_three_hand_day_is_a_day_the_rules_allow() -> None:
     """The hand-built three-hand day is legal, and the search takes it when it is handed over.
 
     Two separate facts: `check_route` says no rule is broken, and a search warmed with the route comes
-    back carrying all 54 - which is what makes the day's own allowance the answer and the search the
-    thing that is short.
+    back carrying all 54.
     """
-    day, tasks = _day()
+    day, tasks = _day(hands=REFERENCE_HANDS)
     route = [(turn, task_id, worker) for turn, task_id, worker in REFERENCE_ROUTE]
     assert len(route) == tasks.n, f"the reference covers {len(route)} of the day's {tasks.n} tasks"
-    reference = B.Result(pool=HANDS, route=route, complete=True)
+    reference = B.Result(pool=REFERENCE_HANDS, route=route, complete=True)
 
     assert not check_route(day, tasks, reference), "the reference breaks a rule the engine enforces"
-    warmed = B.search(day, tasks, hands=HANDS, max_hands=HANDS, warm=reference)
+    warmed = B.search(day, tasks, hands=REFERENCE_HANDS, max_hands=REFERENCE_HANDS, warm=reference)
     assert warmed.complete, (
         f"warmed with the reference the search placed {len(warmed.route)} of {tasks.n}")
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "the search does not find the three-hand day on its own - it places 53 of 54 where the "
-    "hand-built route on the same day places all 54, so the shortfall is the search's"))
 def test_the_search_finds_the_three_hand_day_by_itself() -> None:
-    """Three hands are enough for this day - the reference proves it - so the search has to find it."""
-    day, tasks = _day()
-    result = B.search(day, tasks, beam=64, hands=HANDS, max_hands=HANDS)
+    """Three hands are enough for this day - the reference proves it - and the search finds it."""
+    day, tasks = _day(hands=REFERENCE_HANDS)
+    result = B.search(day, tasks, beam=64, hands=REFERENCE_HANDS, max_hands=REFERENCE_HANDS)
     assert result.complete, f"the search placed {len(result.route)} of {tasks.n}"
 
 
