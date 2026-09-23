@@ -41,10 +41,10 @@ AVAILABLE = {"WHEAT": 0}
 #: complete with an animal the engine never fed.
 POOLS = (0, 1, 2)
 #: A second day where the SEARCH's pricing of the refetch decides the answer, not only the
-#: compiler's writing of it: FEED and COLLECT_FERTILIZER with the fertilizer due by hour 12, the
-#: farmer alone. A search that does not charge the walk back through a door leaves the farmer no
-#: turns for it, and the compiler refuses the route.
-TIGHT = (("FEED", "COLLECT_FERTILIZER"), 12, 0)
+#: compiler's writing of it: the whole chain, FEED, CARE and COLLECT_FERTILIZER, with the fertilizer
+#: due by hour 12, the farmer alone. A search that does not charge the walk back through a door leaves
+#: the farmer no turns for it, and the compiler refuses the route.
+TIGHT = (CHAIN, 12, 0)
 PASS = {"farmer": ["PASS"], "hands": [], "market": []}
 
 
