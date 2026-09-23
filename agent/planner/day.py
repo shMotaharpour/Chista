@@ -40,6 +40,11 @@ class DayFit:
     hours_used: float              # worker-hours the route actually spent
     hours_committed: float         # what the master's row charged for day 0
     reason: str = ""               # "" when it fits: "hours", "budget", "unstable"
+    #: Worker-turns the route left unspent, walks included (`Result.spare`): what
+    #: more work the SAME hands could carry. The search computes it and it used to
+    #: stop here — but it is the number the manager needs to decide whether to lay
+    #: more on the day, hire more, or confirm.
+    spare: int = 0
 
     @property
     def overhead(self) -> float:
@@ -147,11 +152,13 @@ def fit(chains, *, hands: int, available: dict | None = None,
         # is an answer the caller already knows how to use (#73 is why this is
         # checked here rather than discovered inside `compile_route`).
         return DayFit(tuple(chains), len(result.route), tasks.n, result.pool,
-                      False, hours, hours_committed, "unstable")
+                      False, hours, hours_committed, "unstable",
+                      spare=int(result.spare))
     reason = "" if result.complete else ("budget" if result.can_improve
                                          else "hours")
     return DayFit(tuple(chains), len(result.route), tasks.n, result.pool,
-                  bool(result.complete), hours, hours_committed, reason)
+                  bool(result.complete), hours, hours_committed, reason,
+                  spare=int(result.spare))
 
 
 def hours_for(hands: int, days: int, overhead: float = 0.35) -> np.ndarray:
