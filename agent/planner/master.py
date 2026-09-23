@@ -230,6 +230,11 @@ TOL_DUAL = 1.0
 # the cap must come off the contended number, not this floor.
 ITER_CAP_DEFAULT = 8
 
+#: How many depth blocks the master prices a day's sells with. The curve is
+#: belief's (`belief.depth.sell_blocks`); the count is this LP's own modelling
+#: choice, and a maximising LP fills the rich blocks first by itself.
+SELL_BLOCKS: int = 5
+
 # A single master round (contractor sweeps + LP solve), measured.
 #
 # It used to be one sweep per distinct STATE. The subproblem is exact now — the
@@ -924,6 +929,23 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
             values.append(max(0.0, float(board.tile_values[i])))
         return np.asarray(values, dtype=np.float64), columns
 
+    # The market's DEPTH, from belief's own ladder (`belief.depth.sell_blocks`):
+    # what a lot fetches, per good per day, as blocks an LP can price. Built from
+    # the SAME forecast the price path came from, so the curve and the path are
+    # one walk and the first block's price IS the day's quote. Any failure leaves
+    # `depth = None`, which is the two-tier model that shipped — one degrade, and
+    # never a second price.
+    depth = None
+    if forecast_obj is not None:
+        try:
+            from agent.belief.depth import sell_blocks
+            goods = [SHED_ITEMS[ii] for ii in SELLABLE]
+            depth = sell_blocks(forecast_obj, goods, int(obs.get("day", 0)),
+                                days, int(supply.shed_capacity),
+                                blocks=SELL_BLOCKS)
+        except Exception:                       # noqa: BLE001 - the flat tier stands
+            depth = None
+
     try:
         # The warm pool is priced at TODAY's product prices before it is used:
         # a column's revenue was computed on the board it was built on, and the
@@ -936,6 +958,7 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
                              prices=p_mkt,
                              market=SELLABLE,
                              sell_cap=_sell_cap(obs, days),
+                             depth=depth,
                              warm=_repriced_pool(pool, p_mkt, days),
                              smoothing=smoothing)
     except RuntimeError as exc:

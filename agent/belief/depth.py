@@ -150,3 +150,59 @@ def best_day_split(fc: MarketForecast, item: str, day: int, lot: int,
              - int(fc.inventory_of(item, day + d + 1)))
          for d in range(n_days)], dtype=np.int64)
     return split_days(item, start, max(0, int(lot)), drains)
+
+
+def geometric_edges(cap: int, blocks: int) -> tuple[int, ...]:
+    """Cumulative block boundaries up to `cap`, doubling.
+
+    Fine where a farm actually trades (a handful of units a day) and coarse
+    where it does not: the ladder's own slope is steepest at the first units,
+    so an even split would price the units that matter with the average of a
+    block that reaches into the cheap end.
+    """
+    cap = max(1, int(cap))
+    blocks = max(1, int(blocks))
+    edges: list[int] = []
+    e = 1
+    for _ in range(blocks - 1):
+        if e >= cap:
+            break
+        edges.append(int(e))
+        e *= 2
+    if not edges or edges[-1] != cap:
+        edges.append(cap)
+    return tuple(edges)
+
+
+def sell_blocks(fc: MarketForecast, goods, first_day: int, days: int,
+                cap: int, blocks: int = 5, *, hour: int | None = None
+                ) -> tuple[np.ndarray, np.ndarray]:
+    """The depth curve of every good and day as LP blocks.
+
+    Returns `(units, prices)`, both `(len(goods), days, blocks)`: `units[g,d,b]`
+    is how many units block `b` may take on that day and `prices[g,d,b]` the
+    exact average the ladder pays over it. A maximising LP with declining
+    prices fills the rich blocks first by itself, so the arrays need no
+    ordering rows — and the block total equals `depth_coins` at the boundaries,
+    which is what makes the model the curve rather than an approximation of it.
+
+    `cap` bounds one good's sale in one day; the shed's own capacity is the
+    honest value, since a day cannot sell more than it can hold.
+    """
+    cap = max(1, int(cap))
+    edges = geometric_edges(cap, blocks)
+    n_goods, days = len(goods), max(1, int(days))
+    units = np.zeros((n_goods, days, len(edges)), dtype=np.int64)
+    prices = np.zeros((n_goods, days, len(edges)), dtype=np.float64)
+    for gi, good in enumerate(goods):
+        for d in range(days):
+            day = int(first_day) + d
+            prev = 0
+            for b, end in enumerate(edges):
+                coins = (depth_coins(fc, good, day, end, hour=hour)
+                         - depth_coins(fc, good, day, prev, hour=hour))
+                k = int(end) - prev
+                units[gi, d, b] = k
+                prices[gi, d, b] = (coins / k) if k > 0 else 0.0
+                prev = int(end)
+    return units, prices
