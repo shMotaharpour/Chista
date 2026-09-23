@@ -271,6 +271,7 @@ class Manager:
         A failure here leaves the calendar's daily curve standing: one degrade,
         never a second policy.
         """
+        from agent.belief.market import PRODUCTS
         try:
             out: dict[int, dict[str, int]] = {}
             tracker = self.tracker
