@@ -253,9 +253,55 @@ class Manager:
             horizon = M.season_horizon(obs)
             return forecast(obs, days=horizon, config=config,
                             our_sells=self.own_sells or None,
-                            rival_supply=self._rival_supply(obs, horizon))
+                            rival_supply=self._rival_supply(obs, horizon),
+                            rival_sells=self._rival_hours(obs, horizon) or None)
         except Exception:                      # noqa: BLE001 - belief is optional
             return None
+
+    def _rival_hours(self, obs, horizon: int) -> dict:
+        """The rival's DATED supply: what they sold, then what the model expects.
+
+        `_rival_supply` is the calendar — which days they pay out, not which
+        hour — so the walk dated all of it at hour 0 and the rest of the day was
+        quoted on a market they never sold into (#16). Two sources know the hour:
+        the tracker's inferred `rival_sales` for the turns already recorded, and
+        the opponent model's `expected_sell` for the rest, evaluated at the
+        quotes in hand.
+
+        A failure here leaves the calendar's daily curve standing: one degrade,
+        never a second policy.
+        """
+        try:
+            out: dict[int, dict[str, int]] = {}
+            tracker = self.tracker
+            if tracker is not None:
+                for rec in getattr(tracker, "records", ()) or ():
+                    units = np.asarray(rec.rival_sales, dtype=np.float64)
+                    for i, good in enumerate(PRODUCTS):
+                        n = int(round(float(units[i])))
+                        if n > 0:
+                            out.setdefault(int(rec.step), {})[good] = n
+            model = self.opponent
+            if model is not None and getattr(model, "counts", None):
+                activity = self._activity()
+                quotes = (obs.get("market") or {}).get("prices") or {}
+                step0 = int(obs.get("step", int(obs.get("day", 0))
+                                     * TURNS_PER_DAY))
+                for d in range(max(1, int(horizon))):
+                    for h in range(TURNS_PER_DAY):
+                        step = step0 + d * TURNS_PER_DAY + h
+                        for good in PRODUCTS:
+                            price = int(quotes.get(good, 0))
+                            if price <= 0:
+                                continue
+                            n = int(round(float(
+                                model.expected_sell(good, step, price,
+                                                    activity=activity))))
+                            if n > 0:
+                                out.setdefault(step, {})[good] = n
+            return out
+        except Exception:                      # noqa: BLE001 - the calendar stands
+            return {}
 
     def _rival_supply(self, obs, horizon):
         """The rival's dated supply curve, or None when it cannot be read.
