@@ -17,6 +17,17 @@ positional: tomorrow's class 3 is not today's, and a plan for an empty field
 arriving as a plan for a grown crop is a fiction the master would then commit
 tiles to.
 
+## The day moves, and so does everything indexed by it
+
+The horizon is the season that is LEFT (F029): 30 days on day 0, 29 on day 1,
+..., 1 on day 29. There is no horizon after the season ends, and a fixed
+look-ahead is wrong at both ends of it — 20 days on day 0 stops the DP short of
+the season's own end, 20 days on day 20 prices ten days the season does not
+have. `_roll_day` sets the contractor to that horizon at every day start and
+moves the carried pool onto it: a column is a plan for the days of the board it
+was built on, so its day-indexed arrays shift up one (`colgen.advance_pool`),
+which is also where the columns the LP gave no weight to are dropped.
+
 ## What the 24 turns are for
 
 `actTimeout` is per turn, and hours 1..23 replay a plan already made — about
@@ -43,8 +54,9 @@ from agent.config import Config
 from agent.planner import columns as C
 from agent.planner import day as D
 from agent.planner import master as M
-from agent.planner.colgen import classes_of
+from agent.planner.colgen import advance_pool, classes_of
 from agent.planner.inputs import GRAPH_PATH
+from agent.tile_dp.contractor import HORIZON_DAYS
 from agent.world.rules import TURNS_PER_DAY
 
 IDLE_PLAN = {"units": [[["PASS"]] * TURNS_PER_DAY], "market": []}
@@ -84,9 +96,19 @@ class Manager:
         self.cfg = config or Config.load()
         self.graph = graph if graph is not None else _load_graph()
         self.keys = frozenset(self.graph.key_index)
-        self.contractor = _contractor(self.cfg)
+        self.contractor = _contractor(self.graph, HORIZON_DAYS)
         self.steps = C.shed_distance()
         self.pool: list = []            # columns carried between days
+        #: The last solve's mix, in `pool` order — what the day roll prunes on.
+        #: Kept BESIDE the pool and never apart from it: `generate` rebuilds the
+        #: pool as [idle, warm, new] on every call, so `step` leaves the pool in
+        #: a different order from the one `observe` solved, and a weight indexed
+        #: against the wrong order drops the columns the last solve was using.
+        self.lam: np.ndarray | None = None
+        #: The day the pool's columns are indexed from. A column is a plan for
+        #: the days of the board it was built on, so carrying it into another
+        #: day without moving it is carrying a plan for the wrong days.
+        self.pool_day: int | None = None
         self.duals = None               # yesterday's published prices
         self.plan: dict = dict(IDLE_PLAN)
         self.day: D.DayPlan | None = None
@@ -105,6 +127,39 @@ class Manager:
         self.opponent = opponent_model()
 
     # -- the day ----------------------------------------------------------
+    def _roll_day(self, obs) -> None:
+        """Move the carried memory onto today's board: the horizon and the pool.
+
+        Both are a function of the day and neither may be stale.
+
+        **The horizon is the season that is LEFT** (F029) and the contractor
+        prices over it, so the DP's terminal row is the season's own end rather
+        than a cliff inside it: 30 days on day 0, 29 on day 1, ..., 1 on day 29.
+        The contractor is rebuilt from the graph already in hand when the day
+        changes — measured 0.4 ms against the artifact read — and everything
+        downstream reads `contractor.days`: the master's LP, `to_mixes`, the
+        hire bill and the projected sells.
+
+        **The pool is a plan for the days of the board it was built on**, so
+        every column moves up with the day (`colgen.advance_pool`) and the ones
+        the LP gave no weight to are dropped there. `self.lam` is the mix of the
+        solve that produced `self.pool` — `step` re-solves and reorders it, so
+        the pair is what travels, never a remembered weight.
+        """
+        day = int(obs.get("day", 0)) if isinstance(obs, dict) else 0
+        days = M.season_horizon(obs)
+        if int(self.contractor.days) != days:
+            self.contractor = _contractor(self.graph, days)
+        if self.pool_day is None:                 # nothing carried yet
+            self.pool_day = day
+            return
+        step = day - self.pool_day
+        if step <= 0:                             # same day, or a re-observe
+            return
+        self.pool = advance_pool(self.pool, self.lam, step=step)
+        self.lam = None                           # the new day has not solved yet
+        self.pool_day = day
+
     def observe(self, obs, config=None) -> None:
         """Start a day: solve inside the turn's budget and commit a plan.
 
@@ -114,6 +169,10 @@ class Manager:
         """
         started = time.perf_counter()
         self.obs, self.config = obs, config
+        # Today's horizon, and the pool moved onto it. Before anything reads
+        # either: `supply`/`class_of_tile` are day-invariant, but the contractor
+        # is not, and `_forecast` sizes its walk from the horizon.
+        self._roll_day(obs)
         supply = M.supply_from_obs(obs)
         owned = M._owned_states(object(), obs)
         _reps, _counts, of_tile = classes_of(
@@ -141,6 +200,7 @@ class Manager:
                           forecast_obj=forecast_obj,
                           smoothing=self.cfg.smoothing)
         self.pool = list(self.day.master.pool)
+        self.lam = self.day.master.lam
         self.duals = self.day.master.w
         self.certified = bool(self.day.master.certified)
         self._project_own_sells()
@@ -165,12 +225,15 @@ class Manager:
         OUR projected supply goes in too (`self.own_sells`, #110): the plan
         committed yesterday moves today's path. None is not a second policy —
         it is the day-0 case, before any plan exists to project.
+
+        The walk covers the season that is LEFT (F029) and not a fixed
+        look-ahead: the master prices its product rows off this path, so a path
+        longer than the horizon is wasted work and a shorter one is padded with
+        a quote for a day that does not exist.
         """
         try:
             from agent.belief.market import forecast
-            from agent.belief.shed import SEASON_DAYS
-            day = int(obs.get("day", 0)) if isinstance(obs, dict) else 0
-            horizon = max(self.contractor.days, SEASON_DAYS - day)
+            horizon = M.season_horizon(obs)
             return forecast(obs, days=horizon, config=config,
                             our_sells=self.own_sells or None,
                             rival_supply=self._rival_supply(obs, horizon))
@@ -276,6 +339,7 @@ class Manager:
                                deadline=time.perf_counter() + budget / 1000.0)
         if not result.used_fallback:
             self.pool = list(result.pool)
+            self.lam = result.lam           # the mix of THIS pool, in its order
             self.certified = bool(result.certified)
         return self.certified
 
@@ -306,6 +370,14 @@ def _load_graph():
     return TileGraph.load(GRAPH_PATH)
 
 
-def _contractor(cfg: Config):
-    from agent.planner.inputs import load_contractor
-    return load_contractor(days=cfg.horizon_days)
+def _contractor(graph, days: int):
+    """The tile DP's pricing oracle, cast over the graph already in hand.
+
+    `days` is the horizon the sweep runs over, so it changes with the day
+    (`_roll_day`). Building it from `self.graph` rather than through
+    `load_contractor` keeps the artifact read to the one the manager already
+    paid for: `TileGraph.load` per day would be a file read per day for a table
+    that never changes.
+    """
+    from agent.tile_dp.contractor import TileContractor
+    return TileContractor(graph, days=days)

@@ -56,10 +56,6 @@ class Config:
     #: resource use a submission can take from inside.
     log_gaps: bool = False
 
-    # --- the contractor ----------------------------------------------------
-    #: Days the tile DP looks ahead when it prices the board.
-    horizon_days: int = 20
-
     # --- the master --------------------------------------------------------
     #: Pricing rounds one `equilibrate` may spend. The certificate usually
     #: arrives well inside it (58 rounds cold on a day-0 board, 1 warm); the
@@ -114,8 +110,6 @@ class Config:
             raise ValueError(f"max_hands {self.max_hands} is outside 1..16")
         if not 0.0 < self.damping <= 1.0:
             raise ValueError(f"damping {self.damping} is outside (0, 1]")
-        if self.horizon_days < 1:
-            raise ValueError(f"horizon_days {self.horizon_days} is below 1")
 
     @property
     def solve_budget_ms(self) -> float:
