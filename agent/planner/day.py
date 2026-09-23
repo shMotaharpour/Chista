@@ -333,18 +333,30 @@ def _solve_at(obs, contractor, supply, class_of_tile, hands, iter_cap,
         fitted = fit(chains, hands=hands, budget_s=budget_s,
                      available=availability(obs, chains),
                      hours_committed=committed)
-        if not fitted.complete and not fitted.out_of_time:
+        if not fitted.complete and fitted.reason == "hours":
             # wsr's answer is an offer to act on, not a verdict to file away:
             # `complete=False` with time to spare means THIS pool could not carry
             # the day, so ask once for one more hand before pricing a day the
-            # search has already refused. `out_of_time` is excluded on purpose -
-            # more hands do not buy more time, and that answer belongs to the
-            # budget, not to the pool.
+            # search has already refused. `reason == "hours"` is the pool's own
+            # verdict: "budget" means the deadline stopped the search, and more
+            # hands do not buy more time, so that answer belongs to the budget.
+            # (`DayFit` has no `out_of_time`; that field is `Result`'s.)
             again = fit(chains, hands=int(hands) + 1, budget_s=budget_s,
                         available=availability(obs, chains),
                         hours_committed=committed)
             if again.complete or int(again.pool) > int(fitted.pool):
                 fitted = again
+        elif fitted.complete and int(fitted.spare) > 0 and int(fitted.pool) > 0:
+            # The mirror of the ask above, and what `spare` is FOR: the day is
+            # carried and the hands are not full, so the same route with one hand
+            # fewer costs one hire bill less. The pool is the bill's own input
+            # (day.py:327) and `compile` hires exactly it, so a leaner complete
+            # answer is strictly cheaper for the same work.
+            leaner = fit(chains, hands=int(fitted.pool) - 1, budget_s=budget_s,
+                         available=availability(obs, chains),
+                         hours_committed=committed)
+            if leaner.complete:
+                fitted = leaner
         # The hands are hired again every morning (F039), so their wage is a
         # cost on every day of the horizon and not a one-off.
         # The bill follows the pool that actually carries the day (`fitted.pool`
