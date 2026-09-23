@@ -147,6 +147,47 @@ def test_the_bound_identity_holds_with_the_entry_row() -> None:
             f"{'eta' if entry else 'sigma'}, but handed them something else")
 
 
+
+def test_an_unsellable_harvest_still_has_to_be_accounted_for() -> None:
+    """The split row is an EQUALITY, and this is the board where that bites.
+
+    A hand-built column produces a GOOSE on the last day. A goose cannot be
+    SOLD (the sells cover the nine products) and the season ends there, so the
+    only ways out are the waste charge or — with an INEQUALITY split row —
+    leaving it unaccounted, which is free disposal and dodges the charge. The
+    board of sellable goods cannot show this: there the LP splits fully either
+    way, which is why this arm needed a synthetic column.
+    """
+    from agent.planner.inputs import GRAPH_PATH
+    from agent.tile_dp.graph import TileGraph
+    from agent.world.model import N_RESOURCE, RESOURCE_ID
+    obs, supply, reps, counts, horizon = _board()
+    fc = forecast(obs, days=horizon)
+    goods = [M.SHED_ITEMS[ii] for ii in M.SELLABLE]
+    depth = sell_blocks(fc, goods, int(obs.get("day", 0)), horizon,
+                        int(supply.shed_capacity), blocks=M.SELL_BLOCKS)
+    produce = np.zeros((horizon, N_RESOURCE), dtype=np.float64)
+    produce[horizon - 1, RESOURCE_ID["ANIMAL_GOOSE"]] = 1.0
+    goose_col = colgen.Column(
+        cls=0, cls_key=(0, 0), cost=np.zeros((horizon, M.N_COUPLING)),
+        spend=np.zeros(horizon), earn=np.zeros(horizon), revenue=0.0,
+        produce=produce, chains=(), entities=(), key=())
+    from agent.belief.market import price_paths
+    path = np.asarray([price_paths(fc, days=horizon)[g] for g in PRODUCTS],
+                      dtype=np.float64).T
+    solved = colgen.MasterLP().solve(
+        [goose_col], np.array([1]), supply.hours, supply.money, horizon,
+        M.N_COUPLING, shed_stock=supply.shed_stock,
+        shed_capacity=float(supply.shed_capacity), prices=path,
+        market=M.SELLABLE, sell_cap=M._sell_cap(obs, horizon), depth=depth,
+        entry=True)
+    now, defer = np.asarray(solved.now), np.asarray(solved.defer)
+    goose = M.SHED_ITEMS.index("GOOSE")
+    assert np.isclose(now[horizon - 1, goose] + defer[horizon - 1, goose], 1.0), (
+        "the goose must be accounted for by one of the two ways: with an "
+        "INEQUALITY split row the LP leaves it out and dodges the waste charge")
+
+
 def main() -> int:
     tests = [(k, v) for k, v in sorted(globals().items())
              if k.startswith("test_") and callable(v)]
