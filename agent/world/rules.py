@@ -201,6 +201,17 @@ DEFAULT_BOARD: int = 10
 MAX_ORDERS_PER_TURN: int = 10
 
 
+def hire_hour(k: int) -> int:
+    """The earliest hour the k-th hand of a day (0-based) can act.
+
+    A hand hired in turn t acts from hour t + 1 (F040), and a turn settles at most
+    `MAX_ORDERS_PER_TURN` orders (F031), so even with every slot of a turn given to hires a day's
+    first ten hands act from hour 1 at the earliest, the next ten from hour 2. A queue that puts
+    other orders ahead of the hires in a turn starts them later than this.
+    """
+    return int(k) // MAX_ORDERS_PER_TURN + 1
+
+
 #: The engine's names for the four shed-access tiles, in the same order as `SHED_ACCESS`.
 SHED_ACCESS_NAMES: tuple[str, ...] = ("NW", "NE", "SW", "SE")
 
