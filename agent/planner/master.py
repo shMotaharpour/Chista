@@ -131,7 +131,7 @@ from agent.planner import colgen
 from agent.planner.inputs import dual_stand_in
 from agent.world.model import (ANIMALS, CROPS, N_RESOURCE, PRODUCTS,
                                RESOURCE_ID, RES_LABOR, SHED_ITEMS)
-from agent.tile_dp.contractor import PricedBoard
+from agent.tile_dp.contractor import HORIZON_DAYS, PricedBoard
 from agent.planner.colgen import _resource_of
 
 #: The shed items the market sells, as INDICES into `SHED_ITEMS` — the products
@@ -566,6 +566,18 @@ def _product_price_path(obs, days: int, p_flat: np.ndarray,
         # building it twice was 1.1 + 1.4 ms of the turn.
         fc = (forecast_obj if forecast_obj is not None
               else _forecast(obs, days=days, config=config))
+        # Every row of `p` must be a day the season HAS, and the path is indexed
+        # from the observation's own day (`price_paths(from_day=first_day)`), so
+        # a forecast that covers the horizon puts day `days - 1` on the season's
+        # last day and nothing beyond it. A forecast built for FEWER days than
+        # the horizon cannot: `MarketForecast.price_of` clamps onto its last
+        # modelled day, so the rows past its own end repeat a quote for a day
+        # nobody walked — the same pad `path[min(day, len(path) - 1)]` used to
+        # write here by hand, one layer down. It degrades to the flat stand-in
+        # and SAYS so, the way every other forecast failure here does.
+        if int(getattr(fc, "days", days)) < days:
+            return p_flat, (f"flat stand-in (forecast covers "
+                            f"{int(getattr(fc, 'days', 0))} of {days} days)")
         paths = price_paths(fc, days=days)
     except Exception as exc:                     # noqa: BLE001 - degrade
         return p_flat, f"flat stand-in (forecast failed: {type(exc).__name__})"
@@ -574,8 +586,7 @@ def _product_price_path(obs, days: int, p_flat: np.ndarray,
         rid = RESOURCE_ID.get(item)
         if rid is None or rid not in MARKET_IDS:
             continue
-        out[:, rid] = [float(path[min(day, len(path) - 1)])
-                       for day in range(days)]
+        out[:, rid] = [float(path[day]) for day in range(days)]
     return out, f"market forecast (#15, unlock policy {fc.unlock_policy})"
 
 
@@ -610,6 +621,54 @@ def _repriced_pool(pool, p_mkt: np.ndarray, days: int) -> list:
         earn = (produce[:days][:, market] * p_mkt[:days]).sum(axis=1)
         out.append(replace(column, earn=earn, revenue=float(earn.sum())))
     return out
+
+
+def season_horizon(obs) -> int:
+    """The days a plan may look ahead: the season that is LEFT (F029).
+
+    There is no horizon after the season ends. A plan made on day 0 starts at
+    30 days — the DP needs the whole season to value what it builds — and every
+    day the farm moves forward one, the horizon shrinks by one: day 1 -> 29,
+    ..., day 29 -> 1. A fixed look-ahead is wrong at both ends of the season:
+    20 days on day 0 stops the DP short of the season's own end (a crop it
+    plants on day 19 has nowhere to be harvested), and 20 days on day 20 prices
+    days 20..39, ten of which the season does not have.
+
+    The season's length is read from the tile DP's own constant, because that
+    is the horizon the sweep can run over at all — belief spells the same 30
+    `SEASON_DAYS` (F029) and `tests/test_season_horizon.py` pins the two
+    together, so a drift is a red test rather than a horizon nobody can price.
+
+    `max(1, ...)`: a day past the last one has no horizon at all, and a caller
+    that asks for one gets the single day it is standing on rather than an
+    empty LP.
+    """
+    day = int(obs.get("day", 0)) if isinstance(obs, dict) else 0
+    return max(1, int(HORIZON_DAYS) - day)
+
+
+def priced_contractor(contractor, obs):
+    """`contractor`, shrunk to the season that is left when it overshoots it.
+
+    The horizon is a fact of the day (F029), and the contractor's `days` is the
+    number of days its sweep runs over — so the two must agree, or the DP prices
+    days the season does not have and the columns come back with rows past the
+    horizon. A contractor built for FEWER days is honoured as it stands: a
+    shorter look-ahead is a legal plan, and every fixture that prices a board
+    hands one (20 days). A contractor built for MORE is rebuilt over its own
+    graph, which costs 0.4 ms measured against the artifact read
+    `load_contractor` pays.
+
+    `manager._roll_day` builds the day's contractor at the remaining season
+    already, so in the shipped path this is a no-op; it is here because
+    `equilibrate` may be called by anything, and pricing past the season is a
+    silent defect — the terminal row of the DP stops being the season's end.
+    """
+    days = season_horizon(obs)
+    if int(contractor.days) <= days:
+        return contractor
+    from agent.tile_dp.contractor import TileContractor
+    return TileContractor(contractor.graph, days=days)
 
 
 def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
@@ -647,7 +706,15 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
     prices and says so. `poll()` (the rung's deadline bail) may raise:
     the incumbent `(p, w_lag)` is on the result object either way.
     """
-    days = contractor.days
+    # The horizon is the season that is LEFT (F029), never a fixed look-ahead:
+    # a day-0 plan starts at 30 days and shrinks by one a day, so the DP's
+    # terminal row is the season's own end. The contractor is what carries it
+    # (`priced_contractor` shrinks a contractor that overshoots the season; a
+    # shorter one is the caller's own look-ahead and is priced as it stands),
+    # and everything below reads the same `days`: the LP's rows, the columns,
+    # the bound.
+    contractor = priced_contractor(contractor, obs)
+    days = int(contractor.days)
     p_mkt_full, w_stand_full = dual_stand_in(obs)
     p = p_mkt_full[:days]
     # #15: the product rows of `p` come from the market forecast (F035's
