@@ -22,7 +22,8 @@ from __future__ import annotations
 from typing import NamedTuple
 
 from agent.wsr.beam import (Day, Result, _bag, _start_hours, _start_positions, first_walk_turn,
-                            good_hours, leg_moves, legs, pickup_turns, walk_start_turn)
+                            good_hours, leg_moves, leg_target, legs, pickup_turns,
+                            walk_start_turn)
 from agent.wsr.tasks import ITEM_CODE, TaskArray
 
 PASS = ("PASS",)
@@ -89,7 +90,7 @@ def compile_route(day: Day, tasks: TaskArray, result: Result, *,
     for worker, entries in by_worker.items():
         for turn, row, fetch in legs(tasks, entries):
             task_id = tasks.ids[row]
-            target = (int(tasks.cells[row][0]), int(tasks.cells[row][1]))
+            target = leg_target(tasks, row, at[worker])
             # A good used after the worker's own DROP is fetched again on the way: the drop took the
             # load from the door with it (`legs`), and the leg walks through the nearest door.
             moves = leg_moves(at[worker], target, fetch)

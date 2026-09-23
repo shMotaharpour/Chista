@@ -46,6 +46,11 @@ DOOR_TO: np.ndarray = DISTANCE[DOOR_OF, :]
 #: A refetch leg's walk, cell to cell: out to the worker's nearest door, then on to the task.
 REFETCH: np.ndarray = (DISTANCE[np.arange(BOARD_SIZE ** 2), DOOR_OF][:, None]
                        + DOOR_TO).astype(np.int16)
+#: A DROP's walk from every cell: to that cell's own nearest door, where the bag is handed over
+#: (`leg_target`).
+DROP_WALK: np.ndarray = DISTANCE[np.arange(BOARD_SIZE ** 2), DOOR_OF].astype(np.int16)
+#: That door as a cell, per cell - where a worker stands after its DROP.
+DOOR_CELL: np.ndarray = np.stack([DOOR_OF // BOARD_SIZE, DOOR_OF % BOARD_SIZE], axis=1).astype(np.int16)
 
 #: What one step of the search is allowed to cost, as `beam x workers x tasks`. A step's arrays are
 #: that product wide, so a fixed width makes a hundred tiles cost fifty times a quadrant. This is the
@@ -231,6 +236,19 @@ def legs(tasks: TaskArray, entries: list[tuple[int, str]]) -> list[tuple[int, in
     return out
 
 
+def leg_target(tasks: TaskArray, row: int, here: Cell) -> Cell:
+    """Where a worker standing on `here` does task `row`: the task's own tile, or a DROP's door.
+
+    Any of the four shed-access tiles takes a DROP (`kaggriculture.py:138-139`, `:343-356`), so the
+    door a bag is handed over at is a property of the route - the one nearest the worker when it
+    drops (`nearest_shed`, the refetch's own rule) - and not of the harvest it banks. The search
+    (`DROP_DOOR`), the compiler and every reader of where a worker stands go through here.
+    """
+    if bool(tasks.is_drop[row]):
+        return nearest_shed(here)
+    return (int(tasks.cells[row][0]), int(tasks.cells[row][1]))
+
+
 def leg_moves(here: Cell, target: Cell, fetch) -> list[tuple]:
     """The ops that carry a worker to its task: the walk, or the walk through a door and a PICKUP."""
     if fetch is None:
@@ -282,7 +300,7 @@ def remaining_turns(day: Day, tasks: TaskArray, result: Result) -> list[int]:
         # the mixed day, where the farmer begins at hour 0 and the shed opens at hour 1.
         spent = len(bag)
         for _turn, row, fetch in legs(tasks, entries):
-            target = (int(tasks.cells[row][0]), int(tasks.cells[row][1]))
+            target = leg_target(tasks, row, here)
             spent += len(leg_moves(here, target, fetch)) + 1
             here = target
         out.append(int(day.horizon) - int(hours[worker]) - spent)
@@ -620,7 +638,7 @@ def _warm_row(tasks: TaskArray, warm: Result, done, when, who, free, where, trav
     for worker, entries in per_worker.items():
         at = (int(start[worker, 0]), int(start[worker, 1]))
         for _turn, index, fetch in legs(tasks, entries):
-            target = (int(tasks.cells[index][0]), int(tasks.cells[index][1]))
+            target = leg_target(tasks, index, at)
             walked += sum(1 for op in leg_moves(at, target, fetch) if op[0] in MOVE_DELTA)
             at = target
         where[row, worker] = at
@@ -726,7 +744,7 @@ def _stand_after(tasks: TaskArray, route, start, turn: int) -> Cell:
     """
     pos = (int(start[0]), int(start[1]))
     for task_turn, row, fetch in legs(tasks, route):
-        target = (int(tasks.cells[row][0]), int(tasks.cells[row][1]))
+        target = leg_target(tasks, row, pos)
         moves = leg_moves(pos, target, fetch)
         began = walk_start_turn(task_turn, len(moves))
         if turn < began:
@@ -964,6 +982,11 @@ def _expand(day: Day, tasks: TaskArray, done, when, who, free, where, travel, li
     # dimension more than the arithmetic needs and one pass less than the machine wants.
     # No cast: the table is int16, the width the arithmetic runs in, so the gather is the answer.
     hop = DISTANCE[here[:, :, None], tasks.cell_index[index][None, None, :]]
+    # A DROP is handed over at the door nearest the worker, not at a door fixed when the day was
+    # built (`leg_target`): its walk is the worker's own distance to its nearest door.
+    drop_here = tasks.is_drop[index]
+    if drop_here.any():
+        hop = np.where(drop_here[None, None, :], DROP_WALK[here][:, :, None], hop)
 
     # Each worker's last DROP, per route. The engine's DROP empties the whole bag, the goods loaded
     # at the door included, so after it a consumer's good is fetched again on the way (`legs`).
@@ -1168,8 +1191,15 @@ def _select(expanded, tasks: TaskArray, beam: int, first_hand: int, start_hours)
     child_free = free[parent].copy()
     child_free[np.arange(parent.size), worker] = np.where(idle_here, free[parent, worker], hour)
     child_where = where[parent].copy()
+    # Where the worker ends up: the task's tile, or for a DROP the door nearest where it stood.
+    target = tasks.cells[task]
+    dropping = tasks.is_drop[task]
+    if dropping.any():
+        stood = where[parent, worker]
+        at_door = DOOR_CELL[stood[:, 0].astype(np.int32) * BOARD_SIZE + stood[:, 1].astype(np.int32)]
+        target = np.where(dropping[:, None], at_door, target)
     child_where[np.arange(parent.size), worker] = np.where(
-        idle_here[:, None], where[parent, worker], tasks.cells[task])
+        idle_here[:, None], where[parent, worker], target)
     child_travel = travel[parent] + hop[parent, worker, column]
     # Placing a task advances the tasks it precedes, so the counter for those children moves by one
     # on each edge out of it. Most tasks precede one other, so this is a few hundred additions.
