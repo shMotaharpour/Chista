@@ -445,14 +445,26 @@ def _fixed_point(day: Day, tasks: TaskArray, beam: int, pool: int,
     and a half-built attempt must never replace the fuller day the first pass found.
     """
     conservative = _settle(day, tasks, beam, pool, deadline, warm)
+    hours, arrival = _start_hours(day, pool), good_hours(tasks)
     if conservative.complete:
-        # The day-wide charge already carries the day, so the tightening pass has nothing to win on
-        # completeness - and it costs a search per pass, which on a real day is the budget the caller
-        # gave (F046). The day-wide charge is a ceiling, so the day it found is the day.
+        # The day-wide charge already carries the day, so there is nothing to win on completeness -
+        # but it charges every worker every good of the day, and a worker that loads fewer at its door
+        # (a good it only uses after its own DROP is fetched then, not at the door - `_bag`) starts
+        # every walk late for pickups it never makes. One pass with the route's own bags, and only when
+        # some worker was charged a later start than its bag needs: a day with no such worker costs
+        # nothing more (F046).
+        bags = bags_of(day, tasks, conservative)
+        full = preload_turns(tasks)
+        if all(first_walk_turn(h, bag, arrival) >= first_walk_turn(h, full, arrival)
+               for h, bag in zip(hours, bags)):
+            return conservative
+        candidate = _settle(day, tasks, beam, pool, deadline, warm, charge=bags)
+        if (candidate.complete and _consistent(day, tasks, candidate)
+                and not _better_route(conservative, candidate)):
+            return candidate
         return conservative
     best: Result = conservative
     charge = bags_of(day, tasks, conservative)
-    hours, arrival = _start_hours(day, pool), good_hours(tasks)
     tightened = False
     for _attempt in range(CHARGE_PASSES + 1):
         candidate = _settle(day, tasks, beam, pool, deadline, warm, charge=charge)
