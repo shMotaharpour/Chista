@@ -61,6 +61,23 @@ from agent.world.rules import TURNS_PER_DAY
 
 IDLE_PLAN = {"units": [[["PASS"]] * TURNS_PER_DAY], "market": []}
 
+
+def _sell_hours(plan) -> dict:
+    """`{good: hour}` from the committed plan's own market orders.
+
+    The FIRST hour a good is sold in is the one that matters for the walk: the
+    units are in the market from then on. A plan with no sells for a good leaves
+    it out, and the projection then lands that good at hour 0 — the behaviour
+    that shipped.
+    """
+    hours: dict[str, int] = {}
+    market = (plan or {}).get("market") or []
+    for hour, orders in enumerate(market[:TURNS_PER_DAY]):
+        for order in orders or []:
+            if order and str(order[0]) == "SELL" and str(order[1]) not in hours:
+                hours[str(order[1])] = int(hour)
+    return hours
+
 #: The pretrained rival model, loaded ONCE per process (#95).
 #:
 #: `OpponentModel(pretrained=True)` reads `agent/artifact/opponent_counts.npz`
@@ -280,7 +297,8 @@ class Manager:
                 self.own_sells = {}
                 return
             self.own_sells = plan_supply_sells_from_pool(
-                pool, lam, self.contractor.days, day)
+                pool, lam, self.contractor.days, day,
+                hours=_sell_hours(self.plan))
         except Exception:                      # noqa: BLE001 - flat path stands
             self.own_sells = {}
 
