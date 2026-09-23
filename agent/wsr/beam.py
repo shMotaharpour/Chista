@@ -243,17 +243,19 @@ def leg_moves(here: Cell, target: Cell, fetch) -> list[tuple]:
     return walk(here, door) + [fetched] + walk(door, target)
 
 
-def bags_of(day: Day, tasks: TaskArray, result: Result) -> list[int]:
-    """The pickups each worker's own day needs: one per distinct good in its own bag.
+def bags_of(day: Day, tasks: TaskArray, result: Result) -> list[frozenset[int]]:
+    """The goods each worker's own day loads at its door: the distinct goods in its own bag.
 
-    The compiler writes one PICKUP per good, at the worker's door, before its walk - so this count is
-    what the search has to charge that worker, and it is a property of the route rather than of the
-    day. `_fixed_point` iterates it; `compile_route` writes from the same bags.
+    The compiler writes one PICKUP per good, at the worker's door, before its walk, each at its own
+    good's hour (`pickup_turns`) - so this is what the search has to charge that worker, and it is a
+    property of the route rather than of the day. `_fixed_point` iterates it; `compile_route` writes
+    from the same bags.
     """
     per: dict[int, list[tuple[int, str]]] = {}
     for turn, task_id, worker in result.route:
         per.setdefault(int(worker), []).append((int(turn), task_id))
-    return [len(_bag(tasks, per.get(worker, []))) for worker in range(len(day.units) + result.pool)]
+    return [frozenset(_bag(tasks, per.get(worker, [])))
+            for worker in range(len(day.units) + result.pool)]
 
 
 def remaining_turns(day: Day, tasks: TaskArray, result: Result) -> list[int]:
@@ -459,7 +461,9 @@ def _fixed_point(day: Day, tasks: TaskArray, beam: int, pool: int,
         if _consistent(day, tasks, candidate) and _better_route(candidate, best):
             best = candidate
         bags = bags_of(day, tasks, candidate)
-        grown = [max(charged, bag) for charged, bag in zip(charge, bags)]
+        # A superset of goods never loads its last one earlier (`pickup_turns`), so the union is
+        # the ceiling that only grows.
+        grown = [charged | bag for charged, bag in zip(charge, bags)]
         if grown != charge:
             charge = grown
             continue
@@ -834,23 +838,41 @@ def _stand_for(tasks: TaskArray, row: int, at: tuple[int, int]) -> tuple[int, in
     return (int(tasks.cells[row][0]), int(tasks.cells[row][1]))
 
 
-def preload_turns(tasks: TaskArray) -> int:
-    """How many pickups the day's walk is shifted by: one per distinct good a task consumes.
+def preload_turns(tasks: TaskArray) -> frozenset[int]:
+    """The goods a worker may have to load at its door: every good a task of the day consumes.
 
-    A worker takes what it will use while it stands on the door, so its walk out begins that many
-    turns later. Charging every worker the day's own count is a ceiling, not a guess: a worker that
-    needs fewer goods leaves the difference idle, and one that needs them all has exactly its room.
+    Charging every worker the day's own goods is a ceiling, not a guess: a worker that needs fewer
+    leaves the difference idle, and one that needs them all has exactly its room.
     """
-    goods = tasks.items[tasks.items >= 0]
-    return int(np.unique(goods).size)
+    return frozenset(int(g) for g in np.unique(tasks.items[tasks.items >= 0]))
 
 
-def first_arrival(tasks: TaskArray) -> int:
-    """The earliest turn any good a task consumes is in the shed."""
-    goods = tasks.items >= 0
-    if not goods.any():
-        return 0
-    return int(tasks.earliest[goods].min())
+def good_hours(tasks: TaskArray) -> dict[int, int]:
+    """The hour each good a task consumes is in the shed - the timetable, per good.
+
+    A PICKUP before its good is in the shed is refused in silence (F047), so each good is loaded at
+    its OWN hour: a cow bought in turn 0 is not in the shed at hour 0 however early the wheat is.
+    """
+    out: dict[int, int] = {}
+    for good, hour in zip(tasks.items.tolist(), tasks.earliest.tolist()):
+        if good >= 0:
+            out[int(good)] = max(out.get(int(good), 0), int(hour))
+    return out
+
+
+def pickup_turns(hour: int, goods, arrival: dict[int, int]) -> list[tuple[int, int]]:
+    """The turn each good is loaded at the worker's door: `(turn, good)`, in the order they are taken.
+
+    One turn per good, from the worker's own first hour, each no earlier than its good is in the
+    shed - so the goods that are already there go first, and the walk waits only for the last one.
+    """
+    out: list[tuple[int, int]] = []
+    turn = int(hour)
+    for good in sorted(goods, key=lambda g: (arrival.get(int(g), 0), int(g))):
+        turn = max(turn, arrival.get(int(good), 0))
+        out.append((turn, int(good)))
+        turn += 1
+    return out
 
 
 def walk_start_turn(turn: int, moves: int) -> int:
@@ -868,31 +890,31 @@ def walk_start_turn(turn: int, moves: int) -> int:
     return int(turn) - int(moves)
 
 
-def first_walk_turn(hour: int, arrival: int, bag: int) -> int:
+def first_walk_turn(hour: int, goods, arrival: dict[int, int]) -> int:
     """The turn the compiler writes a worker's first walk in - `compile_route`'s `last + 1`.
 
-    A worker with an empty bag walks from the turn its own day begins; one that carries goods spends
-    its first turns at its door picking them up, one per distinct good, and walks after that. The
-    compiler writes the ops with this rule and the model counts where the units stand after the first
-    turn with it, so the day that is written and the day that was priced cannot disagree.
+    A worker with an empty bag walks from the turn its own day begins; one that carries goods loads
+    them at its door first (`pickup_turns`) and walks after the last one. The compiler writes the ops
+    with this rule and the model counts where the units stand after the first turn with it, so the
+    day that is written and the day that was priced cannot disagree.
     """
-    return int(hour) if not bag else max(int(hour), int(arrival)) + int(bag)
+    loads = pickup_turns(hour, goods, arrival)
+    return int(hour) if not loads else loads[-1][0] + 1
 
 
 def start_hours(day: Day, tasks: TaskArray, hands: int, charge=None) -> np.ndarray:
     """The hour each worker's WALK may begin: its own hour, the goods, and the pickups before it.
 
-    `charge` is how many pickups each worker's own day needs - one turn per distinct good in its bag.
-    That is a property of the route (which worker does what), so the search iterates it
-    (`_fixed_point`) and this is where the iteration lands. Without it every worker is charged the
-    day's whole distinct-good count: a ceiling that is always safe and costs the search the turns
-    nobody uses.
+    `charge` is the goods each worker's own day loads at its door. That is a property of the route
+    (which worker does what), so the search iterates it (`_fixed_point`) and this is where the
+    iteration lands. Without it every worker is charged the day's whole set of goods: a ceiling that
+    is always safe and costs the search the turns nobody uses.
     """
     hours = _start_hours(day, hands)
     if charge is None:
         charge = [preload_turns(tasks)] * len(hours)
-    arrival = first_arrival(tasks)
-    return np.asarray([first_walk_turn(h, arrival, c) for h, c in zip(hours, charge)],
+    arrival = good_hours(tasks)
+    return np.asarray([first_walk_turn(h, c, arrival) for h, c in zip(hours, charge)],
                       dtype=np.int16)
 
 

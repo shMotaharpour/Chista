@@ -22,8 +22,8 @@ from __future__ import annotations
 from typing import NamedTuple
 
 from agent.wsr.beam import (Day, Result, _bag, _settled_after_first_turn, _start_hours,
-                            _start_positions, first_arrival, first_walk_turn, leg_moves, legs,
-                            preload_turns, walk_start_turn)
+                            _start_positions, good_hours, first_walk_turn, leg_moves, legs,
+                            pickup_turns, walk_start_turn)
 from agent.wsr.routing import nearest_shed
 from agent.wsr.tasks import ITEM_CODE, TaskArray
 
@@ -81,19 +81,18 @@ def compile_route(day: Day, tasks: TaskArray, result: Result, *,
 
     # The pickups: one turn each, at the door the worker starts on, carrying the whole day's use of
     # that good. The second feeding of a day buys nothing, so it is not fetched again. Each worker's
-    # pickups begin at ITS own hour - a hand offered at hour 1 cannot pick anything up at hour 0,
-    # and giving it another worker's hour is what put a walk one turn short of its room.
-    arrival = first_arrival(tasks)
+    # pickups begin at ITS own hour - a hand offered at hour 1 cannot pick anything up at hour 0 -
+    # and each good is taken no earlier than it is in the shed (`pickup_turns`): a PICKUP before its
+    # good has arrived is refused in silence (F047).
+    arrival = good_hours(tasks)
     for worker in range(m):
         bag = _bag(tasks, by_worker.get(worker, []))
-        # The pickups go on the worker's own first turns, one per good, at its door: a hand offered
-        # from hour 1 cannot pick anything up at hour 0 (F040). The walk then begins where they end,
-        # which is what `first_walk_turn` says and what the search charged this worker for.
-        pickup = max(int(hours[worker]), arrival)
-        for step, good in enumerate(sorted(bag)):
-            ops[worker][pickup + step] = ("PICKUP", ITEM_NAME[good], bag[good])
+        # The walk then begins after the last of them, which is what `first_walk_turn` says and
+        # what the search charged this worker for.
+        for turn, good in pickup_turns(hours[worker], bag, arrival):
+            ops[worker][turn] = ("PICKUP", ITEM_NAME[good], bag[good])
         if bag:
-            last[worker] = first_walk_turn(hours[worker], arrival, len(bag)) - 1
+            last[worker] = first_walk_turn(hours[worker], bag, arrival) - 1
 
     for worker, entries in by_worker.items():
         for turn, row, fetch in legs(tasks, entries):
