@@ -41,17 +41,33 @@ def test_without_a_tracker_or_a_model_the_calendar_stands() -> None:
     assert m._rival_hours(None, 3) == {}
 
 
-def test_a_tracker_failure_degrades_to_the_calendar() -> None:
-    """A broken record is not a new policy: it leaves the dated input empty."""
-    m = _manager()
+def test_a_broken_tracker_spills_unless_the_run_asked_to_degrade() -> None:
+    """`never_raise` decides, exactly as it does at the turn boundary.
+
+    Off (the shipped default) the error comes out where it can be seen; on, the
+    calendar stands. Swallowing unconditionally is how the `NameError` in
+    `0ce5d25` hid behind this very except.
+    """
 
     class Boom:
         @property
         def records(self):
             raise RuntimeError("tracker exploded")
 
+    m = _manager()
     m.tracker = Boom()
-    assert m._rival_hours(None, 2) == {}
+    m.opponent = None
+    try:
+        m._rival_hours(None, 2)
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("a broken tracker must spill, not hide")
+
+    quiet = MC.Manager(Config(never_raise=True))
+    quiet.tracker = Boom()
+    quiet.opponent = None
+    assert quiet._rival_hours(None, 2) == {}
 
 
 def main() -> int:
