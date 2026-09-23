@@ -56,6 +56,28 @@ class Config:
     #: resource use a submission can take from inside.
     log_gaps: bool = False
 
+    # --- the never-raise boundary -----------------------------------------
+    #: Whether a failed turn is CAUGHT and passed, or re-raised.
+    #:
+    #: ON — the submission's contract: the harness is never handed an exception.
+    #: The failure is recorded on `Runtime.failures`, its day marked, the turn
+    #: answers all-PASS, and the `A` line says so.
+    #: OFF — the same record and the same `A` line, and then the exception is
+    #: RE-RAISED with its traceback, so a run that reaches the boundary says WHAT
+    #: reached it instead of passing the day. A silent PASS day is how the day
+    #: layer's short-horizon `compile_route` refusal stayed invisible for a whole
+    #: investigation.
+    #:
+    #: **OFF right now, by the owner's order (2026-09-23):** the hunt wants the
+    #: traceback. It MUST be ON in the submission — an exception out of
+    #: `agent.main` is an episode the harness cannot score.
+    #:
+    #: It is not a policy switch and not a fallback ladder: the plan, the market
+    #: orders and the dispatcher are untouched by it. What it decides is whether
+    #: a failure is VISIBLE, which is the class `log_gaps` belongs to — and like
+    #: `log_gaps` it is display-only and says so here.
+    never_raise: bool = False
+
     # --- the master --------------------------------------------------------
     #: Pricing rounds one `equilibrate` may spend. The certificate usually
     #: arrives well inside it (58 rounds cold on a day-0 board, 1 warm); the

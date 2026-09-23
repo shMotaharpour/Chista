@@ -26,6 +26,8 @@ import io
 import pathlib
 from typing import Any
 
+import pytest
+
 from agent.config import Config
 from agent.dispatch import MAX_MARKET_ORDERS, PASS_ACTION, dispatch_plan
 from agent.main import agent
@@ -91,15 +93,61 @@ def _quiet(fn, *args, **kwargs) -> tuple[str, Any]:
 # --------------------------------------------------------------- the entry point
 
 def test_entry_point_never_raises() -> None:
-    """Any input - real-shaped, empty, garbage, None - gets a legal dict."""
+    """Any input - real-shaped, empty, garbage, None - gets a legal dict.
+
+    `never_raise=True` names the contract under test: the submission's arm. The
+    OFF arm is `test_the_never_raise_switch_decides_whether_a_failure_escapes`.
+    """
     fake = _FakeManager(raises="observe")
-    runtime = _runtime(fake)
+    runtime = _runtime(fake, never_raise=True)
     for bad_input in (None, 42, {}, {"farms": "no"}, _obs()):
         action = runtime.act(bad_input)
         assert set(action) == {"farmer", "hands", "market"}, action
         assert isinstance(action["farmer"], list)
         assert isinstance(action["hands"], list)
         assert isinstance(action["market"], list)
+
+
+def test_the_never_raise_switch_decides_whether_a_failure_escapes() -> None:
+    """Both arms of `Config.never_raise`, on the same failing turn.
+
+    ON: all-PASS, the failure on `Runtime.failures`, the day marked, the `A` line
+    written. OFF: the same three records, and then the exception comes out with
+    its traceback — a hunt wants to know what reached the boundary instead of
+    reading a season of PASSed days.
+
+    The switch decides whether the run CONTINUES, never whether the failure is
+    written down: both arms are asserted to leave the same record.
+    """
+    caught = _runtime(_FakeManager(raises="observe"), never_raise=True)
+    stdout, action = _quiet(caught.act, _obs(day=4, hour=0))
+    assert action == PASS_ACTION
+    assert len(caught.failures) == 1 and caught.failed_days == {4}
+    assert "A day=4 hour=0" in stdout and "error=" in stdout, stdout
+
+    loud = _runtime(_FakeManager(raises="observe"), never_raise=False)
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        with pytest.raises(RuntimeError, match="observe blew up"):
+            loud.act(_obs(day=4, hour=0))
+    assert len(loud.failures) == 1, loud.failures
+    assert "day 4 hour 0" in loud.failures[0]
+    assert loud.failed_days == {4}
+    assert "A day=4 hour=0" in buf.getvalue(), (
+        "the OFF arm must write the same log line before it raises")
+
+
+def test_the_never_raise_switch_default_is_the_owners_current_setting() -> None:
+    """The DEFAULT is a temporary owner setting, and the guard says which.
+
+    It is OFF right now (the owner's order, 2026-09-23: the hunt wants the
+    traceback) and MUST be ON in the submission. This guard exists so a flip is
+    a deliberate edit that names itself, not a silent drift — it is not a claim
+    that OFF is correct.
+    """
+    assert Config().never_raise is False, (
+        "the default flipped: if this is the submission, the harness can now be "
+        "handed an exception — update this guard's docstring with the reason")
 
 
 def test_the_module_level_entry_point_is_legal_on_garbage() -> None:
@@ -111,7 +159,7 @@ def test_the_module_level_entry_point_is_legal_on_garbage() -> None:
     saved = dict(RUNTIME.__dict__)
     try:
         RUNTIME.__dict__.clear()
-        RUNTIME.__dict__.update(Runtime().__dict__)
+        RUNTIME.__dict__.update(Runtime(Config(never_raise=True)).__dict__)
         stdout, action = _quiet(agent, {"farms": []})
         assert set(action) == {"farmer", "hands", "market"}, action
         assert RUNTIME.failures, "a junk observation must be recorded as a failure"
@@ -167,9 +215,13 @@ def test_the_managers_plan_is_what_gets_dispatched() -> None:
 # --------------------------------------------------------------- visible failure
 
 def test_a_failing_observe_passes_and_is_recorded() -> None:
-    """A raising manager: PASS, a recorded failure, its day marked, a log line."""
+    """A raising manager: PASS, a recorded failure, its day marked, a log line.
+
+    `never_raise=True` is the arm that answers; the OFF arm is asserted beside
+    it in `test_the_never_raise_switch_decides_whether_a_failure_escapes`.
+    """
     fake = _FakeManager(raises="observe")
-    runtime = _runtime(fake)
+    runtime = _runtime(fake, never_raise=True)
     stdout, action = _quiet(runtime.act, _obs(day=4, hour=0))
     assert action == PASS_ACTION, action
     assert len(runtime.failures) == 1, runtime.failures
@@ -184,7 +236,7 @@ def test_a_failing_observe_passes_and_is_recorded() -> None:
 def test_a_failing_step_passes_and_is_recorded() -> None:
     """A failure on any turn of the day is recorded, not swallowed."""
     fake = _FakeManager(raises="step")
-    runtime = _runtime(fake)
+    runtime = _runtime(fake, never_raise=True)
     action = runtime.act(_obs(day=2, hour=5))
     assert action == PASS_ACTION
     assert runtime.failed_days == {2}
@@ -194,7 +246,7 @@ def test_a_failing_step_passes_and_is_recorded() -> None:
 def test_a_failure_does_not_stop_the_next_turn() -> None:
     """One bad turn is one bad turn: the next turn still calls the manager."""
     fake = _FakeManager(raises="step")
-    runtime = _runtime(fake)
+    runtime = _runtime(fake, never_raise=True)
     runtime.act(_obs(hour=1))
     fake.raises = None
     action = runtime.act(_obs(hour=2))
