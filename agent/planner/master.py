@@ -779,7 +779,9 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
     w_cur = w_lag
     state = {"w": w_lag, "cash": np.zeros(days), "failed": None}
 
-    def price(y, cash, shed=None):
+    def price(duals):
+        y, cash, shed = duals.y, duals.cash, duals.shed
+
         """The subproblem: price each class at the master's OWN duals.
 
         Exactly those duals, not damped ones and not raised onto a floor. The

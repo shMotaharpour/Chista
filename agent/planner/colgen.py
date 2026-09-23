@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import os as _os
 import time
+from typing import NamedTuple
 from dataclasses import dataclass, field, replace
 
 import numpy as np
@@ -787,6 +788,25 @@ def lagrangian_bound(solve: MasterSolve, values: np.ndarray,
                         * np.asarray(values, dtype=np.float64)).sum())
 
 
+class PricingDuals(NamedTuple):
+    """Every dual the pricing step may need, as ONE argument.
+
+    A callback that reads only `y` and `cash` ignores the rest; one that needs
+    the shed's prices reads `shed`; the entry row's `eta` is here too. The point
+    is that adding a ROW BLOCK adds a field and touches no signature — the
+    positional form grew a slot per block and every hand-built callback in the
+    guards had to follow it. A NamedTuple, not a dataclass: it is built once per
+    pricing round and read field-wise, so the tuple's speed is what we want.
+    """
+
+    y: np.ndarray
+    cash: np.ndarray
+    shed: tuple | None = None
+    #: The split rows' duals (the internal price of a harvested unit), or None
+    #: when the entry row is off.
+    eta: np.ndarray | None = None
+
+
 @dataclass
 class ColgenResult:
     """The mix, the duals, and whether the answer carries a proof."""
@@ -1079,7 +1099,8 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
             used = (tuple(alpha * np.asarray(c) + (1.0 - alpha) * np.asarray(e)
                           for c, e in zip(centre, exact))
                     if smoothed else exact)
-            values, columns = price(used[0], used[1], shed_duals)
+            values, columns = price(PricingDuals(
+                y=used[0], cash=used[1], shed=shed_duals))
             if shed is not None and seeded:
                 # No bound on the seeded round. The bound is a Lagrangian bound
                 # at the multipliers it was computed with, and those are the
