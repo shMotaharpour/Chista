@@ -243,6 +243,7 @@ def forecast(obs: Any, *, days: int = 30,
              our_sells: Mapping[int, Mapping[str, int]] | None = None,
              residual: Mapping[str, float] | None = None,
              rival_supply: np.ndarray | None = None,
+             rival_sells: Mapping[int, Mapping[str, int]] | None = None,
              unlock_policy: str = "mean",
              config: Any = None,
              market_params: Any = None,
@@ -254,7 +255,12 @@ def forecast(obs: Any, *, days: int = 30,
     enter as cumulative ladders (`belief/ladder.py`), and the prices are the
     quote table indexed at the walked rows — no per-turn Python loop.
 
-    `our_sells` is `{absolute_step: {item: units}}`; `residual` is the
+    `our_sells` and `rival_sells` are both `{absolute_step: {item: units}}`.
+    `rival_sells` is the DATED form of the rival's pressure — the hours their
+    supply actually lands in — and it REPLACES `rival_supply`'s day-level total
+    on every day it names, because a caller that knows the hours and also passes
+    the day's total would count the same units twice. A day it does not name
+    keeps the calendar's own number. `residual` is the
     opponent's sell pressure in units per day (#16 owns the estimate), and
     `rival_supply` is that same pressure DATED — `(days, 9)` units per day per
     good, as `belief/rival_calendar.supply_curve` builds it from their public
@@ -349,6 +355,29 @@ def forecast(obs: Any, *, days: int = 30,
                 f"rival_supply: expected shape ({horizon}, {len(PRODUCTS)}), "
                 f"got {curve.shape}")
         rival = curve[day_of_turn] / TURNS_PER_DAY
+    if rival_sells:
+        # The rival's supply at the HOUR it lands, not spread over the day. The
+        # days it names lose the calendar's own total for that day: the dated
+        # units are what the tracker and the opponent model know, and adding both
+        # would push the same supply into the walk twice.
+        touched = set()
+        for abs_step, basket in rival_sells.items():
+            t = int(abs_step) - step
+            if 0 <= t < len(turns):
+                touched.add(int(abs_step) // TURNS_PER_DAY - first_day)
+                for it, units in basket.items():
+                    if it in n:
+                        rival[t, n[it]] += float(units)
+        for rel in touched:
+            if 0 <= rel < horizon:
+                rival[day_of_turn == rel, :] = 0.0
+                for abs_step, basket in rival_sells.items():
+                    t = int(abs_step) - step
+                    if (0 <= t < len(turns)
+                            and int(abs_step) // TURNS_PER_DAY - first_day == rel):
+                        for it, units in basket.items():
+                            if it in n:
+                                rival[t, n[it]] += float(units)
 
     # --- inventory walk: cumsum of (rival + our - drain), per TURN ----------
     # both seats' sales ADD supply (+1 per unit, engine `_commit_unit`); the

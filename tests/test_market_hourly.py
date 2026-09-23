@@ -164,3 +164,39 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+def test_a_rivals_dated_sale_moves_the_hours_after_it() -> None:
+    """The rival's supply at hour 10 cheapens hour 11 onward, not hour 10.
+
+    `rival_supply` is per DAY, so their units all landed at hour 0 and the rest
+    of the day was quoted on a market they never sold into (#16). The dated form
+    puts them where they land: a sale adds supply AFTER that turn's market, so
+    the turns before it are unchanged and the turns after it are cheaper.
+    """
+    sim, _PASS = _sim(0)
+    obs = sim.observations()[0]
+    g = M_PRODUCTS.index("MELON")
+    base = hourly_prices(forecast(obs, days=1), days=1)
+    dated = hourly_prices(forecast(obs, days=1,
+                                   rival_sells={10: {"MELON": 20}}), days=1)
+    assert (dated[:11, g] == base[:11, g]).all(), \
+        "the hours before the sale must not move"
+    assert (dated[11:, g] < base[11:, g]).all(), \
+        "the hours after it must be cheaper"
+
+
+def test_the_dated_rivals_supply_replaces_the_days_total() -> None:
+    """Naming a day's hours must not ADD to that day's calendar total."""
+    import numpy as np
+    sim, _PASS = _sim(0)
+    obs = sim.observations()[0]
+    daily = np.zeros((1, len(M_PRODUCTS)))
+    daily[0, M_PRODUCTS.index("MELON")] = 20
+    both = hourly_prices(forecast(obs, days=1, rival_supply=daily,
+                                  rival_sells={10: {"MELON": 20}}), days=1)
+    dated = hourly_prices(forecast(obs, days=1,
+                                   rival_sells={10: {"MELON": 20}}), days=1)
+    assert (both == dated).all(), (
+        "the day's calendar total and its dated hours are the same units: the "
+        "dated form REPLACES the day it names")
