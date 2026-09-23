@@ -15,9 +15,12 @@ calling conventions (owner note 2026-09-15):
   needs (turnsPerDay, shedCapacity, ...) is either pinned by an engine
   probe (tests/test_agent_obs.py) or carried in the observation.
 
-This module never raises: the spine records the failure and returns the
-safest legal action dict (all-PASS). It does not play a different policy
-instead - see docs/ARCHITECTURE.md section 5.
+This module never raises while `Config.never_raise` is ON (the submission's
+setting): the spine records the failure and returns the safest legal action dict
+(all-PASS). It does not play a different policy instead - see
+docs/ARCHITECTURE.md section 5. With the switch OFF the failure is recorded and
+then re-raised with its traceback: a diagnostic arm for a hunt, never a
+submission setting.
 """
 
 from __future__ import annotations
