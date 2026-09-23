@@ -21,6 +21,9 @@ worked: 2,840 coins against a PASS opponent's 3,000, worse than doing nothing
 (`docs/ARCHITECTURE.md` §5). Failure is visible instead: an exception is
 recorded on `Runtime.failures`, its day is marked, the turn PASSes, and the log
 says so. PASS is legal and honest; a worse policy wearing the same shape is not.
+That is `Config.never_raise` ON, the submission's setting. With it OFF the same
+record is written and the exception is then re-raised with its traceback — a
+diagnostic arm, so a hunt sees what reached the boundary instead of a PASSed day.
 
 Budget (F046): one free second per turn, unbankable; the harness bills ~35 ms
 more than measured, and an exhausted 60 s episode bank forfeits. The working
@@ -112,7 +115,13 @@ class GapStats:
 
 
 class Runtime:
-    """The turn's clock, the manager, and the never-raise promise."""
+    """The turn's clock, the manager, and the never-raise boundary.
+
+    `Config.never_raise` decides whether a failed turn answers all-PASS (the
+    submission's contract) or is re-raised after it is recorded and logged (the
+    diagnostic arm, OFF by the owner's order while the day layer's short-horizon
+    refusal is being hunted).
+    """
 
     def __init__(self, config: Config | None = None) -> None:
         #: The numbers the agent plays with: `agent/artifact/config.json` if it
@@ -149,6 +158,7 @@ class Runtime:
         if self.last_return_t is not None:
             self.gaps.add((started - self.last_return_t) * 1000.0)
         error: Exception | None = None
+        raise_after: Exception | None = None
         try:
             if self.manager is None:
                 self.manager = Manager(self.cfg)
@@ -166,6 +176,13 @@ class Runtime:
                     f"day {day} hour {hour}: {type(exc).__name__}: {exc}")
             self.failed_days.add(day)
             action = dict(PASS_ACTION)
+            if not self.cfg.never_raise:
+                # `Config.never_raise` is OFF: the failure is recorded and the
+                # `A` line below still carries it, and then it is RE-RAISED with
+                # its traceback. Raised after the log, so the season's log holds
+                # the same evidence either way — the switch decides whether the
+                # run continues, never whether the failure is written down.
+                raise_after = exc
         self_s = time.perf_counter() - started
         self.worst_overrun_s = max(
             self.worst_overrun_s,
@@ -173,6 +190,8 @@ class Runtime:
         self._log(obs, self_s, error)
         self.last_return_t = time.perf_counter()
         self.turns += 1
+        if raise_after is not None:
+            raise raise_after
         return action
 
     def _remaining_ms(self, started: float) -> float:
