@@ -80,6 +80,9 @@ def test_a_model_present_dates_the_hours_the_tracker_has_not_seen() -> None:
     model = MC.opponent_model()
     assert model is not None, "the pretrained opponent table must be present"
     m.opponent = model
+    calendar = np.zeros((2, len(PRODUCTS)))
+    calendar[0, PRODUCTS.index("MELON")] = 20.0     # the board says day 0 sells
+    m._rival_supply = lambda obs, horizon: calendar
     quotes = {"WHEAT": 25, "CARROT": 35, "TOMATO": 60, "STRAWBERRY": 120,
               "MELON": 250, "EGG": 50, "MILK": 160, "WOOL": 200,
               "FERTILIZER": 100}
@@ -89,3 +92,22 @@ def test_a_model_present_dates_the_hours_the_tracker_has_not_seen() -> None:
         "with the model present the rival's hours must be dated; an empty dict "
         "means the model branch is not running")
     assert all(0 <= int(step) < 2 * 24 for step in hours), sorted(hours)
+
+
+def test_the_model_only_dates_a_day_the_board_says_has_goods() -> None:
+    """An empty calendar gates the model out: no phantom rival supply.
+
+    The model's table is trained on OTHER players' games, so on a day the board
+    shows nothing to sell its priors describe a rival who is not there. Measured
+    on the PASS season: letting them through cost 4,058 coins.
+    """
+    m = _manager()
+    m.tracker = None
+    m.opponent = MC.opponent_model()
+    assert m.opponent is not None
+    empty = np.zeros((2, len(PRODUCTS)))
+    m._rival_supply = lambda obs, horizon: empty
+    quotes = {g: 50 for g in PRODUCTS}
+    obs = {"step": 0, "day": 0, "market": {"prices": quotes}}
+    assert m._rival_hours(obs, 2) == {}, (
+        "the board says no goods: the model must not date anything")

@@ -288,7 +288,16 @@ class Manager:
                 quotes = (obs.get("market") or {}).get("prices") or {}
                 step0 = int(obs.get("step", int(obs.get("day", 0))
                                      * TURNS_PER_DAY))
+                # The gate: the model only says WHICH HOUR of a day that the
+                # board already says has goods. On a day the calendar is empty
+                # there is nothing to date, and the model's priors would invent
+                # a rival who sells — measured at 4,058 coins against a seat
+                # that does nothing.
+                calendar = np.asarray(self._rival_supply(obs, horizon),
+                                      dtype=np.float64)
                 for d in range(max(1, int(horizon))):
+                    if float(calendar[d].sum()) <= 0.0:
+                        continue
                     for h in range(TURNS_PER_DAY):
                         step = step0 + d * TURNS_PER_DAY + h
                         for good in PRODUCTS:
