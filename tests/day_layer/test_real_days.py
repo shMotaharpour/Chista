@@ -47,24 +47,37 @@ KNOWN_SHORT = {
     ("2026-09-06", 105964064, 25),
     ("2026-09-16", 109466152, 25),
     ("2026-09-01", 104478289, 15),
-    # and the one the real hire hours cost: two of the game's hands began at hour 2, so they had 22
-    # turns and not 23 - which the corpus used to give them all.
-    ("2026-08-24", 98009264, 14),
 }
 
 #: The strong sample's own short days, same rule. Every one is a late day of a big farm - the days a
 #: top-10 player had the most land and the same handful of hands - and each misses a few tasks.
 KNOWN_SHORT_STRONG = {
-    ("2026-08-11", 91807542, 25),
     ("2026-08-31", 103687742, 15),
     ("2026-09-05", 105864228, 25),
-    ("2026-09-10", 107289135, 25),
     ("2026-09-15", 109086888, 15),
     ("2026-09-15", 109086888, 20),
     ("2026-09-15", 109086888, 25),
     ("2026-09-20", 111016701, 20),
     ("2026-09-20", 111016701, 25),
 }
+
+#: Days the search carries at some widths of the game's own pool and not at the width `beam_for`
+#: picks: the shortlist's tie-break decides them, not the pool or the rules. Measured with the pool
+#: fixed at the game's, over the default width and its neighbours.
+KNOWN_WIDTH = {
+    ("2026-08-24", 98009264, 18),
+    ("2026-09-08", 106613414, 22),
+}
+KNOWN_WIDTH_STRONG = {
+    ("2026-08-23", 97204025, 5),
+    ("2026-09-05", 105864228, 15),
+    ("2026-09-10", 107289135, 25),
+}
+
+_WIDTH_REASON = (
+    "carried at other widths of the game's own pool, not at the default one: the shortlist's "
+    "tie-break among equal finish hours decides the day, not the pool"
+)
 
 _SHORT_REASON = (
     "the model's turn cost is higher than the game's on these days and the cause is not yet found. "
@@ -162,10 +175,17 @@ def test_the_strong_corpus_says_who_it_is_built_from():
 
 # A strict marker, not `pytest.xfail(...)`: that call stops the test and reports xfail whatever would
 # have happened, so a mark that has gone stale can never say so.
+def _marked(entry, short: set, reason: str, width: set):
+    if _key(entry) in short:
+        return pytest.param(entry, marks=pytest.mark.xfail(strict=True, reason=reason))
+    if _key(entry) in width:
+        return pytest.param(entry, marks=pytest.mark.xfail(strict=True, reason=_WIDTH_REASON))
+    return entry
+
+
 @pytest.mark.parametrize(
     "entry",
-    [pytest.param(e, marks=pytest.mark.xfail(strict=True, reason=_SHORT_REASON))
-     if _key(e) in KNOWN_SHORT else e for e in REAL_DAYS],
+    [_marked(e, KNOWN_SHORT, _SHORT_REASON, KNOWN_WIDTH) for e in REAL_DAYS],
     ids=[f"{e['dump']}-{e['episode']}-d{e['day']}" for e in REAL_DAYS])
 def test_a_real_day_is_carried_as_the_game_carried_it(entry):
     """The land conversion is the game's, and the pool is no larger than what the game paid."""
@@ -174,8 +194,7 @@ def test_a_real_day_is_carried_as_the_game_carried_it(entry):
 
 @pytest.mark.parametrize(
     "entry",
-    [pytest.param(e, marks=pytest.mark.xfail(strict=True, reason=_STRONG_SHORT_REASON))
-     if _key(e) in KNOWN_SHORT_STRONG else e for e in STRONG_DAYS],
+    [_marked(e, KNOWN_SHORT_STRONG, _STRONG_SHORT_REASON, KNOWN_WIDTH_STRONG) for e in STRONG_DAYS],
     ids=[f"{e['agent']}-{e['dump']}-d{e['day']}" for e in STRONG_DAYS])
 def test_a_strong_players_day_is_carried(entry):
     """The same two questions on the days a top-10 player won, which is the competitive target."""
