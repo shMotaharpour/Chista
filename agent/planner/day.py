@@ -20,7 +20,13 @@ This is M4. Nothing here decides anything: it asks, and it reports.
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
+from dataclasses import replace, dataclass
+
+#: How many extra hands the day layer asks for before it accepts a day that does
+#: not fit. Each ask is a full search, so the loop is BOUNDED rather than "until
+#: it fits": a day that needs more than this is a day to lay less on, and the
+#: manager reads the shortfall off `DayFit.short` to make that call.
+MAX_HANDS_SHORT = 4
 
 import numpy as np
 
@@ -45,6 +51,10 @@ class DayFit:
     #: stop here — but it is the number the manager needs to decide whether to lay
     #: more on the day, hire more, or confirm.
     spare: int = 0
+    #: How many extra hands the day needed before it was carried, 0 when the
+    #: priced pool was enough. The number the manager decides on: hire them, lay
+    #: less on the day, or accept a day that does not fit.
+    short: int = 0
 
     @property
     def overhead(self) -> float:
@@ -334,18 +344,17 @@ def _solve_at(obs, contractor, supply, class_of_tile, hands, iter_cap,
                      available=availability(obs, chains),
                      hours_committed=committed)
         if not fitted.complete and fitted.reason == "hours":
-            # wsr's answer is an offer to act on, not a verdict to file away:
-            # `complete=False` with time to spare means THIS pool could not carry
-            # the day, so ask once for one more hand before pricing a day the
-            # search has already refused. `reason == "hours"` is the pool's own
-            # verdict: "budget" means the deadline stopped the search, and more
-            # hands do not buy more time, so that answer belongs to the budget.
-            # (`DayFit` has no `out_of_time`; that field is `Result`'s.)
-            again = fit(chains, hands=int(hands) + 1, budget_s=budget_s,
-                        available=availability(obs, chains),
-                        hours_committed=committed)
-            if again.complete or int(again.pool) > int(fitted.pool):
-                fitted = again
+            short = 0
+            while (not fitted.complete and fitted.reason == "hours"
+                   and short < MAX_HANDS_SHORT):
+                short += 1
+                again = fit(chains, hands=int(hands) + short, budget_s=budget_s,
+                            available=availability(obs, chains),
+                            hours_committed=committed)
+                if again.complete or int(again.pool) > int(fitted.pool):
+                    fitted = again
+            if short:
+                fitted = replace(fitted, short=int(short))
         elif fitted.complete and int(fitted.spare) > 0 and int(fitted.pool) > 0:
             # The mirror of the ask above, and what `spare` is FOR: the day is
             # carried and the hands are not full, so the same route with one hand
