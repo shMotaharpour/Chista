@@ -326,9 +326,24 @@ def _solve_at(obs, contractor, supply, class_of_tile, hands, iter_cap,
         fitted = fit(chains, hands=hands, budget_s=budget_s,
                      available=availability(obs, chains),
                      hours_committed=committed)
+        if not fitted.complete and not fitted.out_of_time:
+            # wsr's answer is an offer to act on, not a verdict to file away:
+            # `complete=False` with time to spare means THIS pool could not carry
+            # the day, so ask once for one more hand before pricing a day the
+            # search has already refused. `out_of_time` is excluded on purpose -
+            # more hands do not buy more time, and that answer belongs to the
+            # budget, not to the pool.
+            again = fit(chains, hands=int(hands) + 1, budget_s=budget_s,
+                        available=availability(obs, chains),
+                        hours_committed=committed)
+            if again.complete or int(again.pool) > int(fitted.pool):
+                fitted = again
         # The hands are hired again every morning (F039), so their wage is a
         # cost on every day of the horizon and not a one-off.
-        bill = hire_bill(hands) * contractor.days
+        # The bill follows the pool that actually carries the day (`fitted.pool`
+        # is what `compile` hires, day.py:396), not the pool the master priced
+        # with before the search had its say.
+        bill = hire_bill(int(fitted.pool)) * contractor.days
         candidate = DayPlan(result, choices, mixes, fitted, spent, applied,
                             solves=spent, hands=hands,
                             net=float(result.objective) - bill)
