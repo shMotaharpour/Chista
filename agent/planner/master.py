@@ -360,6 +360,11 @@ class MasterResult:
     #: (days, items) the entry rows' duals: the internal price of a harvested
     #: unit, which the pricing credits the tiles with when the entry row is on.
     eta: np.ndarray = None
+    #: (days, items) the produce credit the pricing handed the tiles, and the
+    #: defer block's own upper bounds: both are read by guards that would be
+    #: blind if they had to infer them from the answer.
+    credit: np.ndarray = None
+    defer_cap: np.ndarray = None
     #: The columns `lam` weights, and the classes they belong to. A mix is
     #: useless without them: `columns.assign_tiles` has to know WHICH plan each
     #: weight is for, and re-pricing at the published duals gives a different
@@ -785,6 +790,9 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
             for c in range(len(reps))]
 
     w_cur = w_lag
+    #: The produce credit the pricing closure handed the tiles on its LAST call:
+    #: the guard reads it directly instead of inferring it from a certificate.
+    credit_box: list = [None]
     state = {"w": w_lag, "cash": np.zeros(days), "failed": None}
 
     def price(duals):
@@ -854,6 +862,7 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
             credit = sig
             if entry and eta is not None:
                 credit = np.maximum(np.asarray(eta, dtype=np.float64), 0.0)
+            credit_box[0] = np.array(credit[:days, :], dtype=np.float64)
             for gi, ii in enumerate(SELLABLE):
                 rid = _resource_of(SHED_ITEMS[ii])
                 if rid is not None:
@@ -1005,6 +1014,8 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
         result.now = getattr(cg.solve, "now", None)
         result.defer = getattr(cg.solve, "defer", None)
         result.eta = getattr(cg.solve, "eta", None)
+        result.credit = credit_box[0]
+        result.defer_cap = getattr(cg.solve, "defer_cap", None)
     converged = cg.certified
 
     # #87's dead-zone clamp, on the COUPLING dual before the publish map:

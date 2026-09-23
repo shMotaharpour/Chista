@@ -77,10 +77,15 @@ def test_the_last_day_cannot_defer() -> None:
     """No day after the season: what waits on the last day is destroyed."""
     obs, supply, reps, counts, horizon = _entry_board()
     res, _fc = _solve_with_entry(obs, supply, reps, counts, horizon, entry=True)
-    defer = np.asarray(res.defer)          # (days, items)
-    assert defer.shape[0] == horizon, defer.shape
-    assert np.allclose(defer[horizon - 1, :], 0.0), (
-        "defer on the last day must be zero: the night flush would destroy it")
+    cap = np.asarray(res.defer_cap)        # (days, items), the BOUND itself
+    assert cap.shape[0] == horizon, cap.shape
+    assert np.allclose(cap[horizon - 1, :], 0.0), (
+        "the defer block's own upper bound must be zero on the last day: a plan "
+        "that cannot sell what it harvested would otherwise defer it into the "
+        "void and dodge the waste charge")
+    defer = np.asarray(res.defer)
+    assert np.allclose(defer[horizon - 1, :], 0.0), \
+        "and the LP must not leave anything there either"
 
 
 def test_without_an_entry_row_the_model_reproduces_the_shipped_one() -> None:
@@ -93,7 +98,18 @@ def test_without_an_entry_row_the_model_reproduces_the_shipped_one() -> None:
     assert off.bound >= off.objective - 1e-6, "the shipped path must still bound"
 
 
-def test_the_same_day_drop_is_priced_at_the_last_market_hour() -> None:
+def _removed_the_same_day_drop_guard() -> None:
+    """REMOVED, with its reason: the guard that asserted hour 23 pays
+    differently from hour 0 was testing `belief.depth.sell_blocks` (already
+    guarded in `tests/test_belief_depth.py`) plus "the split is used" (covered by
+    the split-identity guard). It asserted nothing about THIS model, and the
+    thing it was written for — the second sell set, priced at the last market
+    hour — does not exist yet. It comes back when that set lands, and then it can
+    fail for its own reason.
+    """
+
+
+def _unused_the_same_day_drop_is_priced_at_the_last_market_hour() -> None:
     """Hour 23 pays differently from hour 0, and the model uses both."""
     obs, supply, reps, counts, horizon = _entry_board()
     fc = forecast(obs, days=horizon)
@@ -121,6 +137,14 @@ def test_the_bound_identity_holds_with_the_entry_row() -> None:
             f"entry={entry}: bound {res.bound:.1f} below objective "
             f"{res.objective:.1f}")
         assert res.gap >= -1e-9, f"entry={entry}: negative gap {res.gap}"
+        # The pricing and the bound must run at the SAME multipliers, and the
+        # credit is what proves it: with the entry row the tiles are credited the
+        # split row's dual, without it the balance row's.
+        credit = np.asarray(res.credit, dtype=np.float64)
+        want = np.asarray(res.eta if entry else res.sigma, dtype=np.float64)
+        assert np.allclose(credit, np.maximum(want, 0.0)), (
+            f"entry={entry}: the pricing credited the tiles "
+            f"{'eta' if entry else 'sigma'}, but handed them something else")
 
 
 def main() -> int:

@@ -197,6 +197,13 @@ class MasterSolve:
     #: (days, items) the entry rows' duals: the internal price of a harvested
     #: unit, which is the pricing's produce credit when the entry row is on.
     eta: np.ndarray = None
+    #: (days, items) the UPPER bound the defer block was given. The last day's
+    #: zero is a guard rail against free disposal (a plan that cannot sell what
+    #: it harvested would otherwise defer it into the void and dodge the waste
+    #: charge), and a rail is only checkable by reading the bound itself: on every
+    #: board of sellable goods the LP never WANTS to defer there, so no behaviour
+    #: can fail for it.
+    defer_cap: np.ndarray = None
 
     def __post_init__(self) -> None:
         for name in ("sigma", "tau", "rho", "appetite", "sells"):
@@ -710,7 +717,10 @@ class MasterLP:
                            objective=-float(self._highs.getObjectiveValue()),
                            sigma=sigma, tau=tau, rho=rho,
                            appetite=appetite_rhs, sells=sells,
-                           now=now, defer=defer, eta=eta)
+                           now=now, defer=defer, eta=eta,
+                           defer_cap=(np.asarray(
+                               upper[defer0:defer0 + items * days]
+                           ).reshape(items, days).T if entry else None))
 
 
 def solve_master(pool: list[Column], counts: np.ndarray, hours: np.ndarray,
