@@ -40,13 +40,17 @@ AVAILABLE = {"WHEAT": 0}
 #: The pools `test_animal_drop_day.py` searches. The farmer alone and two hands both came back
 #: complete with an animal the engine never fed.
 POOLS = (0, 1, 2)
+#: A second day where the SEARCH's pricing of the refetch decides the answer, not only the
+#: compiler's writing of it: FEED and COLLECT_FERTILIZER with the fertilizer due by hour 12, the
+#: farmer alone. A search that does not charge the walk back through a door leaves the farmer no
+#: turns for it, and the compiler refuses the route.
+TIGHT = (("FEED", "COLLECT_FERTILIZER"), 12, 0)
 PASS = {"farmer": ["PASS"], "hands": [], "market": []}
-MOVES = {"PASS", "NORTH", "SOUTH", "EAST", "WEST"}
 
 
-def _search(hands: int):
-    grid = [(cell, CHAIN, entity) for cell, entity in ANIMALS]
-    tasks = T.build(grid, available=AVAILABLE, drop_by=[DEADLINE] * len(grid))
+def _search(hands: int, chain=CHAIN, deadline=DEADLINE):
+    grid = [(cell, chain, entity) for cell, entity in ANIMALS]
+    tasks = T.build(grid, available=AVAILABLE, drop_by=[deadline] * len(grid))
     day = B.Day(chains=tuple(grid), available=AVAILABLE, hire_times=(1,) * hands)
     return day, tasks, B.search(day, tasks, hands=hands, max_hands=hands, budget_s=20.0)
 
@@ -128,3 +132,24 @@ def test_no_worker_consumes_from_an_emptied_bag(played) -> None:
                     f"hands={hands}: worker {worker} runs {op[0]} at turn {turn} with no {good} "
                     f"in its bag - a DROP before it emptied the bag")
                 bag[good] -= 1
+
+
+def test_the_search_leaves_room_for_the_refetch() -> None:
+    """The search charges the walk back through a door, so the day it calls carried compiles.
+
+    The compiler writes the refetch whatever the search priced; a search that priced none leaves
+    the farmer no turns for it and the compiler refuses the route - so this is the guard on the
+    search's half of the rule, where the day above only reads the compiler's.
+    """
+    chain, deadline, hands = TIGHT
+    day, tasks, result = _search(hands, chain, deadline)
+    assert result.complete, f"{len(result.route)} of {tasks.n} tasks with the farmer alone"
+    drops = [task_id for _turn, task_id, _worker in result.route if task_id.endswith("_drop")]
+    assert drops, "the premise: the farmer drops before it feeds, so the refetch is needed"
+    try:
+        ops = compile_route(day, tasks, result)
+    except ValueError as exc:
+        pytest.fail(f"the search called the day carried and priced no walk back through a door "
+                    f"after the drop, so the compiler refuses it: {exc}")
+    pickups = [op for op in ops.units[0] if op[0] == "PICKUP"]
+    assert len(pickups) >= 2, f"the day loads once and never fetches again after its drop: {pickups}"
