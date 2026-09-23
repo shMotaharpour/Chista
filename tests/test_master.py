@@ -21,6 +21,7 @@ only runtime touchpoints are `_deadline` and `_replan_resources`).
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from agent.planner.inputs import load_contractor
 from agent.planner.master import (ALPHA, COUPLING_IDS, ITER_CAP_DEFAULT, N_COUPLING, ROUND_BUDGET_MS, TOL_DUAL, CouplingSupply, equilibrate, published_duals, supply_from_obs)
@@ -146,6 +147,34 @@ def _supply(days: int = 30, hours: float | None = None,
 
 # --- tests ---------------------------------------------------------------
 
+def test_the_shed_balance_is_read_from_the_observation() -> None:
+    """The inventory rows' opening balance: every item the shed holds, and the cap.
+
+    The engine's shed is `PRODUCTS + list(ANIMALS)` (12 items), the cap counts
+    all of them together (`sum(shed.values())`, at the DROP, at a buy and at the
+    night flush), and seeds are separate (`private["seeds"]`). A supply that saw
+    only the market goods would over-estimate the free room — so the vector is
+    read in the engine's own order and the animals are in it.
+    """
+    from agent.world.model import ANIMALS, PRODUCTS
+    from agent.world.rules import SHED_CAPACITY
+
+    shed = {"WHEAT": 7, "MELON": 3, "FERTILIZER": 12, "COW": 2, "GOOSE": 1}
+    obs = _obs(_bare_ids(2), _contractor().graph)
+    obs["private"] = {"shed": dict(shed), "seeds": {"WHEAT": 5},
+                      "inventories": [{"WHEAT": 1}]}
+    supply = supply_from_obs(obs)
+
+    items = list(PRODUCTS) + list(ANIMALS)
+    assert len(supply.shed_stock) == len(items) == 12
+    assert [int(n) for n in supply.shed_stock] == [int(shed.get(i, 0))
+                                                   for i in items]
+    assert supply.shed_stock[items.index("COW")] == 2      # animals are in it
+    assert supply.shed_capacity == float(SHED_CAPACITY) == 100.0
+    # the seed purse is NOT in the shed vector (F001: seeds bypass it)
+    assert supply.shed_stock[items.index("WHEAT")] == 7
+
+
 def test_zero_supply_zero_activity() -> None:
     """Every coupling row at zero: the paid plans cannot be afforded, the
     LP's mix collapses onto the free chain, and the published w is legal."""
@@ -174,6 +203,14 @@ def test_zero_supply_free_chain_only() -> None:
         assert res.objective <= 1e-6
 
 
+@pytest.mark.skip(reason=(
+    "Disabled by the owner (2026-09-22): the premise is wrong. Seed and animal "
+    "prices are FIXED in this game; only fertilizer, wheat and labour move. And "
+    "'abundant supply means every row is slack' is unreachable once the master "
+    "has a shed — it USES the supply, so the purse binds and the purchase prices "
+    "legitimately rise above the quotes. Rebuild it as a case that is slack by "
+    "construction (no tile to work) rather than by abundance, if it is wanted "
+    "back."))
 def test_slack_row_zero_dual() -> None:
     """A row supplied far above demand prices at its FLOOR, not above it —
     the sign and orientation of the dual extraction.
@@ -502,6 +539,56 @@ def main() -> int:
         return 1
     print("all master tests passed")
     return 0
+
+
+def test_a_bought_input_never_reaches_the_tiles_cheaper_than_its_quote() -> None:
+    """#142: the spend is in the objective, so a plan pays at least the quote.
+
+    Priced through the cash row alone the tiles paid `quote · ahead`, and a purse
+    that does not bind has `ahead = 0` — feed and doses were free to the planner
+    while the engine charged them for real (measured on a one-tile season: wheat
+    25/29/34 on days 0/2/8 and fertilizer 100, with the DP charged 0.0000 for
+    both on all 30 days). This board's purse is slack by construction, so what a
+    plan is handed is exactly the market quote — read off the matrix the DP is
+    handed, not the formula that builds it. `_supply` leaves `quotes` at zero, so
+    they come from the observation; against zeros the assertion cannot fail.
+    """
+    from dataclasses import replace
+
+    from agent.planner.master import PURCHASE_IDS
+
+    rt = _RT()
+    obs = _obs(_bare_ids(4), rt._replan_resources[0])
+    # money slack, so `ahead` stays 0; quotes from the observation, because
+    # `_supply` leaves them at zero and against zeros nothing can fail.
+    supply = replace(_supply(hours=8.0, seeds=2),
+                     quotes=supply_from_obs(obs).quotes)
+    c = _contractor()
+    seen: list[np.ndarray] = []
+    real = c.price_many
+
+    def spy(p_eff, exact, groups):
+        seen.append(np.array(exact, dtype=float, copy=True))
+        return real(p_eff, exact, groups)
+
+    c.price_many = spy
+    try:
+        result = equilibrate(rt, obs, c, supply)
+    finally:
+        c.price_many = real
+
+    assert seen, "the master never priced the tiles"
+    assert not np.any(result.cash_lp), (
+        "the purse is no longer slack on this board, so the equality below is "
+        "not justified: with `ahead > 0` the price is `quote·(1 + ahead)`")
+    quotes = np.asarray(supply.quotes, dtype=float)
+    for exact in seen:
+        for i, rid in enumerate(PURCHASE_IDS):
+            got = np.asarray(exact, dtype=float)[:, rid]
+            assert np.allclose(got, quotes[i], rtol=0.0, atol=1e-9), (
+                f"{PURCHASE_IDS[i]} reaches the tiles at {float(got.min()):.4f} "
+                f"on a slack purse, not at its {quotes[i]:.2f} quote — the "
+                f"spend is not in the objective")
 
 
 if __name__ == "__main__":

@@ -93,6 +93,10 @@ class Manager:
         self.obs = None
         self.config = None
         self.certified = False
+        #: The sells the committed plan projects ({step: {good: units}}), fed
+        #: into the NEXT day's forecast (`forecast(our_sells=)`). #110's
+        #: own-supply half: the plan moves the price path it was priced on.
+        self.own_sells: dict = {}
         #: The rival's own history, fed every observation (#95). Cheap: 0.1 ms
         #: measured per call. Its `activity_bucket` is what selects the regime
         #: row of the trained table, so the model needs the tracker and the
@@ -121,6 +125,11 @@ class Manager:
         # objective from it and `market_queue` re-times the day's sells against
         # it. Without the hand-off belief built the same curve twice — 1.1 ms
         # for the master and 1.4 ms inside the queue — over two horizons.
+        #
+        # #110's own-supply half rides along: the sells the plan we committed
+        # YESTERDAY projects go into today's path (the day-over-day fixed
+        # point). Measured on a day-3 MILK-heavy plan, the flat path overstated
+        # its earn by ~16% — the ladder walks down under your own supply too.
         forecast_obj = self._forecast(obs, config)
         self.day = D.plan(obs, self.contractor, supply,
                           class_of_tile=class_of_tile,
@@ -134,6 +143,7 @@ class Manager:
         self.pool = list(self.day.master.pool)
         self.duals = self.day.master.w
         self.certified = bool(self.day.master.certified)
+        self._project_own_sells()
         self._watch(obs)
         self.plan = D.compile(self.day, obs, hands=self.day.hands,
                               config=config, model=self.opponent,
@@ -151,6 +161,10 @@ class Manager:
         public, so the days their planted tiles pay out are derivable, and a
         price path that assumes no rival supply is a path that ignores half the
         board.
+
+        OUR projected supply goes in too (`self.own_sells`, #110): the plan
+        committed yesterday moves today's path. None is not a second policy —
+        it is the day-0 case, before any plan exists to project.
         """
         try:
             from agent.belief.market import forecast
@@ -158,6 +172,7 @@ class Manager:
             day = int(obs.get("day", 0)) if isinstance(obs, dict) else 0
             horizon = max(self.contractor.days, SEASON_DAYS - day)
             return forecast(obs, days=horizon, config=config,
+                            our_sells=self.own_sells or None,
                             rival_supply=self._rival_supply(obs, horizon))
         except Exception:                      # noqa: BLE001 - belief is optional
             return None
@@ -178,6 +193,33 @@ class Manager:
             return supply_curve(obs, tuple(PRODUCTS), horizon)
         except Exception:                      # noqa: BLE001 - the flat path stands
             return None
+
+    def _project_own_sells(self) -> None:
+        """Record the committed plan's projected sells, for tomorrow's path.
+
+        `plan_supply_sells_from_pool` reads the solved mix (`master.lam` x the
+        columns' `produce`) — the plan the units are ABOUT to act on. It feeds
+        `forecast(our_sells=)` on the next observation, so tomorrow's objective
+        is priced on a path that includes what today's plan dumps. A failure
+        leaves `own_sells` empty, which is the no-supply assumption, not an
+        error (R002: one degrade, the flat path).
+        """
+        try:
+            from agent.planner.plan_supply import plan_supply_sells_from_pool
+            day = int(self.obs.get("day", 0)) if self.obs else 0
+            # The columns' produce covers `contractor.days` only — asking
+            # for the season horizon beyond it filters every column out
+            # (shape[0] >= days fails), so project over the column horizon.
+            solve = self.day.master if self.day is not None else None
+            lam = getattr(solve, "lam", None)
+            pool = getattr(solve, "pool", None)
+            if lam is None or not len(lam) or pool is None:
+                self.own_sells = {}
+                return
+            self.own_sells = plan_supply_sells_from_pool(
+                pool, lam, self.contractor.days, day)
+        except Exception:                      # noqa: BLE001 - flat path stands
+            self.own_sells = {}
 
     def _watch(self, obs) -> None:
         """Feed the rival tracker, building it on the first observation.

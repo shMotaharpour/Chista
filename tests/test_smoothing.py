@@ -1,13 +1,16 @@
 """Guards for the Wentges smoothing knob (#87 follow-up sweep).
 
 The smoothing parameter changes HOW FAST the certificate arrives, never
-WHAT it certifies — pinned here as: the same objective and bound at every
-alpha, and the default alpha=0.7 cutting rounds on the cold day-0 board.
+WHAT it certifies — pinned here as: the same objective at every alpha, the
+bound inside the certificate's own residual of it, and the default alpha=0.7
+cutting rounds on the cold day-0 board.
 
 Run:  .venv/bin/python -m tests.test_smoothing   (also under pytest)
 """
 
 from __future__ import annotations
+
+import math
 
 from offline_lab.kaggle_env import new_environment
 from agent.planner import master as M
@@ -15,8 +18,8 @@ from agent.planner.inputs import load_contractor
 
 
 def test_smoothing_never_changes_the_certified_answer() -> None:
-    """Every alpha certifies the same objective and bound — smoothing is
-    a speed knob, not an answer knob."""
+    """Every alpha certifies the same objective — smoothing is a speed knob,
+    not an answer knob."""
     env = new_environment()
     obs = env.state[0].observation
     contractor = load_contractor(days=20)
@@ -26,8 +29,18 @@ def test_smoothing_never_changes_the_certified_answer() -> None:
         r = M.equilibrate(object(), obs, contractor, supply,
                           iter_cap=200, smoothing=alpha)
         assert r.certified, f"alpha={alpha} did not certify: {r.stopped}"
-        answers[alpha] = (round(r.objective, 4), round(r.bound, 4))
-    assert answers[0.0] == answers[0.5] == answers[0.7], answers
+        answers[alpha] = r
+    # The ANSWER is the objective, and it is identical at every alpha. The bound
+    # is a certificate quantity: the loop stops within its own residual of the
+    # objective, and that residual moves with the dual path — measured here at
+    # 0.0018 at alpha 0.0 and 0.7 against 0.0025 at 0.5, 5e-08 relative. Pinning
+    # its fourth decimal across alphas pins the residual, not the answer.
+    objs = {a: round(r.objective, 4) for a, r in answers.items()}
+    assert len(set(objs.values())) == 1, objs
+    for alpha, r in answers.items():
+        assert math.isclose(r.bound, objs[alpha], rel_tol=1e-6, abs_tol=1e-6), (
+            f"alpha={alpha}: bound {r.bound!r} is not inside the certificate's "
+            f"own residual of the objective {objs[alpha]!r}")
 
 
 def test_alpha_seven_cuts_rounds_on_the_cold_board() -> None:

@@ -10,6 +10,7 @@ Tools that never run inside a turn: evaluation, simulation, the pool.
 | an agent's action shape | `actions.validate_action` |
 | a paired evaluation of two agents | `evaluate.py` |
 | one episode, one process, per seat | `runner.py` |
+| what a day's search costs, day by day | `search_cost.py` |
 | the opponent pool | `pool/` |
 
 `offline_lab/` may import `world/` (the definitions). `world/` never imports `offline_lab/`.
