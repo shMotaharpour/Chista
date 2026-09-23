@@ -138,7 +138,7 @@ def fit(chains, *, hands: int, available: dict | None = None,
 
     hours = float(max((turn for turn, _t, _w in result.route), default=0) + 1) \
         * max(1, result.pool)
-    if result.complete and check_route(day, tasks, result, result.settled):
+    if result.complete and check_route(day, tasks, result):
         # A route the compiler will not take is a day that did not fit, which
         # is an answer the caller already knows how to use (#73 is why this is
         # checked here rather than discovered inside `compile_route`).
@@ -356,8 +356,8 @@ def compile(day_plan: "DayPlan", obs, *, hands: int | None = None,
     """A `DayPlan` -> the `{"units": [...], "market": [...]}` the dispatcher slices.
 
     The unit ops come from the day layer's own compiler, against the doors the
-    search priced the hands on — `Result.doors`, which `compile_route` reads
-    when it is not handed a `settled` of its own (#73). The market side is
+    search priced the hands on — `Result.doors`, the only positions
+    `compile_route` writes from (#73, #162). The market side is
     assembled from the SAME chains, so a seed the plan needs and a seed the
     queue buys cannot disagree.
 
@@ -388,9 +388,6 @@ def compile(day_plan: "DayPlan", obs, *, hands: int | None = None,
     # market must hire what the day was costed with or the hours row was a
     # fiction. wsr reports what it used, and the smaller of the two is what
     # gets paid for.
-    # The day is written from the doors the search priced the hands on (`Result.doors`, F040). An
-    # explicit `settled=` would switch those off and place the hands from where the farmer STARTS,
-    # which is a different day whenever the farmer walks off its door in turn 0 (#73).
     ops = compile_route(day, tasks, result, horizon=TURNS_PER_DAY)
     harvest = sum(int(units) for _hour, _item, units in ops.arrivals)
     market = K.build(obs, fitted.chains, hands=min(pool, result.pool) if pool else result.pool,

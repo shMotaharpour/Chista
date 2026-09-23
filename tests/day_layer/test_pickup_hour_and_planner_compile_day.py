@@ -8,9 +8,9 @@ Two ways a compiled day fails on the engine in silence (F047):
    at hour 0, not both counted from the earlier hour.
 
 2. `agent/planner/day.py:compile` is the runtime's call into this layer. It must write the day from
-   the doors the search priced the hands on (`Result.doors`). An explicit `settled=` turns those
-   doors off, and on a day whose farmer walks in turn 0 the hands are then written from the wrong
-   doors and the compiler refuses the day.
+   the doors the search priced the hands on (`Result.doors`). Placing the hands from the farmer's
+   start cell instead is a different day whenever the farmer walks in turn 0, and the compiler
+   refuses it.
 
 What is asserted is what the engine did.
 """

@@ -21,10 +21,8 @@ from __future__ import annotations
 
 from typing import NamedTuple
 
-from agent.wsr.beam import (Day, Result, _bag, _settled_after_first_turn, _start_hours,
-                            _start_positions, good_hours, first_walk_turn, leg_moves, legs,
-                            pickup_turns, walk_start_turn)
-from agent.wsr.routing import nearest_shed
+from agent.wsr.beam import (Day, Result, _bag, _start_hours, _start_positions, first_walk_turn,
+                            good_hours, leg_moves, legs, pickup_turns, walk_start_turn)
 from agent.wsr.tasks import ITEM_CODE, TaskArray
 
 PASS = ("PASS",)
@@ -44,7 +42,7 @@ ITEM_NAME = {code: item.name for item, code in ITEM_CODE.items()}
 
 
 def compile_route(day: Day, tasks: TaskArray, result: Result, *,
-                  horizon: int | None = None, settled=None) -> DayOps:
+                  horizon: int | None = None) -> DayOps:
     """A route -> one op list per worker, `horizon` turns long and PASS-padded.
 
     `drop` writes the trip that carries what the day grew to the shed. The DROP empties the whole
@@ -54,18 +52,12 @@ def compile_route(day: Day, tasks: TaskArray, result: Result, *,
     The list is indexed by turn, so `ops[worker][hour]` is what that worker does at that hour -
     which is the shape the dispatcher slices.
 
-    `settled` is where the units already on the field stand once the first turn is over. The hands
-    land on the doors that are free when they are hired, so a unit that walks off its door in turn
-    zero moves every hand after it - the search prices that, and this must walk the same cells or
-    the day it writes is not the day that was searched.
+    The hands start on `result.doors`, the doors the search priced them on. There is no second way
+    to place them: a caller-supplied position was the path that wrote the hands from the farmer's
+    start cell and made the planner's day uncompilable (#162).
     """
     horizon = int(horizon if horizon is not None else day.horizon)
-    # An explicit `settled` is the caller placing the hands itself; the result's own doors are used
-    # when it lets the result decide, which is the only way the day is written as it was priced.
-    doors = result.doors if settled is None else None
-    if settled is None:
-        settled = result.settled or _settled_after_first_turn(day, tasks, result)
-    starts = _start_positions(day, result.pool, settled, doors)
+    starts = _start_positions(day, result.pool, result.doors)
     hours = _start_hours(day, result.pool)
     m = int(starts.shape[0])
 
@@ -96,10 +88,6 @@ def compile_route(day: Day, tasks: TaskArray, result: Result, *,
 
     for worker, entries in by_worker.items():
         for turn, row, fetch in legs(tasks, entries):
-            if turn < 0:
-                # A drop with an empty bag: the bag was already handed over, so there is no op to
-                # write and no turn to spend. The route carries it so the day is complete.
-                continue
             task_id = tasks.ids[row]
             target = (int(tasks.cells[row][0]), int(tasks.cells[row][1]))
             # A good used after the worker's own DROP is fetched again on the way: the drop took the
@@ -158,17 +146,14 @@ def _room(task_id: str, worker: int, turn: int, needed: int, first: int) -> None
             f"and only {turn - first} are free - the schedule and the day disagree")
 
 
-def check_route(day: Day, tasks: TaskArray, result: Result, settled=None) -> list[str]:
+def check_route(day: Day, tasks: TaskArray, result: Result) -> list[str]:
     """Everything a compiled route promises, checked - so a caller can report instead of hope.
 
     The engine refuses a bad op in silence, which is why a day is worth verifying rather than
     trusting: this names what is wrong, and an empty list means nothing is.
     """
     complaints: list[str] = []
-    doors = result.doors if settled is None else None
-    if settled is None:
-        settled = result.settled or _settled_after_first_turn(day, tasks, result)
-    starts = _start_positions(day, result.pool, settled, doors)
+    starts = _start_positions(day, result.pool, result.doors)
     hours = _start_hours(day, result.pool)
 
     turns: dict[int, list[tuple[int, str]]] = {}
