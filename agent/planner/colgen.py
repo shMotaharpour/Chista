@@ -36,7 +36,7 @@ from __future__ import annotations
 
 import os as _os
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 
@@ -810,6 +810,71 @@ def column_key(board, tile: int, days: int) -> tuple:
     entity = board.per_day_entity[tile, :days] if board.per_day_entity is not None else ()
     return tuple((int(d), int(chain), int(entity[i]) if i < len(entity) else 0)
                  for i, (d, _state, chain) in enumerate(plan[:days]))
+
+
+def _shifted_key(key: tuple, step: int) -> tuple:
+    """A plan's signature, moved `step` days forward: the day numbers renumber.
+
+    `column_key` is `(day, chain, entity)` per day, so a plan carried one day
+    forward is the same tuple with its first entry gone and every day index one
+    smaller. A stale key is not harmless in either direction: the pool's
+    `seen` set is what stops a plan being added twice, so a key that still
+    carries yesterday's day 0 makes the loop refuse a plan the pool no longer
+    holds — the `stalled: rc ... on a column the pool holds` failure the key
+    exists to prevent.
+    """
+    return tuple((int(d) - step, chain, entity)
+                 for d, chain, entity in key if int(d) >= step)
+
+
+def advance_pool(pool: list[Column], lam: np.ndarray | None = None,
+                 *, step: int = 1) -> list[Column]:
+    """Yesterday's pool as today's plan: every day-indexed array moves up a day.
+
+    A column is a plan for days `0..N-1` OF THE DAY IT WAS BUILT ON, and the
+    horizon is the season that is left (F029), so the same plan carried into the
+    next day is its days `step..N-1` — which is exactly the new horizon. Four
+    arrays are day-indexed and all four move: `cost`, `spend`, `earn` and
+    `produce`. `chains` and `entities` move with them and that is not cosmetic —
+    the day layer commits DAY 0 of the plan it is given (`day.day_chains` reads
+    `plan.chains[0]` and `column.entities[0]`), so a column that did not move
+    would hand today's board yesterday's chain, on a tile whose state has moved
+    on. `revenue` is re-derived from the shifted `earn`, so the two stay the
+    pair they were.
+
+    **The columns the LP gave no weight to are dropped** (`lam`, in pool order).
+    A plan the master does not use is a plan the next day's pricing can
+    rediscover if it is still worth having, and carrying it is what made the
+    pool grow monotonically and without bound (measured by a reviewer: 126
+    columns on day 0 to 1,054 on day 29). The weight is the last one the pool was
+    solved at, so a column beyond `lam`'s length — added after the final solve,
+    never priced — is KEPT: there is no evidence against it.
+
+    A column whose plan cannot cover the new horizon is dropped: no `produce` to
+    re-price from (an idle column; `master._repriced_pool` drops those anyway, and
+    `generate` re-seeds one per class), or fewer days than `step` left in it.
+    """
+    out: list[Column] = []
+    weights = None if lam is None else np.asarray(lam, dtype=np.float64)
+    k = max(1, int(step))
+    for j, column in enumerate(pool or ()):
+        if weights is not None and j < weights.size and float(weights[j]) <= 0.0:
+            continue
+        if column.produce is None:
+            continue
+        cost = np.asarray(column.cost)[k:]
+        spend = np.asarray(column.spend)[k:]
+        earn = np.asarray(column.earn)[k:]
+        produce = np.asarray(column.produce)[k:]
+        if cost.shape[0] < 1 or produce.shape[0] < 1:
+            continue
+        out.append(replace(
+            column, cost=cost, spend=spend, earn=earn,
+            revenue=float(earn.sum()), produce=produce,
+            chains=tuple(link for link in column.chains if int(link[0]) >= k),
+            entities=tuple(column.entities[k:]),
+            key=_shifted_key(column.key, k)))
+    return out
 
 
 def generate(price, supply_hours, money, counts, days, n_coupling,
