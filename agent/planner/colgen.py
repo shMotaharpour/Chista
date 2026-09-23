@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import os as _os
 import time
+from typing import NamedTuple
 from dataclasses import dataclass, field, replace
 
 import numpy as np
@@ -189,6 +190,20 @@ class MasterSolve:
     appetite: np.ndarray = None
     #: (n_goods, days) what the master decided to SELL, in `market` order.
     sells: np.ndarray = None
+    #: (days, items) what the plan drops by the last market hour of the day, and
+    #: what waits for the night flush. None when the entry row is off.
+    now: np.ndarray = None
+    defer: np.ndarray = None
+    #: (days, items) the entry rows' duals: the internal price of a harvested
+    #: unit, which is the pricing's produce credit when the entry row is on.
+    eta: np.ndarray = None
+    #: (days, items) the UPPER bound the defer block was given. The last day's
+    #: zero is a guard rail against free disposal (a plan that cannot sell what
+    #: it harvested would otherwise defer it into the void and dodge the waste
+    #: charge), and a rail is only checkable by reading the bound itself: on every
+    #: board of sellable goods the LP never WANTS to defer there, so no behaviour
+    #: can fail for it.
+    defer_cap: np.ndarray = None
 
     def __post_init__(self) -> None:
         for name in ("sigma", "tau", "rho", "appetite", "sells"):
@@ -301,7 +316,9 @@ class MasterLP:
               shed_capacity: float = 0.0,
               prices: np.ndarray | None = None,
               market: tuple[int, ...] = (),
-              sell_cap: np.ndarray | None = None) -> MasterSolve:
+              sell_cap: np.ndarray | None = None,
+              depth: tuple[np.ndarray, np.ndarray] | None = None,
+              entry: bool = False) -> MasterSolve:
         """The restricted master over the pool, with the SHED as a stock.
 
         Variables: `lambda_j >= 0` per column, then per day the sells, the stock
@@ -341,6 +358,13 @@ class MasterLP:
         n_goods = len(market)
         n = len(pool)
         n_classes = int(counts.size)
+        # The sells are K blocks per good per day when the caller hands in the
+        # market's own curve (`belief.depth.sell_blocks`), and the legacy two
+        # tiers when it does not. `tiers` is the ONLY thing that differs: the
+        # layout, the objective, the bounds, the balance rows, the cash rows and
+        # the read-back are all written per tier below, so the feature-absent
+        # path is the model that was here before, unchanged.
+        tiers = 2 if depth is None else int(np.asarray(depth[0]).shape[2])
         revenue = np.array([c.revenue for c in pool], dtype=np.float64)
         # quantity rows: (n_coupling·days, n)
         A_q = np.stack([c.cost.T.reshape(-1) for c in pool], axis=1) if n else \
@@ -387,16 +411,43 @@ class MasterLP:
         # is an integer staircase (`kaggriculture.py::market_price`), and more
         # tiers are the refinement of this, not a different model.
         half = n_goods * days
-        block = 2 * half
+        block = tiers * half
         stock0 = n + block
         waste0 = stock0 + items * days
-        n_cols = waste0 + items * days
+        now0 = waste0 + items * days
+        defer0 = now0 + items * days
+        n_cols = (defer0 + items * days) if entry else now0
 
-        def col_sell(gi: int, d: int) -> int:
-            return n + gi * days + d
+        def col_now(ii: int, d: int) -> int:
+            return now0 + ii * days + d
+
+        def col_defer(ii: int, d: int) -> int:
+            return defer0 + ii * days + d
+
+        def col_sell(gi: int, d: int, b: int = 0) -> int:
+            return n + b * half + gi * days + d
 
         def col_sell_deep(gi: int, d: int) -> int:
-            return n + half + gi * days + d
+            """Tier 1 of the legacy two-tier model (the depth path never calls it)."""
+            return col_sell(gi, d, 1)
+
+        # The per-block price and size: the objective, the bounds, the cash rows
+        # and the balance rows all read THESE, built once. With a curve they are
+        # the ladder's own blocks; without one they are the day's quote and
+        # `SELL_DEEP_FACTOR` of it, which is the model that shipped.
+        block_price = np.zeros((n_goods, days, tiers), dtype=np.float64)
+        block_units = np.full((n_goods, days, tiers), np.inf, dtype=np.float64)
+        if items and n_goods:
+            px = np.asarray(prices, dtype=np.float64)
+            for b in range(tiers):
+                if depth is None:
+                    factor = 1.0 if b == 0 else SELL_DEEP_FACTOR
+                    block_price[:, :, b] = factor * px[:days, :n_goods].T
+                else:
+                    block_price[:, :, b] = np.asarray(
+                        depth[1], dtype=np.float64)[:, :days, b]
+                    block_units[:, :, b] = np.asarray(
+                        depth[0], dtype=np.float64)[:, :days, b]
 
         def col_stock(ii: int, d: int) -> int:
             return stock0 + ii * days + d
@@ -429,6 +480,11 @@ class MasterLP:
                                            dtype=np.float64)[:days].sum())
         lower = np.zeros(n_cols)
         upper = np.full(n_cols, np.inf)
+        if entry:
+            # No day after the season: what waits on the last day is destroyed by
+            # the night flush, so the LP may not leave anything there.
+            for ii in range(items):
+                upper[col_defer(ii, days - 1)] = 0.0
         # The appetite rows: ONE cumulative row per good, `Σ_d sell[g,d] ≤
         # appetite[g]`, never a per-day cap. The town eats so much over the
         # horizon and our sales may land on any day of it — belief's
@@ -439,14 +495,18 @@ class MasterLP:
         appetite_row = np.zeros((n_goods, n_cols))
         appetite_rhs = np.zeros(n_goods)
         if items:
-            px = np.asarray(prices, dtype=np.float64)
             for gi, ii in enumerate(market):
                 for d in range(days):
                     # `prices` is the (days, len(market)) market path, so the
                     # good's own index is `gi`, NOT the shed-item index `ii`.
-                    cost[col_sell(gi, d)] = -float(px[d, gi])   # max p·sell
-                    cost[col_sell_deep(gi, d)] = -SELL_DEEP_FACTOR * float(
-                        px[d, gi])
+                    for b in range(tiers):
+                        j = col_sell(gi, d, b)
+                        cost[j] = -block_price[gi, d, b]          # max Σ p·sell
+                        if depth is not None:
+                            # A block takes what the ladder's own step can hold;
+                            # past the last block the market is out of depth, so
+                            # the LP cannot sell it at any price.
+                            upper[j] = block_units[gi, d, b]
             # `stock[i, 0]` is the opening shed: fixed, not a decision.
             for ii in range(items):
                 j = col_stock(ii, 0)
@@ -457,7 +517,14 @@ class MasterLP:
                     # flush really does discard the overflow, so the variable
                     # cannot be deleted — it is priced instead.
                     cost[col_waste(ii, d)] = _lost_sale_cost(prices, market, d)
-            if sell_cap is not None and n_goods:
+            if sell_cap is not None and n_goods and depth is None:
+                # The appetite row is a PROXY for the town's demand and the
+                # depth curve replaces it: the ladder already says what every
+                # additional unit fetches, so a second cap on the cheap tier
+                # double-counts the drain (#151). The row stays in the layout —
+                # the dual offsets are positional — with zero coefficients and a
+                # zero right-hand side, which constrains nothing and keeps
+                # `rho·appetite` at zero in the bound.
                 cap_arr = np.atleast_2d(np.asarray(sell_cap, dtype=np.float64))
                 width = min(n_goods, cap_arr.shape[1])
                 for gi in range(width):
@@ -481,10 +548,10 @@ class MasterLP:
                 # through the waste variable rather than by magic.
                 bal[row, col_waste(ii, d)] = 1.0
                 if sellable >= 0:
-                    bal[row, col_sell(sellable, d)] = 1.0
-                    bal[row, col_sell_deep(sellable, d)] = 1.0
+                    for b in range(tiers):
+                        bal[row, col_sell(sellable, d, b)] = 1.0
+        prod = np.zeros((items * days, n))
         if items:
-            prod = np.zeros((items * days, n))
             for j, col in enumerate(pool):
                 if col.produce is None:
                     continue
@@ -494,13 +561,35 @@ class MasterLP:
                         continue
                     for d in range(min(days, produced.shape[0])):
                         prod[ii * days + d, j] = float(produced[d, rid])
-            bal[:, :n] -= prod
+            if entry:
+                for ii in range(items):
+                    for d in range(days):
+                        bal[ii * days + d, col_now(ii, d)] = -1.0
+                        if d >= 1:
+                            bal[ii * days + d, col_defer(ii, d - 1)] = -1.0
+            else:
+                bal[:, :n] -= prod
 
         # cap rows: one per day, Σ_i stock[i, d] <= capacity
         cap = np.zeros((days, n_cols))
         for ii in range(items):
             for d in range(days):
                 cap[d, col_stock(ii, d)] = 1.0
+
+        # The SPLIT rows: `now + defer = produce`, an EQUALITY per (item, day).
+        # The harvest is a decision the tile DP already took, so none of it may
+        # vanish — the manager only chooses which way it reaches the shed. The
+        # row's dual is the internal price of a harvested unit, and it is what the
+        # pricing credits (`PricingDuals.eta`): with the entry row the columns no
+        # longer appear in the balance rows at all.
+        split = (np.zeros((items * days, n_cols)) if entry
+                 else np.zeros((0, n_cols)))
+        if entry:
+            for ii in range(items):
+                for d in range(days):
+                    split[ii * days + d, col_now(ii, d)] = 1.0
+                    split[ii * days + d, col_defer(ii, d)] = 1.0
+            split[:, :n] -= prod
 
         # The cash rows earn from the sells: a sale on day d' is money in the
         # purse from d' onward. Same convention as the columns' own spend — the
@@ -513,9 +602,8 @@ class MasterLP:
                 for d in range(days):
                     # Same index rule as the objective: the market path is by
                     # GOOD (`gi`), not by shed item (`ii`).
-                    A_c[d:, col_sell(gi, d)] = -float(px[d, gi])
-                    A_c[d:, col_sell_deep(gi, d)] = -(
-                        SELL_DEEP_FACTOR * float(px[d, gi]))
+                    for b in range(tiers):
+                        A_c[d:, col_sell(gi, d, b)] = -block_price[gi, d, b]
 
         target = counts.astype(np.float64)
         if n_cols > n:
@@ -531,8 +619,9 @@ class MasterLP:
         # purpose: every offset below is positional, so a row inserted in the
         # middle silently re-labels τ as ρ and every price downstream is read off
         # the wrong constraint.
-        rows = np.vstack([A_q, A_c, bal, cap, appetite_row, A_e])
-        n_ineq = (n_coupling * days + days + items * days + days + n_goods)
+        rows = np.vstack([A_q, A_c, bal, cap, appetite_row, split, A_e])
+        n_ineq = (n_coupling * days + days + items * days + days + n_goods
+                  + (items * days if entry else 0))
         csc = sparse.csc_matrix(rows)
 
         lp = _highspy._core.HighsLp()
@@ -546,12 +635,14 @@ class MasterLP:
             np.full(items * days, 0.0),                   # balance: equality
             np.full(days, -np.inf),                       # cap: <=
             np.full(n_goods, -np.inf),                    # town appetite: <=
+            np.zeros(items * days if entry else 0),        # split: equality
             target])
         lp.row_upper_ = np.concatenate([
             b_q, b_c,
             np.zeros(items * days),
             np.full(days, float(shed_capacity)),
             appetite_rhs,
+            np.zeros(items * days if entry else 0),        # split: equality
             target])
         lp.sense_ = _highspy._core.ObjSense.kMinimize
         matrix = _highspy._core.HighsSparseMatrix()
@@ -602,7 +693,11 @@ class MasterLP:
         # numbers and a single `[:days]`-style slice over both would price one
         # constraint with the other's dual.
         tau = np.maximum(-marg[off + days + items * days:cap_end], 0.0)
-        rho = np.maximum(-marg[cap_end:n_ineq], 0.0)
+        rho_end = cap_end + n_goods
+        rho = np.maximum(-marg[cap_end:rho_end], 0.0)
+        eta = (-np.asarray(marg[rho_end:rho_end + items * days],
+                           dtype=np.float64).reshape(items, days).T
+               if entry else None)
         # The convexity duals are EQUALITY marginals and are free in sign: a class
         # whose tiles are worth having carries a negative one. Clamping them would
         # break the reduced-cost test, which is the only reason they are read.
@@ -611,12 +706,21 @@ class MasterLP:
         # What the master decided to SELL is the SUM of the tiers: they are two
         # prices for one sale, not two sales, and a caller that read only the
         # first would see a farm that never sells past the town's appetite.
-        sells = (values[n:n + half].reshape(n_goods, days)
-                 + values[n + half:n + block].reshape(n_goods, days))
+        sells = np.zeros((n_goods, days), dtype=np.float64)
+        for b in range(tiers):
+            start = n + b * half
+            sells += values[start:start + half].reshape(n_goods, days)
+        now = (values[now0:defer0].reshape(items, days).T if entry else None)
+        defer = (values[defer0:defer0 + items * days].reshape(items, days).T
+                 if entry else None)
         return MasterSolve(lam=values[:n], y=y, cash=cash, mu=mu,
                            objective=-float(self._highs.getObjectiveValue()),
                            sigma=sigma, tau=tau, rho=rho,
-                           appetite=appetite_rhs, sells=sells)
+                           appetite=appetite_rhs, sells=sells,
+                           now=now, defer=defer, eta=eta,
+                           defer_cap=(np.asarray(
+                               upper[defer0:defer0 + items * days]
+                           ).reshape(items, days).T if entry else None))
 
 
 def solve_master(pool: list[Column], counts: np.ndarray, hours: np.ndarray,
@@ -673,7 +777,9 @@ def lagrangian_bound(solve: MasterSolve, values: np.ndarray,
                      counts: np.ndarray, hours: np.ndarray, money: float,
                      days: int, n_coupling: int,
                      shed: tuple | None = None,
-                     sell: tuple | None = None) -> float:
+                     sell: tuple | None = None,
+                     blocks: tuple | None = None,
+                     market: tuple[int, ...] = ()) -> float:
     """`L(y) = y·b + Σ_c N_c · v_c(y)` — an UPPER bound on the master's optimum.
 
     Relax the coupling rows with their duals and the problem separates into
@@ -727,8 +833,41 @@ def lagrangian_bound(solve: MasterSolve, values: np.ndarray,
         rho, appetite = sell
         rhs += float((np.asarray(rho, dtype=np.float64)
                       * np.asarray(appetite, dtype=np.float64)).sum())
+    if blocks is not None:
+        # The SELLS' own inner problem. With finite block sizes the relaxation
+        # is bounded at ANY sigma, so no raised floor is needed and the term is
+        # `sum_b u_b * max(0, p_b - sigma)`: block b is worth selling whenever
+        # the ladder pays more than the unit in the shed is carried at. A term
+        # left out does not make this conservative, it makes it a different
+        # number — measured on the seeded day-0 board, bound 29,161.7 against an
+        # objective of 32,083.5 without it, which is not a bound.
+        units, block_prices = blocks
+        sig_g = np.asarray(sigma, dtype=np.float64)[:, list(market)]
+        for b in range(np.asarray(units).shape[2]):
+            u_b = np.asarray(units, dtype=np.float64)[:, :days, b]
+            p_b = np.asarray(block_prices, dtype=np.float64)[:, :days, b]
+            rhs += float((u_b * np.maximum(0.0, p_b - sig_g[:days, :].T)).sum())
     return rhs + float((np.asarray(counts, dtype=np.float64)
                         * np.asarray(values, dtype=np.float64)).sum())
+
+
+class PricingDuals(NamedTuple):
+    """Every dual the pricing step may need, as ONE argument.
+
+    A callback that reads only `y` and `cash` ignores the rest; one that needs
+    the shed's prices reads `shed`; the entry row's `eta` is here too. The point
+    is that adding a ROW BLOCK adds a field and touches no signature — the
+    positional form grew a slot per block and every hand-built callback in the
+    guards had to follow it. A NamedTuple, not a dataclass: it is built once per
+    pricing round and read field-wise, so the tuple's speed is what we want.
+    """
+
+    y: np.ndarray
+    cash: np.ndarray
+    shed: tuple | None = None
+    #: The split rows' duals (the internal price of a harvested unit), or None
+    #: when the entry row is off.
+    eta: np.ndarray | None = None
 
 
 @dataclass
@@ -883,7 +1022,9 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
              smoothing: float = 0.0, shed: tuple | None = None,
              prices: np.ndarray | None = None,
              market: tuple[int, ...] = (),
-             sell_cap: np.ndarray | None = None) -> ColgenResult:
+             sell_cap: np.ndarray | None = None,
+             depth: tuple[np.ndarray, np.ndarray] | None = None,
+             entry: bool = False) -> ColgenResult:
     """The loop: master over every column so far, price, add, repeat.
 
     `price(y, cash)` is the caller's pricing step: it publishes the duals to
@@ -973,7 +1114,8 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
             result.pool, counts, supply_hours, money, days, n_coupling,
             shed_stock=None if shed is None else shed[0],
             shed_capacity=0.0 if shed is None else float(shed[1]),
-            prices=prices, market=market, sell_cap=sell_cap)
+            prices=prices, market=market, sell_cap=sell_cap,
+            depth=depth, entry=entry)
         result.rounds += 1
 
         exact = (result.solve.y, result.solve.cash, result.solve.mu)
@@ -1020,7 +1162,10 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
             used = (tuple(alpha * np.asarray(c) + (1.0 - alpha) * np.asarray(e)
                           for c, e in zip(centre, exact))
                     if smoothed else exact)
-            values, columns = price(used[0], used[1], shed_duals)
+            values, columns = price(PricingDuals(
+                y=used[0], cash=used[1], shed=shed_duals,
+                eta=(result.solve.eta
+                     if (entry and result.solve is not None) else None)))
             if shed is not None and seeded:
                 # No bound on the seeded round. The bound is a Lagrangian bound
                 # at the multipliers it was computed with, and those are the
@@ -1048,7 +1193,7 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
                     shed=(None if shed is None or shed_duals is None else
                           (shed[0], float(shed[1]), shed_duals[0],
                            shed_duals[1])),
-                    sell=sell_duals)
+                    sell=sell_duals, blocks=depth, market=market)
             if bound < result.bound:
                 result.bound, centre = bound, used
             if _os.environ.get("CHISTA_DEBUG_BOUND") and not (

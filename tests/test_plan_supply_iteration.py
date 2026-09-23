@@ -91,3 +91,23 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+def test_the_projected_sells_land_on_the_plans_own_hour() -> None:
+    """A sell at hour 14 supplies the market at hour 14, not at hour 0.
+
+    The walk accepts per-turn sells (`our_sells` is `{absolute_step: {item:
+    units}}`), so pricing every day's projection at hour 0 made it blind to our
+    own intra-day supply: the hours after a sale are quoted on a market we never
+    sold into (#110).
+    """
+    import numpy as np
+    from agent.planner.plan_supply import plan_supply_sells
+    from agent.world.model import N_RESOURCE, RESOURCE_ID
+    produce = np.zeros((1, 2, N_RESOURCE), dtype=np.float64)
+    produce[0, 1, RESOURCE_ID["CARROT"]] = 3.0
+    lam = np.array([1.0])
+    plain = plan_supply_sells(produce, lam, 2, 5)
+    assert plain == {6 * 24: {"CARROT": 3}}, plain
+    dated = plan_supply_sells(produce, lam, 2, 5, hours={"CARROT": 14})
+    assert dated == {6 * 24 + 14: {"CARROT": 3}}, dated

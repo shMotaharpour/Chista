@@ -230,6 +230,11 @@ TOL_DUAL = 1.0
 # the cap must come off the contended number, not this floor.
 ITER_CAP_DEFAULT = 8
 
+#: How many depth blocks the master prices a day's sells with. The curve is
+#: belief's (`belief.depth.sell_blocks`); the count is this LP's own modelling
+#: choice, and a maximising LP fills the rich blocks first by itself.
+SELL_BLOCKS: int = 5
+
 # A single master round (contractor sweeps + LP solve), measured.
 #
 # It used to be one sweep per distinct STATE. The subproblem is exact now — the
@@ -348,6 +353,18 @@ class MasterResult:
     #: sold later), so it is the price `to_mixes` values a plan at. Empty without
     #: a shed.
     sigma: np.ndarray = None
+    #: (days, items) what the plan DROPS by the last market hour of the day, and
+    #: what waits for the night flush — the entry row's own decision.
+    now: np.ndarray = None
+    defer: np.ndarray = None
+    #: (days, items) the entry rows' duals: the internal price of a harvested
+    #: unit, which the pricing credits the tiles with when the entry row is on.
+    eta: np.ndarray = None
+    #: (days, items) the produce credit the pricing handed the tiles, and the
+    #: defer block's own upper bounds: both are read by guards that would be
+    #: blind if they had to infer them from the answer.
+    credit: np.ndarray = None
+    defer_cap: np.ndarray = None
     #: The columns `lam` weights, and the classes they belong to. A mix is
     #: useless without them: `columns.assign_tiles` has to know WHICH plan each
     #: weight is for, and re-pricing at the published duals gives a different
@@ -678,7 +695,8 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
                 pool: list | None = None,
                 deadline: float | None = None,
                 forecast_obj=None,
-                smoothing: float = 0.0) -> MasterResult:
+                smoothing: float = 0.0,
+                entry: bool = False) -> MasterResult:
     """Column generation over the tile classes; always publishable.
 
     One round is one Dantzig-Wolfe round (lesson 1.9): the LP solves over EVERY
@@ -772,9 +790,15 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
             for c in range(len(reps))]
 
     w_cur = w_lag
+    #: The produce credit the pricing closure handed the tiles on its LAST call:
+    #: the guard reads it directly instead of inferring it from a certificate.
+    credit_box: list = [None]
     state = {"w": w_lag, "cash": np.zeros(days), "failed": None}
 
-    def price(y, cash, shed=None):
+    def price(duals):
+        y, cash, shed = duals.y, duals.cash, duals.shed
+        eta = duals.eta
+
         """The subproblem: price each class at the master's OWN duals.
 
         Exactly those duals, not damped ones and not raised onto a floor. The
@@ -830,10 +854,19 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
             # tiles at one σ and bound them at another, and the bound would come
             # out below the objective it bounds.
             sig = np.asarray(shed[0], dtype=np.float64)[:days]
+            # With the entry row the columns appear in the SPLIT rows and not in
+            # the balance rows, so the produce's internal price is the split row's
+            # dual: crediting sigma would price the tiles at multipliers this LP
+            # does not use, the reduced-cost test would stop being about this LP,
+            # and the bound identity would break.
+            credit = sig
+            if entry and eta is not None:
+                credit = np.maximum(np.asarray(eta, dtype=np.float64), 0.0)
+            credit_box[0] = np.array(credit[:days, :], dtype=np.float64)
             for gi, ii in enumerate(SELLABLE):
                 rid = _resource_of(SHED_ITEMS[ii])
                 if rid is not None:
-                    p_eff[:days, rid] = sig[:, ii]
+                    p_eff[:days, rid] = credit[:days, ii]
         # `exact` is the price a plan PAYS for what it consumes, and with a shed it
         # is the WHOLE of `published_duals`: `quote·(1+ahead)` for a bought input,
         # because the spend is in the objective now (see `MasterLP.solve`). With a
@@ -924,6 +957,29 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
             values.append(max(0.0, float(board.tile_values[i])))
         return np.asarray(values, dtype=np.float64), columns
 
+    # The market's DEPTH, from belief's own ladder (`belief.depth.sell_blocks`):
+    # what a lot fetches, per good per day, as blocks an LP can price. Built from
+    # the SAME forecast the price path came from, so the curve and the path are
+    # one walk and the first block's price IS the day's quote. Any failure leaves
+    # `depth = None`, which is the two-tier model that shipped — one degrade, and
+    # never a second price.
+    depth = None
+    if forecast_obj is not None:
+        try:
+            from agent.belief.depth import day_envelope, sell_blocks
+            goods = [SHED_ITEMS[ii] for ii in SELLABLE]
+            # The day's ENVELOPE, not its hour-0 row: goods already in the shed
+            # can reach any hour of the day, so the day is worth what its best
+            # hour pays — and the hourly layer, which owns the hour, can only do
+            # better than this number, never worse.
+            _env_price, env_hour = day_envelope(forecast_obj, goods,
+                                                int(obs.get("day", 0)), days)
+            depth = sell_blocks(forecast_obj, goods, int(obs.get("day", 0)),
+                                days, int(supply.shed_capacity),
+                                blocks=SELL_BLOCKS, hours=env_hour)
+        except Exception:                       # noqa: BLE001 - the flat tier stands
+            depth = None
+
     try:
         # The warm pool is priced at TODAY's product prices before it is used:
         # a column's revenue was computed on the board it was built on, and the
@@ -936,6 +992,8 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
                              prices=p_mkt,
                              market=SELLABLE,
                              sell_cap=_sell_cap(obs, days),
+                             depth=depth,
+                             entry=entry,
                              warm=_repriced_pool(pool, p_mkt, days),
                              smoothing=smoothing)
     except RuntimeError as exc:
@@ -959,6 +1017,11 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
         result.mu = cg.solve.mu
         result.sigma = cg.solve.sigma
         result.cash_lp = cg.solve.cash
+        result.now = getattr(cg.solve, "now", None)
+        result.defer = getattr(cg.solve, "defer", None)
+        result.eta = getattr(cg.solve, "eta", None)
+        result.credit = credit_box[0]
+        result.defer_cap = getattr(cg.solve, "defer_cap", None)
     converged = cg.certified
 
     # #87's dead-zone clamp, on the COUPLING dual before the publish map:
