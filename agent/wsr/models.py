@@ -55,6 +55,7 @@ ORDER_MATTERS: tuple[tuple[str, str], ...] = (
     ("HARVEST", "PLANT"),
     ("HARVEST", "DIG"),
     ("PLANT", "WATER"),
+    ("PLANT", "FERTILIZE"),     # FERTILIZE needs a plant on the tile (kaggriculture.py:475-482)
 )
 
 #: The same, but only where a crop yields once: its dose only counts inside a window and its

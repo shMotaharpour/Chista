@@ -148,7 +148,7 @@ def test_a_hand_hired_late_is_priced_from_where_the_field_stands_then(late) -> N
     """
     day, tasks, result = late
     first_turn = tuple(tuple(int(v) for v in cell)
-                       for cell in B._start_positions(day, result.pool, result.settled)[len(day.units):])
+                       for cell in B._start_positions(day, result.pool)[len(day.units):])
     assert result.doors, "the search never settled the doors"
     assert first_turn != result.doors, (
         "this day does not tell the two moments apart, so it cannot pin the rule")

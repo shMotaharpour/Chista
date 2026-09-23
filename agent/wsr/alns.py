@@ -65,7 +65,7 @@ def keys(day: B.Day, tasks: TaskArray, result: B.Result) -> tuple:
     first_hand = len(day.units)
     hours = B._start_hours(day, result.pool)
     free = np.asarray(hours, dtype=np.int16)[None, :].copy()
-    where = B._start_positions(day, result.pool, None, result.doors)[None, :, :].astype(np.int16)
+    where = B._start_positions(day, result.pool, result.doors)[None, :, :].astype(np.int16)
     done = np.zeros((1, n), dtype=bool)
     when = np.zeros((1, n), dtype=np.int16)
     who = np.full((1, n), -1, dtype=np.int16)

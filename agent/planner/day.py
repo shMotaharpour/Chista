@@ -138,7 +138,7 @@ def fit(chains, *, hands: int, available: dict | None = None,
 
     hours = float(max((turn for turn, _t, _w in result.route), default=0) + 1) \
         * max(1, result.pool)
-    if result.complete and check_route(day, tasks, result, result.settled):
+    if result.complete and check_route(day, tasks, result):
         # A route the compiler will not take is a day that did not fit, which
         # is an answer the caller already knows how to use (#73 is why this is
         # checked here rather than discovered inside `compile_route`).
@@ -355,11 +355,11 @@ def compile(day_plan: "DayPlan", obs, *, hands: int | None = None,
             forecast_obj=None) -> dict:
     """A `DayPlan` -> the `{"units": [...], "market": [...]}` the dispatcher slices.
 
-    The unit ops come from the day layer's own compiler, against the hand
-    positions the search settled on — `Result.settled`, which is the one
-    correct way to write the day down (#73). The market side is assembled from
-    the SAME chains, so a seed the plan needs and a seed the queue buys cannot
-    disagree.
+    The unit ops come from the day layer's own compiler, against the doors the
+    search priced the hands on — `Result.doors`, the only positions
+    `compile_route` writes from (#73, #162). The market side is
+    assembled from the SAME chains, so a seed the plan needs and a seed the
+    queue buys cannot disagree.
 
     A day that did not fit compiles to nobody doing anything. That is a legal
     answer and the honest one: the alternative is dispatching a route the
@@ -388,8 +388,7 @@ def compile(day_plan: "DayPlan", obs, *, hands: int | None = None,
     # market must hire what the day was costed with or the hours row was a
     # fiction. wsr reports what it used, and the smaller of the two is what
     # gets paid for.
-    ops = compile_route(day, tasks, result, horizon=TURNS_PER_DAY,
-                        settled=result.settled)
+    ops = compile_route(day, tasks, result, horizon=TURNS_PER_DAY)
     harvest = sum(int(units) for _hour, _item, units in ops.arrivals)
     market = K.build(obs, fitted.chains, hands=min(pool, result.pool) if pool else result.pool,
                      harvest_expected=harvest, config=config,
