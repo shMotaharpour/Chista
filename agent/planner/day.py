@@ -129,11 +129,12 @@ def fit(chains, *, hands: int, available: dict | None = None,
 
     available = available or {}
     tasks = T.build(chains, available=available)
-    day = B.Day(chains=tuple(chains), available=available,
-                hire_times=(1,) * max(1, hands))
+    # `hands` is the offer the master priced, and zero is an offer: the farmer walks alone. The
+    # hours each hand starts at are the engine's (`rules.hire_hour`), which `Day` fills in.
+    day = B.Day(chains=tuple(chains), available=available, hands=hands)
     floor = max(0, B.lower_bound(day, tasks) - len(day.units))
     result = B.search(day, tasks, beam=beam,
-                      hands=min(floor, max(1, hands)), max_hands=max(1, hands),
+                      hands=min(floor, hands), max_hands=hands,
                       budget_s=budget_s, warm=warm)
 
     hours = float(max((turn for turn, _t, _w in result.route), default=0) + 1) \
@@ -380,17 +381,13 @@ def compile(day_plan: "DayPlan", obs, *, hands: int | None = None,
 
     available = availability(obs, fitted.chains)
     tasks = T.build(fitted.chains, available=available)
-    day = B.Day(chains=tuple(fitted.chains), available=available,
-                hire_times=(1,) * max(1, pool))
-    result = B.search(day, tasks, hands=min(pool, max(1, pool)),
-                      max_hands=max(1, pool))
-    # The plan is PRICED for `pool` hands; the route may need fewer, but the
-    # market must hire what the day was costed with or the hours row was a
-    # fiction. wsr reports what it used, and the smaller of the two is what
-    # gets paid for.
+    day = B.Day(chains=tuple(fitted.chains), available=available, hands=pool)
+    result = B.search(day, tasks, hands=pool, max_hands=pool)
+    # The plan is PRICED for `pool` hands and the search is held to exactly those: the market
+    # hires what the day was costed with, and a route may leave some of them idle.
     ops = compile_route(day, tasks, result, horizon=TURNS_PER_DAY)
     harvest = sum(int(units) for _hour, _item, units in ops.arrivals)
-    market = K.build(obs, fitted.chains, hands=min(pool, result.pool) if pool else result.pool,
+    market = K.build(obs, fitted.chains, hands=result.pool,
                      harvest_expected=harvest, config=config,
                      model=model, activity=activity, forecast_obj=forecast_obj)
     return to_plan(ops, market=market.rows)
