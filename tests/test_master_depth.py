@@ -60,6 +60,61 @@ def _solve(obs, supply, reps, counts, horizon, *, depth: bool,
     return res, fc
 
 
+
+# --- the reduced process, for the guard that needs a CERTIFICATE ----------
+# The one-tile board is a PROBE-level patch (price and run only the tile the
+# farmer stands on, no hands), never a `Config` switch: the guards that need a
+# certified LP use it, everything else runs the real board.
+_REAL = {}
+
+
+def _one_tile(runtime, obs):
+    from agent.planner import columns as C
+    states = _REAL["states"](runtime, obs)
+    distances = _REAL["distances"](obs, C.shed_distance())
+    here = [i for i, d in enumerate(distances) if int(d) == 0]
+    return [states[here[0]]] if here else states[:1]
+
+
+def _only_here(obs, steps):
+    return [0]
+
+
+def _board_class_map(self, obs, of_tile):
+    from agent.obs import decode_world
+    view = decode_world(obs, at_day_start=True, graph_keys=self.keys)
+    keys = np.asarray(view.me.keys)
+    farm = (obs.get("farms") or [{}])[int(obs.get("player", 0))]
+    fx, fy = farm.get("farmer", (0, 0))
+    idx = int(fy) * keys.shape[1] + int(fx)
+    out = [None] * keys.size
+    if keys.reshape(-1)[idx] >= 0:
+        out[idx] = 0
+    return out
+
+
+def _solve_one_tile(obs, supply, horizon, *, depth: bool):
+    """`equilibrate` on the reduced process, at the default round cap."""
+    import agent.manager.core as MC
+    from agent.tile_dp.contractor import TileContractor
+    from agent.planner.inputs import GRAPH_PATH
+    from agent.tile_dp.graph import TileGraph
+    _REAL.setdefault("states", M._owned_states)
+    _REAL.setdefault("distances", M._owned_distances)
+    _REAL.setdefault("class_of_tile", MC.Manager._class_of_tile)
+    contractor = TileContractor(TileGraph.load(GRAPH_PATH), days=horizon)
+    fc = forecast(obs, days=horizon) if depth else None
+    M._owned_states, M._owned_distances = _one_tile, _only_here
+    MC.Manager._class_of_tile = _board_class_map
+    try:
+        res = M.equilibrate(object(), obs, contractor, supply,
+                            iter_cap=Config().master_rounds, forecast_obj=fc)
+    finally:
+        M._owned_states = _REAL["states"]
+        M._owned_distances = _REAL["distances"]
+        MC.Manager._class_of_tile = _REAL["class_of_tile"]
+    return res, fc
+
 def test_the_curve_lowers_the_internal_price_below_the_peak() -> None:
     """σ is the ladder's marginal, not the best price on the horizon."""
     obs, supply, reps, counts, horizon = _board()
@@ -96,11 +151,20 @@ def _loaded_supply(obs, good: str = "MELON", units: int = 60):
 
 
 def test_the_bound_is_still_a_bound_with_the_curve() -> None:
-    """The sells' inner term is in the bound, or the bound is not a bound."""
-    obs, supply, reps, counts, horizon = _board()
-    supply = _loaded_supply(obs)
-    for depth in (False, True):
-        res, _ = _solve(obs, supply, reps, counts, horizon, depth=depth)
+    """The sells' inner term is in the bound, or the bound is not a bound.
+
+    On the board where the master CERTIFIES the check has teeth: the bound lands
+    exactly on the objective, so a term dropped from `lagrangian_bound` shows up
+    as a bound BELOW it at once (measured 29,161.7 against 32,083.5). The full
+    board cannot fail this way — it does not converge in twenty rounds (gap
+    0.32-0.79, uncertified), so its bound sits far above the objective.
+    """
+    obs, supply, _reps, _counts, horizon = _board()
+    for depth in (True, False):
+        res, _fc = _solve_one_tile(obs, supply, horizon, depth=depth)
+        assert res.certified, (
+            f"depth={depth}: the reduced process must certify, or this guard "
+            "proves nothing (bound far above the objective)")
         assert res.bound >= res.objective - 1e-6, (
             f"depth={depth}: bound {res.bound:.1f} is BELOW the objective "
             f"{res.objective:.1f} — not a bound (the sells' inner term is "
