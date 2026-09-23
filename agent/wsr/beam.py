@@ -452,15 +452,15 @@ def _fixed_point(day: Day, tasks: TaskArray, beam: int, pool: int,
         return conservative
     best: Result = conservative
     charge = bags_of(day, tasks, conservative)
+    hours, arrival = _start_hours(day, pool), good_hours(tasks)
     tightened = False
     for _attempt in range(CHARGE_PASSES + 1):
         candidate = _settle(day, tasks, beam, pool, deadline, warm, charge=charge)
         if _consistent(day, tasks, candidate) and _better_route(candidate, best):
             best = candidate
         bags = bags_of(day, tasks, candidate)
-        # A superset of goods never loads its last one earlier (`pickup_turns`), so the union is
-        # the ceiling that only grows.
-        grown = [charged | bag for charged, bag in zip(charge, bags)]
+        grown = [grow_charge(h, charged, bag, arrival)
+                 for h, charged, bag in zip(hours, charge, bags)]
         if grown != charge:
             charge = grown
             continue
@@ -849,6 +849,18 @@ def first_walk_turn(hour: int, goods, arrival: dict[int, int]) -> int:
     """
     loads = pickup_turns(hour, goods, arrival)
     return int(hour) if not loads else loads[-1][0] + 1
+
+
+def grow_charge(hour: int, charged, bag, arrival: dict[int, int]):
+    """The larger of two pickup charges, by the turn each starts the worker's walk.
+
+    The charge `_fixed_point` iterates may only grow, and what grows is the delay it puts on the
+    walk - not the goods it names. Their union charges a pickup turn neither route makes: a worker
+    that loads one good on one pass and another good on the next needs one turn, not two.
+    """
+    if first_walk_turn(hour, charged, arrival) >= first_walk_turn(hour, bag, arrival):
+        return charged
+    return bag
 
 
 def start_hours(day: Day, tasks: TaskArray, hands: int, charge=None) -> np.ndarray:
