@@ -28,7 +28,7 @@ from agent.wsr import beam as B, tasks as T
 from agent.wsr.emit import check_route, compile_route, to_plan
 
 tasks  = T.build(chains, available=available, drop_by=drop_by)       # -> TaskArray
-day    = B.Day(chains=tuple(chains), available=available, hire_times=hire_times)
+day    = B.Day(chains=tuple(chains), available=available, hands=hands)
 result = B.search(day, tasks, beam=None, hands=None, max_hands=None,
                   budget_s=None, warm=None)                          # -> Result
 ops    = compile_route(day, tasks, result)                           # -> DayOps
@@ -42,7 +42,7 @@ T.build(chains, *, available: dict[str, int] | None = None, horizon: int = 24,
         drop_by=None) -> TaskArray
 
 B.Day(chains, available: dict[str, int], horizon: int = TURNS_PER_DAY,
-      hire_times: tuple[int, ...] = ())
+      hire_times: tuple[int, ...] = (), hands: int | None = None)
 
 B.search(day: Day, tasks: TaskArray, *, beam: int | None = None,
          hands: int | None = None, max_hands: int | None = None,
@@ -64,7 +64,8 @@ to_plan(day_ops: DayOps, market=None) -> dict
 | `available` | the hour each good (and seed) is in the shed. A buy in turn 0 is in the shed at hour 1, and a task that consumes a good cannot run before it. |
 | `drop_by` | one entry per chain: the latest hour that chain's harvest must be banked, or `None` to leave it for the night. |
 | `horizon` | the day's turns; `TURNS_PER_DAY` unless a test asks for fewer. |
-| `hire_times` | the hour each offered hand may begin. A hand hired in turn `h` acts from `h + 1` (F040); an offer shorter than the pool starts the rest at hour 1. |
+| `hands` | the hands the planner offers today, besides the farmer who is always on the field. Zero is an offer: the farmer walks alone. |
+| `hire_times` | optional: the hour each offered hand begins. Left out, each starts at the engine's earliest hour, `rules.hire_hour(k)` (a hand hired in turn `t` acts from `t + 1`, F040; ten orders a turn, F031). A recorded day passes its own hours, and then `hands` is their count. |
 | `beam` | the width. `None` asks for `beam_for(tasks, workers)`: a step costs `beam x workers x tasks`, so the width follows the day's size. |
 | `hands` | the pool to start at. `None` starts at the arithmetic floor (`lower_bound`) and halving-searches the smallest pool that carries the day; a number scans upward from it. |
 | `max_hands` | the largest pool allowed, capped by `ceiling_for` (the hands the day offered). Equal to `hands`, it asks one yes-or-no question. |
@@ -102,9 +103,10 @@ worker) and `spare_turns(day, tasks, result)`.
   -> DayFit` asks whether the master's first day walks: `build`, then `search` with the pool the
   master priced (`hands=min(floor, hands)`, `max_hands=hands`), then `check_route` on a complete
   route. `DayFit.reason` is `""` when it fits, else `"hours"`, `"budget"` or `"unstable"`.
+  `hands` is passed as it is, so a plan priced with no hands is searched with the farmer alone.
 - `compile(day_plan, obs, *, hands=None, ...) -> dict` writes the day the dispatcher slices:
-  `search` at the fitted pool, `compile_route`, then the market rows from the same chains and
-  `to_plan`. A day that did not fit compiles to nobody doing anything.
+  `search` held to exactly the fitted pool, `compile_route`, then the market rows (hiring that
+  pool) from the same chains and `to_plan`. A day that did not fit compiles to nobody doing anything.
 
 The planner fixes the pool itself rather than asking `search(hands=None)` for the smallest one: the
 hands are already priced by the master it is answering.

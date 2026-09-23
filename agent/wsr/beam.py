@@ -86,19 +86,37 @@ FARMER_START: Cell = SPAWN
 
 @dataclass(frozen=True)
 class Day:
-    """The chains to run today, in the planner's order, with the shed's timetable.
+    """The chains to run today, in the planner's order, with the shed's timetable and the hands.
 
-    `hire_times` is the planner's offer: the hour each hand it will pay for may begin. A hand is
-    offered at most one start, and the times are not interchangeable - a hand hired for turn 0 acts
-    from hour 1 (F040), and one the market cannot reach until turn 5 is idle before that. The
-    engine's own day runs hour 0 to 23, so a hand hired at turn 0 has 23 turns of work in it and a
-    hand hired at turn 5 has 18.
+    `hands` is the planner's offer: how many hands it will hire today, besides the farmer who is
+    always on the field. Each starts at the earliest hour the engine allows (`rules.hire_hour`: a
+    hand hired in turn t acts from t + 1, ten orders a turn) unless the caller passes `hire_times` -
+    a recorded day whose hands really began later passes its own hours, and then `hands` is their
+    count. Zero hands is a day the farmer walks alone.
     """
 
     chains: tuple[tuple[Cell, tuple[str, ...], str | None], ...]
     available: dict[str, int]
     horizon: int = TURNS_PER_DAY
-    hire_times: tuple[int, ...] = ()        # the hour each offered hand may begin
+    hire_times: tuple[int, ...] = ()        # the hour each offered hand may begin; engine default
+    hands: int | None = None                # the hands offered; len(hire_times) when not given
+
+    def __post_init__(self) -> None:
+        from agent.world.rules import hire_hour
+
+        times = tuple(int(t) for t in self.hire_times)
+        if self.hands is None:
+            hands = len(times)
+        else:
+            hands = int(self.hands)
+            if hands < 0:
+                raise ValueError(f"hands must be >= 0, got {hands}")
+            if times and len(times) != hands:
+                raise ValueError(f"{hands} hands offered with {len(times)} hire times")
+            if not times:
+                times = tuple(hire_hour(k) for k in range(hands))
+        object.__setattr__(self, "hire_times", times)
+        object.__setattr__(self, "hands", hands)
 
     @property
     def units(self) -> tuple[Cell, ...]:
@@ -773,7 +791,7 @@ def _hand_doors(day: Day, tasks: TaskArray, result: Result, hands: int) -> tuple
     """
     from agent.world.rules import spawn_cell
 
-    hire = [max(1, int(day.hire_times[k])) if k < len(day.hire_times) else 1 for k in range(hands)]
+    hire = [int(h) for h in _start_hours(day, hands)[len(day.units):]]
     routes: dict[int, list] = {}
     for turn, task_id, worker in result.route:
         routes.setdefault(int(worker), []).append((int(turn), task_id))
@@ -1031,15 +1049,17 @@ def _start_hours(day: Day, hands: int) -> np.ndarray:
     A unit already on the field acts from the day's first hour. A hand begins at the hour the
     planner offered it, and the offer is not a formality: the engine settles hires in index order
     and a hand hired in turn h acts from h + 1, so a hand the market cannot pay for until turn 5
-    does nothing for the first five hours of the day. An offer shorter than the pool means the
-    planner did not price that hand, and the engine's own rule for a hire in turn 0 applies.
+    does nothing for the first five hours of the day. A hand beyond the offer starts at the
+    engine's own hour for it (`rules.hire_hour`).
     """
+    from agent.world.rules import hire_hour
+
     hours = [0] * len(day.units)
     for index in range(hands):
         if index < len(day.hire_times):
             hours.append(max(1, int(day.hire_times[index])))
         else:
-            hours.append(1)
+            hours.append(hire_hour(index))
     return np.asarray(hours, dtype=np.int16)
 
 
