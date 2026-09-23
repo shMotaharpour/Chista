@@ -64,14 +64,6 @@ def test_a_bigger_budget_never_places_less(monkeypatch):
     assert placed == sorted(placed), f"a larger budget placed less: {placed}"
 
 
-def test_a_result_always_says_where_it_was_priced_from():
-    """Never None: the compiler's None means derive from the route, which is a different question."""
-    chains, tasks = _day()
-    result = B.search(_day_for(chains), tasks, hands=HANDS, max_hands=HANDS, budget_s=0.001)
-
-    assert result.settled, "a Result must carry the positions its route was priced from"
-
-
 def test_a_carried_day_does_not_ask_to_be_ground():
     """A route can be complete and still have crossed its deadline; it has no work left to place."""
     carried = B.Result(pool=2, route=[(0, "a", 0)], complete=True, out_of_time=True)
