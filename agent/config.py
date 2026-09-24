@@ -40,6 +40,13 @@ class Config:
     # --- the turn's clock --------------------------------------------------
     #: The working budget inside one turn, in ms. F046: one free second per
     #: turn, unbankable, and the harness bills ~35 ms more than measured.
+    #: How many times the manager may re-ask the day layer before accepting the
+    #: answer it has (the day layer's own cap is `DEFAULT_ASK_ROUNDS`; this is the
+    #: owner's, and an episode may override it as `handsAskRounds`). Fixed, not
+    #: per-hand: offering 5 and carrying the day with 1 must report 1, not walk
+    #: down one search at a time.
+    hands_ask_rounds: int = 2
+
     turn_budget_ms: float = 965.0
     #: Held back for compiling and dispatching, so a solve that runs to its
     #: deadline still leaves the turn a legal answer.

@@ -22,11 +22,11 @@ from __future__ import annotations
 import time
 from dataclasses import replace, dataclass
 
-#: How many extra hands the day layer asks for before it accepts a day that does
-#: not fit. Each ask is a full search, so the loop is BOUNDED rather than "until
-#: it fits": a day that needs more than this is a day to lay less on, and the
-#: manager reads the shortfall off `DayFit.short` to make that call.
-MAX_HANDS_SHORT = 4
+#: How many times the manager may re-ask the day layer before it accepts the
+#: answer it has. FIXED and small on purpose: each ask is a whole search, and the
+#: loop is not "until it fits" — a day that still does not fit is a day to lay
+#: less on. An episode may override it as `handsAskRounds`.
+DEFAULT_ASK_ROUNDS = 2
 
 import numpy as np
 
@@ -357,7 +357,11 @@ def _solve_at(obs, contractor, supply, class_of_tile, hands, iter_cap,
             #
             # "budget" is never re-asked: more hands do not buy more time.
             fitted = replace(fitted, short=max(0, int(fitted.floor) - int(hands)))
-            if int(fitted.floor) > int(hands):
+            # The cap is the manager's (`Config.hands_ask_rounds`, an episode may
+            # override it as `handsAskRounds`); the day layer only needs to know
+            # whether a re-ask is allowed at all, and this function has no config
+            # in hand — the loop that reads it lives in the manager.
+            if int(fitted.floor) > int(hands) and DEFAULT_ASK_ROUNDS > 0:
                 again = fit(chains, hands=int(fitted.floor), budget_s=budget_s,
                             available=availability(obs, chains),
                             hours_committed=committed)
