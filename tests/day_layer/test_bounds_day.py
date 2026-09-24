@@ -15,9 +15,9 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
 from agent.wsr import beam as B
 from agent.wsr import tasks as T
 
-CORPUS = pathlib.Path(__file__).parent / "corpus" / "real_days.json"
-#: A day from the archive with a floor worth asking about: 93 tasks, one unit on the field.
-DAY_KEY = ("2026-08-24", 98009264, 14)
+CORPUS = pathlib.Path(__file__).parent / "corpus" / "winner_days.json"
+#: A winner's day with a floor worth asking about: the corpus's most-op day, 181 tasks.
+DAY_KEY = ("2026-09-16", 109545391, 13)
 
 
 def _the_day():

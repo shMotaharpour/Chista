@@ -22,7 +22,7 @@ from agent.wsr import beam as B
 from agent.wsr import tasks as T
 from agent.wsr.emit import check_route
 
-CORPUS = pathlib.Path(__file__).parent / "corpus" / "real_days.json"
+CORPUS = pathlib.Path(__file__).parent / "corpus" / "winner_days.json"
 REAL_DAYS = json.loads(CORPUS.read_text())
 BY_SIZE = sorted(REAL_DAYS, key=lambda e: sum(len(ops) for _c, ops, _e in e["chains"]))
 

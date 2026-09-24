@@ -23,7 +23,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
 from agent.wsr import beam as B
 from agent.wsr import tasks as T
 
-CORPUS = pathlib.Path(__file__).parent / "corpus" / "real_days.json"
+CORPUS = pathlib.Path(__file__).parent / "corpus" / "winner_days.json"
 REAL_DAYS = json.loads(CORPUS.read_text())
 
 #: The largest day in the corpus, which is the one the cost is about.
