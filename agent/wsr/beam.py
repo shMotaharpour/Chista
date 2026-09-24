@@ -819,6 +819,24 @@ def _start_positions(day: Day, hands: int, settled=None, doors=None) -> np.ndarr
     return np.asarray(out, dtype=np.int16)
 
 
+def _bag(tasks: TaskArray, entries: list[tuple[int, str]]) -> dict[int, int]:
+    """How much of each good one worker loads at its door (`door_load`, `loads_before`).
+
+    Only the goods used before the worker's first DROP: the engine's DROP empties the whole bag
+    (`kaggriculture.py:343-356`), so what is still in it goes to the shed with the harvest, and every
+    use after the drop is fetched again (`legs`).
+    """
+    bag: dict[int, int] = {}
+    for turn, task_id in sorted(entries):
+        row = tasks.ids.index(task_id)
+        if int(turn) >= 0 and bool(tasks.is_drop[row]):
+            break
+        good = int(tasks.items[row])
+        if good >= 0:
+            bag[good] = bag.get(good, 0) + 1
+    return bag
+
+
 def preload_turns(tasks: TaskArray) -> frozenset[int]:
     """The goods a worker may have to load at its door: every good a task of the day consumes.
 
@@ -1476,3 +1494,60 @@ def _carried(done, who, tasks: TaskArray, workers: int, when=None, last_drop=Non
         flat[index[live]] = True
     return flat.reshape(batch, workers, n_goods)
 
+
+def leg_moves(here: Cell, target: Cell, fetch) -> list[tuple]:
+    """The ops that carry a worker to its task: the walk, or the walk through a door and a PICKUP."""
+    if fetch is None:
+        return walk(here, target)
+    door = nearest_shed(here)
+    fetched = ("PICKUP", ITEM_NAME[int(fetch[0])], int(fetch[1]))
+    return walk(here, door) + [fetched] + walk(door, target)
+
+
+def leg_target(tasks: TaskArray, row: int, here: Cell) -> Cell:
+    """Where a worker standing on `here` does task `row`: the task's own tile, or a DROP's door.
+
+    Any of the four shed-access tiles takes a DROP (`kaggriculture.py:138-139`, `:343-356`), so the
+    door a bag is handed over at is a property of the route - the one nearest the worker when it
+    drops (`nearest_shed`, the refetch's own rule) - and not of the harvest it banks. The search
+    (`DROP_DOOR`), the compiler and every reader of where a worker stands go through here.
+    """
+    if bool(tasks.is_drop[row]):
+        return nearest_shed(here)
+    return (int(tasks.cells[row][0]), int(tasks.cells[row][1]))
+
+
+def legs(tasks: TaskArray, entries: list[tuple[int, str]]) -> list[tuple[int, int, tuple | None]]:
+    """One worker's day as `(turn, row, fetch)`, where `fetch` is `(good, n)` or None.
+
+    A DROP hands over the whole bag, so a good used after it is no longer carried: the first use of
+    each good after a drop walks through the nearest door on the way and picks up `n` - every use
+    of that good until the next drop. A good the worker has taken off a tile since the drop is in
+    the bag, as before. The search prices this trip and the compiler writes it from here, so the
+    two cannot disagree on it.
+
+    A drop with an empty bag (turn -1) is not a leg: it has no turn, no op and no walk, so the
+    worker never goes to its door. Reading it as one put the worker on that door from turn 0.
+    """
+    rows = [(int(turn), tasks.ids.index(task_id)) for turn, task_id in sorted(entries)
+            if int(turn) >= 0]
+    out: list[tuple[int, int, tuple | None]] = []
+    dropped = False
+    held: set[int] = set()
+    for k, (turn, row) in enumerate(rows):
+        fetch = None
+        need = int(tasks.items[row])
+        if bool(tasks.is_drop[row]):
+            dropped, held = True, set()
+        elif dropped and need >= 0 and need not in held:
+            n = 0
+            for _later_turn, later in rows[k:]:
+                if bool(tasks.is_drop[later]):
+                    break
+                n += int(tasks.items[later]) == need
+            fetch = (need, n)
+        for good in (need, int(tasks.yields[row])):
+            if good >= 0:
+                held.add(good)
+        out.append((turn, row, fetch))
+    return out
