@@ -8,7 +8,7 @@ It exists because three vocabularies grew for one world — the engine's action
 strings, the tile DP's chain ops, and the WSR day's enums — and every
 consumer paid: the DP's market ops looked incomplete, `PLACE` existed twice, the
 day's `PRODUCT_ITEMS` lacked every crop, and one chain was expanded twice
-(`agent/tile_dp/graph.py::_exec_chain` at build time, `day/models.py::expand_major_task`
+(`agent/tile_dp/graph.py::_exec_chain` at build time, the old `day/models.py::expand_major_task`
 at runtime).
 
 ---
