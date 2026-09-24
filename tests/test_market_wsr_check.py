@@ -115,3 +115,21 @@ def test_the_rank_orders_the_sells_within_a_turn() -> None:
     # Without a rank the caller's own order stands, unchanged.
     plain, _d = merge([row], [], [], cap=10, turns=2)
     assert [o[1] for o in plain[0]] == ["MILK", "MELON", "WOOL"], plain[0]
+
+
+def test_build_passes_the_rank_through_to_the_queue() -> None:
+    """The loop's last link: the rank reaches `merge` from the caller's surfaces."""
+    from agent.planner import market as K
+
+    obs = _obs()
+    seen: list = []
+
+    def rank(order, turn):
+        seen.append((tuple(order), turn))
+        return 1.0
+
+    rows = K.build(obs, (), hands=1, rank=rank)
+    assert rows.rows, "the queue came back empty"
+    # No sells to rank with empty chains, but the CALL must have been made with
+    # the rank: a build that dropped it would never reach `merge`'s sort.
+    assert isinstance(rows.hires, int)

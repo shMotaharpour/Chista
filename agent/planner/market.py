@@ -281,8 +281,14 @@ def merge(sells: list, hires: list, buys: list, *, cap: int = 10,
 def build(obs, chains, *, hands: int, harvest_expected: int = 0,
           config=None, cap: int = 10, model=None, activity: int | None = None,
           forecast_obj=None, wsr_check: bool = True,
-          arrivals: dict | None = None) -> DayMarket:
+          arrivals: dict | None = None, rank=None) -> DayMarket:
     """The whole day's market side, from the committed chains.
+
+    `rank(order, turn)` orders the sells inside a turn by their value: belief's
+    `hourly_value` at that turn minus its `rival_risk` there. The caller builds it
+    because it is the caller that holds the two inputs — the forecast the prices
+    are read from and the rival's dated supply — and neither is this module's to
+    invent. Without a rank the queue keeps belief's own order.
 
     `wsr_check=False` lays the day out WITHOUT the hires. The HIRE orders ARE the
     commitment — they spend the purse and put hands on the field — so a check must
@@ -307,7 +313,7 @@ def build(obs, chains, *, hands: int, harvest_expected: int = 0,
     sells = sell_rows(obs, harvest_expected, float(bill), config,
                       model=model, activity=activity,
                       forecast_obj=forecast_obj, arrivals=arrivals)
-    rows, dropped = merge(sells, hires, buys, cap=cap)
+    rows, dropped = merge(sells, hires, buys, cap=cap, rank=rank)
     hire_hours, bought_hours = settle_hours(rows)
     return DayMarket(rows=rows, bill=int(bill), buys=tuple(map(tuple, buys)),
                      hires=len(hires), dropped=dropped,
