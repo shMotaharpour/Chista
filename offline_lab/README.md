@@ -13,4 +13,6 @@ Tools that never run inside a turn: evaluation, simulation, the pool.
 | what a day's search costs, day by day | `search_cost.py` |
 | the opponent pool | `pool/` |
 
-`offline_lab/` may import `world/` (the definitions). `world/` never imports `offline_lab/`.
+`offline_lab/` may import `agent/world/` (the definitions). `agent/world/` never imports
+`offline_lab/` — and nothing under `agent/` does: the submission is self-contained, and the
+builders that write its artifacts live here.

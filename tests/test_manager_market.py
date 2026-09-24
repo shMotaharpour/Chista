@@ -34,8 +34,9 @@ def test_the_settle_order_has_exactly_one_definition():
 
     It was written four times: `planner/market.py`'s `QUEUE_RANK`,
     `planner/repair.py`'s `_QUEUE_RANK`, a fourth inline dict in
-    `market_layer.py` — whose own docstring asked to delegate back once the
-    planner imported cleanly — and the belief hook it is passed through. The
+    `market_layer.py` — a fourth, retired with that env-switched
+    circuit — whose own docstring asked to delegate back once the planner
+    imported cleanly — and the belief hook it is passed through. The
     engine settles strictly by queue index, so two tables can disagree and one
     of them would be wrong without saying so.
     """

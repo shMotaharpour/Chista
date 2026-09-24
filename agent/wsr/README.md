@@ -28,7 +28,7 @@ from agent.wsr import beam as B, tasks as T
 from agent.wsr.emit import check_route, compile_route, to_plan
 
 tasks  = T.build(chains, available=available, drop_by=drop_by)       # -> TaskArray
-day    = B.Day(chains=tuple(chains), available=available, hands=hands)
+day    = B.Day(chains=tuple(chains), available=available, hire_times=hire_times)
 result = B.search(day, tasks, beam=None, hands=None, max_hands=None,
                   budget_s=None, warm=None)                          # -> Result
 ops    = compile_route(day, tasks, result)                           # -> DayOps
@@ -42,7 +42,7 @@ T.build(chains, *, available: dict[str, int] | None = None, horizon: int = 24,
         drop_by=None) -> TaskArray
 
 B.Day(chains, available: dict[str, int], horizon: int = TURNS_PER_DAY,
-      hire_times: tuple[int, ...] = (), hands: int | None = None)
+      hire_times: tuple[int, ...] = ())
 
 B.search(day: Day, tasks: TaskArray, *, beam: int | None = None,
          hands: int | None = None, max_hands: int | None = None,
@@ -64,8 +64,7 @@ to_plan(day_ops: DayOps, market=None) -> dict
 | `available` | the hour each good (and seed) is in the shed. A buy in turn 0 is in the shed at hour 1, and a task that consumes a good cannot run before it. |
 | `drop_by` | one entry per chain: the latest hour that chain's harvest must be banked, or `None` to leave it for the night. |
 | `horizon` | the day's turns; `TURNS_PER_DAY` unless a test asks for fewer. |
-| `hands` | the hands the planner offers today, besides the farmer who is always on the field. Zero is an offer: the farmer walks alone. |
-| `hire_times` | optional: the hour each offered hand begins. Left out, each starts at the engine's earliest hour, `rules.hire_hour(k)` (a hand hired in turn `t` acts from `t + 1`, F040; ten orders a turn, F031). A recorded day passes its own hours, and then `hands` is their count. |
+| `hire_times` | the hour each hand is AVAILABLE to act — the hour its HIRE settles plus one (a hand hired in turn `t` acts from `t + 1`, F040; ten orders a turn, F031). `Day.hands` is its length, so there is no separate count to disagree with it: zero hands is an empty tuple, and the farmer is always on the field without being in it. Nothing inside `Day` derives an hour — the engine's own earliest (`rules.earliest_hire_times`, an optimistic bound) belongs at the call site, and a bad tuple is `Day`'s to refuse. |
 | `beam` | the width. `None` asks for `beam_for(tasks, workers)`: a step costs `beam x workers x tasks`, so the width follows the day's size. |
 | `hands` | the pool to start at. `None` starts at the arithmetic floor (`lower_bound`) and halving-searches the smallest pool that carries the day; a number scans upward from it. |
 | `max_hands` | the largest pool allowed, capped by `ceiling_for` (the hands the day offered). Equal to `hands`, it asks one yes-or-no question. |

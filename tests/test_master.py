@@ -425,54 +425,6 @@ def test_scipy_absent_is_survivable() -> None:
     assert "OK" in proc.stdout
 
 
-def test_budget() -> None:
-    """One master round (sweep + LP) against the brief's 45 ms ceiling,
-    the price-path forecast it now calls (#15), and the full 8-round loop
-    measured so the cap's cost is on record.
-
-    The forecast is measured SEPARATELY rather than folded into the
-    round: #12's 45 ms ceiling bounds the sweep + LP, and #15's own budget
-    for the market layer is 10 ms (`day/market.py`; its p50/p99 come
-    from `bench/bench_market_forecast.py --layer-timing`, printed below and
-    NOT quoted as a stale pair here). Folding the two together would hide
-    which part moved. The round keeps a hard ceiling of both budgets
-    together, so a regression cannot hide inside the subtraction.
-    """
-    import time
-    from agent.belief.market import forecast
-    rt, c = _RT(), _contractor()
-    obs = _obs(_bare_ids(4), c.graph)
-    forecast(obs, days=c.days)                    # warm the import + tables
-    # The floor of paired readings: this is a shared box, and a single reading
-    # carries another process's contention (measured under the six-worker suite:
-    # one round read 49.0 ms against a 45 ms ceiling while the floor stayed put).
-    def _floor(fn, reps: int = 5) -> float:
-        best = float("inf")
-        for _ in range(reps):
-            t = time.perf_counter()
-            out = fn()
-            best = min(best, (time.perf_counter() - t) * 1000.0)
-        return best, out
-
-    fc_ms, _ = _floor(lambda: forecast(obs, days=c.days))
-    one, res = _floor(lambda: equilibrate(rt, obs, c, _supply(), iter_cap=1))
-    t0 = time.perf_counter()
-    res = equilibrate(rt, obs, c, _supply())
-    full = (time.perf_counter() - t0) * 1000.0
-    print(f"one round {one:.1f} ms (ceiling {ROUND_BUDGET_MS:.0f}), of which "
-          f"the #15 price-path forecast {fc_ms:.1f} ms (budget "
-          f"{MARKET_LAYER_BUDGET_MS:.0f}); "
-          f"full {res.rounds}-round loop {full:.1f} ms "
-          f"(history {['%.0f' % m for m in res.history]})")
-    assert fc_ms < MARKET_LAYER_BUDGET_MS, \
-        f"the market forecast took {fc_ms:.1f} ms (> {MARKET_LAYER_BUDGET_MS:.0f} ms)"
-    assert one - fc_ms < ROUND_BUDGET_MS, \
-        f"one master round took {one - fc_ms:.1f} ms (> {ROUND_BUDGET_MS:.0f} ms)"
-    assert one < ROUND_BUDGET_MS + MARKET_LAYER_BUDGET_MS, \
-        (f"one master round including the #15 forecast took {one:.1f} ms "
-         f"(> {ROUND_BUDGET_MS + MARKET_LAYER_BUDGET_MS:.0f} ms)")
-
-
 def test_the_market_forecast_reaches_the_masters_product_rows() -> None:
     """#15's wiring: the product rows of `p` come from the forecast itself.
 

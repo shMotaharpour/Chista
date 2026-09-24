@@ -6,7 +6,8 @@
 > sections correct/refine earlier ones, and superseded material is marked
 > explicitly rather than deleted, so the reasoning trail stays auditable.
 >
-> This is the English translation of `problem-formulation.fa.md` (the
+> This is the English translation of the Persian original (which is NOT in this
+> tree any more - see the note at the end), written as
 > original, in Persian). Mathematical notation is language-independent and
 > is reproduced verbatim; only prose is translated.
 

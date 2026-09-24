@@ -1,5 +1,12 @@
 # planner — rounding, repair, land (issue #13)
 
+> **A record of the design at the time**, written on the branch that built it. The
+> tense below is that moment's ("this branch", "today"). The names it cites were
+> checked against the code: `Plan`, `ClassMix`, `ROW_NAMES`, `assign_tiles`,
+> `violations`, `demote_to_feasible`, `plan_from_board` and `max_solves` all exist,
+> and both `TODO(#12)` markers are STILL open in `columns.py` and `land.py` — so the
+> two rows it declines to measure are still declined, not stale.
+
 The layer between the master's LP (#12) and the agent's dispatcher. Issue #13
 asks for three things and this branch builds the two and a half that do not need
 the master to exist.
@@ -56,8 +63,9 @@ one).
 
 ## Tests
 
-`tests/test_planner_integrality.py` — rounding is a function; ties are not coin
-tosses; a LOCKED tile never receives a plan; the row check bites on a tight day
+Planned, not yet written: `tests/test_planner_integrality.py`. What it must pin: rounding
+is a function; ties are not coin tosses; a LOCKED tile never receives a plan; the row check
+bites on a tight day
 and the demotion loop clears it over 20 boards; the repaired plan dispatches and
 validates for 30 days; every F047 drop is counted with its rule (F031 cap, short
 purse, F004, F043, F042, F032's queue order); the land prefix is the engine's
