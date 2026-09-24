@@ -257,3 +257,47 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+def test_the_blocks_term_is_in_the_bound() -> None:
+    """The sells' inner problem is a term of the bound, and it is exactly this term.
+
+    `lagrangian_bound`'s own comment: with finite block sizes the term is
+    `sum_b u_b * max(0, p_b - sigma)` - block b is worth selling whenever the ladder pays
+    more than the unit in the shed is carried at - and "a term left out does not make this
+    conservative, it makes it a different number".
+
+    This checks the number. The bound is computed twice on the SAME multipliers, once with
+    the blocks and once without; everything else is identical, so the difference is the
+    term and nothing else. The numbers are chosen to make the expectation a literal: one
+    block, ten units, a price of 7 against a carry of 1, so the term is 10 * (7 - 1) = 60.
+    """
+    from agent.planner.colgen import MasterSolve, lagrangian_bound
+
+    days, n_coupling = 2, 1
+    solve = MasterSolve(lam=np.zeros(0), y=np.zeros((days, n_coupling)),
+                        cash=np.zeros(days), mu=np.zeros(0), objective=0.0)
+    values, counts = np.zeros(0), np.zeros(0)
+    hours, money = np.zeros(days), 1.0
+    sigma = np.array([[1.0], [1.0]])                     # the carry of the priced item
+    shed = (np.zeros(1), 0.0, sigma, np.zeros(days))     # opening, capacity, sigma, tau
+    market = (0,)
+    units = np.full((days, days, 1), 10.0)               # u_b = 10 on every block-day
+    prices = np.zeros((days, days, 1))
+    prices[0, 0, 0] = 7.0                                # p_b = 7 on day 0, hour 0
+
+    def bound(blocks):
+        return lagrangian_bound(solve, values, counts, hours, money, days, n_coupling,
+                                shed=shed, blocks=blocks, market=market)
+
+    without = bound(None)
+    with_blocks = bound((units, prices))
+    assert with_blocks > without, "the blocks term is not in the bound at all"
+    term = with_blocks - without
+    # 10 units * max(0, 7 - 1) on the one block-day that has a price.
+    assert term == 60.0, f"the sells' term reads {term}, not 10 * (7 - 1) = 60"
+
+    # And a block whose price is below the carry contributes nothing: it is not sold.
+    flat = np.zeros((days, days, 1))
+    assert bound((units, flat)) == without, (
+        "a block priced below the carry was counted anyway")
