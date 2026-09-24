@@ -310,7 +310,9 @@ class Manager:
                             if n > 0:
                                 out.setdefault(step, {})[good] = n
             return out
-        except Exception:                      # noqa: BLE001 - the calendar stands
+        except Exception:                      # noqa: BLE001
+            if not self._degrades():           # see `_project_own_sells`
+                raise
             return {}
 
     def _rival_supply(self, obs, horizon):
@@ -355,8 +357,24 @@ class Manager:
             self.own_sells = plan_supply_sells_from_pool(
                 pool, lam, self.contractor.days, day,
                 hours=_sell_hours(self.plan))
-        except Exception:                      # noqa: BLE001 - flat path stands
+        except Exception:                      # noqa: BLE001
+            # The flat path stands only when the run ASKED for it. Swallowing
+            # unconditionally is how a broken projection hides: `own_sells`
+            # stays empty, the walk prices a market without our own supply, and
+            # nothing in the season's log says why (the same shape as the
+            # NameError that hid behind `_rival_hours`'s except).
+            if not self._degrades():
+                raise
             self.own_sells = {}
+
+    def _degrades(self) -> bool:
+        """May a broken optional wire fall back instead of raising?
+
+        The run says so, once, through `Config.never_raise` — the same switch the
+        runtime already honours at the turn boundary. Off (the shipped default)
+        means the error spills where it can be seen.
+        """
+        return bool(getattr(getattr(self, "cfg", None), "never_raise", False))
 
     def _watch(self, obs) -> None:
         """Feed the rival tracker, building it on the first observation.
