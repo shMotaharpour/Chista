@@ -9,12 +9,17 @@ The defect this pins, measured: `dual_stand_in` floored the wage at
 ~147 — so the farm froze with 16-18 of 25 tiles idle and a purse that
 never rose once in 14 days.
 
+Epic: the third guard turns a whole season of the tatonnement, so it is marked `epic`
+and left out of the default run - `pytest -m epic` runs it. The two floors above it
+are cheap and structural and stay in the default run.
+
 Run:  .venv/bin/python -m tests.test_labour_dead_zone   (also pytest)
 """
 
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from offline_lab.kaggle_env import new_environment
 from agent.planner import master as M
@@ -62,6 +67,7 @@ def test_the_dead_edge_is_the_last_live_price() -> None:
         "LABOUR_DEAD_EDGE from the sweep")
 
 
+@pytest.mark.epic
 def test_the_published_labour_dual_never_enters_the_dead_zone() -> None:
     """One full season (seed 3, the issue's fixture): every published
     w_labour cell stays at or under the dead edge, and the clamp counter
