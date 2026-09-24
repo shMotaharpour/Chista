@@ -372,9 +372,36 @@ def _assert_within_cap(queue: list[list[list]]) -> None:
                 "silence (F031)")
 
 
+def _after_arrival(queue: list, arrivals: dict, cap: int = MAX_ORDERS_PER_TURN
+                   ) -> list:
+    """No SELL before its good is IN THE SHED.
+
+    A good arrives when the route's drop carrying it lands (`DayOps.arrivals`) or
+    the turn after its BUY settles (F030). Selling it earlier is refused by the
+    engine without a word (F047), and the day then silently does less than it
+    says. A sell moves to the first turn at or after its arrival that has room
+    under the per-turn cap; a day with no room left for it loses that sell rather
+    than the whole queue.
+    """
+    turns = len(queue)
+    out: list = [[] for _ in range(turns)]
+    for turn, row in enumerate(queue):
+        for order in row:
+            at = turn
+            if order and order[0] == "SELL" and len(order) > 1:
+                at = int(arrivals.get(str(order[1]), 0))
+            target = max(turn, at)
+            while target < turns and len(out[target]) >= cap:
+                target += 1
+            if target < turns:
+                out[target].append(order)
+    return out
+
+
 def market_queue(obs: Any, forecast_obj=None, *, harvest_expected: int = 0,
                  cash_needed: float = 0.0, config: Any = None,
-                 sort_market=None, model=None, activity: int | None = None
+                 sort_market=None, model=None, activity: int | None = None,
+                 arrivals: dict | None = None
                  ) -> list[list[list]]:
     """The market half of one day's plan, from the observation alone.
 
@@ -382,6 +409,10 @@ def market_queue(obs: Any, forecast_obj=None, *, harvest_expected: int = 0,
     them. #14 publishes a plan of what the units will harvest today
     (`harvest_expected`); until that is wired in, the caller passes its own
     estimate and this module says so on the result's assumptions.
+
+    `arrivals` is the hour each good is in the shed TODAY (the route's drops and
+    the day's buys): a sell of a good is moved to its own arrival hour, because
+    the engine refuses a sale of what is not there yet (F047) without saying so.
 
     `model` (#78) is a pretrained opponent model: when given, the day's
     SELL hours are re-timed by the slot circuit (`plan_day_slots`) per
@@ -424,6 +455,8 @@ def market_queue(obs: Any, forecast_obj=None, *, harvest_expected: int = 0,
         except Exception:
             pass                        # degrade to the uniform spread
     queue = orders_by_hour(sales)
+    if arrivals:
+        queue = _after_arrival(queue, arrivals)
     if sort_market is not None:            # F032: land, sells, hires, buys
         queue = [sort_market(row) if row else row for row in queue]
     _assert_within_cap(queue)

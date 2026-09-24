@@ -246,3 +246,32 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+def test_the_first_unit_at_each_hour_is_that_hours_own_quote() -> None:
+    """The curve's own identity, per HOUR: `marginal_price(..., 1)` is the quote.
+
+    `hourly_value` is built on this: the value of one more unit at a turn starts
+    from that turn's own quote and walks down the ladder. If this fails, the
+    surface is reading a different row from the one `hourly_prices` publishes, and
+    every number it hands the secretary is off.
+    """
+    import pytest as _pytest
+
+    from agent.belief.depth import hourly_value, marginal_price
+    from agent.belief.market import forecast, hourly_prices
+    from offline_lab.kaggle_env import new_environment
+
+    obs = new_environment(configuration={"seed": 2}).state[0].observation
+    fc = forecast(obs, days=2)
+    quotes = hourly_prices(fc, days=2, items=("MELON",))
+    for h in (0, 5, 12, 23):
+        first = marginal_price(fc, "MELON", 0, 1, hour=h)
+        assert first == _pytest.approx(float(quotes[h, 0]), rel=1e-9), (
+            f"hour {h}: the curve's first unit {first} is not the hour's quote "
+            f"{quotes[h, 0]}")
+    values = hourly_value(fc, ("MELON",), 0, 2)
+    for h in (0, 5, 12, 23):
+        assert values[("MELON", h)] == _pytest.approx(float(quotes[h, 0]), rel=1e-9), (
+            f"hour {h}: hourly_value {values[('MELON', h)]} is not the hour's "
+            f"quote {quotes[h, 0]} - the units argument is off")

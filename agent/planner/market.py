@@ -29,6 +29,17 @@ class DayMarket:
     hires: int = 0                 # hands hired
     dropped: tuple = ()            # orders no turn had room for
     sells: int = 0                 # SELL orders the queue carries
+    #: The hour each hired hand is AVAILABLE to act: the turn its HIRE settles in
+    #: plus one (F040). Read off the queue that was actually merged, so the day
+    #: layer stops assuming the engine's earliest bound — the queue puts the sells
+    #: first (F032), so a hire settles LATER than a bound that spends a whole
+    #: turn's order budget on hires.
+    hire_hours: tuple = ()
+    #: `((good, hour), ...)`: when each bought good LANDS, i.e. its BUY's settlement
+    #: turn plus one (F030 settles units before the market inside a turn). This is
+    #: what wsr's `available` wants; `availability`'s constant 1 is the same
+    #: optimistic assumption on the goods side.
+    bought_hours: tuple = ()
 
 
 def needs(chains) -> dict[str, int]:
@@ -150,7 +161,7 @@ def hire_orders(hands: int, hires_today: int, multiplier: int = 1
 
 def sell_rows(obs, harvest_expected: int, cash_needed: float, config=None,
               *, model=None, activity: int | None = None,
-              forecast_obj=None) -> list:
+              forecast_obj=None, arrivals: dict | None = None) -> list:
     """Belief's per-hour SELL queue, or no rows if it cannot build one.
 
     Called through `market_queue`, which is belief's documented entry point and
@@ -165,6 +176,7 @@ def sell_rows(obs, harvest_expected: int, cash_needed: float, config=None,
     """
     from agent.belief.shed import market_queue
     return market_queue(_sellable_obs(obs), forecast_obj=forecast_obj,
+                        arrivals=arrivals,
                         harvest_expected=int(harvest_expected),
                         cash_needed=float(cash_needed), config=config,
                         model=model, activity=activity)
@@ -197,8 +209,31 @@ def _sellable_obs(obs):
     return trimmed
 
 
+def settle_hours(rows) -> tuple[tuple[int, ...], tuple[tuple[str, int], ...]]:
+    """Read the timetable off the merged queue.
+
+    A hand hired in turn `t` acts from `t + 1` (F040); a BUY settles before the
+    units move inside a turn, so its good is in the shed from `t + 1` (F030).
+    Both numbers come from where the order ACTUALLY landed, which is the whole
+    point: the engine's earliest bound assumes a whole turn's budget goes to
+    hires, and this queue puts the sells first (F032).
+    """
+    hands: list[int] = []
+    goods: list[tuple[str, int]] = []
+    for turn, row in enumerate(rows):
+        for order in row:
+            if not order:
+                continue
+            kind = str(order[0])
+            if kind == "HIRE":
+                hands.append(turn + 1)
+            elif kind.startswith("BUY_") and len(order) > 1 and order[1]:
+                goods.append((str(order[1]), turn + 1))
+    return tuple(hands), tuple(goods)
+
+
 def merge(sells: list, hires: list, buys: list, *, cap: int = 10,
-          turns: int = TURNS_PER_DAY) -> tuple[list, tuple]:
+          turns: int = TURNS_PER_DAY, rank=None) -> tuple[list, tuple]:
     """One queue, in the engine's settle order, capped per turn.
 
     Sells keep the head of each row because the engine settles them before
@@ -207,7 +242,32 @@ def merge(sells: list, hires: list, buys: list, *, cap: int = 10,
     the queue quietly forgot is a plan that silently does less than it says.
     """
     rows = [[] for _ in range(turns)]
-    opening = [list(o) for o in hires] + [list(o) for o in buys]
+    if rank is not None and sells:
+        # Within a turn, the market-priced orders are the ones that compete, and
+        # the LAST slot before the cap is the one worth ranking for: the order that
+        # misses it spills into a turn where the rival's queue is different.
+        # `rank(order, turn)` returns the value of landing it here — belief's
+        # `hourly_value` minus its `rival_risk` at that turn — and the highest
+        # value keeps the head of the row. Without a rank the order is left as the
+        # caller queued it.
+        ranked = []
+        for turn in range(turns):
+            row = [list(o) for o in (sells[turn] if turn < len(sells) else [])]
+            head = [o for o in row if not (o and o[0] == "SELL")]
+            tail = [o for o in row if o and o[0] == "SELL"]
+            tail.sort(key=lambda o: float(rank(o, turn)), reverse=True)
+            ranked.append(head + tail)
+        sells = ranked
+    # The engine quotes BOTH players at the same index before committing either
+    # (`_process_market`), so a turn's early slots are where our order competes
+    # with the rival's. Orders with a MARKET price take them; the fixed-price ones
+    # (`BUY_SEED`, `BUY_ANIMAL`) and the atomic ones (`HIRE`, `BUY_LAND`) have no
+    # rival in their price and go LAST, where they cost nothing: the engine settles
+    # atomic orders first WITHIN an index, so a hire queued last still settles in
+    # the same turn.
+    competing = [list(o) for o in buys if o and str(o[0]) == "BUY_PRODUCT"]
+    quiet = [list(o) for o in buys if not (o and str(o[0]) == "BUY_PRODUCT")]
+    opening = competing + [list(o) for o in hires] + quiet
     for turn in range(turns):
         row = [list(o) for o in (sells[turn] if turn < len(sells) else [])]
         row.sort(key=lambda o: SETTLE_RANK.get(o[0] if o else "",
@@ -220,8 +280,22 @@ def merge(sells: list, hires: list, buys: list, *, cap: int = 10,
 
 def build(obs, chains, *, hands: int, harvest_expected: int = 0,
           config=None, cap: int = 10, model=None, activity: int | None = None,
-          forecast_obj=None) -> DayMarket:
-    """The whole day's market side, from the committed chains."""
+          forecast_obj=None, wsr_check: bool = True,
+          arrivals: dict | None = None, rank=None) -> DayMarket:
+    """The whole day's market side, from the committed chains.
+
+    `rank(order, turn)` orders the sells inside a turn by their value: belief's
+    `hourly_value` at that turn minus its `rival_risk` there. The caller builds it
+    because it is the caller that holds the two inputs — the forecast the prices
+    are read from and the rival's dated supply — and neither is this module's to
+    invent. Without a rank the queue keeps belief's own order.
+
+    `wsr_check=False` lays the day out WITHOUT the hires. The HIRE orders ARE the
+    commitment — they spend the purse and put hands on the field — so a check must
+    not place them: the manager iterates on the check (wsr answers with its free
+    slots, or with how many hands short it is) and commits ONCE, with the hand
+    count wsr agreed to.
+    """
     private = obs.get("private", {}) if isinstance(obs, dict) else {}
     farms = obs.get("farms", []) if isinstance(obs, dict) else []
     player = int(obs.get("player", 0)) if isinstance(obs, dict) else 0
@@ -232,13 +306,16 @@ def build(obs, chains, *, hands: int, harvest_expected: int = 0,
                             dict(private.get("shed", {}) or {}), quotes)
     multiplier = int((config or {}).get("farmHandCostMult", 1) or 1) \
         if config is not None else 1
-    hires, hire_bill = hire_orders(hands, int(farm.get("hires_today", 0)),
+    hires, hire_bill = hire_orders(hands if wsr_check else 0,
+                                   int(farm.get("hires_today", 0)),
                                    multiplier)
     bill += hire_bill
     sells = sell_rows(obs, harvest_expected, float(bill), config,
                       model=model, activity=activity,
-                      forecast_obj=forecast_obj)
-    rows, dropped = merge(sells, hires, buys, cap=cap)
+                      forecast_obj=forecast_obj, arrivals=arrivals)
+    rows, dropped = merge(sells, hires, buys, cap=cap, rank=rank)
+    hire_hours, bought_hours = settle_hours(rows)
     return DayMarket(rows=rows, bill=int(bill), buys=tuple(map(tuple, buys)),
                      hires=len(hires), dropped=dropped,
-                     sells=sum(1 for r in rows for o in r if o and o[0] == "SELL"))
+                     sells=sum(1 for r in rows for o in r if o and o[0] == "SELL"),
+                     hire_hours=hire_hours, bought_hours=bought_hours)

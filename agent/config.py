@@ -40,6 +40,13 @@ class Config:
     # --- the turn's clock --------------------------------------------------
     #: The working budget inside one turn, in ms. F046: one free second per
     #: turn, unbankable, and the harness bills ~35 ms more than measured.
+    #: How many times the manager may re-ask the day layer before accepting the
+    #: answer it has (the day layer's own cap is `DEFAULT_ASK_ROUNDS`; this is the
+    #: owner's, and an episode may override it as `handsAskRounds`). Fixed, not
+    #: per-hand: offering 5 and carrying the day with 1 must report 1, not walk
+    #: down one search at a time.
+    hands_ask_rounds: int = 2
+
     turn_budget_ms: float = 965.0
     #: Held back for compiling and dispatching, so a solve that runs to its
     #: deadline still leaves the turn a legal answer.
@@ -82,7 +89,13 @@ class Config:
     #: Pricing rounds one `equilibrate` may spend. The certificate usually
     #: arrives well inside it (58 rounds cold on a day-0 board, 1 warm); the
     #: cap is what stops a board that will not converge from eating the turn.
-    master_rounds: int = 200
+    #: Column-generation rounds per solve, and the round count is a DECISION, not
+    #: a race with the clock: consulting the clock between rounds made two runs of
+    #: the same seed disagree (18,312 against 28,890 with every RNG in our code
+    #: seeded and the threads pinned to one), and letting the rounds run unbounded
+    #: pushed every turn past the harness's own limit. One round is what the
+    #: 825 ms of a turn actually affords, so it is what we ask for.
+    master_rounds: int = 1
     #: Damping on the price the rest of the agent reads. It may not touch the
     #: pricing step — the reduced-cost test is only a reduced cost of the LP
     #: whose duals it used.

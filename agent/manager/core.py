@@ -225,7 +225,11 @@ class Manager:
         self.plan = D.compile(self.day, obs, hands=self.day.hands,
                               config=config, model=self.opponent,
                               activity=self._activity(),
-                              forecast_obj=forecast_obj)
+                              forecast_obj=forecast_obj,
+                              # The rival's dated supply, gated to the days their
+                              # board says have goods: the risk half of the sell
+                              # rank. One day is all the rank reads.
+                              rival_supply=self._rival_hours(obs, 1))
 
     def _forecast(self, obs, config):
         """This turn's market forecast, or None when belief cannot build one.

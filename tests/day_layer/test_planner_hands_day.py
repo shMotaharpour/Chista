@@ -59,8 +59,57 @@ def test_compile_with_no_hands_writes_one_unit_and_hires_nobody() -> None:
     assert not hires, f"a plan with no hands hires {len(hires)}"
 
 
-def test_a_day_s_hands_start_at_the_engine_s_own_hours() -> None:
-    day = B.Day(chains=CHAINS, available=AVAILABLE, hands=MAX_ORDERS_PER_TURN + 2)
-    assert day.hire_times == tuple(hire_hour(k) for k in range(MAX_ORDERS_PER_TURN + 2))
-    assert day.hire_times[0] == 1 and day.hire_times[-1] == 2, day.hire_times
-    assert B.Day(chains=CHAINS, available=AVAILABLE, hands=0).hire_times == ()
+def test_the_hours_are_the_callers_and_the_tuple_is_the_count() -> None:
+    """`Day` derives nothing: the tuple IS the day's labour.
+
+    One source. Its length is the count, each entry is the hour that hand is
+    AVAILABLE, and a caller that knows better (the hourly layer) passes its own
+    hours straight through. The engine's earliest is a bound the CALLER asks for,
+    which is why it is built out here and not inside `Day`.
+    """
+    from agent.world.rules import earliest_hire_times
+
+    bound = earliest_hire_times(MAX_ORDERS_PER_TURN + 2)
+    day = B.Day(chains=CHAINS, available=AVAILABLE, hire_times=bound)
+    assert day.hire_times == bound
+    assert day.hands == len(bound) == MAX_ORDERS_PER_TURN + 2
+    assert bound[0] == 1 and bound[-1] == 2, bound      # ten orders a turn (F031)
+    empty = B.Day(chains=CHAINS, available=AVAILABLE)
+    assert empty.hire_times == () and empty.hands == 0  # the farmer walks alone
+    assert B.Day(chains=CHAINS, available=AVAILABLE,
+                 hire_times=(5, 5, 1)).hands == 3       # a caller's own hours survive
+
+
+def test_a_complete_day_reports_the_hands_it_needs_not_the_offer() -> None:
+    """Offer 5, use 1: wsr's own number, and no second search to find it.
+
+    The search starts at the arithmetic floor and grows to the offer
+    (`hands=min(floor, hands)`), so a complete answer's `pool` already IS the
+    least it carried the day with. The manager reads it instead of paying for
+    another search per hand.
+    """
+    from agent.planner import day as D
+
+    fitted = D.fit(CHAINS, hands=5, available=AVAILABLE)
+    assert fitted.complete, fitted.reason
+    assert fitted.pool < 5, "the answer echoed the offer instead of the need"
+    assert 0 <= fitted.floor <= fitted.pool, (fitted.floor, fitted.pool)
+
+
+def test_the_day_takes_the_secretarys_hours_when_it_has_them() -> None:
+    """The hours are an INPUT: the hourly secretary's timetable, or the bound.
+
+    `DayMarket.hire_hours` is the settlement turn plus one (F040). Handing it to
+    `fit` must reach the search unchanged — a hand available from hour 5 has 18
+    turns of work in it, not 23, and the capacity arithmetic has to know.
+    """
+    from agent.planner import day as D
+
+    given = D.fit(CHAINS, hands=2, available=AVAILABLE, hire_times=(5, 5))
+    bound = D.fit(CHAINS, hands=2, available=AVAILABLE)
+    # The claim is that the input REACHES the search, so the observable is that
+    # the day is not the same day: hands that start at hour 5 walk a different
+    # day from hands that start at hour 1. Equal numbers here would mean the
+    # tuple was dropped on the way in.
+    assert given.tasks == bound.tasks
+    assert given.hours_used != bound.hours_used, (given.hours_used, bound.hours_used)
