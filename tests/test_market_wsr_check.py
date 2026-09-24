@@ -36,3 +36,27 @@ def test_zero_hands_commits_nobody() -> None:
     obs = _obs()
     rows = K.build(obs, (), hands=0, wsr_check=True)
     assert _hires(rows.rows) == 0
+
+
+def test_the_queue_reports_when_its_hires_are_available() -> None:
+    """The timetable is READ off the queue, not assumed from the engine's bound.
+
+    Ten orders fill turn 0 (F031), so the hire behind them settles in turn 1 and
+    the hand is available from hour 2 (F040) — not hour 1, which is what a bound
+    that spends the whole turn on hires would claim.
+    """
+    from agent.planner.market import settle_hours
+
+    rows = [[["SELL", "MILK", 3]] * 10,
+            [["HIRE"], ["BUY_SEED", "WHEAT", 2]]]
+    hands, goods = settle_hours(rows)
+    assert hands == (2,), hands
+    assert goods == (("WHEAT", 2),), goods
+
+
+def test_a_queue_with_room_settles_its_hire_at_once() -> None:
+    from agent.planner.market import settle_hours
+
+    hands, goods = settle_hours([[["HIRE"], ["BUY_ANIMAL", "COW"]]])
+    assert hands == (1,), hands          # turn 0 + F040
+    assert goods == (("COW", 1),), goods

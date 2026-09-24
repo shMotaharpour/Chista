@@ -29,6 +29,17 @@ class DayMarket:
     hires: int = 0                 # hands hired
     dropped: tuple = ()            # orders no turn had room for
     sells: int = 0                 # SELL orders the queue carries
+    #: The hour each hired hand is AVAILABLE to act: the turn its HIRE settles in
+    #: plus one (F040). Read off the queue that was actually merged, so the day
+    #: layer stops assuming the engine's earliest bound — the queue puts the sells
+    #: first (F032), so a hire settles LATER than a bound that spends a whole
+    #: turn's order budget on hires.
+    hire_hours: tuple = ()
+    #: `((good, hour), ...)`: when each bought good LANDS, i.e. its BUY's settlement
+    #: turn plus one (F030 settles units before the market inside a turn). This is
+    #: what wsr's `available` wants; `availability`'s constant 1 is the same
+    #: optimistic assumption on the goods side.
+    bought_hours: tuple = ()
 
 
 def needs(chains) -> dict[str, int]:
@@ -197,6 +208,29 @@ def _sellable_obs(obs):
     return trimmed
 
 
+def settle_hours(rows) -> tuple[tuple[int, ...], tuple[tuple[str, int], ...]]:
+    """Read the timetable off the merged queue.
+
+    A hand hired in turn `t` acts from `t + 1` (F040); a BUY settles before the
+    units move inside a turn, so its good is in the shed from `t + 1` (F030).
+    Both numbers come from where the order ACTUALLY landed, which is the whole
+    point: the engine's earliest bound assumes a whole turn's budget goes to
+    hires, and this queue puts the sells first (F032).
+    """
+    hands: list[int] = []
+    goods: list[tuple[str, int]] = []
+    for turn, row in enumerate(rows):
+        for order in row:
+            if not order:
+                continue
+            kind = str(order[0])
+            if kind == "HIRE":
+                hands.append(turn + 1)
+            elif kind.startswith("BUY_") and len(order) > 1 and order[1]:
+                goods.append((str(order[1]), turn + 1))
+    return tuple(hands), tuple(goods)
+
+
 def merge(sells: list, hires: list, buys: list, *, cap: int = 10,
           turns: int = TURNS_PER_DAY) -> tuple[list, tuple]:
     """One queue, in the engine's settle order, capped per turn.
@@ -247,6 +281,8 @@ def build(obs, chains, *, hands: int, harvest_expected: int = 0,
                       model=model, activity=activity,
                       forecast_obj=forecast_obj)
     rows, dropped = merge(sells, hires, buys, cap=cap)
+    hire_hours, bought_hours = settle_hours(rows)
     return DayMarket(rows=rows, bill=int(bill), buys=tuple(map(tuple, buys)),
                      hires=len(hires), dropped=dropped,
-                     sells=sum(1 for r in rows for o in r if o and o[0] == "SELL"))
+                     sells=sum(1 for r in rows for o in r if o and o[0] == "SELL"),
+                     hire_hours=hire_hours, bought_hours=bought_hours)
