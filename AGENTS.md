@@ -147,6 +147,9 @@ the point of this section, and the reason it is here rather than assumed.
 - `docs/ARCHITECTURE.md` — **the** system shape: layers and ownership, the one
   vocabulary (`world/model.py`), the DP ↔ WSR alignment, the one belief
   (`belief/`), and the migration order that retires the duplicates.
+  It also carries the day layer's four paid-for decisions (§6: the hours come
+  from `hire_times`, the doors from `_hand_doors`, why `settled` is gone, and the
+  spare's one definition).
 - `world/model.py` — the canonical, engine-derived vocabulary every layer imports.
 
 ## Games run on FastSim — MANDATORY

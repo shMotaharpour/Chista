@@ -146,3 +146,44 @@ right, it goes to `main` in one PR. No piecemeal merges. Steps:
 Each step ends with the full suite green. The name ratchet that counted what is left
 to move lived in `tests/test_model.py` and went with it: nothing measures hand-spelled
 good names now, and re-basing that count on the current names is a fresh measurement.
+
+## 6. The day layer — the hours, the doors, the spare
+
+`agent/wsr/` turns one day into one op list per worker. Four decisions there are not
+obvious from the code, and each was paid for:
+
+**The hours are the hourly layer's input.** `Day.hire_times` is the hour each hand is
+AVAILABLE to act — the hour its HIRE settles plus one (F040) — and `Day.hands` is
+`len(hire_times)`. There is no separate count to disagree with it, and zero hires is
+an empty tuple (the farmer is always on the field and is not in the list). Nothing
+inside `Day` derives an hour: a default computed there hides where the hands came
+from, and the engine's own earliest (`rules.earliest_hire_times`) is an optimistic
+BOUND that belongs at the call site. A bad tuple is `Day`'s to refuse.
+
+**Where a hand lands is wsr's own answer.** A hand appears on the door the engine
+gives it at ITS OWN hire moment (`_hand_doors`, `_start_positions`), and a unit that
+walks off its door in the first turn moves every hand hired after it. So the doors are
+the search's fixed point (`_settle`): search, derive the doors from the route, search
+again until they agree — two passes or not at all. `Result.doors` is the statement of
+where the hands start, and `_consistent` checks the route against it.
+
+**`settled` is gone, deliberately.** Passing an explicit `settled` to `compile_route`
+made it ignore the searched doors, so a day whose farmer walks in turn 0 was priced
+from positions it does not have and refused (issue #162). The doors are the one
+statement of where the hands start; a unit's own start is not a choice.
+
+**The spare is one definition.** `remaining_turns(day, tasks, result)` gives each
+worker the room its route leaves — its own day (horizon less its own start hour), one
+turn per task, one per tile walked FROM ITS OWN START, and the pickups themselves: the
+WAIT for goods is room, because the compiler writes PASS for those turns. `spare_turns`
+is `sum(remaining_turns(...))` and nothing else. `ceiling_for` bounds the pool by the
+day's OWN hands (`len(hire_times)`) rather than by the task count — a pool beyond the
+offer is a pool nobody is paying for.
+
+**A trip through the door is a property of the route.** `legs` gives each worker's day
+as `(turn, row, fetch)`, `leg_target` names the tile or the DROP's door (the nearest
+one when it drops), and `leg_moves` writes the walk, or the walk through the door and
+the PICKUP. The search prices this trip and the compiler writes it from the same
+place, so the two cannot disagree — which is why every reader of where a unit stands
+goes through `_stand_after`. Pricing the trip on the consumer instead and shifting the
+whole walk by a count leaves turn 0 idle for a pickup the worker never makes.
