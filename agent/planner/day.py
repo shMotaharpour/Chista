@@ -409,6 +409,7 @@ def _solve_at(obs, contractor, supply, class_of_tile, hands, iter_cap,
 
 
 def compile(day_plan: "DayPlan", obs, *, hands: int | None = None,
+            rival_supply: dict | None = None,
             config=None, model=None, activity: int | None = None,
             forecast_obj=None) -> dict:
     """A `DayPlan` -> the `{"units": [...], "market": [...]}` the dispatcher slices.
@@ -438,13 +439,42 @@ def compile(day_plan: "DayPlan", obs, *, hands: int | None = None,
 
     from agent.world.rules import earliest_hire_times
 
+    def sell_rank():
+        """`rank(order, turn)`: the value of a sale there minus the rival's risk.
+
+        The two surfaces belief already publishes (`hourly_value` and
+        `rival_risk`), keyed the same way. Built only when there is a forecast to
+        read the prices from: without one there is nothing to rank with, and the
+        queue keeps belief's own order. `sold` is left empty for now, so the value
+        is that turn's own quote — pricing our own planned volume into it is the
+        next refinement, not a hidden assumption.
+        """
+        if forecast_obj is None:
+            return None
+        from agent.belief.depth import hourly_value, rival_risk
+
+        goods = tuple(sorted({str(c[1]) for c in fitted.chains if c[1]}))
+        if not goods:
+            return None
+        day = int(obs.get("day", 0)) if isinstance(obs, dict) else 0
+        value = hourly_value(forecast_obj, goods, day, 1)
+        risk = rival_risk(rival_supply or {}, goods, day, 1)
+
+        def rank(order, turn):
+            if not (order and str(order[0]) == "SELL" and len(order) > 1):
+                return 0.0
+            key = (str(order[1]), day * TURNS_PER_DAY + int(turn))
+            return float(value.get(key, 0.0)) - float(risk.get(key, 0.0))
+
+        return rank
+
     def queue(harvest_expected: int, hands: int, wsr_check: bool,
               arrivals: dict | None = None):
         return K.build(obs, fitted.chains, hands=hands,
                        harvest_expected=harvest_expected, config=config,
                        model=model, activity=activity,
                        forecast_obj=forecast_obj, wsr_check=wsr_check,
-                       arrivals=arrivals)
+                       arrivals=arrivals, rank=sell_rank())
 
     def arrival_hours(ops) -> dict:
         """The hour each good is IN THE SHED today, from the route's own drops.
