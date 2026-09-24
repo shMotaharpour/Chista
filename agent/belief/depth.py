@@ -85,7 +85,7 @@ def marginal_price(fc: MarketForecast, item: str, day: int, units: int,
 
 
 def hourly_value(fc: MarketForecast, items: Iterable[str], first_day: int,
-                 days: int) -> dict:
+                 days: int, *, sold: dict | None = None) -> dict:
     """`value(good, hour)`: what ONE MORE unit fetches at that turn.
 
     The secretary's ordering needs to know which slot is worth competing for, and
@@ -95,21 +95,27 @@ def hourly_value(fc: MarketForecast, items: Iterable[str], first_day: int,
     and `hourly_inventory` for the rows behind it, so the two read one surface.
 
     Keyed by `(good, absolute_step)` — the same shape the manager's plan and the
-    rival's dated supply already speak.
+    rival's dated supply already speak. `sold` is OUR OWN units already planned at
+    each `(good, absolute_step)`: the ladder prices the lot we put in, so the value
+    of the next unit at a turn starts from what we are already selling there.
     """
-    from agent.belief.market import TURNS_PER_DAY, hourly_inventory
+    from agent.belief.market import TURNS_PER_DAY
 
     goods = tuple(items)
-    inv = hourly_inventory(fc, days=days, items=goods)
+    planned = dict(sold or {})
     out: dict = {}
     for d in range(max(1, int(days))):
         day = int(first_day) + d
         for h in range(TURNS_PER_DAY):
-            row = d * TURNS_PER_DAY + h
-            for gi, good in enumerate(goods):
-                held = int(inv[row, gi]) if row < inv.shape[0] else 0
-                out[(good, day * TURNS_PER_DAY + h)] = marginal_price(
-                    fc, good, day, held + 1, hour=h)
+            step = day * TURNS_PER_DAY + h
+            for good in goods:
+                # `units` is OUR OWN volume at that turn, not the market's
+                # inventory: the ladder prices the lot we put in. With nothing
+                # planned yet the next unit is the hour's own quote, which is the
+                # curve's documented first unit (`hourly_prices`).
+                mine = int(planned.get((good, step), 0))
+                out[(good, step)] = marginal_price(fc, good, day, mine + 1,
+                                                   hour=h)
     return out
 
 
