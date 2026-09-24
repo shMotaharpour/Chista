@@ -31,7 +31,7 @@ from agent.world.board import MOVE_DELTA, SPAWN
 from agent.world.rules import BOARD_SIZE, TURNS_PER_DAY
 from agent.wsr.routing import nearest_shed, walk
 from agent.wsr.tasks import (DISTANCE, ITEM_CODE, NO_ITEM, SHED_INDEX, TaskArray,
-                             day_walking, index_of, spanning_walk)
+                             index_of, spanning_walk)
 
 Cell = tuple[int, int]
 
@@ -1028,7 +1028,6 @@ def _expand(day: Day, tasks: TaskArray, done, when, who, free, where, travel, li
     until its first DROP; the load's pickups are paid by the first task that is not `door_work`,
     from the turn the worker is free (`_load_ready`), so work on a shed-access tile can come first.
     """
-    n = tasks.n
     b, m = free.shape
     rows = np.flatnonzero(live)
     if rows.size == 0:
