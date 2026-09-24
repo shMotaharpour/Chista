@@ -436,33 +436,58 @@ def compile(day_plan: "DayPlan", obs, *, hands: int | None = None,
                        forecast_obj=forecast_obj).rows
         return {"units": [[["PASS"]] * TURNS_PER_DAY], "market": rows}
 
-    available = availability(obs, fitted.chains)
-    tasks = T.build(fitted.chains, available=available)
     from agent.world.rules import earliest_hire_times
 
-    # The hours come from the QUEUE, not from the engine's bound. The hourly
-    # secretary lays the day's orders out with `wsr_check=False` — a check commits
-    # no hires — and the day is then priced with the hours those orders actually
-    # land in (`DayMarket.hire_hours`: settlement plus one, F040). The bound
-    # assumed a whole turn's order budget went to hires, and this queue puts the
-    # sells first (F032), so the bound was optimistic by construction.
-    #
-    # The check's `harvest_expected` is a stand-in: the compiled route is what
-    # knows the real harvest, and handing that back is the manager's two-phase
-    # flow. The sells' COUNT already shapes this queue, which is the part the
-    # bound never had at all.
-    check = K.build(obs, fitted.chains, hands=pool, harvest_expected=0,
-                    config=config, model=model, activity=activity,
-                    forecast_obj=forecast_obj, wsr_check=False)
-    day = B.Day(chains=tuple(fitted.chains), available=available,
-                hire_times=(tuple(check.hire_hours)
-                            if check.hire_hours else earliest_hire_times(pool)))
-    result = B.search(day, tasks, hands=pool, max_hands=pool)
+    def queue(harvest_expected: int, hands: int, wsr_check: bool):
+        return K.build(obs, fitted.chains, hands=hands,
+                       harvest_expected=harvest_expected, config=config,
+                       model=model, activity=activity,
+                       forecast_obj=forecast_obj, wsr_check=wsr_check)
+
+    def timetable(base: dict, check) -> dict:
+        """`available`, with each bought good's hour taken from the queue.
+
+        The queue settles a BUY and the good lands in the shed the turn after
+        (F030). `availability`'s constant 1 is the same optimistic assumption on
+        the goods side that the bound was on the labour side, and the queue is
+        what actually knows.
+        """
+        out = dict(base)
+        for good, hour in check.bought_hours:
+            out[good] = max(int(out.get(good, 0)), int(hour))
+        return out
+
+    def priced(hire_times):
+        """The day, the route and the queue it implies, from one set of hours."""
+        day = B.Day(chains=tuple(fitted.chains), available=available,
+                    hire_times=hire_times)
+        result = B.search(day, tasks, hands=pool, max_hands=pool)
+        ops = compile_route(day, tasks, result, horizon=TURNS_PER_DAY)
+        harvest = sum(int(units) for _hour, _item, units in ops.arrivals)
+        return day, result, ops, harvest
+
+    # The hours come from the QUEUE, not from the engine's bound: the hourly
+    # secretary lays the day's orders out with `wsr_check=False` (a check commits
+    # no hires) and the day is priced on the hours those orders actually land in
+    # (`DayMarket.hire_hours`: settlement plus one, F040). The bound assumed a
+    # whole turn's order budget went to hires; this queue puts the sells first
+    # (F032), so the bound was optimistic by construction.
+    check = queue(0, pool, wsr_check=False)
+    available = timetable(availability(obs, fitted.chains), check)
+    tasks = T.build(fitted.chains, available=available)
+    hours = tuple(check.hire_hours) if check.hire_hours else earliest_hire_times(pool)
+    day, result, ops, harvest = priced(hours)
+
     # The plan is PRICED for `pool` hands and the search is held to exactly those: the market
     # hires what the day was costed with, and a route may leave some of them idle.
-    ops = compile_route(day, tasks, result, horizon=TURNS_PER_DAY)
-    harvest = sum(int(units) for _hour, _item, units in ops.arrivals)
-    market = K.build(obs, fitted.chains, hands=result.pool,
-                     harvest_expected=harvest, config=config,
-                     model=model, activity=activity, forecast_obj=forecast_obj)
+    market = queue(harvest, result.pool, wsr_check=True)
+    if tuple(market.hire_hours) and tuple(market.hire_hours) != tuple(day.hire_times):
+        # ONE correction round, and the reason the check's harvest was a stand-in:
+        # the committed queue knows the real one, so if its hires land in other
+        # hours the day is priced again on them. The invariant is that the day the
+        # engine executes is the day the queue's own timetable priced.
+        again = priced(tuple(market.hire_hours))
+        if again[1].complete:
+            day, result, ops, harvest = again
+            market = queue(harvest, result.pool, wsr_check=True)
     return to_plan(ops, market=market.rows)
