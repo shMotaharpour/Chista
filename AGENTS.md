@@ -148,3 +148,10 @@ the point of this section, and the reason it is here rather than assumed.
   vocabulary (`world/model.py`), the DP ↔ WSR alignment, the one belief
   (`belief/`), and the migration order that retires the duplicates.
 - `world/model.py` — the canonical, engine-derived vocabulary every layer imports.
+
+## Games run on FastSim — MANDATORY
+Every season, episode or match in this repo runs on `offline_lab/fast_sim.py`, never
+on the kaggle harness, unless the owner says otherwise. The harness caps a turn at
+one second (`kaggriculture.json`: `"actTimeout": 1`), so a plan's round count follows
+the machine's speed and two runs of one seed disagree. `run_episode` stays for the
+submission-path checks the owner asks for by name.

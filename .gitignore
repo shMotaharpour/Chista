@@ -17,3 +17,18 @@ artifacts/
 # The tuned numbers ship beside the agent; they come out of the ignore
 # list once they stop moving (agent/config.py has the committed defaults).
 agent/artifact/config.json
+
+# graphify knowledge graph: the OUTPUTS are tracked (they are project artifacts,
+# queried while debugging), the rebuildable parts are not.
+graphify-out/cache/
+graphify-out/2026-*/
+graphify-out/.graphify_ast.json
+graphify-out/.graphify_extract.json
+graphify-out/.graphify_analysis.json
+graphify-out/.graphify_detect.json
+graphify-out/.graphify_semantic.json
+graphify-out/.graphify_uncached.txt
+graphify-out/.graphify_chunk_*.json
+graphify-out/.graphify_chunk_*.files.txt
+graphify-out/.graphify_cached.json
+graphify-out/.graphify_semantic_new.json
