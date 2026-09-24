@@ -41,7 +41,7 @@ the cost vector's arithmetic is not.
 
 Issue #14's adapter. Three of Chista's ops — `CARE`, `DIG` and
 `BUILD_COOP`/`BUILD_PASTURE` — have no major-task recipe in
-`day/models.py`, so the adapter emits them as standalone minor tasks with
+the old `day/models.py`, so the adapter emits them as standalone minor tasks with
 explicit precedence. That is a hand-built chain by construction, and it reaches
 the cost path the same way.
 

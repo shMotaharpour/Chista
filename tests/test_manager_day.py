@@ -1,5 +1,8 @@
 """The loop closed: master, assignment, and the day layer's verdict.
 
+Epic: each of these plans a full day (an LP, its rounding, and the day search), so
+they are marked `epic` and left out of the default run - `pytest -m epic` runs them.
+
 `master` commits a day on a labour row that charges each worked tile its ops
 plus the walk to reach it — a LOWER bound, deliberately, so the LP stays a
 relaxation. `wsr` is what says whether the day can actually be walked, and
@@ -46,6 +49,7 @@ def board():
     return obs, load_contractor(days=20), M.supply_from_obs(obs), class_of_tile
 
 
+@pytest.mark.epic
 def test_the_day_the_master_commits_can_actually_be_walked(board):
     """End to end: a certified LP mix, rounded, and carried by real workers."""
     obs, contractor, supply, class_of_tile = board
@@ -60,6 +64,7 @@ def test_the_day_the_master_commits_can_actually_be_walked(board):
     assert result.day.tasks >= len(result.day.chains)
 
 
+@pytest.mark.epic
 def test_the_committed_tiles_are_the_ones_beside_the_shed(board):
     """Travel is priced, so the near tiles are taken before the far ones.
 
@@ -84,6 +89,7 @@ def test_the_committed_tiles_are_the_ones_beside_the_shed(board):
     assert worked == reachable, (
         f"a band was skipped: worked {worked}, but the farm owns tiles at "
         f"{reachable} no farther out")
+@pytest.mark.epic
 def test_a_declined_tile_is_not_a_dropped_one(board):
     """Every chain that reaches wsr is a chain the DP chose at these prices.
 
@@ -112,6 +118,7 @@ def test_an_empty_day_fits_and_says_so():
         "no work is not an overhead of infinity, nor a division by zero")
 
 
+@pytest.mark.epic
 def test_the_hours_only_ever_come_down(board):
     """wsr is a feasibility oracle here, not a calibration source.
 

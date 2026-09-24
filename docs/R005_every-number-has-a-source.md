@@ -14,7 +14,7 @@ A number that enters the code, a document or an issue must be able to answer
    the id next to the number: `0.965` is F046's, not a rounding choice.
 2. **The engine** — read at build time through `kaggle_environments`, never
    transcribed by hand (R002), and re-checked live where the tables do not
-   state it (`tile_dp/graph.py::verify_engine_constants` is the pattern).
+   state it (`agent/tile_dp/graph.py::verify_engine_constants` is the pattern).
 3. **A measurement you took** — with the procedure and the result written down
    where the number is used, so a later reader can repeat it and disagree.
 

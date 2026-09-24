@@ -57,9 +57,8 @@ from agent.belief.ladder import sell_coins, split_days
   that retires it.
 
 Every docstring claim is reproduced by a module under `tests/`
-(`test_market_analyzer`, `test_market_ladder`, `test_market_hourly`,
-`test_market_layer`) and measured by `bench/bench_market_analyzer.py` /
-`bench_market_forecast.py`. The artifact builder and its evaluation live
+(`test_market_analyzer`, `test_market_ladder`, `test_market_hourly`)
+and measured by `bench/bench_market_analyzer.py`. The artifact builder and its evaluation live
 OUTSIDE the agent (`offline_lab/build/opponent_model.py`) per the
 submission-closure rule; the agent only loads `agent/artifact/
 opponent_counts.npz`.

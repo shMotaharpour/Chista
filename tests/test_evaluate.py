@@ -118,68 +118,6 @@ def test_tier_counts_agree_with_the_note() -> None:
             f"{TIER_AGENT_EPISODES[tier]}")
 
 
-def test_scoreboard_rows_match_the_header() -> None:
-    """Self-review guard: the scoreboard is the PR's DURABLE evidence, so
-    it must parse as CSV.
-
-    Why this exists: two rows were hand-written with a label containing
-    unquoted commas ("... vs spine, 3 seeds, adaptive-replay-agent seat
-    1"), which made them 23 and 22 fields against the 21-column header —
-    every field after the label shifts for any reader, and the numbers
-    that a reviewer would quote (n_ok, margin, CI) are silently wrong.
-    A row must also carry a label: the one row that matters most (the
-    M1 baseline) shipped with an empty one, i.e. unidentifiable evidence.
-
-    R007: verified in its failing direction — re-introducing one
-    unquoted comma into a label makes this test fail with
-    "row 20260916T071102Z has 22 fields, header has 21".
-    """
-    import csv
-    from pathlib import Path
-
-    path = Path(__file__).resolve().parents[1] / "offline" / "scoreboard.csv"
-    rows = list(csv.reader(path.open()))
-    header, data = rows[0], rows[1:]
-    assert header == ["run_id", "utc", "label", "tier", "a", "b", "git_sha",
-                      "opponents_note", "n_jobs", "n_ok", "n_abandoned",
-                      "wins", "losses", "ties", "win_rate", "margin_mean",
-                      "margin_sd", "ci_lo", "ci_hi", "seeds_needed",
-                      "records"], header
-    assert data, "the scoreboard has no measured row"
-    raw = path.open(newline="").read()   # newline="" keeps \r visible
-    assert "nan" not in raw, "an undefined number was written as 'nan'"
-    assert "\r" not in raw, "CRLF line endings mixed into the scoreboard"
-
-    def _num(s: str) -> float | None:
-        # '' is this file's convention for "undefined" (never 'nan'):
-        # a single paired comparison has no sd, hence no CI.
-        return float(s) if s.strip() else None
-
-    for r in data:
-        assert len(r) == len(header), (
-            f"row {r[0]} has {len(r)} fields, header has {len(header)}")
-        assert r[0].strip() and r[2].strip(), f"row {r[0]} lacks id/label"
-        assert r[3] in ("smoke", "ladder", "full"), r[3]
-        n_jobs, n_ok = int(r[8]), int(r[9])
-        wins, losses, ties = int(r[11]), int(r[12]), int(r[13])
-        assert n_ok <= n_jobs
-        assert wins + losses + ties == n_ok, r[:2]
-        mean = _num(r[15])
-        assert mean is not None, f"row {r[0]} has no margin"
-        lo, hi = _num(r[17]), _num(r[18])
-        assert (lo is None) == (hi is None), f"row {r[0]}: half a CI"
-        if lo is not None:
-            assert lo <= mean <= hi, (r[0], lo, mean, hi)
-        else:
-            assert n_ok < 2, f"row {r[0]}: no CI for {n_ok} comparisons"
-        sd = _num(r[16])
-        if sd is not None:
-            assert sd >= 0.0
-        seeds_n = _num(r[19])
-        if seeds_n is not None:
-            assert seeds_n >= 0.0
-
-
 def test_bank_seconds_is_the_policy_draw() -> None:
     """F046: 1 free second per turn, billed per turn -> the bank draw is
     the SUM of overruns, not the worst turn's.

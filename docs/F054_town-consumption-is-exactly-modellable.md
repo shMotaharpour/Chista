@@ -34,7 +34,7 @@ start of day 3 and has not consumed yet at that day's first turn. The
 `none` policy is biased one way — missing unlocks under-counts
 consumption, so it holds MORE inventory and prices it LOWER.
 
-Consequence: `day/market.py` forecasts inventory and calls the
+Consequence: `agent/planner/market.py` forecasts inventory and calls the
 engine's own `market_price` (R002 — the curve is never transcribed); the
 `mean` policy is the default because it is measured better at every
 horizon past day 3. The `d+1` cash contract is unaffected — see F055.

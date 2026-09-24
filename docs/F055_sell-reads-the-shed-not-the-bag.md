@@ -17,5 +17,5 @@ still open: a day-`d` harvest is sellable on day `d+1` through the
 nightly drop, **unless** a unit spends an hour dropping it at a
 shed-adjacent tile that day — the same day the harvest was picked. The
 master's cash row must not assume the lag is forced, and
-`day/inventory.py` sells from the shed only (F043), so a harvest
+the old `day/inventory.py` sells from the shed only (F043), so a harvest
 sitting in a bag is not part of the sellable stock until it lands.

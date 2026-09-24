@@ -8,7 +8,7 @@ maximises.
 
 ## What was measured
 
-Both numbers come from the shipped graph through the DP (`tile_dp/contractor.py`,
+Both numbers come from the shipped graph through the DP (`agent/tile_dp/contractor.py`,
 issue #11), not from a hand-built schedule:
 
 - **Horizon that admits one cycle** (`days=5` from the bare tile, price 1 on

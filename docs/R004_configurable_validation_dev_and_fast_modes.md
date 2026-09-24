@@ -64,7 +64,7 @@ re-checked by rerunning the same inputs in dev mode.
 Fast mode also hands out LIVE observation views, so a policy that writes into
 an observation mutates the episode; dev mode's copies and its mutation guard do
 not apply. The mitigation is the same deliberate entry plus the read-only
-contract stated in `world/README.md` — a fast-mode policy must treat the
+contract stated in `agent/world/README.md` — a fast-mode policy must treat the
 observation it is handed as read-only. The copies dev mode makes cost
 +265 us/turn (0.270 s vs 0.034 s per 720-step season), which is why "fast"
 stays the default for sweeps.
