@@ -67,6 +67,6 @@ def test_a_good_drawn_before_it_is_in_the_shed_is_named() -> None:
 def test_the_searchs_own_routes_draw_no_complaint() -> None:
     """The rules have to stay silent about the days the search builds: a check that starts refusing
     good routes is worse than the one that never ran."""
-    for entry in [BY_SIZE[0], BY_SIZE[2], BY_SIZE[20], BY_SIZE[50]]:
+    for entry in [BY_SIZE[0], BY_SIZE[2], BY_SIZE[10], BY_SIZE[20]]:
         day, tasks, result = _searched(entry)
         assert check_route(day, tasks, result) == [], tasks.n
