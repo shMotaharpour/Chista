@@ -267,13 +267,57 @@ def _land_work(route) -> collections.Counter:
         if not task_id.endswith("_drop"))
 
 
+def _harvests(entry, grid) -> list:
+    """What each chain's HARVEST takes: `(good, units)` read off the day's hour-0 snapshot.
+
+    The good is the tile's own crop, or its animal's product (`rules.ANIMAL_RULES`), not the entity
+    the chain plants after it. The count is the tile's `yield_units`, plus the engine's WATER bonus
+    when the chain waters a one-time crop before harvesting it (kaggriculture.py:431-443: +1 inside
+    `water_window_start..max_yield_day`, +2 while fertilised, capped at `max_yield`).
+    """
+    from agent.world.rules import ANIMAL_RULES, CROP_RULES, water_window_start
+
+    board = {(int(x), int(y)): tile for x, y, tile in entry["snapshot"]["board"]}
+    out: list = []
+    for cell, ops, _entity in grid:
+        tile = board.get(tuple(cell)) or {}
+        if "HARVEST" not in ops or not (tile.get("crop") or tile.get("animal")):
+            out.append(None)
+            continue
+        units = int(tile.get("yield_units", 0) or 0)
+        crop = tile.get("crop")
+        if crop is None:
+            out.append((ANIMAL_RULES[tile["animal"]]["product"], units))
+            continue
+        rule = CROP_RULES[crop]
+        head = ops[:ops.index("HARVEST")]
+        age = int(entry["day"]) - int(tile.get("planted_day", 0))
+        if (not rule["ongoing"] and "WATER" in head
+                and water_window_start(crop) <= age <= rule["max_yield_day"]):
+            fertilised = (int(tile.get("fertilized_until_day", -1)) >= int(entry["day"])
+                          or "FERTILIZE" in head[:head.index("WATER")])
+            units = min(rule["max_yield"], units + (2 if fertilised else 1))
+        out.append((crop, units))
+    return out
+
+
+def _day(entry, grid) -> B.Day:
+    return B.Day(chains=tuple(grid),
+                 available={good: int(hour) for good, hour in entry["available"].items()},
+                 hire_times=tuple(entry["hire_times"]) or (1,) * entry["hands"])
+
+
+def _tasks(entry, grid):
+    available = {good: int(hour) for good, hour in entry["available"].items()}
+    return T.build(grid, available=available, drop_by=entry.get("drop_by"),
+                   harvests=_harvests(entry, grid))
+
+
 def _search(entry, hands: int | None = None, max_hands: int | None = None):
     grid = [(tuple(cell), tuple(ops), entity) for cell, ops, entity in entry["chains"]]
-    available = {good: int(hour) for good, hour in entry["available"].items()}
-    hire_times = tuple(entry["hire_times"]) or (1,) * entry["hands"]
-    tasks = T.build(grid, available=available, drop_by=entry.get("drop_by"))
+    tasks = _tasks(entry, grid)
     result = B.search(
-        B.Day(chains=tuple(grid), available=available, hire_times=hire_times),
+        _day(entry, grid),
         tasks,
         hands=entry["hands"] - 1 if hands is None else hands,
         max_hands=entry["hands"] if max_hands is None else max_hands,
@@ -342,19 +386,23 @@ def test_day_29_days_carry_sell_deadlines() -> None:
 #: engine provably ran (the golden replay). Strict xfails: when the search
 #: closes a gap the mark FAILS, which is the reminder to take the day out.
 #: Measured 2026-09-24 on the corpus with each hand's FIRST ACTING hour (hired
-#: in turn h -> acts from h + 1), search hands = game-1, budget 20 s:
-#:   quadrant-4 d14        125/127
-#:   quadrant-4 d15        131/132
-#:   quadrant-4 d16        131/138
-#:   self-serve d14        132/141
-#:   self-serve d16        122/127
+#: in turn h -> acts from h + 1), the worker's own harvest credited to its bag,
+#: and a HARVEST bagging the tile's own yield; search hands = game-1, budget 20 s:
+#:   quadrant-3 d11        129/130  (carried at beam 36 and 40, not 20-32)
+#:   quadrant-4 d14        126/127
+#:   quadrant-4 d15        123/132
+#:   quadrant-4 d16        132/138
+#:   self-serve d14        134/141
+#:   self-serve d16        121/127
 #:   self-serve d17        135/146
 #:   most-ops d13          170/181
-#:   most-ops d23          167/175
-#:   most-ops d21          162/177
-#: (Before the hours were corrected every hand had one turn more, and d14/d15
-#: were carried on it.)
+#:   most-ops d23          170/175
+#:   most-ops d21          168/177
+#: The game's own route compiles on every one of them
+#: (`test_the_game_route_of_a_short_day_is_one_the_model_allows`), so each is a
+#: search shortfall, not a model that forbids the game's play.
 KNOWN_SHORT = {
+    ("2026-09-16", 109468286, 11),
     ("2026-09-16", 109471187, 14),
     ("2026-09-16", 109471187, 15),
     ("2026-09-16", 109471187, 16),
@@ -425,11 +473,7 @@ def test_a_day_29_day_banks_by_the_game_sell_hours(entry) -> None:
         f"placed {sum(placed.values())} of the day's {sum(asked.values())} tile ops; "
         f"missing {(asked - placed).most_common(3)}, extra {(placed - asked).most_common(3)}"
     )
-    names = [c for c in check_route(
-        B.Day(chains=tuple(grid),
-              available={g: int(h) for g, h in entry["available"].items()},
-              hire_times=tuple(entry["hire_times"]) or (1,) * entry["hands"]),
-        tasks, result)]
+    names = [c for c in check_route(_day(entry, grid), tasks, result)]
     assert not names, f"the route the search returned does not compile: {names[:4]}"
 
 
@@ -469,3 +513,69 @@ def test_a_doubled_pool_does_not_spread_the_day_over_more_workers(entry) -> None
     assert _used_workers(result) <= _used_workers(own), (
         f"{doubled} hands offered: the route uses {_used_workers(result)} workers where the "
         f"day's own answer uses {_used_workers(own)}")
+
+
+def _game_route(entry, grid, tasks) -> list[tuple[int, str, int]]:
+    """The recorded day as a route in the layer's own terms: each unit's effective tile op at its
+    hour, matched to the k-th task of that op on that tile (unit k is worker k)."""
+    tile_of = {tuple(cell): index for index, (cell, _ops, _entity) in enumerate(grid)}
+    by_op: dict = collections.defaultdict(list)
+    for task_id in tasks.ids:
+        by_op[_pair(task_id)].append(task_id)
+    for ids in by_op.values():
+        ids.sort(key=lambda s: (len(s), s))
+    used: collections.Counter = collections.Counter()
+    route = []
+    # In hour order across units: the k-th op of a kind on a tile is the k-th in TIME, whichever
+    # unit ran it (two units may water one tile before and after its replanting).
+    slots = sorted(((slot, unit) for unit, row in enumerate(entry["recorded"]["unit_hours"])
+                    for slot in row if slot), key=lambda pair: (pair[0][0], pair[1]))
+    for slot, unit in slots:
+        if slot[3] in (None, "None", "PASS", "NORTH", "SOUTH", "EAST", "WEST",
+                       "PICKUP", "DROP", "HIRE"):
+            continue
+        key = (tile_of.get((slot[1], slot[2])), slot[3].lower())
+        if used[key] < len(by_op.get(key, [])):
+            route.append((int(slot[0]), by_op[key][used[key]], unit))
+            used[key] += 1
+    return sorted(route)
+
+
+#: Short days whose recorded route the model still refuses, with the measured reason.
+MODEL_REFUSES = {
+    ("2026-09-16", 109468286, 11): (
+        "worker 8 loads WHEAT at the door at hour 15, mid-day with no DROP before it, while the "
+        "model loads every good before the worker's first task; and the recorded walk leaves the "
+        "door a turn earlier than the compiler writes it, which moves hand 11's spawn door"),
+}
+
+
+def _short_days():
+    for e in WINNER_DAYS:
+        if _key(e) not in KNOWN_SHORT:
+            continue
+        reason = MODEL_REFUSES.get(_key(e))
+        marks = [pytest.mark.xfail(strict=True, reason=reason)] if reason else []
+        yield pytest.param(e, marks=marks, id=f"{e['bucket']}-d{e['day']}")
+
+
+@pytest.mark.parametrize("entry", list(_short_days()))
+def test_the_game_route_of_a_short_day_is_one_the_model_allows(entry) -> None:
+    """A day the search falls short on is a day the MODEL allows: the game's own route, placed on
+    the engine's hours with its own workers, passes `check_route` and compiles.
+
+    This is what makes a KNOWN_SHORT day a search shortfall and not a model that forbids the game's
+    play: the hands act from their own hour (hire turn + 1), a worker that harvests the good it then
+    feeds or fertilizes with needs no PICKUP, and a HARVEST bags the tile's whole yield.
+    """
+    from agent.wsr.emit import compile_route
+
+    grid = [(tuple(cell), tuple(ops), entity) for cell, ops, entity in entry["chains"]]
+    tasks = _tasks(entry, grid)
+    day = _day(entry, grid)
+    route = _game_route(entry, grid, tasks)
+    assert len(route) == tasks.n, f"the recording maps to {len(route)} of {tasks.n} tasks"
+    result = B.Result(entry["hands"], route, True)
+    result = result._replace(doors=B._hand_doors(day, tasks, result, entry["hands"]))
+    assert not check_route(day, tasks, result), check_route(day, tasks, result)[:3]
+    compile_route(day, tasks, result)

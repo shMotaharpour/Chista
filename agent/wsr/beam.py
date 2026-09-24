@@ -775,16 +775,24 @@ def _bag(tasks: TaskArray, entries: list[tuple[int, str]]) -> dict[int, int]:
 
     Only the goods used before the worker's first DROP: the engine's DROP empties the whole bag
     (`kaggriculture.py:343-356`), so what is still in it goes to the shed with the harvest, and every
-    use after the drop is fetched again (`legs`).
+    use after the drop is fetched again (`legs`). A use the worker's own earlier HARVEST or
+    COLLECT_FERTILIZER covers is not loaded: the good is already in its bag (`tasks.yield_n` units).
     """
     bag: dict[int, int] = {}
+    own: dict[int, int] = {}
     for turn, task_id in sorted(entries):
         row = tasks.ids.index(task_id)
         if int(turn) >= 0 and bool(tasks.is_drop[row]):
             break
         good = int(tasks.items[row])
         if good >= 0:
-            bag[good] = bag.get(good, 0) + 1
+            if own.get(good, 0) > 0:
+                own[good] -= 1
+            else:
+                bag[good] = bag.get(good, 0) + 1
+        made = int(tasks.yields[row])
+        if made >= 0:
+            own[made] = own.get(made, 0) + int(tasks.yield_n[row])
     return bag
 
 
