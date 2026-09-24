@@ -183,22 +183,18 @@ the search's fixed point (`_settle`): search, derive the doors from the route, s
 again until they agree — two passes or not at all. `Result.doors` is the statement of
 where the hands start, and `_consistent` checks the route against it.
 
-**`settled` is not passed to the compiler, deliberately.** `compile_route` takes the
-doors and nothing else. `Result` still carries a `settled` field, but no caller hands
-it over: an explicit position was the path that wrote the hands from the farmer's start
-cell, ignored the doors the search priced, and made a day whose farmer walks in turn 0
-uncompilable (issue #162). The doors are the one statement of where the hands start; a
-unit's own start is not a choice.
+**`settled` is gone, deliberately.** Passing an explicit `settled` to `compile_route`
+made it ignore the searched doors, so a day whose farmer walks in turn 0 was priced
+from positions it does not have and refused (issue #162). The doors are the one
+statement of where the hands start; a unit's own start is not a choice.
 
 **The spare is one definition.** `remaining_turns(day, tasks, result)` gives each
 worker the room its route leaves — its own day (horizon less its own start hour), one
 turn per task, one per tile walked FROM ITS OWN START, and the pickups themselves: the
 WAIT for goods is room, because the compiler writes PASS for those turns. `spare_turns`
-is `sum(remaining_turns(...))` and nothing else. `ceiling_for` takes the smaller of two
-bounds: the day's OWN hands (`len(hire_times)`) and the work itself (`tasks.n + units`,
-since every unit does at least one task). The offer is the tighter one by a wide margin
-— a pool beyond it is a pool nobody is paying for — but the task bound is live, and this
-file said it was not.
+is `sum(remaining_turns(...))` and nothing else. `ceiling_for` bounds the pool by the
+day's OWN hands (`len(hire_times)`) rather than by the task count — a pool beyond the
+offer is a pool nobody is paying for.
 
 **A trip through the door is a property of the route.** `legs` gives each worker's day
 as `(turn, row, fetch)`, `leg_target` names the tile or the DROP's door (the nearest
