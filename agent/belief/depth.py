@@ -84,6 +84,35 @@ def marginal_price(fc: MarketForecast, item: str, day: int, units: int,
                  - depth_coins(fc, item, day, n - 1, hour=hour))
 
 
+def hourly_value(fc: MarketForecast, items: Iterable[str], first_day: int,
+                 days: int) -> dict:
+    """`value(good, hour)`: what ONE MORE unit fetches at that turn.
+
+    The secretary's ordering needs to know which slot is worth competing for, and
+    the quote alone cannot say it: the market is a ladder, so the price of the
+    next unit at the inventory that hour's walk holds is the number that ranks two
+    slots against each other. `hourly_prices` samples the same walk for the quote
+    and `hourly_inventory` for the rows behind it, so the two read one surface.
+
+    Keyed by `(good, absolute_step)` — the same shape the manager's plan and the
+    rival's dated supply already speak.
+    """
+    from agent.belief.market import TURNS_PER_DAY, hourly_inventory
+
+    goods = tuple(items)
+    inv = hourly_inventory(fc, days=days, items=goods)
+    out: dict = {}
+    for d in range(max(1, int(days))):
+        day = int(first_day) + d
+        for h in range(TURNS_PER_DAY):
+            row = d * TURNS_PER_DAY + h
+            for gi, good in enumerate(goods):
+                held = int(inv[row, gi]) if row < inv.shape[0] else 0
+                out[(good, day * TURNS_PER_DAY + h)] = marginal_price(
+                    fc, good, day, held + 1, hour=h)
+    return out
+
+
 def depth_blocks(fc: MarketForecast, item: str, day: int, units: int,
                  blocks: int = 3, *, hour: int | None = None
                  ) -> tuple[tuple[int, float], ...]:
