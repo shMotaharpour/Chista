@@ -803,7 +803,12 @@ def _hand_doors(day: Day, tasks: TaskArray, result: Result, hands: int) -> tuple
     """
     from agent.world.rules import spawn_cell
 
-    hire = [max(1, int(day.hire_times[k])) if k < len(day.hire_times) else 1 for k in range(hands)]
+    # The hours come from `Day.hire_times` and nowhere else - the same tuple `hands` is the
+    # length of, so there is no separate count to disagree with it and zero hires is simply an
+    # empty tuple (the farmer is always on the field and is not in this list). No floor and no
+    # fallback: rewriting the caller's hour silently is how a day gets priced on hours it does
+    # not have. A bad tuple is `Day`'s to refuse, not this function's to mop up.
+    hire = [int(h) for h in day.hire_times]
     routes: dict[int, list] = {}
     for turn, task_id, worker in result.route:
         routes.setdefault(int(worker), []).append((int(turn), task_id))
