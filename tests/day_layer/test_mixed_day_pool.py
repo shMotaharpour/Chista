@@ -248,13 +248,15 @@ def test_the_reference_three_hand_day_is_a_day_the_rules_allow() -> None:
     back carrying all 54 - which is what makes the day's own allowance the answer and the search the
     thing that is short.
     """
-    day, tasks = _day()
+    # The reference is the THREE-hand day: its route names workers 0..3. Building it with the
+    # fixture's default (2 hands) makes `check_route` report a worker the day does not have.
+    day, tasks = _day(hands=HANDS + 1)
     route = [(turn, task_id, worker) for turn, task_id, worker in REFERENCE_ROUTE]
     assert len(route) == tasks.n, f"the reference covers {len(route)} of the day's {tasks.n} tasks"
-    reference = B.Result(pool=HANDS, route=route, complete=True)
+    reference = B.Result(pool=HANDS + 1, route=route, complete=True)
 
     assert not check_route(day, tasks, reference), "the reference breaks a rule the engine enforces"
-    warmed = B.search(day, tasks, hands=HANDS, max_hands=HANDS, warm=reference)
+    warmed = B.search(day, tasks, hands=HANDS + 1, max_hands=HANDS + 1, warm=reference)
     assert warmed.complete, (
         f"warmed with the reference the search placed {len(warmed.route)} of {tasks.n}")
 
