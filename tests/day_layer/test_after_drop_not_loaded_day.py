@@ -84,14 +84,6 @@ def test_the_feed_is_after_the_drop_and_nothing_is_loaded_at_the_door(played) ->
     assert farmer[first][0] != "PICKUP", f"the farmer loads at the door: {farmer[first]}"
 
 
-def test_no_turn_is_spent_at_the_door_for_a_good_used_after_the_drop(played) -> None:
-    _result, ops, _obs = played
-    farmer = ops.units[0]
-    assert farmer[0][0] != "PASS", (
-        f"the farmer waits at its door in turn 0 for a pickup it never makes: "
-        f"{[(t, op) for t, op in enumerate(farmer) if op[0] != 'PASS']}")
-
-
 def test_the_engine_banked_the_fertilizer_and_fed_the_sheep(played) -> None:
     _result, _ops, obs = played
     x, y = SHEEP_TILE

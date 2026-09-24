@@ -348,23 +348,6 @@ def spanning_walk(tasks: TaskArray) -> int:
     return total
 
 
-def day_walking(tasks: TaskArray) -> int:
-    """The walking a day cannot pay less than: the tree over its tiles, doubled on a deadline day.
-
-    A spanning tree over the worked tiles and the shed doors is a floor on any set of walks that
-    covers them, and unlike the tile count it pays for the crossings. A day with a drop deadline adds
-    a second floor: a unit has to reach the furthest tile and finish at a door, so its path is at
-    least twice the distance from that door to that tile.
-    """
-    if tasks.n == 0:
-        return 0
-    walking = spanning_walk(tasks)
-    if tasks.drop_rows.size:
-        reach = int(DISTANCE[SHED_INDEX].min(axis=0)[tasks.cell_index].max())
-        walking = max(walking, 2 * reach)
-    return walking
-
-
 def columns_of(cells: np.ndarray) -> np.ndarray:
     """Number the tiles, so tasks can be grouped by the tile they happen on."""
     seen: dict[tuple[int, int], int] = {}
@@ -441,9 +424,9 @@ def build(chains, *, available: dict[str, int] | None = None, horizon: int = 24,
     order = [(b, a) for b, a in order if b not in fetches and a not in fetches]
     column_of = {tid: col for tid, col in column_of.items() if tid not in fetches}
 
-    # A DROP is derived: a good the worker took off a tile gets a drop of its own. Its cell here is
-    # the harvest's nearest door, but the door it is DONE at is chosen on the route - the one nearest
-    # the worker when it drops (`beam.leg_target`), since any shed-access tile takes a DROP. The ops that put a good in
+    # A DROP is derived: a good the worker took off a tile gets a drop of its own, and the drop's
+    # cell is the door it hands the bag over at - so the walk to it is priced by the same rule as
+    # any other task and nothing in the search has to know what a drop is. The ops that put a good in
     # a worker's bag are the world's own `YIELDS`; PICKUP is in that table too, but what it takes is
     # already in the shed, so it needs no walk back. The bag is the worker's, so a drop banks what its
     # own worker took: the order edge below is the whole of the precedence a drop needs.
@@ -598,3 +581,20 @@ def _item_code(item) -> int:
     if item is None:
         return NO_ITEM
     return ITEM_CODE.get(item, NO_ITEM)
+
+
+def day_walking(tasks: TaskArray) -> int:
+    """The walking a day cannot pay less than: the tree over its tiles, doubled on a deadline day.
+
+    A spanning tree over the worked tiles and the shed doors is a floor on any set of walks that
+    covers them, and unlike the tile count it pays for the crossings. A day with a drop deadline adds
+    a second floor: a unit has to reach the furthest tile and finish at a door, so its path is at
+    least twice the distance from that door to that tile.
+    """
+    if tasks.n == 0:
+        return 0
+    walking = spanning_walk(tasks)
+    if tasks.drop_rows.size:
+        reach = int(DISTANCE[SHED_INDEX].min(axis=0)[tasks.cell_index].max())
+        walking = max(walking, 2 * reach)
+    return walking

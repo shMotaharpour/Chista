@@ -11,7 +11,7 @@ import sys
 
 import numpy as np
 
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
+sys.path.insert(0, "/chista/pm/world")
 
 from agent.wsr import tasks as T
 
