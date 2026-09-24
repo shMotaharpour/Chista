@@ -86,7 +86,7 @@ Built-in baselines need no directory: `"random"`, `"pass"` and `"starter"` come
 from the environment itself.
 
 > **Before the arena runs them:** hand a third-party agent a *copy* of the
-> observation, never the live view. `world/README.md` and R004 record that fast
+> observation, never the live view. `agent/world/README.md` and R004 record that fast
 > mode hands out live views and that a live view can zero the opponent's money
 > or grant itself free seeds. The audit found no agent doing anything of the
 > sort — the point is that a stray mutation would corrupt an evaluation
