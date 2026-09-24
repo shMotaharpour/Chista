@@ -119,6 +119,31 @@ def hourly_value(fc: MarketForecast, items: Iterable[str], first_day: int,
     return out
 
 
+def rival_risk(supply: dict, items: Iterable[str], first_day: int,
+               days: int) -> dict:
+    """`risk(good, hour)`: the units the RIVAL is expected to put in that turn.
+
+    The same shape as `hourly_value`, and the other half of the ranking: the
+    engine quotes both players at one index before committing either, so a sale
+    the rival is also making that turn shares the price and is worth less than the
+    quote says. `supply` is the manager's dated rival supply —
+    `{absolute_step: {good: units}}`, already gated to the days their board says
+    have goods — and a turn they are absent from is zero risk, which is the honest
+    reading of an empty board rather than a gap for priors to fill.
+    """
+    goods = set(items)
+    out: dict = {}
+    for d in range(max(1, int(days))):
+        day = int(first_day) + d
+        for h in range(24):
+            step = day * 24 + h
+            basket = (supply or {}).get(step) or {}
+            for good, units in basket.items():
+                if good in goods:
+                    out[(good, step)] = int(units)
+    return out
+
+
 def depth_blocks(fc: MarketForecast, item: str, day: int, units: int,
                  blocks: int = 3, *, hour: int | None = None
                  ) -> tuple[tuple[int, float], ...]:

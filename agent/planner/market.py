@@ -242,7 +242,16 @@ def merge(sells: list, hires: list, buys: list, *, cap: int = 10,
     the queue quietly forgot is a plan that silently does less than it says.
     """
     rows = [[] for _ in range(turns)]
-    opening = [list(o) for o in hires] + [list(o) for o in buys]
+    # The engine quotes BOTH players at the same index before committing either
+    # (`_process_market`), so a turn's early slots are where our order competes
+    # with the rival's. Orders with a MARKET price take them; the fixed-price ones
+    # (`BUY_SEED`, `BUY_ANIMAL`) and the atomic ones (`HIRE`, `BUY_LAND`) have no
+    # rival in their price and go LAST, where they cost nothing: the engine settles
+    # atomic orders first WITHIN an index, so a hire queued last still settles in
+    # the same turn.
+    competing = [list(o) for o in buys if o and str(o[0]) == "BUY_PRODUCT"]
+    quiet = [list(o) for o in buys if not (o and str(o[0]) == "BUY_PRODUCT")]
+    opening = competing + [list(o) for o in hires] + quiet
     for turn in range(turns):
         row = [list(o) for o in (sells[turn] if turn < len(sells) else [])]
         row.sort(key=lambda o: SETTLE_RANK.get(o[0] if o else "",

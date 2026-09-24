@@ -84,3 +84,20 @@ def test_a_good_is_not_sold_before_it_arrives() -> None:
     # An unknown good is treated as available now, which is `availability`'s own
     # default (a good left out of the timetable is there at hour 0).
     assert _after_arrival(queue, {})[3] == [["SELL", "MELON", 5]]
+
+
+def test_a_competing_buy_is_queued_before_a_hire() -> None:
+    """A turn's early slots go to what competes with the rival.
+
+    The engine quotes both players at the same index before committing either, so
+    a market-priced order there shares its price with whatever the rival is doing.
+    A hire has no rival in its price, and the engine settles atomic orders first
+    WITHIN an index — so queueing it last costs the day nothing.
+    """
+    from agent.planner.market import merge
+
+    sells = [[["SELL", "MILK", 1]] * 10]           # turn 0 is full
+    hires = [["HIRE"]]
+    buys = [["BUY_PRODUCT", "WHEAT", 2], ["BUY_SEED", "MELON", 1]]
+    rows, _dropped = merge(sells, hires, buys, cap=10, turns=3)
+    assert [o[0] for o in rows[1]] == ["BUY_PRODUCT", "HIRE", "BUY_SEED"], rows[1]
