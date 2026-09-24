@@ -63,8 +63,9 @@ one).
 
 ## Tests
 
-(planned, not yet written: `tests/test_planner_integrality.py`) — rounding is a function; ties are not coin
-tosses; a LOCKED tile never receives a plan; the row check bites on a tight day
+Planned, not yet written: `tests/test_planner_integrality.py`. What it must pin: rounding
+is a function; ties are not coin tosses; a LOCKED tile never receives a plan; the row check
+bites on a tight day
 and the demotion loop clears it over 20 boards; the repaired plan dispatches and
 validates for 30 days; every F047 drop is counted with its rule (F031 cap, short
 purse, F004, F043, F042, F032's queue order); the land prefix is the engine's
