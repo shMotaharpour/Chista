@@ -33,7 +33,7 @@ under it. All three are refused **in silence** (F047), which is exactly the
 failure class the day compiler exists to close: measured before the fix, the
 per-op instrument in `tests/test_day_plan.py` reported six silent no-ops on a
 hand's route (`PLANT` refused on a WEED tile at (0,1) — one tile west of where
-the plan thought the hand stood). the old `day/routing.py::plan_day` now simulates
+the plan thought the hand stood). `plan_day` (the old `day/routing.py`) now simulates
 turn 0 and spawns from the post-move occupancy.
 
 ## Source
