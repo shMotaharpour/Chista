@@ -432,9 +432,9 @@ def test_budget() -> None:
 
     The forecast is measured SEPARATELY rather than folded into the
     round: #12's 45 ms ceiling bounds the sweep + LP, and #15's own budget
-    for the market layer is 10 ms (`day/market.py`; its p50/p99 come
-    from `bench/bench_market_forecast.py --layer-timing`, printed below and
-    NOT quoted as a stale pair here). Folding the two together would hide
+    for the market layer is 10 ms (`day/market.py`; its p50/p99 came
+    from `bench/bench_market_forecast.py --layer-timing`, retired with the
+    market circuit — the numbers are NOT quoted as a stale pair here). Folding the two together would hide
     which part moved. The round keeps a hard ceiling of both budgets
     together, so a regression cannot hide inside the subtraction.
     """
