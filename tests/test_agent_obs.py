@@ -140,7 +140,7 @@ def _board_with_plant(day: int) -> list:
                           "consecutive_unwatered": 0, "yield_units": 2,
                           "max_lifespan_step": 96,
                           "fertilized_until_day": -1}],
-            [None, "WEED", None],
+            [None, {"kind": "WEED"}, None],
             ["LOCKED", "LOCKED", "LOCKED"]]
 
 
