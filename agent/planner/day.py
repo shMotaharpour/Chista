@@ -130,6 +130,7 @@ def availability(obs, chains) -> dict:
 
 
 def fit(chains, *, hands: int, available: dict | None = None,
+        hire_times: tuple[int, ...] | None = None,
         budget_s: float | None = None, beam: int | None = None,
         hours_committed: float = 0.0, warm=None) -> DayFit:
     """Hand the day to wsr and report what it made of it.
@@ -153,8 +154,13 @@ def fit(chains, *, hands: int, available: dict | None = None,
     # hours each hand starts at are the engine's (`rules.hire_hour`), which `Day` fills in.
     from agent.world.rules import earliest_hire_times
 
+    # The hours are the HOURLY secretary's when it has laid the day out
+    # (`DayMarket.hire_hours`: the settlement turn plus one, F040). Only when it
+    # has not does the engine's earliest bound stand in — and that bound assumes a
+    # whole turn's order budget goes to hires, which the real queue does not.
     day = B.Day(chains=tuple(chains), available=available,
-                hire_times=earliest_hire_times(hands))
+                hire_times=(tuple(hire_times) if hire_times is not None
+                            else earliest_hire_times(hands)))
     floor = max(0, B.lower_bound(day, tasks) - len(day.units))
     result = B.search(day, tasks, beam=beam,
                       hands=min(floor, hands), max_hands=hands,

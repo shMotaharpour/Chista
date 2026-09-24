@@ -94,3 +94,22 @@ def test_a_complete_day_reports_the_hands_it_needs_not_the_offer() -> None:
     assert fitted.complete, fitted.reason
     assert fitted.pool < 5, "the answer echoed the offer instead of the need"
     assert 0 <= fitted.floor <= fitted.pool, (fitted.floor, fitted.pool)
+
+
+def test_the_day_takes_the_secretarys_hours_when_it_has_them() -> None:
+    """The hours are an INPUT: the hourly secretary's timetable, or the bound.
+
+    `DayMarket.hire_hours` is the settlement turn plus one (F040). Handing it to
+    `fit` must reach the search unchanged — a hand available from hour 5 has 18
+    turns of work in it, not 23, and the capacity arithmetic has to know.
+    """
+    from agent.planner import day as D
+
+    given = D.fit(CHAINS, hands=2, available=AVAILABLE, hire_times=(5, 5))
+    bound = D.fit(CHAINS, hands=2, available=AVAILABLE)
+    # The claim is that the input REACHES the search, so the observable is that
+    # the day is not the same day: hands that start at hour 5 walk a different
+    # day from hands that start at hour 1. Equal numbers here would mean the
+    # tuple was dropped on the way in.
+    assert given.tasks == bound.tasks
+    assert given.hours_used != bound.hours_used, (given.hours_used, bound.hours_used)
