@@ -574,3 +574,20 @@ def _item_code(item) -> int:
     if item is None:
         return NO_ITEM
     return ITEM_CODE.get(item, NO_ITEM)
+
+
+def day_walking(tasks: TaskArray) -> int:
+    """The walking a day cannot pay less than: the tree over its tiles, doubled on a deadline day.
+
+    A spanning tree over the worked tiles and the shed doors is a floor on any set of walks that
+    covers them, and unlike the tile count it pays for the crossings. A day with a drop deadline adds
+    a second floor: a unit has to reach the furthest tile and finish at a door, so its path is at
+    least twice the distance from that door to that tile.
+    """
+    if tasks.n == 0:
+        return 0
+    walking = spanning_walk(tasks)
+    if tasks.drop_rows.size:
+        reach = int(DISTANCE[SHED_INDEX].min(axis=0)[tasks.cell_index].max())
+        walking = max(walking, 2 * reach)
+    return walking

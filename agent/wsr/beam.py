@@ -1551,3 +1551,56 @@ def legs(tasks: TaskArray, entries: list[tuple[int, str]]) -> list[tuple[int, in
                 held.add(good)
         out.append((turn, row, fetch))
     return out
+
+
+DROP_WALK: np.ndarray = DISTANCE[np.arange(BOARD_SIZE ** 2), DOOR_OF].astype(np.int16)
+
+
+def bags_of(day: Day, tasks: TaskArray, result: Result) -> list[frozenset[int]]:
+    """The goods each worker's own day loads at its door: the distinct goods in its own bag.
+
+    The compiler writes one PICKUP per good, at the worker's door, before its first task that is
+    not door work (`loads_before`), each at its own good's hour (`pickup_turns`) - so this is what the search has to charge that worker, and it is a
+    property of the route rather than of the day. `_fixed_point` iterates it; `compile_route` writes
+    from the same bags.
+    """
+    per: dict[int, list[tuple[int, str]]] = {}
+    for turn, task_id, worker in result.route:
+        per.setdefault(int(worker), []).append((int(turn), task_id))
+    return [frozenset(_bag(tasks, per.get(worker, [])))
+            for worker in range(len(day.units) + result.pool)]
+
+
+def _settled_after_first_turn(day: Day, tasks: TaskArray, result: Result) -> list:
+    """Where the units already on the field stand when the first turn is over.
+
+    A unit moves in the first turn only if its first task needs a walk that starts then - the walk
+    occupies the turns immediately before the task, so a task at turn t with a walk of w moves
+    from turn t-w. This is the compiler's own rule, applied to the route the search just built.
+    """
+
+    occupied = [(int(c[0]), int(c[1])) for c in day.units]
+    first: dict[int, tuple[int, str]] = {}
+    for turn, task_id, worker in result.route:
+        worker, turn = int(worker), int(turn)
+        if worker >= len(occupied):
+            continue
+        if worker not in first or turn < first[worker][0]:
+            first[worker] = (turn, task_id)
+
+    for worker, (turn, task_id) in first.items():
+        row = tasks.ids.index(task_id)
+        target = _stand_for(tasks, row, occupied[worker])
+        moves = walk(occupied[worker], target)
+        if not moves:
+            continue
+        # The walk occupies the turns immediately before the task, and a unit is free from the
+        # first turn of its day. It moves in turn zero only when the walk begins exactly there -
+        # a walk that would have to start before the day did is not a walk the day can make, and
+        # assuming otherwise is what let the model credit the farmer a move it never took.
+        if turn - len(moves) == 0:
+            step = moves[0][0]
+            if step in MOVE_DELTA:
+                dx, dy = MOVE_DELTA[step]
+                occupied[worker] = (occupied[worker][0] + int(dx), occupied[worker][1] + int(dy))
+    return occupied
