@@ -439,6 +439,8 @@ def compile(day_plan: "DayPlan", obs, *, hands: int | None = None,
 
     from agent.world.rules import earliest_hire_times
 
+    sold: dict = {}          # our own units per (good, step), from the last queue
+
     def sell_rank():
         """`rank(order, turn)`: the value of a sale there minus the rival's risk.
 
@@ -463,7 +465,7 @@ def compile(day_plan: "DayPlan", obs, *, hands: int | None = None,
         if not goods:
             return None
         day = int(obs.get("day", 0)) if isinstance(obs, dict) else 0
-        value = hourly_value(forecast_obj, goods, day, 1)
+        value = hourly_value(forecast_obj, goods, day, 1, sold=sold)
         risk = rival_risk(rival_supply or {}, goods, day, 1)
 
         def rank(order, turn):
@@ -476,11 +478,22 @@ def compile(day_plan: "DayPlan", obs, *, hands: int | None = None,
 
     def queue(harvest_expected: int, hands: int, wsr_check: bool,
               arrivals: dict | None = None):
-        return K.build(obs, fitted.chains, hands=hands,
-                       harvest_expected=harvest_expected, config=config,
-                       model=model, activity=activity,
-                       forecast_obj=forecast_obj, wsr_check=wsr_check,
-                       arrivals=arrivals, rank=sell_rank())
+        built = K.build(obs, fitted.chains, hands=hands,
+                        harvest_expected=harvest_expected, config=config,
+                        model=model, activity=activity,
+                        forecast_obj=forecast_obj, wsr_check=wsr_check,
+                        arrivals=arrivals, rank=sell_rank())
+        # Remember what this queue sells so the NEXT build ranks on our own volume
+        # too: the ladder prices the lot we put in, and the correction round is
+        # exactly the place that number exists.
+        day0 = int(obs.get("day", 0)) if isinstance(obs, dict) else 0
+        sold.clear()
+        for turn, row in enumerate(built.rows):
+            for order in row:
+                if order and str(order[0]) == "SELL" and len(order) > 2:
+                    key = (str(order[1]), day0 * TURNS_PER_DAY + turn)
+                    sold[key] = int(sold.get(key, 0)) + int(order[2])
+        return built
 
     def arrival_hours(ops) -> dict:
         """The hour each good is IN THE SHED today, from the route's own drops.
