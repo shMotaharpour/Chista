@@ -453,7 +453,13 @@ def compile(day_plan: "DayPlan", obs, *, hands: int | None = None,
             return None
         from agent.belief.depth import hourly_value, rival_risk
 
-        goods = tuple(sorted({str(c[1]) for c in fitted.chains if c[1]}))
+        # `c` is (cell, ops, entity): the GOOD is the entity, `c[2]` — `c[1]` is the
+        # ops tuple, and passing that here raised KeyError the first time a day with
+        # FEED/CARE chains reached this. Only market goods can be ranked.
+        from agent.belief.market import PRODUCTS
+
+        goods = tuple(sorted({str(c[2]) for c in fitted.chains
+                              if len(c) > 2 and c[2] in PRODUCTS}))
         if not goods:
             return None
         day = int(obs.get("day", 0)) if isinstance(obs, dict) else 0
