@@ -194,9 +194,11 @@ unit's own start is not a choice.
 worker the room its route leaves — its own day (horizon less its own start hour), one
 turn per task, one per tile walked FROM ITS OWN START, and the pickups themselves: the
 WAIT for goods is room, because the compiler writes PASS for those turns. `spare_turns`
-is `sum(remaining_turns(...))` and nothing else. `ceiling_for` bounds the pool by the
-day's OWN hands (`len(hire_times)`) rather than by the task count — a pool beyond the
-offer is a pool nobody is paying for.
+is `sum(remaining_turns(...))` and nothing else. `ceiling_for` takes the smaller of two
+bounds: the day's OWN hands (`len(hire_times)`) and the work itself (`tasks.n + units`,
+since every unit does at least one task). The offer is the tighter one by a wide margin
+— a pool beyond it is a pool nobody is paying for — but the task bound is live, and this
+file said it was not.
 
 **A trip through the door is a property of the route.** `legs` gives each worker's day
 as `(turn, row, fetch)`, `leg_target` names the tile or the DROP's door (the nearest
