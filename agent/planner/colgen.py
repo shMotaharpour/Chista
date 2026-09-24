@@ -1103,21 +1103,10 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
 
     # One LP object for the whole day: the rounds share a basis (see MasterLP).
     solver = MasterLP()
-    for round_index in range(max(1, rounds)):
+    for _ in range(max(1, rounds)):
         if poll is not None:
             poll()
-        if (round_index == 0 and deadline is not None
-                and time.perf_counter() + spent >= deadline):
-            # The clock guards the FIRST round only. Once a round has started the
-            # round count is `rounds` - the caller's decision - and nothing about
-            # how fast this machine is can change the plan.
-            #
-            # Consulting the clock BETWEEN rounds is what made two runs of the same
-            # seed disagree: the round count followed the machine's speed, and with
-            # it the plan (measured: same seed, same opponent, 18,312 against
-            # 28,890 with every RNG in our code seeded and the threads pinned to
-            # one). The deadline stays as the alarm for a turn that cannot even
-            # start its first round, and `stopped = "budget"` is what says so.
+        if deadline is not None and time.perf_counter() + spent >= deadline:
             result.stopped = "budget"
             return result
         started = time.perf_counter()
