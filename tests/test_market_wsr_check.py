@@ -60,3 +60,27 @@ def test_a_queue_with_room_settles_its_hire_at_once() -> None:
     hands, goods = settle_hours([[["HIRE"], ["BUY_ANIMAL", "COW"]]])
     assert hands == (1,), hands          # turn 0 + F040
     assert goods == (("COW", 1),), goods
+
+
+def test_a_good_is_not_sold_before_it_arrives() -> None:
+    """The drops' hours reach the queue: a sale waits for its own good.
+
+    `DayOps.arrivals` knows when each drop lands, and `compile` used to sum those
+    hours away. A sell of a good that arrives at hour 10 belongs at hour 10 — the
+    engine refuses it earlier without a word (F047) and the day silently does less
+    than it says.
+    """
+    from agent.belief.shed import _after_arrival
+
+    queue = [[] for _ in range(24)]
+    queue[3] = [["SELL", "MELON", 5]]
+    moved = _after_arrival(queue, {"MELON": 10})
+    assert moved[3] == [], "sold before it arrived"
+    assert moved[10] == [["SELL", "MELON", 5]], moved[10]
+
+    # A good already in the shed keeps its hour: the clamp changes nothing.
+    kept = _after_arrival(queue, {"MELON": 0})
+    assert kept[3] == [["SELL", "MELON", 5]]
+    # An unknown good is treated as available now, which is `availability`'s own
+    # default (a good left out of the timetable is there at hour 0).
+    assert _after_arrival(queue, {})[3] == [["SELL", "MELON", 5]]

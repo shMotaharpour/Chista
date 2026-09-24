@@ -438,11 +438,26 @@ def compile(day_plan: "DayPlan", obs, *, hands: int | None = None,
 
     from agent.world.rules import earliest_hire_times
 
-    def queue(harvest_expected: int, hands: int, wsr_check: bool):
+    def queue(harvest_expected: int, hands: int, wsr_check: bool,
+              arrivals: dict | None = None):
         return K.build(obs, fitted.chains, hands=hands,
                        harvest_expected=harvest_expected, config=config,
                        model=model, activity=activity,
-                       forecast_obj=forecast_obj, wsr_check=wsr_check)
+                       forecast_obj=forecast_obj, wsr_check=wsr_check,
+                       arrivals=arrivals)
+
+    def arrival_hours(ops) -> dict:
+        """The hour each good is IN THE SHED today, from the route's own drops.
+
+        `ops.arrivals` is `(hour, item, units)` per drop — the timetable the route
+        already publishes and `compile` used to sum away. The EARLIEST hour wins:
+        the first drop that carries the good is what makes it sellable.
+        """
+        out: dict = {}
+        for hour, item, _units in ops.arrivals:
+            good = str(item)
+            out[good] = min(int(out.get(good, int(hour))), int(hour))
+        return out
 
     def timetable(base: dict, check) -> dict:
         """`available`, with each bought good's hour taken from the queue.
@@ -480,7 +495,8 @@ def compile(day_plan: "DayPlan", obs, *, hands: int | None = None,
 
     # The plan is PRICED for `pool` hands and the search is held to exactly those: the market
     # hires what the day was costed with, and a route may leave some of them idle.
-    market = queue(harvest, result.pool, wsr_check=True)
+    market = queue(harvest, result.pool, wsr_check=True,
+                   arrivals=arrival_hours(ops))
     if tuple(market.hire_hours) and tuple(market.hire_hours) != tuple(day.hire_times):
         # ONE correction round, and the reason the check's harvest was a stand-in:
         # the committed queue knows the real one, so if its hires land in other
@@ -489,5 +505,6 @@ def compile(day_plan: "DayPlan", obs, *, hands: int | None = None,
         again = priced(tuple(market.hire_hours))
         if again[1].complete:
             day, result, ops, harvest = again
-            market = queue(harvest, result.pool, wsr_check=True)
+            market = queue(harvest, result.pool, wsr_check=True,
+                           arrivals=arrival_hours(ops))
     return to_plan(ops, market=market.rows)
