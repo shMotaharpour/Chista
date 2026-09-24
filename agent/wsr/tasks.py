@@ -388,7 +388,6 @@ def build(chains, *, available: dict[str, int] | None = None, horizon: int = 24,
     planting waits for its seed, and everything else may run from the first hour. Nothing is read
     from the world.
     """
-    from agent.world.model import UnitAction
     from agent.wsr.models import MinorTask, expand_chain
     from agent.wsr.routing import nearest_shed
 

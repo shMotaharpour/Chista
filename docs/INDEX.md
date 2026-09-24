@@ -19,7 +19,7 @@ Order: **Rules** (`R<NNN>_<slug>.md`) first, then **Findings**
 - [R003_simulator_wraps_real_interpreter.md](R003_simulator_wraps_real_interpreter.md) —
   Fast game simulation calls `kaggriculture.interpreter()` directly on a
   structify-cloned state instead of reimplementing rules: measured 50.6×
-  faster than `env.run()` for `world/fast_sim` (the 8.2× figure in the doc is
+  faster than `env.run()` for `offline_lab/fast_sim.py` (the 8.2× figure in the doc is
   the earlier prototype module pair) with bit-identical rewards and a
   bit-identical agent-facing observation stream, and no second rule
   implementation to keep in sync.

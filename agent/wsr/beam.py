@@ -31,7 +31,7 @@ from agent.world.board import MOVE_DELTA, SPAWN
 from agent.world.rules import BOARD_SIZE, TURNS_PER_DAY
 from agent.wsr.routing import nearest_shed, walk
 from agent.wsr.tasks import (DISTANCE, ITEM_CODE, NO_ITEM, SHED_INDEX, TaskArray,
-                             day_walking, index_of, spanning_walk)
+                             index_of, spanning_walk)
 
 Cell = tuple[int, int]
 
@@ -1028,7 +1028,6 @@ def _expand(day: Day, tasks: TaskArray, done, when, who, free, where, travel, li
     until its first DROP; the load's pickups are paid by the first task that is not `door_work`,
     from the turn the worker is free (`_load_ready`), so work on a shed-access tile can come first.
     """
-    n = tasks.n
     b, m = free.shape
     rows = np.flatnonzero(live)
     if rows.size == 0:
@@ -1519,20 +1518,4 @@ def bags_of(day: Day, tasks: TaskArray, result: Result) -> list[frozenset[int]]:
 
 
 
-
-def _settled_after_first_turn(day: Day, tasks: TaskArray, result: Result) -> list:
-    """Where the units already on the field stand when the first turn is over.
-
-    Read with the WRITER's own rule (`_stand_after`): a unit moves in the first turn only if its
-    first leg needs a walk that starts then, and a leg that fetches goes through the door
-    (`legs`/`leg_target`/`leg_moves`) - so the turns this counts and the turns `compile_route`
-    writes are the same turns. Reading the route any other way is a guess about idle turns, and a
-    guess here moves every hand hired after the unit.
-    """
-    out: list = []
-    for worker, cell in enumerate(day.units):
-        entries = sorted((int(turn), task_id) for turn, task_id, who in result.route
-                         if int(who) == worker)
-        out.append(_stand_after(tasks, entries, (int(cell[0]), int(cell[1])), 0))
-    return out
 

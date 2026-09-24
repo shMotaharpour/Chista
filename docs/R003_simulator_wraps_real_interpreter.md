@@ -3,7 +3,7 @@
 **Summary (≤50 words):** Fast game simulation must call
 `kaggle_environments.envs.kaggriculture.kaggriculture.interpreter()` directly
 on a real, structify-cloned state — never reimplement the game rules.
-Measured 50.6× faster than `env.run()` in `world/fast_sim` (720-step season;
+Measured 50.6× faster than `env.run()` in `offline_lab/fast_sim.py` (720-step season;
 reproduce with `python -m bench.bench_paths`) with bit-identical rewards and a
 bit-identical agent-facing observation stream (enforced by
 `tests/test_world_parity.py`), and no second rule implementation to keep in
@@ -27,7 +27,7 @@ episodes/second first." So it was measured before building either option,
 3 episodes each, playbook vs pass:
 
 First measurement, taken on the earlier prototype pair (the harness against
-`agrioracle.sim.run_episode()`, not `world/fast_sim`) — kept as the original
+`agrioracle.sim.run_episode()`, not `offline_lab/fast_sim.py`) — kept as the original
 evidence for the decision:
 
 | path | s/episode |
@@ -39,7 +39,7 @@ evidence for the decision:
 (127,425.0000 == 127,425.0000) — not approximately the same, the same
 number, because it is the same code computing it, per R002.
 
-Re-measured on this PR's code (`world/fast_sim`, 720-step season, PASS
+Re-measured on this PR's code (`offline_lab/fast_sim.py`, 720-step season, PASS
 policies, 8-core box, kaggle-environments 1.32.7, median of 3 runs):
 
 | path | s/episode | vs `env.run()` |

@@ -1,7 +1,7 @@
 # Replay Episode File — Schema `chistaagent.replay.v1`
 
 A replay file records the turn-by-turn actions of **ONE agent** (not a full
-two-player match). The `ReplayAgent` in `world/replay_agent.py` plays such a
+two-player match). The `ReplayAgent` in `offline_lab/replay_agent.py` plays such a
 file against any opponent, on either engine path (`offline_lab.fast_sim` or
 `offline_lab.kaggle_env`), in either seat.
 

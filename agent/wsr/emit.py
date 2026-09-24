@@ -22,7 +22,7 @@ from __future__ import annotations
 from typing import NamedTuple
 
 from agent.wsr.beam import (    Day, Result, _bag, _start_hours,
-    _start_positions, day_first_good, door_work, first_walk_turn, good_hours, leg_moves, leg_target, legs, loads_before, pickup_turns, walk_start_turn, _settled_after_first_turn)
+    _start_positions, day_first_good, door_work, first_walk_turn, good_hours, leg_moves, leg_target, legs, loads_before, pickup_turns, walk_start_turn)
 from agent.wsr.tasks import ITEM_CODE, TaskArray
 
 PASS = ("PASS",)
@@ -57,8 +57,6 @@ def compile_route(day: Day, tasks: TaskArray, result: Result, *,
     start cell and made the planner's day uncompilable (#162).
     """
     horizon = int(horizon if horizon is not None else day.horizon)
-    # An explicit `settled` is the caller placing the hands itself; the result's own doors are used
-    # when it lets the result decide, which is the only way the day is written as it was priced.
     starts = _start_positions(day, result.pool, result.doors)
     hours = _start_hours(day, result.pool)
     m = int(starts.shape[0])
