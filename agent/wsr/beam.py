@@ -29,28 +29,10 @@ import numpy as np
 
 from agent.world.board import MOVE_DELTA, SPAWN
 from agent.world.rules import BOARD_SIZE, TURNS_PER_DAY
-from agent.wsr.routing import nearest_shed, walk
-from agent.wsr.tasks import (DISTANCE, ITEM_CODE, NO_ITEM, SHED_INDEX, TaskArray, day_walking,
-                             index_of)
+from agent.wsr.routing import walk
+from agent.wsr.tasks import DISTANCE, NO_ITEM, SHED_INDEX, TaskArray, spanning_walk
 
 Cell = tuple[int, int]
-
-ITEM_NAME: dict[int, str] = {code: item.name for item, code in ITEM_CODE.items()}
-
-#: The door a worker fetches through, per cell: `nearest_shed`, the rule the compiler walks by.
-DOOR_OF: np.ndarray = np.asarray(
-    [index_of(nearest_shed((i // BOARD_SIZE, i % BOARD_SIZE))) for i in range(BOARD_SIZE ** 2)],
-    dtype=np.int32)
-#: From the door to every cell - the leg after a refetch's PICKUP.
-DOOR_TO: np.ndarray = DISTANCE[DOOR_OF, :]
-#: A refetch leg's walk, cell to cell: out to the worker's nearest door, then on to the task.
-REFETCH: np.ndarray = (DISTANCE[np.arange(BOARD_SIZE ** 2), DOOR_OF][:, None]
-                       + DOOR_TO).astype(np.int16)
-#: A DROP's walk from every cell: to that cell's own nearest door, where the bag is handed over
-#: (`leg_target`).
-DROP_WALK: np.ndarray = DISTANCE[np.arange(BOARD_SIZE ** 2), DOOR_OF].astype(np.int16)
-#: That door as a cell, per cell - where a worker stands after its DROP.
-DOOR_CELL: np.ndarray = np.stack([DOOR_OF // BOARD_SIZE, DOOR_OF % BOARD_SIZE], axis=1).astype(np.int16)
 
 #: What one step of the search is allowed to cost, as `beam x workers x tasks`. A step's arrays are
 #: that product wide, so a fixed width makes a hundred tiles cost fifty times a quadrant. This is the
@@ -197,7 +179,17 @@ def lower_bound(day: Day, tasks: TaskArray) -> int:
     if tasks.n == 0:
         return 0
     goods = len({int(i) for i in tasks.items if int(i) != NO_ITEM})
-    work = tasks.n + goods + day_walking(tasks)
+    # A spanning tree over the tiles and the doors, not the tile count: a day that works three
+    # quadrants pays for the crossings and `tiles - 1` does not.
+    walking = spanning_walk(tasks)
+    if tasks.drop_rows.size:
+        # A deadline is a hard window on a task that also has precedence, and it means the unit has
+        # to finish at a shed door rather than wherever it stopped. So its path reaches the furthest
+        # tile and comes back: at least twice the distance from a door to it. Not a doubling of the
+        # tile count, which a route that works the tiles in a loop can beat.
+        reach = int(DISTANCE[SHED_INDEX].min(axis=0)[tasks.cell_index].max())
+        walking = max(walking, 2 * reach)
+    work = tasks.n + goods + walking
 
     total = day.horizon
     hired = 0
@@ -207,157 +199,44 @@ def lower_bound(day: Day, tasks: TaskArray) -> int:
     return len(day.units) + hired
 
 
-def _bag(tasks: TaskArray, entries: list[tuple[int, str]]) -> dict[int, int]:
-    """How much of each good one worker loads at its door (`door_load`, `loads_before`).
-
-    Only the goods used before the worker's first DROP: the engine's DROP empties the whole bag
-    (`kaggriculture.py:343-356`), so what is still in it goes to the shed with the harvest, and every
-    use after the drop is fetched again (`legs`).
-    """
-    bag: dict[int, int] = {}
-    for turn, task_id in sorted(entries):
-        row = tasks.ids.index(task_id)
-        if int(turn) >= 0 and bool(tasks.is_drop[row]):
-            break
-        good = int(tasks.items[row])
-        if good >= 0:
-            bag[good] = bag.get(good, 0) + 1
-    return bag
-
-
-def legs(tasks: TaskArray, entries: list[tuple[int, str]]) -> list[tuple[int, int, tuple | None]]:
-    """One worker's day as `(turn, row, fetch)`, where `fetch` is `(good, n)` or None.
-
-    A DROP hands over the whole bag, so a good used after it is no longer carried: the first use of
-    each good after a drop walks through the nearest door on the way and picks up `n` - every use
-    of that good until the next drop. A good the worker has taken off a tile since the drop is in
-    the bag, as before. The search prices this trip and the compiler writes it from here, so the
-    two cannot disagree on it.
-
-    A drop with an empty bag (turn -1) is not a leg: it has no turn, no op and no walk, so the
-    worker never goes to its door. Reading it as one put the worker on that door from turn 0.
-    """
-    rows = [(int(turn), tasks.ids.index(task_id)) for turn, task_id in sorted(entries)
-            if int(turn) >= 0]
-    out: list[tuple[int, int, tuple | None]] = []
-    dropped = False
-    held: set[int] = set()
-    for k, (turn, row) in enumerate(rows):
-        fetch = None
-        need = int(tasks.items[row])
-        if bool(tasks.is_drop[row]):
-            dropped, held = True, set()
-        elif dropped and need >= 0 and need not in held:
-            n = 0
-            for _later_turn, later in rows[k:]:
-                if bool(tasks.is_drop[later]):
-                    break
-                n += int(tasks.items[later]) == need
-            fetch = (need, n)
-        for good in (need, int(tasks.yields[row])):
-            if good >= 0:
-                held.add(good)
-        out.append((turn, row, fetch))
-    return out
-
-
-def leg_target(tasks: TaskArray, row: int, here: Cell) -> Cell:
-    """Where a worker standing on `here` does task `row`: the task's own tile, or a DROP's door.
-
-    Any of the four shed-access tiles takes a DROP (`kaggriculture.py:138-139`, `:343-356`), so the
-    door a bag is handed over at is a property of the route - the one nearest the worker when it
-    drops (`nearest_shed`, the refetch's own rule) - and not of the harvest it banks. The search
-    (`DROP_DOOR`), the compiler and every reader of where a worker stands go through here.
-    """
-    if bool(tasks.is_drop[row]):
-        return nearest_shed(here)
-    return (int(tasks.cells[row][0]), int(tasks.cells[row][1]))
-
-
-def leg_moves(here: Cell, target: Cell, fetch) -> list[tuple]:
-    """The ops that carry a worker to its task: the walk, or the walk through a door and a PICKUP."""
-    if fetch is None:
-        return walk(here, target)
-    door = nearest_shed(here)
-    fetched = ("PICKUP", ITEM_NAME[int(fetch[0])], int(fetch[1]))
-    return walk(here, door) + [fetched] + walk(door, target)
-
-
-def bags_of(day: Day, tasks: TaskArray, result: Result) -> list[frozenset[int]]:
-    """The goods each worker's own day loads at its door: the distinct goods in its own bag.
-
-    The compiler writes one PICKUP per good, at the worker's door, before its first task that is
-    not door work (`loads_before`), each at its own good's hour (`pickup_turns`) - so this is what the search has to charge that worker, and it is a
-    property of the route rather than of the day. `_fixed_point` iterates it; `compile_route` writes
-    from the same bags.
-    """
-    per: dict[int, list[tuple[int, str]]] = {}
-    for turn, task_id, worker in result.route:
-        per.setdefault(int(worker), []).append((int(turn), task_id))
-    return [frozenset(_bag(tasks, per.get(worker, [])))
-            for worker in range(len(day.units) + result.pool)]
-
-
-def remaining_turns(day: Day, tasks: TaskArray, result: Result) -> list[int]:
-    """What each worker's day has left once the route is carried out, per worker.
-
-    A worker's capacity is its own day: the horizon less the hour it begins at, so the farmer holds
-    one more turn than a hand hired in turn 0 (F040). The route spends a turn per task, a turn per
-    tile walked - the walk from where the worker stands to its next task - and the turns its own
-    pickups take at its door before the first walk. What is left is the room a manager may lay more
-    work into, and it is the same number the compiler leaves as PASS turns: `_run` prices the day
-    from these, `compile_route` writes it from the same rule.
-    """
-    hours = _start_hours(day, result.pool)
-    starts = _start_positions(day, result.pool, result.settled, result.doors)
-    per: dict[int, list[tuple[int, str]]] = {}
-    for turn, task_id, worker in result.route:
-        per.setdefault(int(worker), []).append((int(turn), task_id))
-
-    out: list[int] = []
-    for worker in range(len(day.units) + result.pool):
-        entries = sorted(per.get(worker, []))
-        bag = _bag(tasks, entries)
-        here = (int(starts[worker][0]), int(starts[worker][1]))
-        # The pickups themselves, and not the wait for the goods to reach the shed: the compiler
-        # writes one PICKUP op per good at `max(hour, arrival)` and every turn before that is a PASS,
-        # so charging the wait as spent under-reports the room by the gap - measured at one turn on
-        # the mixed day, where the farmer begins at hour 0 and the shed opens at hour 1.
-        spent = len(bag)
-        for _turn, task_id in entries:
-            row = tasks.ids.index(task_id)
-            target = (int(tasks.cells[row][0]), int(tasks.cells[row][1]))
-            spent += len(walk(here, target)) + 1
-            here = target
-        out.append(int(day.horizon) - int(hours[worker]) - spent)
-    return out
-
-
 def spare_turns(day: Day, tasks: TaskArray, result: Result) -> int:
-    """The worker-turns a route leaves unspent: `remaining_turns`, summed over the pool.
+    """The worker-turns a route leaves unspent, walks included.
 
-    The hands the pool paid for have the day's turns between them; the route spends one per task, one
-    per tile walked, and the turns its own pickups take - a worker that carries goods spends its first
-    turns at its door, and those are not room for more work. A manager reads it after `complete` says
-    yes, to decide whether to lay more work on the same hands rather than hiring again.
+    The hands the pool paid for have the day's turns between them; the route spends one per task and
+    one per tile walked, and this is the rest. A manager reads it after `complete` says yes, to decide
+    whether to lay more work on the same hands rather than hiring again.
     """
-    return sum(remaining_turns(day, tasks, result))
+    hired = max(0, result.pool - len(day.units))
+    total = day.horizon + sum(day.horizon - int(hour) for hour in day.hire_times[:hired])
+    if not result.route:
+        return total
+
+    row = {task_id: index for index, task_id in enumerate(tasks.ids)}
+    per_worker: dict[int, list[tuple[int, str]]] = {}
+    for turn, task_id, worker in result.route:
+        if turn < 0:
+            continue
+        per_worker.setdefault(worker, []).append((turn, task_id))
+
+    spent = 0
+    for items in per_worker.values():
+        here = FARMER_START
+        for _turn, task_id in sorted(items):
+            cell = tasks.cells[row[task_id]]
+            spent += abs(here[0] - int(cell[0])) + abs(here[1] - int(cell[1])) + 1
+            here = (int(cell[0]), int(cell[1]))
+    return max(0, total - spent)
 
 
 def ceiling_for(day: Day, tasks: TaskArray) -> int:
-    """The largest pool worth asking about: the units on the field, plus the hands the day offered.
+    """The largest pool worth asking about: the tasks, plus the units already on the field.
 
-    `hire_times` is the planner's offer - the hour each hand it will pay for may begin - so a pool
-    beyond it is a pool nobody is paying for, and the search has no hour to start those hands on. The
-    tasks bound it too, by argument: every unit does at least one task, so a pool larger than the work
-    cannot be the smallest carrying one. The smaller of the two wins.
-
-    The offer is the tighter of the two by a wide margin, which is the point: the search used to be
-    allowed to hire hands the planner never offered, and answered with pools no one would pay for.
+    Every unit does at least one task, so a pool larger than the number of tasks cannot be the
+    smallest carrying one - which makes this a ceiling by argument rather than by guess. The tighter
+    candidates are guesses: a tour of the tiles bounds the BEST walking, and the search's own route
+    can walk more than it, so a tour-derived ceiling cuts days that would carry.
     """
-    work_bound = tasks.n + len(day.units)
-    offered = len(day.units) + len(day.hire_times)
-    return min(work_bound, offered)
+    return tasks.n + len(day.units)
 
 
 def search(day: Day, tasks: TaskArray, *, beam: int | None = None,
@@ -418,6 +297,11 @@ def search(day: Day, tasks: TaskArray, *, beam: int | None = None,
         return done(Result(ceiling, [], False, infeasible=True))
     if start > ceiling:
         return done(Result(ceiling, [], False, infeasible=True))
+
+    def done(result: Result) -> Result:
+        """The answer with its spare capacity on it. `search` is the only place the pool is known,
+        and the spare is counted against the hands that pool paid for."""
+        return result._replace(spare=spare_turns(day, tasks, result))
 
     def width(pool: int) -> int:
         return beam if beam is not None else beam_for(tasks, len(day.units) + pool)
