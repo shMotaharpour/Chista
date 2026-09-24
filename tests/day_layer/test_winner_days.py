@@ -341,15 +341,22 @@ def test_day_29_days_carry_sell_deadlines() -> None:
 #: The days the search settles short of, measured on the corpus that the
 #: engine provably ran (the golden replay). Strict xfails: when the search
 #: closes a gap the mark FAILS, which is the reminder to take the day out.
-#: Measured 2026-09-23, search hands = game-1, budget 20 s:
-#:   quadrant-4 d16        135/138  (2.2%: harvest, collect_fertilizer, water)
-#:   self-serve d14        134/141  (5.0%: fertilize 3, water 3, plant)
-#:   self-serve d16        124/127  (2.4%: feed, care, water)
-#:   self-serve d17        139/146  (4.8%: fertilize 2, water 2, feed, care, collect)
-#:   most-ops d13          174/181  (3.9%: water 4, plant, feed, care)
-#:   most-ops d23          168/175  (4.0%: water 4, fertilize, harvest, plant)
-#:   most-ops d21          170/177  (4.0%: fertilize 2, water 2, feed, dig, ...)
+#: Measured 2026-09-24 on the corpus with each hand's FIRST ACTING hour (hired
+#: in turn h -> acts from h + 1), search hands = game-1, budget 20 s:
+#:   quadrant-4 d14        125/127
+#:   quadrant-4 d15        131/132
+#:   quadrant-4 d16        131/138
+#:   self-serve d14        132/141
+#:   self-serve d16        122/127
+#:   self-serve d17        135/146
+#:   most-ops d13          170/181
+#:   most-ops d23          167/175
+#:   most-ops d21          162/177
+#: (Before the hours were corrected every hand had one turn more, and d14/d15
+#: were carried on it.)
 KNOWN_SHORT = {
+    ("2026-09-16", 109471187, 14),
+    ("2026-09-16", 109471187, 15),
     ("2026-09-16", 109471187, 16),
     ("2026-09-16", 109466080, 14),
     ("2026-09-16", 109466080, 16),
