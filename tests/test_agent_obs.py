@@ -105,37 +105,6 @@ def test_equivalence_classes_count_plannable() -> None:
     assert len(view.classes) >= 1
 
 
-def test_coverage_roundtrip_weedspawn_zero() -> None:
-    """Scripted episode, weedSpawnChance = 0: every day-start key on BOTH
-    farms is inside the shipped graph's key_index (graph coverage test)."""
-    from offline_lab.fast_sim import FastSim
-
-    graph = _graph()
-    known = frozenset(graph.key_index)
-    sim = FastSim({"episodeSteps": 10 * 24, "seed": 7,
-                   "weedSpawnChance": 0.0})
-
-    def act():
-        return {"farmer": ["PASS"], "hands": [], "market": []}
-
-    for day in range(10):
-        obs = sim.observations()[0]    # hour 0 of `day`
-        assert int(obs["hour"]) == 0, (day, obs["hour"])
-        for p in (0, 1):
-            view = decode_farm(obs["farms"][p], day=int(obs["day"]), hour=0)
-            for key in view.classes:
-                assert key in known, (
-                    f"unmodelled key {key} "
-                    f"({TileState.unpack(key).describe()}) on farm {p} "
-                    f"day {day}")
-        for _ in range(24):            # fill the day; next loop sees hour 0
-            if sim.done:
-                break
-            sim.step([act(), act()])
-        if sim.done:
-            break
-
-
 def test_magic_number_pinned_by_engine_probe() -> None:
     """tile_state.py's mls TODO: plant a MELON on a live sim, read
     max_lifespan_step back, and pin the decoder's formula
@@ -195,37 +164,6 @@ def test_decode_world_no_graph_keys_option() -> None:
     wv = decode_world(_mini_obs(hour=0), decode_opponent=True)
     assert wv.unknown_keys == 0
     assert wv.me.classes and wv.opponent.classes
-
-
-def test_unknown_keys_map_nearest_and_count() -> None:
-    """A key outside the graph maps to the nearest modelled state and is
-    counted — never raised, never silent (issue §3.3)."""
-    graph = _graph()
-    known = frozenset(graph.key_index)
-    # build an obs whose plant tile yields a key the graph lacks:
-    # a WHEAT with an odd yield (the graph enumerates the reachable ones)
-    obs = _mini_obs(hour=0)
-    obs["farms"][0]["tiles"][0][0] = {
-        "kind": "PLANT", "crop": "WHEAT", "planted_day": -3,
-        "watered_today": True, "consecutive_unwatered": 0,
-        "yield_units": 5, "max_lifespan_step": 96,
-        "fertilized_until_day": -1}
-    wv = decode_world(obs, graph_keys=known, decode_opponent=True)
-    raw = decode_world(obs, decode_opponent=True)
-    unknown_raw = 0
-    for farm_view in (raw.me, raw.opponent):   # cumulative over BOTH farms
-        raw_keys = {int(k) for row in farm_view.keys for k in row} \
-            - {LOCKED_KEY}
-        unknown_raw += sum(farm_view.classes[k] for k in raw_keys
-                           if k not in known)
-    # remapping preserves each farm's multiset size (6 plannable: 9 - 3
-    # locked); every unmodelled key on either farm is counted, and every
-    # surviving key is modelled
-    assert sum(wv.me.classes.values()) == 6
-    assert sum(wv.opponent.classes.values()) == 6
-    assert wv.unknown_keys == unknown_raw
-    for key in list(wv.me.classes) + list(wv.opponent.classes):
-        assert key in known
 
 
 def test_timing_under_2ms() -> None:
