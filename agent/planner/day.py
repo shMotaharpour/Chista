@@ -440,8 +440,23 @@ def compile(day_plan: "DayPlan", obs, *, hands: int | None = None,
     tasks = T.build(fitted.chains, available=available)
     from agent.world.rules import earliest_hire_times
 
+    # The hours come from the QUEUE, not from the engine's bound. The hourly
+    # secretary lays the day's orders out with `wsr_check=False` — a check commits
+    # no hires — and the day is then priced with the hours those orders actually
+    # land in (`DayMarket.hire_hours`: settlement plus one, F040). The bound
+    # assumed a whole turn's order budget went to hires, and this queue puts the
+    # sells first (F032), so the bound was optimistic by construction.
+    #
+    # The check's `harvest_expected` is a stand-in: the compiled route is what
+    # knows the real harvest, and handing that back is the manager's two-phase
+    # flow. The sells' COUNT already shapes this queue, which is the part the
+    # bound never had at all.
+    check = K.build(obs, fitted.chains, hands=pool, harvest_expected=0,
+                    config=config, model=model, activity=activity,
+                    forecast_obj=forecast_obj, wsr_check=False)
     day = B.Day(chains=tuple(fitted.chains), available=available,
-                hire_times=earliest_hire_times(pool))
+                hire_times=(tuple(check.hire_hours)
+                            if check.hire_hours else earliest_hire_times(pool)))
     result = B.search(day, tasks, hands=pool, max_hands=pool)
     # The plan is PRICED for `pool` hands and the search is held to exactly those: the market
     # hires what the day was costed with, and a route may leave some of them idle.
