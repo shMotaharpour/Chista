@@ -148,3 +148,32 @@ the point of this section, and the reason it is here rather than assumed.
   vocabulary (`world/model.py`), the DP ↔ WSR alignment, the one belief
   (`belief/`), and the migration order that retires the duplicates.
 - `world/model.py` — the canonical, engine-derived vocabulary every layer imports.
+
+## Games run on FastSim — MANDATORY
+Every season, episode or match in this repo runs on `offline_lab/fast_sim.py`, never
+on the kaggle harness, unless the owner says otherwise. The harness caps a turn at
+one second (`kaggriculture.json`: `"actTimeout": 1`), so a plan's round count follows
+the machine's speed and two runs of one seed disagree. `run_episode` stays for the
+submission-path checks the owner asks for by name.
+
+## Debugging: ask the graph before you grep — `graphify-out/`
+
+This repo carries a knowledge graph of its own code and docs, built with
+`graphify` (a uv tool: `uv tool install graphifyy`; the interpreter it runs is
+recorded in `graphify-out/.graphify_python`). Its outputs are TRACKED here, not
+gitignored: `graphify-out/graph.json`, `graph.html` (opens without a server) and
+`GRAPH_REPORT.md`. Rebuild or extend with `graphify <repo> --code-only` (code
+only — the doc pass wants an LLM key) and `--update` to fold the docs back in
+from the cache; the rebuildable parts (`cache/`, dated backups, the raw
+`.graphify_*` intermediates) stay gitignored.
+
+The rule: for a debugging question — what calls this, what does a change here
+ripple into, which layer owns this name — read the graph FIRST and grep second.
+It answers "what touches this" across layers in one shot, which grep cannot: the
+god nodes (`FastSim`, `forecast()`, `TileGraph`, `compile_route()`, `Config`) are
+exactly the junctions every change propagates through. Query `graphify-out/graph.json`
+with `graphify query` / `path` / `explain`; `docs/ARCHITECTURE.md` still owns the
+INTENDED shape while the graph shows the realised one.
+
+This is a development tool, not a runtime dependency: nothing in `agent/` imports
+it, so it does not belong in `requirements.txt`.
