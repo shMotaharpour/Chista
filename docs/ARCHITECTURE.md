@@ -119,7 +119,7 @@ MarketState = {
 
 | layer | owns | must not |
 |---|---|---|
-| `world/` | the vocabulary (`model.py`), the town (`vocabulary.py`), the engine binding, config | hold policy |
+| `world/` | the vocabulary (`model.py`), the town and the rules (`rules.py`: `SHOPS`, `TOWN_CENTER_PRODUCTS`), the engine binding, config | hold policy |
 | `belief/` | the one belief: the market, the rival, the demand, the shed projection and the sell plan, and the schemas | decide actions, read the board |
 | `tile_dp/` | the chain registry, the per-tile DP | know units, travel, or the market queue |
 | `planner/` | the season: what to grow, when to sell, hire, buy, expand | emit engine actions |
@@ -127,7 +127,8 @@ MarketState = {
 | `agent/` | the spine: decode, dispatch, deadline, fallback | plan |
 
 `secretary/` is gone: its market and shed halves are `belief/`, its routing and
-scheduling halves are `day/`.
+scheduling halves are `wsr/` (the `day/` package this line used to name no longer
+exists - the same tree §1 and §3 still referred to).
 
 ---
 
