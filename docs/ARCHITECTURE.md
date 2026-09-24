@@ -17,17 +17,29 @@ at runtime).
 
 Engine-derived (R002), imported by every layer:
 
-| name | what it is | count |
-|---|---|---|
-| `GOODS` / `PRODUCTS` | what the market trades and the farm sells | 9 |
-| `CROPS` / `ANIMALS` | the five crops, the three species | 5 / 3 |
-| `RESOURCES` | what the farm buys or consumes: labour, fertiliser, wheat, the five seeds, the three animals | 11 |
-| `DUAL` | wheat and fertiliser — a resource **and** a product | 2 |
-| `VECTOR` | the DP graph's columns = resources + products, in the stored order | 18 |
-| `ACTIONS` | every action string the engine's handlers accept, **extracted from their source** | 24 |
-| `WORKER_OPS` | what a unit spends a turn on | 10 |
-| `MARKET_ACTIONS` | the market's own vocabulary: `SELL`, `BUY_SEED/PRODUCT/ANIMAL`, `HIRE`, `BUY_LAND` | 6 |
-| `CHAIN_OPS` | what a DP chain may name: `WORKER_OPS` + the three `BUY_*` it needs + `NO_ACT` | 14 |
+Every row below is the name as the module spells it TODAY, with the count read off
+the module itself (`len(<name>)`), and the file it lives in named — because the
+first version of this table named six symbols that no longer exist and put a
+seventh in the wrong module.
+
+| name | what it is | count | module |
+|---|---|---|---|
+| `PRODUCTS` | what the market trades and the farm sells | 9 | `world/model.py` |
+| `CROPS` / `ANIMALS` | the five crops, the three species | 5 / 3 | `world/model.py` |
+| `INVENTORY_ITEMS` | what the farm buys or consumes and what it can hold | 12 | `world/model.py` |
+| `RESOURCE_NAMES` / `RESOURCE_ID` | the resources by name, and the same as ids | 18 | `world/model.py` |
+| `DUAL` | wheat and fertiliser — a resource **and** a product | 2 | `world/model.py` |
+| `COLUMNS` | the DP graph's columns = resources + products, in the stored order | 18 | `world/model.py` |
+| `UNIT_ACTIONS` | what a unit may be told to do | 18 | `world/model.py` |
+| `MOVES` | the four movement ops | 4 | `world/model.py` |
+| `WORKER_OPS` | what a unit spends a turn on | 18 | `world/action.py` |
+| `MARKET_ORDERS` | the market's own vocabulary: `SELL`, `BUY_SEED/PRODUCT/ANIMAL`, `HIRE`, `BUY_LAND` | 6 | `world/model.py` |
+| `STRUCTURES` / `TILE_KINDS` | what a tile can hold, and what a tile can be | 2 / 7 | `world/model.py` |
+
+Gone since the first version, and not renamed: `GOODS`, `RESOURCES`, `VECTOR`,
+`ACTIONS`, `MARKET_ACTIONS` and `CHAIN_OPS`. The market/farm split they described is
+now carried by `MARKET_ORDERS` versus `WORKER_OPS`, and `WORKER_OPS` lives beside the
+engine's handlers in `world/action.py` rather than in `model.py`.
 
 Rules:
 
@@ -43,8 +55,10 @@ Rules:
 4. **An op outside the vocabulary is never emitted** — the engine ignores it in
    silence (F047).
 
-Legacy, to be deleted (see §5): `day/models.py`'s `Item`, `MinorActionType`,
-`CellType`, `expand_major_task`; the DP's `PLACE_ANIMAL` alias.
+The `day/` tree this first version called legacy is gone — `agent/wsr/day/` no longer
+exists, and `PLACE_ANIMAL` is not mentioned anywhere in `agent/`. The day layer's
+files are the four this document's §2 names. §5's migration list was written against
+that tree and needs the same pass.
 
 ---
 
@@ -89,9 +103,10 @@ MarketState = {
 }
 ```
 
-- **Only `belief/` reads the market.** `day/market.py::forecast` and
-  `day/opponent.py` become views of `MarketState`, or are deleted where they
-  duplicate it.
+- **Only `belief/` reads the market.** The `day/market.py` and `day/opponent.py` this
+  first version pointed at do not exist any more; the market and the rival are read in
+  `belief/market.py` and `belief/opponent.py`, which is where this rule is enforced
+  today.
 - **Consumers**: the master prices revenue at `prices` and internal scarcity at its
   own duals; the compiler schedules sells at `drain`; the runtime publishes timing.
 - **Not owned**: movement, hours, land, animal chains, the order book's optimiser.
