@@ -282,6 +282,27 @@ def _search(entry, hands: int | None = None, max_hands: int | None = None):
     return grid, tasks, result
 
 
+def _assert_answer_shape(entry, tasks, result) -> None:
+    """The reconciled solver's answer contract, as #185's own tests read it.
+
+    `doors` is the one statement of where the hands start — one shed-access
+    cell per hired hand at each hand's own hire moment; `search` fills it on
+    every answer it returns. `spare` counts the worker-turns a complete route
+    leaves, again filled by `search`. (`settled` exists on the Result but is
+    only filled by the warm-start helper `_settled_after_first_turn`, which
+    `search` does not call — an empty tuple here is the normal state, so it
+    carries no assertion.)
+    """
+    if result.pool:
+        assert len(result.doors) == result.pool, (
+            f"doors has {len(result.doors)} cells for pool {result.pool}"
+        )
+        assert all(0 <= x < T.BOARD_SIZE and 0 <= y < T.BOARD_SIZE
+                   for x, y in result.doors), f"doors off the board: {result.doors}"
+    if result.complete:
+        assert result.spare >= 0, f"negative spare {result.spare} on a complete day"
+
+
 def test_the_corpus_covers_every_bucket() -> None:
     """The buckets are the reason this corpus exists: each must carry its three days."""
     for bucket, want in (
@@ -360,6 +381,7 @@ def test_a_winner_day_is_carried_as_the_game_carried_it(entry) -> None:
     if _key(entry) in KNOWN_SHORT:
         pytest.xfail(_SHORT_REASON)
     grid, tasks, result = _search(entry)
+    _assert_answer_shape(entry, tasks, result)
     assert result.complete, (
         f"{len(result.route)} of {tasks.n} tasks with {entry['hands']} hands, which is what the game "
         f"used"
@@ -384,6 +406,7 @@ def test_a_winner_day_is_carried_as_the_game_carried_it(entry) -> None:
 def test_a_day_29_day_banks_by_the_game_sell_hours(entry) -> None:
     """The drop deadlines are the winner's own SELL hours, and the route must bank by them."""
     grid, tasks, result = _search(entry)
+    _assert_answer_shape(entry, tasks, result)
     assert result.route, f"no route: the day cannot be carried at all"
     assert result.pool <= entry["hands"], (
         f"the layer chose {result.pool} hands where the game paid {entry['hands']}"
