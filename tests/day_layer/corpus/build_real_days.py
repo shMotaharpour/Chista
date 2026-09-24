@@ -30,6 +30,94 @@ MID_DAY = 5
 FIRST_DUMP, FIRST_DAYS, FIRST_EPISODES = "2026-09-16", (1, 3, 6, 10), 3
 
 
+def dumps() -> list[str]:
+    return sorted(p.name for p in pathlib.Path(ROOT).iterdir() if p.is_dir())
+
+
+def extract(con, dump: str, episode: int, day: int):
+    """One day's real land work, or None when the dump has no such day."""
+    changed = con.sql(f"""
+        SELECT DISTINCT x, y, step % 24 AS hour
+        FROM '{ROOT}/{dump}/tiles_delta.parquet'
+        WHERE episode_id = {episode} AND player = false AND step // 24 = {day}
+    """).df()
+    if changed.empty:
+        return None
+    happened = {(int(r.x), int(r.y), int(r.hour)) for r in changed.itertuples()}
+
+    submitted = con.sql(f"""
+        SELECT step % 24 AS hour, x, y, op
+        FROM '{ROOT}/{dump}/hands_steps.parquet'
+        WHERE episode_id = {episode} AND player = false AND step // 24 = {day}
+        UNION ALL
+        SELECT step % 24 AS hour, farmer_x AS x, farmer_y AS y, op
+        FROM '{ROOT}/{dump}/farm_steps.parquet'
+        WHERE episode_id = {episode} AND player = false AND step // 24 = {day}
+        ORDER BY hour
+    """).df()
+
+    chains: dict[tuple[int, int], list[str]] = {}
+    op_hours: dict[tuple[int, int], list[int]] = {}
+    for row in submitted.itertuples():
+        if not isinstance(row.op, str) or row.op in MOVES:
+            continue
+        cell = (int(row.x), int(row.y))
+        if (cell[0], cell[1], int(row.hour)) not in happened:
+            continue                       # the engine refused it: it never happened
+        chains.setdefault(cell, []).append(row.op)
+        op_hours.setdefault(cell, []).append(int(row.hour))
+
+    # The crop or the animal the tile ended the day with, for the layer's entity.
+    last = con.sql(f"""
+        SELECT x, y, kind, crop, animal
+        FROM '{ROOT}/{dump}/tiles_delta.parquet'
+        WHERE episode_id = {episode} AND player = false AND step // 24 = {day}
+        QUALIFY row_number() OVER (PARTITION BY x, y ORDER BY step DESC) = 1
+    """).df()
+    entity = {}
+    for row in last.itertuples():
+        if row.crop is not None and row.crop is not pd.NA:
+            entity[(int(row.x), int(row.y))] = row.crop
+        elif row.animal is not None and row.animal is not pd.NA:
+            entity[(int(row.x), int(row.y))] = row.animal
+
+    hours = [int(row[0]) for row in con.sql(f"""
+        SELECT min(step % 24) FROM '{ROOT}/{dump}/hands_steps.parquet'
+        WHERE episode_id = {episode} AND player = false AND step // 24 = {day}
+        GROUP BY unit ORDER BY unit
+    """).fetchall()]
+
+    shed = con.sql(f"""
+        SELECT * FROM '{ROOT}/{dump}/private_steps.parquet'
+        WHERE episode_id = {episode} AND player = false
+          AND step // 24 = {day} AND step % 24 = 0
+    """).df()
+    available = {}
+    if not shed.empty:
+        row = shed.iloc[0]
+        for column in row.index:
+            if column.startswith("shed_") and int(row[column]) > 0:
+                available[column[5:]] = 1
+
+    if not chains:
+        return None
+    return {
+        "dump": dump,
+        "episode": int(episode),
+        "day": int(day),
+        "hands": len(hours),
+        "hire_times": sorted(hours),
+        "available": available,
+        "chains": [[list(cell), ops, entity.get(cell)]
+                   for cell, ops in sorted(chains.items())],
+        # The hour the GAME ran each op, in the same order as that cell's ops. The layer is charged
+        # for its walks, its trips and its pickups, and this is the only record of what those cost
+        # the agent that actually played the day - so a day the layer cannot carry can be read
+        # against the day the game did, op by op, instead of argued about.
+        "op_hours": [[list(cell), op_hours[cell]] for cell, _ops in sorted(chains.items())],
+    }
+
+
 def main() -> None:
     con = duckdb.connect()
     con.execute("SET memory_limit='2GB'")
