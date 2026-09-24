@@ -44,9 +44,9 @@ repository passed while guarding nothing — each exercised a path the productio
 code never takes, and every one survived review by reading.
 
 **One vocabulary, one belief.** `docs/ARCHITECTURE.md` is the system's shape:
-the canonical names live in `world/model.py` (engine-derived, never typed), the
+the canonical names live in `agent/world/model.py` (engine-derived, never typed), the
 DP's chains and the WSR's major tasks are the same object with one expansion
-(`world/model.py::compile_chain`), and `belief/` is the only reader of the market
+(`agent/world/model.py::compile_chain`), and `belief/` is the only reader of the market
 and the rival. Before adding a name, a set or a market read, read that document —
 and if a module disagrees with it, the module is the bug.
 
@@ -145,12 +145,12 @@ the point of this section, and the reason it is here rather than assumed.
 - `docs/kaggriculture-source.md` — environment source notes.
 - `docs/INDEX.md` — one-line index of all rules and findings files.
 - `docs/ARCHITECTURE.md` — **the** system shape: layers and ownership, the one
-  vocabulary (`world/model.py`), the DP ↔ WSR alignment, the one belief
+  vocabulary (`agent/world/model.py`), the DP ↔ WSR alignment, the one belief
   (`belief/`), and the migration order that retires the duplicates.
   It also carries the day layer's four paid-for decisions (§6: the hours come
   from `hire_times`, the doors from `_hand_doors`, why `settled` is gone, and the
   spare's one definition).
-- `world/model.py` — the canonical, engine-derived vocabulary every layer imports.
+- `agent/world/model.py` — the canonical, engine-derived vocabulary every layer imports.
 
 ## Games run on FastSim — MANDATORY
 Every season, episode or match in this repo runs on `offline_lab/fast_sim.py`, never
