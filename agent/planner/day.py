@@ -20,7 +20,13 @@ This is M4. Nothing here decides anything: it asks, and it reports.
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
+from dataclasses import replace, dataclass
+
+#: How many times the manager may re-ask the day layer before it accepts the
+#: answer it has. FIXED and small on purpose: each ask is a whole search, and the
+#: loop is not "until it fits" — a day that still does not fit is a day to lay
+#: less on. An episode may override it as `handsAskRounds`.
+DEFAULT_ASK_ROUNDS = 2
 
 import numpy as np
 
@@ -40,6 +46,20 @@ class DayFit:
     hours_used: float              # worker-hours the route actually spent
     hours_committed: float         # what the master's row charged for day 0
     reason: str = ""               # "" when it fits: "hours", "budget", "unstable"
+    #: Worker-turns the route left unspent, walks included (`Result.spare`): what
+    #: more work the SAME hands could carry. The search computes it and it used to
+    #: stop here — but it is the number the manager needs to decide whether to lay
+    #: more on the day, hire more, or confirm.
+    spare: int = 0
+    #: The arithmetic floor on hands the day's own work needs (`B.lower_bound`
+    #: less the farmer): the MINIMUM a shortfall is measured against, so the
+    #: manager can decide to offer it or lay less on the day instead of walking
+    #: up one hand at a time and paying for a search each step.
+    floor: int = 0
+    #: How many extra hands the day needed before it was carried, 0 when the
+    #: priced pool was enough. The number the manager decides on: hire them, lay
+    #: less on the day, or accept a day that does not fit.
+    short: int = 0
 
     @property
     def overhead(self) -> float:
@@ -110,6 +130,7 @@ def availability(obs, chains) -> dict:
 
 
 def fit(chains, *, hands: int, available: dict | None = None,
+        hire_times: tuple[int, ...] | None = None,
         budget_s: float | None = None, beam: int | None = None,
         hours_committed: float = 0.0, warm=None) -> DayFit:
     """Hand the day to wsr and report what it made of it.
@@ -131,7 +152,15 @@ def fit(chains, *, hands: int, available: dict | None = None,
     tasks = T.build(chains, available=available)
     # `hands` is the offer the master priced, and zero is an offer: the farmer walks alone. The
     # hours each hand starts at are the engine's (`rules.hire_hour`), which `Day` fills in.
-    day = B.Day(chains=tuple(chains), available=available, hands=hands)
+    from agent.world.rules import earliest_hire_times
+
+    # The hours are the HOURLY secretary's when it has laid the day out
+    # (`DayMarket.hire_hours`: the settlement turn plus one, F040). Only when it
+    # has not does the engine's earliest bound stand in — and that bound assumes a
+    # whole turn's order budget goes to hires, which the real queue does not.
+    day = B.Day(chains=tuple(chains), available=available,
+                hire_times=(tuple(hire_times) if hire_times is not None
+                            else earliest_hire_times(hands)))
     floor = max(0, B.lower_bound(day, tasks) - len(day.units))
     result = B.search(day, tasks, beam=beam,
                       hands=min(floor, hands), max_hands=hands,
@@ -144,11 +173,13 @@ def fit(chains, *, hands: int, available: dict | None = None,
         # is an answer the caller already knows how to use (#73 is why this is
         # checked here rather than discovered inside `compile_route`).
         return DayFit(tuple(chains), len(result.route), tasks.n, result.pool,
-                      False, hours, hours_committed, "unstable")
+                      False, hours, hours_committed, "unstable",
+                      spare=int(result.spare), floor=int(floor))
     reason = "" if result.complete else ("budget" if result.can_improve
                                          else "hours")
     return DayFit(tuple(chains), len(result.route), tasks.n, result.pool,
-                  bool(result.complete), hours, hours_committed, reason)
+                  bool(result.complete), hours, hours_committed, reason,
+                  spare=int(result.spare), floor=int(floor))
 
 
 def hours_for(hands: int, days: int, overhead: float = 0.35) -> np.ndarray:
@@ -323,9 +354,35 @@ def _solve_at(obs, contractor, supply, class_of_tile, hands, iter_cap,
         fitted = fit(chains, hands=hands, budget_s=budget_s,
                      available=availability(obs, chains),
                      hours_committed=committed)
+        if not fitted.complete and fitted.reason == "hours":
+            # wsr's OWN number, not a count of retries: `floor` is the arithmetic
+            # minimum the day's work needs, and the search already started there
+            # (`hands=min(floor, hands)`, day.py:150). So ONE ask at the floor
+            # answers "what is the least I could give it" - walking up one hand at
+            # a time would buy the same answer for a search per step.
+            #
+            # "budget" is never re-asked: more hands do not buy more time.
+            fitted = replace(fitted, short=max(0, int(fitted.floor) - int(hands)))
+            # The cap is the manager's (`Config.hands_ask_rounds`, an episode may
+            # override it as `handsAskRounds`); the day layer only needs to know
+            # whether a re-ask is allowed at all, and this function has no config
+            # in hand — the loop that reads it lives in the manager.
+            if int(fitted.floor) > int(hands) and DEFAULT_ASK_ROUNDS > 0:
+                again = fit(chains, hands=int(fitted.floor), budget_s=budget_s,
+                            available=availability(obs, chains),
+                            hours_committed=committed)
+                if again.complete:
+                    fitted = again
+        # A complete answer needs no second ask for a leaner pool: the search
+        # STARTS at the floor and grows (`min(floor, hands)`, day.py:150), so
+        # `result.pool` already IS the least it carried the day with - offering 5
+        # and using 1 reports 1, and the bill follows it.
         # The hands are hired again every morning (F039), so their wage is a
         # cost on every day of the horizon and not a one-off.
-        bill = hire_bill(hands) * contractor.days
+        # The bill follows the pool that actually carries the day (`fitted.pool`
+        # is what `compile` hires, day.py:396), not the pool the master priced
+        # with before the search had its say.
+        bill = hire_bill(int(fitted.pool)) * contractor.days
         candidate = DayPlan(result, choices, mixes, fitted, spent, applied,
                             solves=spent, hands=hands,
                             net=float(result.objective) - bill)
@@ -352,6 +409,7 @@ def _solve_at(obs, contractor, supply, class_of_tile, hands, iter_cap,
 
 
 def compile(day_plan: "DayPlan", obs, *, hands: int | None = None,
+            rival_supply: dict | None = None,
             config=None, model=None, activity: int | None = None,
             forecast_obj=None) -> dict:
     """A `DayPlan` -> the `{"units": [...], "market": [...]}` the dispatcher slices.
@@ -379,15 +437,123 @@ def compile(day_plan: "DayPlan", obs, *, hands: int | None = None,
                        forecast_obj=forecast_obj).rows
         return {"units": [[["PASS"]] * TURNS_PER_DAY], "market": rows}
 
-    available = availability(obs, fitted.chains)
+    from agent.world.rules import earliest_hire_times
+
+    sold: dict = {}          # our own units per (good, step), from the last queue
+
+    def sell_rank():
+        """`rank(order, turn)`: the value of a sale there minus the rival's risk.
+
+        The two surfaces belief already publishes (`hourly_value` and
+        `rival_risk`), keyed the same way. Built only when there is a forecast to
+        read the prices from: without one there is nothing to rank with, and the
+        queue keeps belief's own order. `sold` is left empty for now, so the value
+        is that turn's own quote — pricing our own planned volume into it is the
+        next refinement, not a hidden assumption.
+        """
+        if forecast_obj is None:
+            return None
+        from agent.belief.depth import hourly_value, rival_risk
+
+        # `c` is (cell, ops, entity): the GOOD is the entity, `c[2]` — `c[1]` is the
+        # ops tuple, and passing that here raised KeyError the first time a day with
+        # FEED/CARE chains reached this. Only market goods can be ranked.
+        from agent.belief.market import PRODUCTS
+
+        goods = tuple(sorted({str(c[2]) for c in fitted.chains
+                              if len(c) > 2 and c[2] in PRODUCTS}))
+        if not goods:
+            return None
+        day = int(obs.get("day", 0)) if isinstance(obs, dict) else 0
+        value = hourly_value(forecast_obj, goods, day, 1, sold=sold)
+        risk = rival_risk(rival_supply or {}, goods, day, 1)
+
+        def rank(order, turn):
+            if not (order and str(order[0]) == "SELL" and len(order) > 1):
+                return 0.0
+            key = (str(order[1]), day * TURNS_PER_DAY + int(turn))
+            return float(value.get(key, 0.0)) - float(risk.get(key, 0.0))
+
+        return rank
+
+    def queue(harvest_expected: int, hands: int, wsr_check: bool,
+              arrivals: dict | None = None):
+        built = K.build(obs, fitted.chains, hands=hands,
+                        harvest_expected=harvest_expected, config=config,
+                        model=model, activity=activity,
+                        forecast_obj=forecast_obj, wsr_check=wsr_check,
+                        arrivals=arrivals, rank=sell_rank())
+        # Remember what this queue sells so the NEXT build ranks on our own volume
+        # too: the ladder prices the lot we put in, and the correction round is
+        # exactly the place that number exists.
+        day0 = int(obs.get("day", 0)) if isinstance(obs, dict) else 0
+        sold.clear()
+        for turn, row in enumerate(built.rows):
+            for order in row:
+                if order and str(order[0]) == "SELL" and len(order) > 2:
+                    key = (str(order[1]), day0 * TURNS_PER_DAY + turn)
+                    sold[key] = int(sold.get(key, 0)) + int(order[2])
+        return built
+
+    def arrival_hours(ops) -> dict:
+        """The hour each good is IN THE SHED today, from the route's own drops.
+
+        `ops.arrivals` is `(hour, item, units)` per drop — the timetable the route
+        already publishes and `compile` used to sum away. The EARLIEST hour wins:
+        the first drop that carries the good is what makes it sellable.
+        """
+        out: dict = {}
+        for hour, item, _units in ops.arrivals:
+            good = str(item)
+            out[good] = min(int(out.get(good, int(hour))), int(hour))
+        return out
+
+    def timetable(base: dict, check) -> dict:
+        """`available`, with each bought good's hour taken from the queue.
+
+        The queue settles a BUY and the good lands in the shed the turn after
+        (F030). `availability`'s constant 1 is the same optimistic assumption on
+        the goods side that the bound was on the labour side, and the queue is
+        what actually knows.
+        """
+        out = dict(base)
+        for good, hour in check.bought_hours:
+            out[good] = max(int(out.get(good, 0)), int(hour))
+        return out
+
+    def priced(hire_times):
+        """The day, the route and the queue it implies, from one set of hours."""
+        day = B.Day(chains=tuple(fitted.chains), available=available,
+                    hire_times=hire_times)
+        result = B.search(day, tasks, hands=pool, max_hands=pool)
+        ops = compile_route(day, tasks, result, horizon=TURNS_PER_DAY)
+        harvest = sum(int(units) for _hour, _item, units in ops.arrivals)
+        return day, result, ops, harvest
+
+    # The hours come from the QUEUE, not from the engine's bound: the hourly
+    # secretary lays the day's orders out with `wsr_check=False` (a check commits
+    # no hires) and the day is priced on the hours those orders actually land in
+    # (`DayMarket.hire_hours`: settlement plus one, F040). The bound assumed a
+    # whole turn's order budget went to hires; this queue puts the sells first
+    # (F032), so the bound was optimistic by construction.
+    check = queue(0, pool, wsr_check=False)
+    available = timetable(availability(obs, fitted.chains), check)
     tasks = T.build(fitted.chains, available=available)
-    day = B.Day(chains=tuple(fitted.chains), available=available, hands=pool)
-    result = B.search(day, tasks, hands=pool, max_hands=pool)
+    hours = tuple(check.hire_hours) if check.hire_hours else earliest_hire_times(pool)
+    day, result, ops, harvest = priced(hours)
+
     # The plan is PRICED for `pool` hands and the search is held to exactly those: the market
     # hires what the day was costed with, and a route may leave some of them idle.
-    ops = compile_route(day, tasks, result, horizon=TURNS_PER_DAY)
-    harvest = sum(int(units) for _hour, _item, units in ops.arrivals)
-    market = K.build(obs, fitted.chains, hands=result.pool,
-                     harvest_expected=harvest, config=config,
-                     model=model, activity=activity, forecast_obj=forecast_obj)
+    market = queue(harvest, result.pool, wsr_check=True,
+                   arrivals=arrival_hours(ops))
+    if tuple(market.hire_hours) and tuple(market.hire_hours) != tuple(day.hire_times):
+        # ONE correction round, and the reason the check's harvest was a stand-in:
+        # the committed queue knows the real one, so if its hires land in other
+        # hours the day is priced again on them. The invariant is that the day the
+        # engine executes is the day the queue's own timetable priced.
+        again = priced(tuple(market.hire_hours))
+        if again[1].complete:
+            day, result, ops, harvest = again
+            market = queue(harvest, result.pool, wsr_check=True,
+                           arrivals=arrival_hours(ops))
     return to_plan(ops, market=market.rows)

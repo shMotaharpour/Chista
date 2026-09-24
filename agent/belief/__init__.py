@@ -68,6 +68,7 @@ opponent_counts.npz`.
 from agent.belief.depth import (
     best_day_split, block_revenue, depth_blocks, depth_coins, inventory_at,
     marginal_price,
+    hourly_value,
 )
 from agent.belief.ladder import buy_coins, plan_coins, sell_coins, split_days
 from agent.belief.market import (
