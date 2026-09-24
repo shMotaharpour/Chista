@@ -424,3 +424,41 @@ def test_a_day_29_day_banks_by_the_game_sell_hours(entry) -> None:
               hire_times=tuple(entry["hire_times"]) or (1,) * entry["hands"]),
         tasks, result)]
     assert not names, f"the route the search returned does not compile: {names[:4]}"
+
+
+def _used_workers(result) -> int:
+    """The workers a route puts to work: distinct workers with at least one task on a turn."""
+    return len({int(worker) for turn, _task, worker in result.route if int(turn) >= 0})
+
+
+#: Complete days the doubled-pool question is asked on: d1 (8 hands, all at hour 3, 51 ops) is the
+#: day defect 4 was measured on, and the two quadrant-1 days after it are carried at their own pool.
+DOUBLED_POOL_DAYS = [e for e in WINNER_DAYS
+                     if (e["dump"], e["episode"], e["day"]) in {("2026-09-16", 109468286, 1),
+                                                                ("2026-09-16", 109468286, 2),
+                                                                ("2026-09-16", 109468286, 3)}]
+
+
+@pytest.mark.xfail(strict=True, reason=(
+    "defect 4: `_expand` hands each task to the worker that finishes it first, and a fresh hand on "
+    "its door always does - so the beam never holds the route that leaves it idle"))
+@pytest.mark.parametrize("entry", DOUBLED_POOL_DAYS,
+                         ids=[f"ep{e['episode']}-d{e['day']}" for e in DOUBLED_POOL_DAYS])
+def test_a_doubled_pool_does_not_spread_the_day_over_more_workers(entry) -> None:
+    """Offering twice the hands must not put more workers to work than the day's own answer.
+
+    The extra hands start at the day's own latest hire hour, so the offer is the game's crew
+    twice over and nothing better. A hand is money (the hire ladder), so a route that carries
+    the day with the extra hands idle beats one that spreads the same work over all of them.
+    """
+    _grid, _tasks, own = _search(entry)
+    assert own.complete, "the day's own pool no longer carries it; the premise is gone"
+    hours = tuple(entry["hire_times"])
+    doubled = entry["hands"] * 2
+    wide = dict(entry, hire_times=list(hours + (max(hours),) * entry["hands"]),
+                hands=doubled)
+    _grid, tasks, result = _search(wide, hands=doubled, max_hands=doubled)
+    assert result.complete, f"{len(result.route)} of {tasks.n} with {doubled} hands offered"
+    assert _used_workers(result) <= _used_workers(own), (
+        f"{doubled} hands offered: the route uses {_used_workers(result)} workers where the "
+        f"day's own answer uses {_used_workers(own)}")
