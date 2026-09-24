@@ -121,7 +121,6 @@ Executable checks — `.venv/bin/python -m tests.<module>` (no pytest required; 
 
 - [../tests/test_world_parity.py](../tests/test_world_parity.py) — full agent-facing parity: same seed + same actions ⇒ identical per-turn observations, money and final rewards on the harness path and `offline_lab.fast_sim`.
 - [../tests/test_world_branch_purity.py](../tests/test_world_branch_purity.py) — a clone continued with a suffix equals a from-scratch replay of prefix+suffix, and exploring branches never touches the parent.
-- [../tests/test_import_identity.py](../tests/test_import_identity.py) — R002 name test, no transcribed rule tables, configuration matches the shipped spec, and the pinned kaggle-environments version equals the installed one.
 - [../tests/test_replay_agent.py](../tests/test_replay_agent.py) — a recorded episode replays bit-exactly on both paths, at either seat or both at once; a missing step answers PASS and the record is never mutated.
 - [../tests/test_tile_dp.py](../tests/test_tile_dp.py) — tile graph contracts: day-start decode round-trip, engine calendars as truth, chain and labour cost model, no-op and dominance pruning.
 - [../tests/test_opponents.py](../tests/test_opponents.py) — vendored competitor agents: every slug complete, every payload matching its recorded SHA-256 (the Apache 4(b) claim), nothing reaching outside the process, packed payloads actually decoded, and no doc pointing at a path this repo lacks.
