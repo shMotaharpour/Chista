@@ -233,7 +233,7 @@ def settle_hours(rows) -> tuple[tuple[int, ...], tuple[tuple[str, int], ...]]:
 
 
 def merge(sells: list, hires: list, buys: list, *, cap: int = 10,
-          turns: int = TURNS_PER_DAY) -> tuple[list, tuple]:
+          turns: int = TURNS_PER_DAY, rank=None) -> tuple[list, tuple]:
     """One queue, in the engine's settle order, capped per turn.
 
     Sells keep the head of each row because the engine settles them before
@@ -242,6 +242,22 @@ def merge(sells: list, hires: list, buys: list, *, cap: int = 10,
     the queue quietly forgot is a plan that silently does less than it says.
     """
     rows = [[] for _ in range(turns)]
+    if rank is not None and sells:
+        # Within a turn, the market-priced orders are the ones that compete, and
+        # the LAST slot before the cap is the one worth ranking for: the order that
+        # misses it spills into a turn where the rival's queue is different.
+        # `rank(order, turn)` returns the value of landing it here — belief's
+        # `hourly_value` minus its `rival_risk` at that turn — and the highest
+        # value keeps the head of the row. Without a rank the order is left as the
+        # caller queued it.
+        ranked = []
+        for turn in range(turns):
+            row = [list(o) for o in (sells[turn] if turn < len(sells) else [])]
+            head = [o for o in row if not (o and o[0] == "SELL")]
+            tail = [o for o in row if o and o[0] == "SELL"]
+            tail.sort(key=lambda o: float(rank(o, turn)), reverse=True)
+            ranked.append(head + tail)
+        sells = ranked
     # The engine quotes BOTH players at the same index before committing either
     # (`_process_market`), so a turn's early slots are where our order competes
     # with the rival's. Orders with a MARKET price take them; the fixed-price ones

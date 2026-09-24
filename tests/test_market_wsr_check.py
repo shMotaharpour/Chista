@@ -101,3 +101,17 @@ def test_a_competing_buy_is_queued_before_a_hire() -> None:
     buys = [["BUY_PRODUCT", "WHEAT", 2], ["BUY_SEED", "MELON", 1]]
     rows, _dropped = merge(sells, hires, buys, cap=10, turns=3)
     assert [o[0] for o in rows[1]] == ["BUY_PRODUCT", "HIRE", "BUY_SEED"], rows[1]
+
+
+def test_the_rank_orders_the_sells_within_a_turn() -> None:
+    """The best-value sale keeps the head of the row; the rest follow it down."""
+    from agent.planner.market import merge
+
+    row = [["SELL", "MILK", 1], ["SELL", "MELON", 1], ["SELL", "WOOL", 1]]
+    value = {("MILK",): 3.0, ("MELON",): 9.0, ("WOOL",): 1.0}
+    rank = lambda order, turn: value[(order[1],)]          # noqa: E731
+    rows, _dropped = merge([row], [], [], cap=10, turns=2, rank=rank)
+    assert [o[1] for o in rows[0]] == ["MELON", "MILK", "WOOL"], rows[0]
+    # Without a rank the caller's own order stands, unchanged.
+    plain, _d = merge([row], [], [], cap=10, turns=2)
+    assert [o[1] for o in plain[0]] == ["MILK", "MELON", "WOOL"], plain[0]
