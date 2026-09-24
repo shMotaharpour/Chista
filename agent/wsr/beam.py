@@ -489,6 +489,84 @@ def _fixed_point(day: Day, tasks: TaskArray, beam: int, pool: int,
     and a half-built attempt must never replace the fuller day the first pass found.
     """
     conservative = _settle(day, tasks, beam, pool, deadline, warm)
+    if conservative.complete:
+        # The day-wide charge already carries the day, so the tightening pass has nothing to win on
+        # completeness - and it costs a search per pass, which on a real day is the budget the caller
+        # gave (F046). The day-wide charge is a ceiling, so the day it found is the day.
+        return conservative
+    best: Result = conservative
+    charge = bags_of(day, tasks, conservative)
+    tightened = False
+    for _attempt in range(CHARGE_PASSES + 1):
+        candidate = _settle(day, tasks, beam, pool, deadline, warm, charge=charge)
+        if _consistent(day, tasks, candidate) and _better_route(candidate, best):
+            best = candidate
+        bags = bags_of(day, tasks, candidate)
+        grown = [max(charged, bag) for charged, bag in zip(charge, bags)]
+        if grown != charge:
+            charge = grown
+            continue
+        if tightened:
+            break
+        tightened = True
+        charge = bags
+    return best
+
+
+def _consistent(day: Day, tasks: TaskArray, result: Result) -> bool:
+    """Whether the day that would be compiled is the day that was priced, and one that compiles.
+
+    Two things the compiler derives from the route have to agree with what the search priced:
+
+      the doors    the compiler derives where the hands land from the route
+                   (`_settled_after_first_turn`), and a unit that leaves its door in the first turn
+                   moves every hand hired after it (F040). A route priced from doors the day does not
+                   have is one the engine silently scrambles rather than refuses, so the settled is
+                   checked here by hand.
+      the rest     the pickups each worker's own bag needs, the walks that carry them, and the turns
+                   the tasks were given: `check_route` re-derives all of it from the route and names
+                   what the engine's rules would refuse, and the compile itself is the last word -
+                   `check_route` does not cover the walk that carries a worker between tasks, and
+                   `compile_route` refuses rather than pads a walk that does not fit.
+
+    A route that fails either is not an answer the search may hand back.
+    """
+    from agent.wsr.emit import check_route, compile_route   # emit imports this module: late
+
+    if tuple(result.settled) != tuple(_settled_after_first_turn(day, tasks, result)):
+        return False
+    if check_route(day, tasks, result):
+        return False
+    try:
+        compile_route(day, tasks, result)
+    except ValueError:
+        return False
+    return True
+
+
+def _settle(day: Day, tasks: TaskArray, beam: int, pool: int,
+            deadline: float | None, warm: Result | None = None, charge=None) -> Result:
+    """One pool at one pickup charge, searched until the hands stop moving.
+
+    Two things the search prices are properties of the ROUTE it produces rather than of the day: the
+    pickups each worker's own bag needs, and the doors the hands land on (a unit that walks off its
+    door in the first turn moves every hand hired after it, F040). The doors are settled in `_settle`
+    and the pickups are charged here, because the charge changes which route the search finds and the
+    route changes the charge.
+
+    The charge is a ceiling: a route priced with fewer turns at its door than its own bags need cannot
+    be written (the compiler puts the pickups there), so the ceiling may only grow, and it grows to
+    whatever the last route asked for. A route that asks for LESS than it was charged is a route with
+    turns nobody spends - its workers wait at their doors for pickups they never make - so once the
+    ceiling stops moving, the pass is repeated with the route's own bags: priced with exactly the
+    pickups it makes, or not returned at all.
+
+    The answer is the day-wide charge's own day, improved only by a route that compiles and beats it
+    by the search's own ordering (`_better_route` - carried first, then more work, then the earlier
+    stop). The conservative pass is therefore always in hand: a deadline can cut a later pass short,
+    and a half-built attempt must never replace the fuller day the first pass found.
+    """
+    conservative = _settle(day, tasks, beam, pool, deadline, warm)
     hours, arrival = _start_hours(day, pool), good_hours(tasks)
     if conservative.complete:
         # The day-wide charge already carries the day, so there is nothing to win on completeness -
