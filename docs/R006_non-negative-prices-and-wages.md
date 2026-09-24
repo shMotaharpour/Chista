@@ -7,7 +7,7 @@ the contractor asserts `p >= 0` and `w >= 0` on entry, every call.
 
 ## Decision
 
-`tile_dp/graph.py::_prune` drops `e2` when some `e1` costs no more of **every**
+`agent/tile_dp/graph.py::_prune` drops `e2` when some `e1` costs no more of **every**
 resource and produces no less of **every** resource, componentwise (#7). The
 contractor then prices the surviving edges:
 
@@ -58,7 +58,7 @@ makes the graph the right object to price.
 
 ## How it is enforced
 
-- `tile_dp/contractor.py::_check_non_negative` — the assertion, on every call.
+- `agent/tile_dp/contractor.py::_check_non_negative` — the assertion, on every call.
 - `tests/test_tile_dp_contractor.py::test_negative_price_raises_r006` — the
   guard tested directly, not only the happy path.
 - The master (#12) owns the other half: every duel export is projected onto

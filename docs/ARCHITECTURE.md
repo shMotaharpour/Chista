@@ -103,7 +103,7 @@ MarketState = {
 }
 ```
 
-- **Only `belief/` reads the market.** The `day/market.py` and `day/opponent.py` this
+- **Only `belief/` reads the market.** The `agent/planner/market.py` and `day/opponent.py` this
   first version pointed at do not exist any more; the market and the rival are read in
   `agent/belief/market.py` and `agent/belief/opponent.py`, which is where this rule is enforced
   today.
