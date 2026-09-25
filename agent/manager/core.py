@@ -248,6 +248,11 @@ class Manager:
         self.land_value: float | None = None
         step = purchase_order(quadrants_bought(obs))
         if step is not None and float(supply.money) >= float(step[1]):
+            # The valuation gets its OWN budget. Sharing the day's deadline made the second
+            # solve run on a spent clock and return a degenerate objective - measured on day 0
+            # of seed 33: fresh deadline 90,933.6, same deadline spent 0.0, fresh again
+            # 90,933.6. The day answered "not worth it" every day of a season on that number.
+            land_deadline = time.perf_counter() + self.cfg.solve_budget_ms / 1000.0
             try:
                 obs_buy = with_quadrant_open(obs, step[0], step[1])
                 owned_buy = M._owned_states(object(), obs_buy)
@@ -259,7 +264,7 @@ class Manager:
                              hands=0, max_hands=self.cfg.max_hands,
                              budget_s=self.cfg.search_budget_s,
                              rounds=self.cfg.fit_rounds,
-                             pool=self.pool, deadline=deadline,
+                             pool=self.pool, deadline=land_deadline,
                              forecast_obj=forecast_obj,
                              smoothing=self.cfg.smoothing)
                 self.land_value = (float(buy.master.objective)
