@@ -90,14 +90,6 @@ class TaskArray:
     ties: np.ndarray = field(default_factory=lambda: np.zeros((0, 0), dtype=np.int16))
     cells: np.ndarray = field(default_factory=lambda: np.zeros((0, 2), dtype=np.int16))
     columns: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int8))
-    #: The chain's own shape, per task: how many tasks the task's chain holds, where the task sits
-    #: in it (0-based, day-row order), and the tile the chain stands on. A chain's tail dies with
-    #: its first missed task (a missed WATER leaves the one-shot HARVEST->PLANT->WATER rot), and
-    #: seeing that requires the chain as data, not as a group-by. Structure first: nothing reads
-    #: these yet - the rules that do are their own measured change.
-    chain_size: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int8))
-    chain_pos: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int8))
-    chain_cell: np.ndarray = field(default_factory=lambda: np.zeros((0, 2), dtype=np.int16))
     pred: np.ndarray = field(default_factory=lambda: np.zeros((0, 0), dtype=bool))
     #: No fetch column: a fetch is not a task the day schedules. `items` says what good each task
     #: consumes; the worker's door load and any refetch after a DROP are priced by the search
@@ -507,21 +499,6 @@ def build(chains, *, available: dict[str, int] | None = None, horizon: int = 24,
     cells = np.asarray([t.cell if t.cell else shed_door for t in tasks], dtype=np.int16)
     columns = np.asarray([column_of[t.id] for t in tasks], dtype=np.int8)
 
-    # The chain as three columns, not just the index. A task is a member of a chain, and the
-    # chain's own shape - how many tasks it holds, where the task sits in it, which tile the
-    # chain stands on - is what "a chain's tail dies with its first missed task" needs. Phase-1
-    # structure: nothing reads these yet; the rules and the search that will read them land in
-    # their own change, measured, so the structure and the law stay separate changes.
-    chain_sizes = np.bincount(columns, minlength=int(columns.max()) + 1)
-    chain_size = chain_sizes[columns].astype(np.int8)
-    chain_pos = np.zeros(n, dtype=np.int8)
-    seen_count: dict[int, int] = {}
-    for i in range(n):
-        c = int(columns[i])
-        chain_pos[i] = seen_count.get(c, 0)
-        seen_count[c] = seen_count.get(c, 0) + 1
-    chain_cell = cells.copy()
-
     item_codes = np.asarray([_item_code(t.item) for t in tasks], dtype=np.int16)
     # Two columns, from the world layer's two tables rather than from one guess. A PICKUP would be
     # the fourth kind of need and there are none left: a fetch is the trip a consumer makes.
@@ -555,9 +532,6 @@ def build(chains, *, available: dict[str, int] | None = None, horizon: int = 24,
         yield_n=yield_units.astype(np.int8),
         cells=cells,
         columns=columns,
-        chain_size=chain_size,
-        chain_pos=chain_pos,
-        chain_cell=chain_cell,
         pred=pred,
         earliest=earliest,
         latest=latest,
