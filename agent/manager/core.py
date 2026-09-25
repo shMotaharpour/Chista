@@ -491,8 +491,10 @@ class Manager:
                 quotes=supply.quotes, shed_stock=supply.shed_stock,
                 shed_capacity=supply.shed_capacity)
         result = M.equilibrate(object(), self.obs, self.contractor,
+                               # #156's supply (priced for the hands the day committed) with
+                               # this branch's hour cap: the hour steps get their own round count.
                                supply,
-                               iter_cap=self.cfg.master_rounds,
+                               iter_cap=self.cfg.step_rounds,
                                pool=self.pool,
                                # No wall clock when the config has no turn budget (#156 keeps
                                # the forecast and the smoothing this branch added to the call).
