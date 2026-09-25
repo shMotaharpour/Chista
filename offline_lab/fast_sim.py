@@ -46,7 +46,7 @@ DEFAULT_CONFIGURATION: dict[str, Any] = {
     "townShopUnlockInterval": 3,
     "townShopSellInterval": 4,
     "townCenterSellInterval": 24,
-    "farmHandCostMult": 1,
+    "farmHandCostMult": 0,
     "marketParams": {},
     "seed": None,
 }

@@ -33,7 +33,8 @@ def test_the_settle_order_has_exactly_one_definition():
     """F032 is a design decision, and a second copy is a second decision.
 
     It was written four times: `planner/market.py`'s `QUEUE_RANK`,
-    `planner/repair.py`'s `_QUEUE_RANK`, a fourth inline dict in
+    the retired `planner/repair.py`'s `_QUEUE_RANK` (that module predated the
+    manager and is gone), a fourth inline dict in
     `market_layer.py` — a fourth, retired with that env-switched
     circuit — whose own docstring asked to delegate back once the planner
     imported cleanly — and the belief hook it is passed through. The

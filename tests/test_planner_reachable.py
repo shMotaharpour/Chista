@@ -29,8 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 def test_the_planner_package_imports():
     """Every planner module, by name. An unreachable layer is an absent layer."""
     for name in ("agent.planner", "agent.planner.inputs", "agent.planner.master",
-                 "agent.planner.columns", "agent.planner.land",
-                 "agent.planner.repair"):
+                 "agent.planner.columns", "agent.planner.land"):
         importlib.import_module(name)
 
 

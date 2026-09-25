@@ -38,9 +38,12 @@ pricing oracle (#11), which is what makes the whole module testable today.
   exist first. TODO(#12) is that measurement.
 - **LOCKED tiles get nothing** (`None`), so F042's silent no-op can never be
   planned on; a class with no mix is also `None` rather than a guess.
-- **Dropping is counted.** `repair_day()` returns every drop with the rule it
-  enforces; a plan that quietly loses a third of its ops looks exactly like one
-  that works, and the counts are the only thing that tells them apart.
+- **Dropping must be counted.** A plan that quietly loses a third of its ops
+  looks exactly like one that works, and the counts are the only thing that tells
+  them apart. `planner/repair.py` did that and is retired: it predated the
+  manager (19 Sep, #61, against the manager's 21 Sep, #79/#97) and nothing called
+  it. The day's orders are built by the hourly secretary, and that is where a
+  refused order has to be counted - today it is not counted anywhere.
 - **Land stays out of the LP** (issue §3): a prefix × day enumeration with the
   master injected as a callable, capped at three evaluations per episode and
   re-checked only when the engine's own price for the next step is affordable
