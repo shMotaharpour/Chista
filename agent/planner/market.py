@@ -159,6 +159,31 @@ def hire_orders(hands: int, hires_today: int, multiplier: int = 1
     return orders, bill
 
 
+def land_orders(bought: int, lands_today: int = 0) -> tuple[list, int]:
+    """The BUY_LAND orders for this day and what they cost.
+
+    F042: the price depends on how many quadrants are ALREADY owned, not on how
+    many the day has ordered — `bought` is that count, and `lands_today` is how
+    many this day intends to buy, priced in order (1000, then 2000, then 4000).
+    Past the third purchase there is nothing to buy, and no order is invented.
+
+    The price comes from `planner/land_plan.purchase_order`, the one place the
+    land plan owns it. The owner of the day (`build`, below) puts the bill into
+    the same purse the hires use, which is what makes the day's SELL queue size
+    itself to fund the purchase.
+    """
+    from agent.planner.land_plan import purchase_order
+    orders: list = []
+    bill = 0
+    for i in range(max(0, int(lands_today))):
+        step = purchase_order(int(bought) + i)
+        if step is None:
+            break
+        orders.append(["BUY_LAND"])
+        bill += int(step[1])
+    return orders, bill
+
+
 def sell_rows(obs, harvest_expected: int, cash_needed: float, config=None,
               *, model=None, activity: int | None = None,
               forecast_obj=None, arrivals: dict | None = None,
@@ -235,7 +260,8 @@ def settle_hours(rows) -> tuple[tuple[int, ...], tuple[tuple[str, int], ...]]:
 
 
 def merge(sells: list, hires: list, buys: list, *, cap: int = 10,
-          turns: int = TURNS_PER_DAY, rank=None) -> tuple[list, tuple]:
+          turns: int = TURNS_PER_DAY, rank=None, lands: list | None = None
+          ) -> tuple[list, tuple]:
     """One queue, in the engine's settle order, capped per turn.
 
     Sells keep the head of each row because the engine settles them before
@@ -269,7 +295,11 @@ def merge(sells: list, hires: list, buys: list, *, cap: int = 10,
     # the same turn.
     competing = [list(o) for o in buys if o and str(o[0]) == "BUY_PRODUCT"]
     quiet = [list(o) for o in buys if not (o and str(o[0]) == "BUY_PRODUCT")]
-    opening = competing + [list(o) for o in hires] + quiet
+    # Land is atomic like a hire and sorts first in its turn (SETTLE_RANK: BUY_LAND 0,
+    # SELL 1, HIRE 2), so it opens the quiet group rather than competing for the early
+    # market-priced slots the rival is quoted at.
+    opening = ([list(o) for o in (lands or [])] + competing
+               + [list(o) for o in hires] + quiet)
     for turn in range(turns):
         row = [list(o) for o in (sells[turn] if turn < len(sells) else [])]
         row.sort(key=lambda o: SETTLE_RANK.get(o[0] if o else "",
@@ -283,7 +313,7 @@ def merge(sells: list, hires: list, buys: list, *, cap: int = 10,
 def build(obs, chains, *, hands: int, harvest_expected: int = 0,
           config=None, cap: int = 10, model=None, activity: int | None = None,
           forecast_obj=None, wsr_check: bool = True,
-          arrivals: dict | None = None, rank=None,
+          arrivals: dict | None = None, rank=None, lands: int = 0,
           master_sells: dict | None = None) -> DayMarket:
     """The whole day's market side, from the committed chains.
 
@@ -313,11 +343,18 @@ def build(obs, chains, *, hands: int, harvest_expected: int = 0,
                                    int(farm.get("hires_today", 0)),
                                    multiplier)
     bill += hire_bill
+    # F042: the next purchase's price depends on how many quadrants are already owned, and NW
+    # is free from the start. Like a HIRE, a purchase is a commitment, so a check
+    # (`wsr_check=False`) does not place one. The bill carries it BEFORE the sells are sized,
+    # which is what makes the day's SELL queue raise the coins the purchase needs.
+    owned = max(0, len(farm.get("unlocked_quadrants", []) or []) - 1)
+    land_row, land_bill = land_orders(owned, lands if wsr_check else 0)
+    bill += land_bill
     sells = sell_rows(obs, harvest_expected, float(bill), config,
                       model=model, activity=activity,
                       forecast_obj=forecast_obj, arrivals=arrivals,
                       master_sells=master_sells)
-    rows, dropped = merge(sells, hires, buys, cap=cap, rank=rank)
+    rows, dropped = merge(sells, hires, buys, cap=cap, rank=rank, lands=land_row)
     hire_hours, bought_hours = settle_hours(rows)
     return DayMarket(rows=rows, bill=int(bill), buys=tuple(map(tuple, buys)),
                      hires=len(hires), dropped=dropped,
