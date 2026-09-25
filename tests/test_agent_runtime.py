@@ -186,15 +186,24 @@ def test_hour_zero_observes_and_every_later_hour_steps() -> None:
 
 
 def test_the_step_budget_is_inside_the_turn() -> None:
-    """Every step gets a positive budget no larger than the working second."""
+    """Every step gets a positive budget no larger than the working second - WHEN there is one.
+
+    The turn budget is off by default (nothing in the agent races the clock), so this guard arms
+    one itself rather than reading the default, and it checks the other half of the rule too: with
+    no budget the step is handed None, which `Manager.step` reads as "no deadline".
+    """
     fake = _FakeManager()
-    cfg = Config()
-    runtime = _runtime(fake)
+    runtime = _runtime(fake, turn_budget_ms=965.0, reserve_ms=140.0)
     runtime.act(_obs(hour=0))
     runtime.act(_obs(hour=1))
     assert fake.stepped, "no step was made"
     for budget in fake.stepped:
-        assert 0.0 < budget <= cfg.solve_budget_ms, budget
+        assert 0.0 < budget <= runtime.cfg.solve_budget_ms, budget
+
+    unwalled = _runtime(_FakeManager())
+    unwalled.act(_obs(hour=0))
+    unwalled.act(_obs(hour=1))
+    assert unwalled.manager.stepped == [None], unwalled.manager.stepped
 
 
 def test_the_managers_plan_is_what_gets_dispatched() -> None:

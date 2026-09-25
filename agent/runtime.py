@@ -184,9 +184,10 @@ class Runtime:
                 # run continues, never whether the failure is written down.
                 raise_after = exc
         self_s = time.perf_counter() - started
-        self.worst_overrun_s = max(
-            self.worst_overrun_s,
-            max(0.0, self_s - self.cfg.turn_budget_ms / 1000.0))
+        if self.cfg.turn_budget_ms:      # no budget, no overrun: there is nothing to overrun
+            self.worst_overrun_s = max(
+                self.worst_overrun_s,
+                max(0.0, self_s - self.cfg.turn_budget_ms / 1000.0))
         self._log(obs, self_s, error)
         self.last_return_t = time.perf_counter()
         self.turns += 1
@@ -194,20 +195,30 @@ class Runtime:
             raise raise_after
         return action
 
-    def _remaining_ms(self, started: float) -> float:
+    def _remaining_ms(self, started: float) -> float | None:
         """What is left of this turn's working budget, for the manager's step.
 
         `step` improves tomorrow's pool, so it may only spend what the turn has
         not already spent: at hour 0 the observe call has taken its share, and
         the reserve is never handed out (`Config.solve_budget_ms`).
+
+        None with no turn budget (`Config.turn_budget_ms = 0`): there is no share to divide, and
+        `None` is what `Manager.step` reads as "no deadline". Subtracting from it was a
+        TypeError on every turn after the first (measured: eight `test_agent_runtime` guards).
         """
+        budget = self.cfg.solve_budget_ms
+        if budget is None:
+            return None
         spent_ms = (time.perf_counter() - started) * 1000.0
-        return max(0.0, self.cfg.solve_budget_ms - spent_ms)
+        return max(0.0, budget - spent_ms)
 
     # ---- the log (evidence, never a switch) ----
     def _log(self, obs, self_s: float, error: Exception | None) -> None:
         day, hour = _day_of(obs), _hour_of(obs)
         budget_s = self.cfg.turn_budget_ms / 1000.0
+        # With no turn budget there is no overrun to report: `self_s > 0.0` is always true, and
+        # the `A` line would call every turn over budget for a budget nobody set.
+        over = bool(budget_s) and self_s > budget_s
         if day != self.day_logged and hour == 0:
             print(f"D {day} self_ms={self_s * 1000:.1f} "
                   f"overage={_overage_of(obs):.3f} "
@@ -215,7 +226,7 @@ class Runtime:
                   f"worst_overrun_ms={self.worst_overrun_s * 1000:.1f} "
                   f"failures={len(self.failures)}", flush=True)
             self.day_logged = day
-        if error is not None or self_s > budget_s:
+        if error is not None or over:
             reason = "over_budget" if error is None else f"error={error!r}"
             print(f"A day={day} hour={hour} self_ms={self_s * 1000:.1f} "
                   f"overage={_overage_of(obs):.3f} {reason}", flush=True)
