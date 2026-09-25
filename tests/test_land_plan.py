@@ -13,7 +13,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from agent.planner.land_plan import (FREE_QUADRANT, cash_cost, cash_rhs_reduction,
                                      cells_open_by_day, held_fraction, purchase_order,
-                                     quadrant_cells, round_plan, smooth, tiles_open)
+                                     quadrant_cells, quadrant_is_locked, quadrants_bought,
+                                     round_plan, smooth, tiles_open, with_quadrant_open)
+from agent.world.rules import LAND_PRICES
 
 
 def test_a_single_spike_is_the_hard_plan_buy_on_that_day() -> None:
@@ -152,6 +154,73 @@ def test_held_fraction_measures_what_was_paid_for() -> None:
     assert held_fraction(hard) == 1.0
     assert abs(held_fraction(np.full(8, 0.25)) - 1.0) < 1e-12   # 8 * 0.25 = 2 -> clipped
     assert abs(held_fraction(np.full(8, 0.05)) - 0.4) < 1e-12
+
+
+def board(size: int = 10, unlocked: tuple = ("NW",)) -> dict:
+    """A fresh farm: `unlocked` quadrants open and empty, the rest LOCKED."""
+    cells = [["LOCKED"] * size for _ in range(size)]
+    for q in unlocked:
+        for x, y in quadrant_cells(size, q):
+            cells[y][x] = None
+    return {"player": 0,
+            "farms": [{"money": 3000.0, "tiles": cells,
+                       "unlocked_quadrants": list(unlocked)}]}
+
+
+def test_opening_a_quadrant_flips_its_locked_cells_and_nothing_else() -> None:
+    """`with_quadrant_open` is the what-if board the land valuation plans on: exactly the
+    quadrant's cells change, so the two plans differ only in what a purchase changes."""
+    obs = board()
+    before = [row[:] for row in obs["farms"][0]["tiles"]]
+    out = with_quadrant_open(obs, "NE", 1000)
+    tiles = out["farms"][0]["tiles"]
+    opened = [(x, y) for x, y in quadrant_cells(10, "NE") if tiles[y][x] is None]
+    assert len(opened) == 25, len(opened)
+    for x, y in quadrant_cells(10, "NE"):
+        assert tiles[y][x] is None, (x, y, tiles[y][x])
+    for x, y in quadrant_cells(10, "SW"):
+        assert tiles[y][x] == "LOCKED", (x, y)
+    assert before == obs["farms"][0]["tiles"], "the caller's observation was mutated"
+
+
+def test_the_price_leaves_the_purse_and_appears_in_the_quadrant_list() -> None:
+    """The coins are inside the number: the comparison plans against a purse the price is
+    already out of, and the quadrant is on the list the engine reports."""
+    out = with_quadrant_open(board(), "NE", 1000)
+    farm = out["farms"][0]
+    assert farm["money"] == 3000.0 - 1000, farm["money"]
+    assert farm["unlocked_quadrants"] == ["NW", "NE"], farm["unlocked_quadrants"]
+
+
+def test_a_quadrant_already_on_the_list_is_not_added_twice() -> None:
+    """The list is the engine's bookkeeping; adding twice would make it a lie."""
+    listed = board()
+    listed["farms"][0]["unlocked_quadrants"] = ["NW", "NE"]
+    out = with_quadrant_open(listed, "NE", 2000)
+    assert out["farms"][0]["unlocked_quadrants"] == ["NW", "NE"]
+    assert out["farms"][0]["money"] == 3000.0 - 2000
+
+
+def test_locked_is_read_off_the_board_not_the_list() -> None:
+    """The precondition for buying is the cells, which is what the plan works."""
+    assert quadrant_is_locked(board(), "NE") is True
+    assert quadrant_is_locked(board(), "NW") is False
+    assert quadrant_is_locked(board(unlocked=("NW", "NE")), "NE") is False
+
+
+def test_the_first_quadrant_is_free_so_none_are_bought() -> None:
+    """F042: NW starts open. A fresh board has bought nothing, whatever the list says."""
+    assert quadrants_bought(board()) == 0
+    assert quadrants_bought(board(unlocked=("NW", "NE"))) == 1
+    assert quadrants_bought(board(unlocked=("NW", "NE", "SW", "SE"))) == 3
+
+
+def test_the_forced_order_is_walked_from_what_is_owned() -> None:
+    """The price a day is quoted is the next step in the forced order (F042)."""
+    assert purchase_order(quadrants_bought(board())) == ("NE", int(LAND_PRICES[0]))
+    assert purchase_order(quadrants_bought(board(unlocked=("NW", "NE")))) == (
+        "SW", int(LAND_PRICES[1]))
+    assert purchase_order(3) is None
 
 
 def main() -> int:

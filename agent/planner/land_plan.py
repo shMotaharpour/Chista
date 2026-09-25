@@ -159,3 +159,62 @@ def held_fraction(s: np.ndarray) -> float:
     """
     s = np.clip(np.asarray(s, dtype=np.float64), 0.0, 1.0)
     return float(min(1.0, float(s.sum())))
+
+
+def with_quadrant_open(obs: dict, quadrant: str, price: int, player: int = 0) -> dict:
+    """The observation as it would be if this farm had just bought `quadrant`.
+
+    Deep-copied and edited at the level the day plan actually reads: that quadrant's "LOCKED"
+    cells become None (empty), the quadrant joins `unlocked_quadrants`, and the price leaves
+    the purse. Nothing else moves — so the plans compared against it differ in exactly the two
+    things a purchase changes, which is what makes the comparison a valuation of the land
+    rather than of a different board.
+
+    Raises when the observation does not carry what this needs, instead of returning a board
+    that would be silently wrong.
+    """
+    import copy
+
+    farms = (obs or {}).get("farms") or []
+    if len(farms) <= player:
+        raise ValueError(f"observation has no farm for player {player}")
+    out = copy.deepcopy(obs)
+    farm = out["farms"][player]
+    tiles = farm.get("tiles") or []
+    if not tiles:
+        raise ValueError("farm has no tiles to open")
+    board = len(tiles)
+    for x, y in quadrant_cells(board, quadrant):
+        if tiles[y][x] == "LOCKED":
+            tiles[y][x] = None
+    unlocked = list(farm.get("unlocked_quadrants", []) or [])
+    if quadrant not in unlocked:
+        unlocked.append(quadrant)
+    farm["unlocked_quadrants"] = unlocked
+    farm["money"] = float(farm.get("money", 0.0)) - float(price)
+    return out
+
+
+def quadrant_is_locked(obs: dict, quadrant: str, player: int = 0) -> bool:
+    """Whether this farm still has `quadrant` locked — the precondition for buying it.
+
+    Reads the board rather than the quadrant list: the list is the engine's bookkeeping, and
+    the cells are what the plan works.
+    """
+    farm = ((obs or {}).get("farms") or [{}])[player]
+    tiles = farm.get("tiles") or []
+    if not tiles:
+        return False
+    board = len(tiles)
+    return all(tiles[y][x] == "LOCKED" for x, y in quadrant_cells(board, quadrant))
+
+
+def quadrants_bought(obs: dict, player: int = 0) -> int:
+    """How many quadrants this farm has bought: NW is free from the start (F042).
+
+    Read from the observation rather than tracked in the manager, so the count survives a
+    restart and cannot drift from the board the engine shows.
+    """
+    farms = (obs or {}).get("farms") or []
+    farm = farms[player] if len(farms) > player else {}
+    return max(0, len(farm.get("unlocked_quadrants", []) or []) - 1)

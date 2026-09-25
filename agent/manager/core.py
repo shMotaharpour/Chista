@@ -55,6 +55,8 @@ from agent.planner import columns as C
 from agent.planner import day as D
 from agent.planner import master as M
 from agent.planner.colgen import advance_pool, classes_of
+from agent.planner.land_plan import (purchase_order, quadrants_bought,
+                                     with_quadrant_open)
 from agent.planner.inputs import GRAPH_PATH
 from agent.tile_dp.contractor import HORIZON_DAYS
 from agent.world.rules import TURNS_PER_DAY
@@ -116,6 +118,12 @@ class Manager:
         self.contractor = _contractor(self.graph, HORIZON_DAYS)
         self.steps = C.shed_distance()
         self.pool: list = []            # columns carried between days
+        #: Quadrant the day decided to buy (0 or 1). The secretary turns it into a BUY_LAND
+        #: order and funds it through the day's sell queue, so the decision lives here and the
+        #: price/queue live there.
+        self.lands_today: int = 0
+        self.land_value: float | None = None
+        self.land_note: str = ""
         #: The last solve's mix, in `pool` order — what the day roll prunes on.
         #: Kept BESIDE the pool and never apart from it: `generate` rebuilds the
         #: pool as [idle, warm, new] on every call, so `step` leaves the pool in
@@ -223,10 +231,48 @@ class Manager:
         self.certified = bool(self.day.master.certified)
         self._project_own_sells()
         self._watch(obs)
+        # --- land: one quadrant, in the forced order, only when the purse can pay it --------
+        # The comparison runs the SAME plan on a board where the quadrant is open and the price
+        # is already out of the purse, so the coins are inside the number: the master's objective
+        # is money spent and earned over the season, and a coin spent is a coin lost
+        # (colgen.py:465). The buy plan is NOT adopted — its chains sit on tiles that are still
+        # LOCKED in the engine's board this turn — only the decision is: the order goes out
+        # through the secretary (which prices it and sizes the day's sells against it), and the
+        # tiles are planned from the day the engine shows them.
+        self.lands_today = 0
+        self.land_note = ""
+        #: What the day thought the next quadrant is worth: objective(with it, price paid) minus
+        #: objective(without it), in coins over the rest of the season. None when the day never
+        #: asked the question (nothing left to buy, or the purse cannot pay) — a None is not a
+        #: zero, and a season report must not read it as one.
+        self.land_value: float | None = None
+        step = purchase_order(quadrants_bought(obs))
+        if step is not None and float(supply.money) >= float(step[1]):
+            try:
+                obs_buy = with_quadrant_open(obs, step[0], step[1])
+                owned_buy = M._owned_states(object(), obs_buy)
+                _reps_b, _counts_b, of_tile_b = classes_of(
+                    owned_buy, M._owned_distances(obs_buy, self.steps))
+                buy = D.plan(obs_buy, self.contractor, M.supply_from_obs(obs_buy),
+                             class_of_tile=self._class_of_tile(obs_buy, of_tile_b),
+                             iter_cap=self.cfg.master_rounds,
+                             hands=0, max_hands=self.cfg.max_hands,
+                             budget_s=self.cfg.search_budget_s,
+                             rounds=self.cfg.fit_rounds,
+                             pool=self.pool, deadline=deadline,
+                             forecast_obj=forecast_obj,
+                             smoothing=self.cfg.smoothing)
+                self.land_value = (float(buy.master.objective)
+                                   - float(self.day.master.objective))
+                if self.land_value > 0.0:
+                    self.lands_today = 1
+            except Exception as exc:                # a valuation must never break the day
+                self.lands_today, self.land_note = 0, f"{type(exc).__name__}: {exc}"
         self.plan = D.compile(self.day, obs, hands=self.day.hands,
                               config=config, model=self.opponent,
                               activity=self._activity(),
                               forecast_obj=self.forecast_obj,
+                              lands=self.lands_today,
                               # The rival's dated supply, gated to the days their
                               # board says have goods: the risk half of the sell
                               # rank. One day is all the rank reads.

@@ -481,7 +481,7 @@ def _solve_at(obs, contractor, supply, class_of_tile, hands, iter_cap,
 def compile(day_plan: "DayPlan", obs, *, hands: int | None = None,
             rival_supply: dict | None = None,
             config=None, model=None, activity: int | None = None,
-            forecast_obj=None) -> dict:
+            forecast_obj=None, lands: int = 0) -> dict:
     """A `DayPlan` -> the `{"units": [...], "market": [...]}` the dispatcher slices.
 
     The unit ops come from the day layer's own compiler, against the doors the
@@ -559,13 +559,13 @@ def compile(day_plan: "DayPlan", obs, *, hands: int | None = None,
         return rank
 
     def queue(harvest_expected: int, hands: int, wsr_check: bool,
-              arrivals: dict | None = None):
+              arrivals: dict | None = None, lands: int = 0):
         built = K.build(obs, fitted.chains, hands=hands,
                         harvest_expected=harvest_expected, config=config,
                         model=model, activity=activity,
                         forecast_obj=forecast_obj, wsr_check=wsr_check,
                         arrivals=arrivals, rank=sell_rank(),
-                        master_sells=master_sells)
+                        master_sells=master_sells, lands=lands)
         # Remember what this queue sells so the NEXT build ranks on our own volume
         # too: the ladder prices the lot we put in, and the correction round is
         # exactly the place that number exists.
@@ -619,7 +619,7 @@ def compile(day_plan: "DayPlan", obs, *, hands: int | None = None,
     # (`DayMarket.hire_hours`: settlement plus one, F040). The bound assumed a
     # whole turn's order budget went to hires; this queue puts the sells first
     # (F032), so the bound was optimistic by construction.
-    check = queue(0, pool, wsr_check=False)
+    check = queue(0, pool, wsr_check=False, lands=lands)
     available = timetable(availability(obs, fitted.chains), check)
     tasks = T.build(fitted.chains, available=available)
     hours = tuple(check.hire_hours) if check.hire_hours else earliest_hire_times(pool)
@@ -628,7 +628,7 @@ def compile(day_plan: "DayPlan", obs, *, hands: int | None = None,
     # The plan is PRICED for `pool` hands and the search is held to exactly those: the market
     # hires what the day was costed with, and a route may leave some of them idle.
     market = queue(harvest, result.pool, wsr_check=True,
-                   arrivals=arrival_hours(ops))
+                   arrivals=arrival_hours(ops), lands=lands)
     if tuple(market.hire_hours) and tuple(market.hire_hours) != tuple(day.hire_times):
         # ONE correction round, and the reason the check's harvest was a stand-in:
         # the committed queue knows the real one, so if its hires land in other
@@ -638,5 +638,5 @@ def compile(day_plan: "DayPlan", obs, *, hands: int | None = None,
         if again[1].complete:
             day, result, ops, harvest = again
             market = queue(harvest, result.pool, wsr_check=True,
-                           arrivals=arrival_hours(ops))
+                           arrivals=arrival_hours(ops), lands=lands)
     return to_plan(ops, market=market.rows)
