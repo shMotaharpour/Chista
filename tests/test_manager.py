@@ -205,3 +205,41 @@ def test_unmodelled_tile_does_not_shift_classes_of_subsequent_tiles():
         f"tile 44 class shifted: got {reps1[shifted[44]]}, expected (0, {manager.steps[44]})"
     )
 
+
+def test_step_warms_same_lp_as_hour_zero():
+    """Hours 1-23 must warm the hour-0 LP (forecast, smoothing, hands) (#156)."""
+    from offline_lab.kaggle_env import new_environment
+    from unittest.mock import patch
+    from agent.planner import master as M
+    from agent.planner import day as D
+
+    env = new_environment({"seed": 0})
+    env.reset(2)
+    obs = dict(env.state[0].observation)
+    manager = Manager()
+    manager.observe(obs)
+    manager.certified = False
+
+    called_kwargs = {}
+    called_args = []
+    real_equilibrate = M.equilibrate
+
+    def spy_equilibrate(*args, **kwargs):
+        called_args.extend(args)
+        called_kwargs.update(kwargs)
+        return real_equilibrate(*args, **kwargs)
+
+    with patch.object(M, "equilibrate", side_effect=spy_equilibrate):
+        manager.step(obs, budget_ms=50.0)
+
+    assert "forecast_obj" in called_kwargs, "step() did not pass forecast_obj"
+    assert called_kwargs["forecast_obj"] is getattr(manager, "forecast_obj", object()), "step() passed different forecast_obj"
+    assert "smoothing" in called_kwargs, "step() did not pass smoothing"
+    assert called_kwargs["smoothing"] == manager.cfg.smoothing, "step() passed wrong smoothing"
+    called_supply = called_args[3] if len(called_args) > 3 else called_kwargs.get("supply")
+    assert called_supply is not None
+    days = int(np.asarray(manager.contractor.days))
+    expected_hours = D.hours_for(getattr(manager.day, "hands", 0), days)
+    assert np.allclose(called_supply.hours, expected_hours), "step() used 0-hands supply instead of day.hands"
+
+

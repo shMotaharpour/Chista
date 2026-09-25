@@ -127,6 +127,7 @@ class Manager:
         #: day without moving it is carrying a plan for the wrong days.
         self.pool_day: int | None = None
         self.duals = None               # yesterday's published prices
+        self.forecast_obj = None
         self.plan: dict = dict(IDLE_PLAN)
         self.day: D.DayPlan | None = None
         self.obs = None
@@ -206,7 +207,7 @@ class Manager:
         # YESTERDAY projects go into today's path (the day-over-day fixed
         # point). Measured on a day-3 MILK-heavy plan, the flat path overstated
         # its earn by ~16% — the ladder walks down under your own supply too.
-        forecast_obj = self._forecast(obs, config)
+        self.forecast_obj = self._forecast(obs, config)
         self.day = D.plan(obs, self.contractor, supply,
                           class_of_tile=class_of_tile,
                           iter_cap=self.cfg.master_rounds,
@@ -214,7 +215,7 @@ class Manager:
                           budget_s=self.cfg.search_budget_s,
                           rounds=self.cfg.fit_rounds,
                           pool=self.pool, deadline=deadline,
-                          forecast_obj=forecast_obj,
+                          forecast_obj=self.forecast_obj,
                           smoothing=self.cfg.smoothing)
         self.pool = list(self.day.master.pool)
         self.lam = self.day.master.lam
@@ -225,7 +226,7 @@ class Manager:
         self.plan = D.compile(self.day, obs, hands=self.day.hands,
                               config=config, model=self.opponent,
                               activity=self._activity(),
-                              forecast_obj=forecast_obj,
+                              forecast_obj=self.forecast_obj,
                               # The rival's dated supply, gated to the days their
                               # board says have goods: the risk half of the sell
                               # rank. One day is all the rank reads.
@@ -428,11 +429,24 @@ class Manager:
         if self.obs is None or self.certified:
             return self.certified
         budget = self.cfg.solve_budget_ms if budget_ms is None else budget_ms
+        days = int(np.asarray(self.contractor.days))
+        hands = getattr(self.day, "hands", 0) if self.day is not None else 0
+        supply = M.supply_from_obs(self.obs)
+        if hands > 0:
+            hours = D.hours_for(hands, days)
+            supply = M.CouplingSupply(
+                hours=hours, seed_stock=supply.seed_stock,
+                animal_stock=supply.animal_stock, fert_stock=supply.fert_stock,
+                wheat_feed_stock=supply.wheat_feed_stock, money=supply.money,
+                quotes=supply.quotes, shed_stock=supply.shed_stock,
+                shed_capacity=supply.shed_capacity)
         result = M.equilibrate(object(), self.obs, self.contractor,
-                               M.supply_from_obs(self.obs),
+                               supply,
                                iter_cap=self.cfg.master_rounds,
                                pool=self.pool,
-                               deadline=time.perf_counter() + budget / 1000.0)
+                               deadline=time.perf_counter() + budget / 1000.0,
+                               forecast_obj=self.forecast_obj,
+                               smoothing=self.cfg.smoothing)
         if not result.used_fallback:
             self.pool = list(result.pool)
             self.lam = result.lam           # the mix of THIS pool, in its order
