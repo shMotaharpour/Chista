@@ -172,3 +172,50 @@ def test_an_empty_day_zero_chain_is_left_out_not_padded():
     assert len(chains) == 1, (
         f"the empty chain was carried into the day: {chains}")
     assert chains[0][1] == tuple(chain_ops(real))
+
+
+def test_at_risk_animal_gets_feeding_plan_instead_of_idle():
+    """An animal at risk of escaping (unfed >= 1) must be fed on day 0 (#149)."""
+    import copy
+    from offline_lab.kaggle_env import new_environment
+    from agent.manager.core import Manager
+    from agent.planner.colgen import classes_of
+    from agent.planner import master as M
+    from agent.planner import columns as C
+    from agent.planner.day import chain_ops, day_chains
+
+    env = new_environment({"seed": 0})
+    env.reset(2)
+    obs = copy.deepcopy(env.state[0].observation)
+    manager = Manager()
+
+    # Place a cow with unfed=1 at tile (0, 0)
+    obs["farms"][0]["tiles"][0][0] = {
+        "kind": "PASTURE", "animal": "COW", "placed_day": -2,
+        "consecutive_unfed": 1, "yield_units": 0
+    }
+
+    contractor = manager.contractor
+    supply = M.supply_from_obs(obs)
+    result = M.equilibrate(object(), obs, contractor, supply, iter_cap=5)
+    mixes = M.to_mixes(result, contractor.days)
+
+    owned = M._owned_states(object(), obs)
+    dists = M._owned_distances(obs, manager.steps)
+    _, _, of_tile = classes_of(owned, dists)
+    class_of_tile = manager._class_of_tile(obs, of_tile)
+
+    # Before protection: assign_by_quota gives Plan 0 (idle)
+    raw_choices = C.assign_by_quota(class_of_tile, mixes)
+    raw_chains = day_chains(raw_choices, mixes, result.pool)
+    raw_ops = [ops for cell, ops, _ in raw_chains if cell == (0, 0)]
+    assert not raw_ops or "FEED" not in raw_ops[0], "baseline was already feeding"
+
+    # Protected choices:
+    choices = D.protect_at_risk_assignments(raw_choices, mixes, obs)
+    chains = day_chains(choices, mixes, result.pool)
+
+    tile0_ops = [ops for cell, ops, _ in chains if cell == (0, 0)]
+    assert tile0_ops, "tile (0, 0) was declined or assigned idle"
+    assert "FEED" in tile0_ops[0], f"tile (0, 0) ops do not feed: {tile0_ops[0]}"
+

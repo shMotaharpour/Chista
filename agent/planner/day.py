@@ -20,6 +20,7 @@ This is M4. Nothing here decides anything: it asks, and it reports.
 from __future__ import annotations
 
 import time
+from typing import Any
 from dataclasses import replace, dataclass
 
 #: How many times the manager may re-ask the day layer before it accepts the
@@ -119,6 +120,74 @@ def _column_for(pool, choice, mix):
             return column
         seen += 1
     return None
+
+
+def _find_plan_with_op(mix, op_name: str) -> int | None:
+    """Find the best plan index in a class mix that includes `op_name` on day 0."""
+    best_pi = None
+    best_score = -float("inf")
+    lam = getattr(mix, "lam", None)
+    for pi, plan in enumerate(mix.plans):
+        if not plan.chains:
+            continue
+        ops = chain_ops(int(plan.chains[0]))
+        if op_name in ops:
+            score = (float(lam[pi]) if lam is not None and pi < len(lam)
+                     else float(getattr(plan, "revenue", 0.0)))
+            if score > best_score:
+                best_score = score
+                best_pi = pi
+    return best_pi
+
+
+def protect_at_risk_assignments(choices: list[Any],
+                                mixes: dict[int, Any],
+                                obs: dict | None,
+                                board_size: int = BOARD_SIZE) -> list[Any]:
+    """Ensure at-risk animals and crops receive survival ops on day 0 (#149).
+
+    Animals with consecutive_unfed >= 1 escape tonight unless fed today (F017).
+    Crops with consecutive_unwatered >= 1 become weeds tonight unless watered (F001).
+    Quota rounding can assign them an idle plan (Plan 0) when labour is tight.
+    This promotes their choice to the best plan in their class that contains
+    the necessary survival op ('FEED' for animals, 'WATER' for plants) on day 0.
+    """
+    from agent.planner import columns as C
+    if not obs or not isinstance(obs, dict):
+        return choices
+    player = int(obs.get("player", 0))
+    farms = obs.get("farms") or []
+    if player >= len(farms):
+        return choices
+    tiles = farms[player].get("tiles") or []
+    out = list(choices)
+    for pos, choice in enumerate(out):
+        if choice is None:
+            continue
+        y, x = pos // board_size, pos % board_size
+        if y >= len(tiles) or x >= len(tiles[y]):
+            continue
+        t = tiles[y][x]
+        if not isinstance(t, dict):
+            continue
+        kind = t.get("kind")
+        needed_op = None
+        if kind in ("COOP", "PASTURE") and t.get("animal"):
+            if int(t.get("consecutive_unfed", 0)) >= 1:
+                needed_op = "FEED"
+        elif kind == "PLANT":
+            if int(t.get("consecutive_unwatered", 0)) >= 1:
+                needed_op = "WATER"
+        if needed_op:
+            mix = mixes.get(choice.class_key)
+            if mix and choice.plan_index < len(mix.plans):
+                plan = mix.plans[choice.plan_index]
+                ops = chain_ops(int(plan.chains[0])) if plan.chains else ()
+                if needed_op not in ops:
+                    better_pi = _find_plan_with_op(mix, needed_op)
+                    if better_pi is not None:
+                        out[pos] = C.Choice(choice.class_key, better_pi)
+    return out
 
 
 def availability(obs, chains) -> dict:
@@ -330,6 +399,7 @@ def _solve_at(obs, contractor, supply, class_of_tile, hands, iter_cap,
                                smoothing=smoothing)
         mixes = M.to_mixes(result, contractor.days)
         choices = C.assign_by_quota(class_of_tile, mixes)
+        choices = protect_at_risk_assignments(choices, mixes, obs)
         # The LP's λ is fractional and fits; rounding it to whole tiles need
         # not, and on a day-0 board it does not — the quota rounding overruns
         # the labour row on ten of twenty days (21.0 hours against 15.6).
