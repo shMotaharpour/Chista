@@ -122,7 +122,7 @@ class Manager:
         #: order and funds it through the day's sell queue, so the decision lives here and the
         #: price/queue live there.
         self.lands_today: int = 0
-        self.land_value: float | None = None
+        self.land_ramp: np.ndarray | None = None
         self.land_note: str = ""
         #: The last solve's mix, in `pool` order — what the day roll prunes on.
         #: Kept BESIDE the pool and never apart from it: `generate` rebuilds the
@@ -216,8 +216,37 @@ class Manager:
         # point). Measured on a day-3 MILK-heavy plan, the flat path overstated
         # its earn by ~16% — the ladder walks down under your own supply too.
         self.forecast_obj = self._forecast(obs, config)
+        # --- land: the plan's OWN decision, inside the master LP --------------------------
+        # The purchase is a soft ramp in the LP (`colgen.MasterLP.solve`): `s_d` is the scale
+        # bought BY day d, its price is charged on the step in the objective AND in the cash
+        # rows, and the quadrant's tiles enter the class counts. So the day needs no separate
+        # valuation to be told what land is worth - it competes with the long crop for the same
+        # coin, in the same model, and answers with a DAY.
+        #
+        # It is handed to this one solve, NOT to a second one on a what-if board. The earlier
+        # shape solved a second plan against its own board, and that was wrong twice over: the
+        # second solve ran on the day's spent clock (measured: fresh deadline 90,933.6, same
+        # deadline spent 0.0, fresh again 90,933.6), and even when it did not, the day's own
+        # spending never reserved the coins the purchase needed - the failure the owner named,
+        # the manager buying long crops and never saving for the land.
+        self.lands_today = 0
+        self.land_note = ""
+        #: (days,) the LP's own ramp: what the plan decided to buy by each day. None when the
+        #: day was not offered a purchase (nothing left to buy). Read off the same LP as the
+        #: plan, so a report can say WHEN the plan wanted the land, not just whether.
+        self.land_ramp: np.ndarray | None = None
+        land_option = None
+        step = purchase_order(quadrants_bought(obs))
+        if step is not None:
+            try:
+                added = _tiles_added_by(obs, step[0], self.steps)
+                if float(added.sum()) > 0.0:
+                    land_option = (float(step[1]), added)
+            except Exception as exc:                # a land option must never break the day
+                self.land_note = f"{type(exc).__name__}: {exc}"
         self.day = D.plan(obs, self.contractor, supply,
                           class_of_tile=class_of_tile,
+                          land=land_option,
                           iter_cap=self.cfg.master_rounds,
                           hands=0, max_hands=self.cfg.max_hands,
                           budget_s=self.cfg.search_budget_s,
@@ -231,48 +260,14 @@ class Manager:
         self.certified = bool(self.day.master.certified)
         self._project_own_sells()
         self._watch(obs)
-        # --- land: one quadrant, in the forced order, only when the purse can pay it --------
-        # The comparison runs the SAME plan on a board where the quadrant is open and the price
-        # is already out of the purse, so the coins are inside the number: the master's objective
-        # is money spent and earned over the season, and a coin spent is a coin lost
-        # (colgen.py:465). The buy plan is NOT adopted — its chains sit on tiles that are still
-        # LOCKED in the engine's board this turn — only the decision is: the order goes out
-        # through the secretary (which prices it and sizes the day's sells against it), and the
-        # tiles are planned from the day the engine shows them.
-        self.lands_today = 0
-        self.land_note = ""
-        #: What the day thought the next quadrant is worth: objective(with it, price paid) minus
-        #: objective(without it), in coins over the rest of the season. None when the day never
-        #: asked the question (nothing left to buy, or the purse cannot pay) — a None is not a
-        #: zero, and a season report must not read it as one.
-        self.land_value: float | None = None
-        step = purchase_order(quadrants_bought(obs))
-        if step is not None and float(supply.money) >= float(step[1]):
-            # The valuation gets its OWN budget. Sharing the day's deadline made the second
-            # solve run on a spent clock and return a degenerate objective - measured on day 0
-            # of seed 33: fresh deadline 90,933.6, same deadline spent 0.0, fresh again
-            # 90,933.6. The day answered "not worth it" every day of a season on that number.
-            land_deadline = time.perf_counter() + self.cfg.solve_budget_ms / 1000.0
-            try:
-                obs_buy = with_quadrant_open(obs, step[0], step[1])
-                owned_buy = M._owned_states(object(), obs_buy)
-                _reps_b, _counts_b, of_tile_b = classes_of(
-                    owned_buy, M._owned_distances(obs_buy, self.steps))
-                buy = D.plan(obs_buy, self.contractor, M.supply_from_obs(obs_buy),
-                             class_of_tile=self._class_of_tile(obs_buy, of_tile_b),
-                             iter_cap=self.cfg.master_rounds,
-                             hands=0, max_hands=self.cfg.max_hands,
-                             budget_s=self.cfg.search_budget_s,
-                             rounds=self.cfg.fit_rounds,
-                             pool=self.pool, deadline=land_deadline,
-                             forecast_obj=forecast_obj,
-                             smoothing=self.cfg.smoothing)
-                self.land_value = (float(buy.master.objective)
-                                   - float(self.day.master.objective))
-                if self.land_value > 0.0:
-                    self.lands_today = 1
-            except Exception as exc:                # a valuation must never break the day
-                self.lands_today, self.land_note = 0, f"{type(exc).__name__}: {exc}"
+        # The ramp the ONE plan already decided. The tiles are workable from the day AFTER the
+        # purchase (the market settles it in the turn it is ordered), so the LP works them from
+        # `s_{d-1}`: `s_0` is the statement "the tiles are needed tomorrow", i.e. buy today.
+        ramp = self.day.master.land
+        self.land_ramp = None if ramp is None else np.asarray(ramp, dtype=np.float64)
+        if (self.land_ramp is not None and self.land_ramp.size
+                and float(self.land_ramp[0]) >= 0.5):
+            self.lands_today = 1
         self.plan = D.compile(self.day, obs, hands=self.day.hands,
                               config=config, model=self.opponent,
                               activity=self._activity(),
@@ -528,6 +523,30 @@ class Manager:
                 if int(k) != LOCKED_KEY and int(k) in self.keys
                 else None
                 for k in np.asarray(view.me.keys).reshape(-1)]
+
+
+def _tiles_added_by(obs, quadrant: str, steps) -> np.ndarray:
+    """The coming quadrant's tiles, counted in the BASE board's own classes.
+
+    The LP knows the classes the day already has, so the new capacity has to be expressed in
+    them. Matching is by the class's own representative and never by position: `classes_of`
+    orders classes by what it finds, and the board with the quadrant open is a different board.
+
+    A tile whose class the base board does not have is DROPPED, and that is deliberate - there
+    is no column for it in this pool, so counting it would promise capacity nothing can use.
+    """
+    owned = M._owned_states(object(), obs)
+    reps, counts, _of = classes_of(owned, M._owned_distances(obs, steps))
+    obs_buy = with_quadrant_open(obs, quadrant, 0)
+    owned_buy = M._owned_states(object(), obs_buy)
+    reps_b, counts_b, _of_b = classes_of(owned_buy, M._owned_distances(obs_buy, steps))
+    by_rep = {tuple(np.asarray(r).reshape(-1)): i for i, r in enumerate(reps_b)}
+    added = np.zeros(len(counts), dtype=np.float64)
+    for i, rep in enumerate(reps):
+        j = by_rep.get(tuple(np.asarray(rep).reshape(-1)))
+        if j is not None:
+            added[i] = float(counts_b[j]) - float(counts[i])
+    return added
 
 
 def _load_graph():

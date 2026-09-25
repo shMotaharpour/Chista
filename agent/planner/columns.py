@@ -194,7 +194,13 @@ def assign_by_quota(class_of_tile: Sequence[int | None],
     choices: list[Choice | None] = [None] * len(class_of_tile)
     for key, positions in order.items():
         mix = mixes[key]
-        lam = np.asarray(mix.lam, dtype=np.float64)
+        # NEGATIVE WEIGHTS ARE NUMERICAL NOISE, and they have to be clipped before the floor.
+        # HiGHS hands back values like -1e-9; `floor(-1e-9)` is -1, which the seat count below
+        # does not see (it compares the SUM, and the -1 cancels a +1) while the assignment loop
+        # only walks the POSITIVE floors - so the class is handed one seat more than it has
+        # tiles and the loop runs off the end of `positions` (measured: IndexError on a day-0
+        # board once the master carried land columns).
+        lam = np.maximum(np.asarray(mix.lam, dtype=np.float64), 0.0)
         seats = len(positions)
         whole = np.floor(lam).astype(np.int64)
         # A class may be offered more weight than it has tiles (the LP is

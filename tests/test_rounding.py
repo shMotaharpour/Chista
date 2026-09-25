@@ -56,6 +56,22 @@ def _mix(lam, values=None, count=None) -> dict[int, ClassMix]:
                           lam=tuple(lam))}
 
 
+def test_a_denormal_negative_weight_does_not_steal_a_seat():
+    """A weight of -1e-9 must not hand the class one seat too many.
+
+    HiGHS returns values like that, and `floor(-1e-9)` is -1. The seat count compares the SUM of
+    the floors, where the -1 cancels one of the +1s, while the assignment loop walks only the
+    POSITIVE floors - so the class is handed a seat more than it has tiles and the loop runs off
+    the end of the tile list. Measured as an IndexError on a day-0 board the moment the master
+    carried the land ramp's columns; the clip in `assign_by_quota` is the fix.
+    """
+    mixes = _mix([2.0, -1e-9, 2.0], values=[10.0, 20.0, 30.0], count=3)
+
+    choices = assign_by_quota([KEY, KEY, KEY], mixes)          # exactly three tiles
+
+    assert [c.plan_index for c in choices] == [0, 2, 2]
+
+
 def test_quota_keeps_the_mix_where_argmax_collapses_it():
     """One heavy worthless plan and several light valuable ones.
 

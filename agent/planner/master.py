@@ -347,6 +347,10 @@ class MasterResult:
     #: they are what the pricing charged the tiles (`quote·(1+ahead)`), and the
     #: #13 gap has to be measured in the same accounting as the objective (#142).
     cash_lp: np.ndarray = None
+    #: (days,) the LAND ramp the LP decided: the scale of the coming quadrant's purchase
+    #: committed to BY each day. None when the day was not offered one. The plan's own answer
+    #: to "when is the land worth its price", read off the same LP as everything else.
+    land: np.ndarray = None
     #: (days, len(SHED_ITEMS)) the BALANCE rows' duals the LP solved with — what
     #: one unit of a good sitting in the shed is worth. It is the master's own
     #: price for a plan's OUTPUT (the produce feeds the stock and the stock is
@@ -697,7 +701,8 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
                 deadline: float | None = None,
                 forecast_obj=None,
                 smoothing: float = 0.0,
-                entry: bool = False) -> MasterResult:
+                entry: bool = False,
+                land: tuple[float, np.ndarray] | None = None) -> MasterResult:
     """Column generation over the tile classes; always publishable.
 
     One round is one Dantzig-Wolfe round (lesson 1.9): the LP solves over EVERY
@@ -995,6 +1000,7 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
                              sell_cap=_sell_cap(obs, days),
                              depth=depth,
                              entry=entry,
+                             land=land,
                              warm=_repriced_pool(pool, p_mkt, days),
                              smoothing=smoothing)
     except RuntimeError as exc:
@@ -1021,6 +1027,7 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
         result.now = getattr(cg.solve, "now", None)
         result.defer = getattr(cg.solve, "defer", None)
         result.eta = getattr(cg.solve, "eta", None)
+        result.land = getattr(cg.solve, "land", None)
         result.credit = credit_box[0]
         result.defer_cap = getattr(cg.solve, "defer_cap", None)
         result.sells = getattr(cg.solve, "sells", None)

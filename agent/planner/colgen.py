@@ -197,6 +197,10 @@ class MasterSolve:
     #: (days, items) the entry rows' duals: the internal price of a harvested
     #: unit, which is the pricing's produce credit when the entry row is on.
     eta: np.ndarray = None
+    #: (days,) the LAND ramp: the scale of the coming quadrant's purchase committed to BY each
+    #: day, `s_d - s_{d-1}` being what is bought ON day d. None when the day was not offered a
+    #: purchase. Continuous on purpose (see `MasterLP.solve`), so it is read as a plan.
+    land: np.ndarray = None
     #: (days, items) the UPPER bound the defer block was given. The last day's
     #: zero is a guard rail against free disposal (a plan that cannot sell what
     #: it harvested would otherwise defer it into the void and dodge the waste
@@ -318,7 +322,8 @@ class MasterLP:
               market: tuple[int, ...] = (),
               sell_cap: np.ndarray | None = None,
               depth: tuple[np.ndarray, np.ndarray] | None = None,
-              entry: bool = False) -> MasterSolve:
+              entry: bool = False,
+              land: tuple[float, np.ndarray] | None = None) -> MasterSolve:
         """The restricted master over the pool, with the SHED as a stock.
 
         Variables: `lambda_j >= 0` per column, then per day the sells, the stock
@@ -398,6 +403,7 @@ class MasterLP:
         for j, col in enumerate(pool):
             A_e[col.cls, j] = 1.0
 
+
         # --- the shed: sells, stock, waste, and their rows --------------------
         # Layout: [lambda (n) | sell_shallow (n_goods·days) | sell_deep
         #          (n_goods·days) | stock (items·days) | waste (items·days)]
@@ -417,6 +423,24 @@ class MasterLP:
         now0 = waste0 + items * days
         defer0 = now0 + items * days
         n_cols = (defer0 + items * days) if entry else now0
+
+        # --- the land decision, INSIDE this LP, as a soft ramp ---------------
+        # `s_d in [0,1]` is the scale of the purchase the plan has committed to BY day d, so
+        # `s_d - s_{d-1}` is what is bought ON day d. It is continuous on purpose: the price
+        # enters the objective and the cash rows linearly, the new tiles enter the class counts
+        # linearly, and the LP then trades the coins against the tiles BY ITSELF - no integer
+        # variable, no enumeration of candidate days, no second solve. A coin spent is a coin
+        # lost (`cost` above), so the ramp only leaves zero when the tiles beat the price.
+        #
+        # `land = (price, tiles_per_class)`: how many of the coming quadrant's tiles land in
+        # each class the LP already knows. The caller reads the ramp back (`MasterSolve.land`)
+        # and commits the purchase on the first day it reaches its bound.
+        n_land = days if land is not None else 0
+        land0 = n_cols
+        land_price = float(land[0]) if land is not None else 0.0
+        land_tiles = (np.asarray(land[1], dtype=np.float64) if land is not None
+                      else np.zeros(n_classes))
+        n_cols = land0 + n_land
 
         def col_now(ii: int, d: int) -> int:
             return now0 + ii * days + d
@@ -480,6 +504,20 @@ class MasterLP:
                                            dtype=np.float64)[:days].sum())
         lower = np.zeros(n_cols)
         upper = np.full(n_cols, np.inf)
+        if n_land:
+            lower[land0:land0 + n_land] = 0.0
+            upper[land0:land0 + n_land] = 1.0
+            # The price is charged on the STEP, not on the level: paying it once is what a
+            # purchase is. In the objective as well as in the cash rows - a price that only
+            # timed the spend would be free to the tiles (colgen's own rule, measured on #142),
+            # and a SIGN FLIP here pays the plan for buying (measured: +1,000.0 on a base of
+            # 69,084.7 with the tiles contributing nothing). HiGHS runs this model in MIN form
+            # and the caller negates, so a coin spent is a POSITIVE cost, the same convention
+            # the columns' own `spend` uses.
+            for d in range(days):
+                cost[land0 + d] += land_price
+                if d:
+                    cost[land0 + d - 1] -= land_price
         if entry:
             # No day after the season: what waits on the last day is destroyed by
             # the night flush, so the LP may not leave anything there.
@@ -607,6 +645,16 @@ class MasterLP:
                     for b in range(tiers):
                         A_c[d:, col_sell(gi, d, b)] = -block_price[gi, d, b]
 
+        if A_c.shape[1] < n_cols:                 # no shed: the sells are not columns
+            A_c = np.hstack([A_c, np.zeros((days, n_cols - A_c.shape[1]))])
+        if n_land:
+            # The cumulative spend carries the step from its own day onward, which is the only
+            # place the purse can see it: `Σ_{d'<=d} spend - earn <= money`.
+            for d in range(days):
+                A_c[d:, land0 + d] += land_price
+                if d:
+                    A_c[d:, land0 + d - 1] -= land_price
+
         target = counts.astype(np.float64)
         if n_cols > n:
             # The coupling and convexity rows only involve the columns; the shed
@@ -615,13 +663,40 @@ class MasterLP:
             pad = n_cols - n
             A_q = np.hstack([A_q, np.zeros((A_q.shape[0], pad))])
             A_e = np.hstack([A_e, np.zeros((n_classes, pad))])
+        if n_land:
+            # `Σ_{j in c} λ_j - n_c·s_last = N_c`: the quadrant's tiles are real capacity and
+            # they stand to the end of the season, so the count the classes must cover grows
+            # with the ramp's final level.
+            A_e[:, land0 + days - 1] -= land_tiles
         # Row order, and the duals are read in exactly this order:
         # [labour | cash | balance (EQUALITIES) | cap (≤) | appetite (≤) |
         #  convexity (EQUALITIES)]. The appetite rows sit AFTER the cap rows on
         # purpose: every offset below is positional, so a row inserted in the
         # middle silently re-labels τ as ρ and every price downstream is read off
         # the wrong constraint.
-        rows = np.vstack([A_q, A_c, bal, cap, appetite_row, split, A_e])
+        # The WORK rows, one per (class, day): the tiles worked on day d cannot outnumber the
+        # tiles that exist on day d - the old ones plus what the ramp has bought by the day
+        # BEFORE. That is the engine's rule (a purchase settles in the turn's market, so the
+        # tiles are workable from the next hour) and it is what stops the plan from farming a
+        # quadrant it has not paid for yet.
+        W = np.zeros((n_classes * days if n_land else 0, n_cols))
+        if n_land:
+            for j, col in enumerate(pool):
+                per_day = np.asarray(col.cost, dtype=np.float64)[:days, 0]
+                c0 = int(col.cls) * days
+                W[c0:c0 + days, j] = (per_day > 0.0)
+            for c in range(n_classes):
+                for d in range(1, days):
+                    W[c * days + d, land0 + d - 1] -= land_tiles[c]
+        # The ramp is MONOTONE - `s_{d-1} <= s_d` - because a purchase is a state and not a
+        # spike: without these rows the LP pays the price once on the last day and reports the
+        # tiles to the end (measured: ramp 0,0,...,1 against a base of 69,084.7).
+        Mon = np.zeros((max(0, days - 1) if n_land else 0, n_cols))
+        if n_land:
+            for d in range(1, days):
+                Mon[d - 1, land0 + d - 1] = 1.0
+                Mon[d - 1, land0 + d] = -1.0
+        rows = np.vstack([A_q, A_c, bal, cap, appetite_row, split, A_e, W, Mon])
         n_ineq = (n_coupling * days + days + items * days + days + n_goods
                   + (items * days if entry else 0))
         csc = sparse.csc_matrix(rows)
@@ -638,14 +713,22 @@ class MasterLP:
             np.full(days, -np.inf),                       # cap: <=
             np.full(n_goods, -np.inf),                    # town appetite: <=
             np.zeros(items * days if entry else 0),        # split: equality
-            target])
+            target,
+            np.full(W.shape[0], -np.inf),                   # land work: <= N_c
+            np.full(Mon.shape[0], -np.inf)])                # land ramp: <= 0
         lp.row_upper_ = np.concatenate([
             b_q, b_c,
             np.zeros(items * days),
             np.full(days, float(shed_capacity)),
             appetite_rhs,
             np.zeros(items * days if entry else 0),        # split: equality
-            target])
+            target,
+            # The land work rows' OWN right-hand sides. Left out, HiGHS reads a bound of zero
+            # and every tile is idle: the plan collapses to `-price` (measured 1,000.0 against
+            # a base of 69,084.7, lambda all on idle columns).
+            (np.repeat(np.asarray(counts, dtype=np.float64), days) if n_land
+             else np.zeros(0)),
+            np.zeros(Mon.shape[0])])
         lp.sense_ = _highspy._core.ObjSense.kMinimize
         matrix = _highspy._core.HighsSparseMatrix()
         matrix.format_ = _highspy._core.MatrixFormat.kColwise
@@ -703,7 +786,10 @@ class MasterLP:
         # The convexity duals are EQUALITY marginals and are free in sign: a class
         # whose tiles are worth having carries a negative one. Clamping them would
         # break the reduced-cost test, which is the only reason they are read.
-        mu = np.asarray(marg[n_ineq:], dtype=np.float64)
+        # An EXACT slice, not `marg[n_ineq:]`: the land's work rows are stacked after the
+        # convexity rows, and an open-ended read would put their duals into `mu` - the price of
+        # a class - which is the kind of silent misalignment this file warns about.
+        mu = np.asarray(marg[n_ineq:n_ineq + n_classes], dtype=np.float64)
         values = np.asarray(solution.col_value, dtype=np.float64)
         # What the master decided to SELL is the SUM of the tiers: they are two
         # prices for one sale, not two sales, and a caller that read only the
@@ -715,7 +801,10 @@ class MasterLP:
         now = (values[now0:defer0].reshape(items, days).T if entry else None)
         defer = (values[defer0:defer0 + items * days].reshape(items, days).T
                  if entry else None)
+        land_s = (np.asarray(values[land0:land0 + n_land], dtype=np.float64)
+                  if n_land else None)
         return MasterSolve(lam=values[:n], y=y, cash=cash, mu=mu,
+                           land=land_s,
                            objective=-float(self._highs.getObjectiveValue()),
                            sigma=sigma, tau=tau, rho=rho,
                            appetite=appetite_rhs, sells=sells,
@@ -1026,7 +1115,8 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
              market: tuple[int, ...] = (),
              sell_cap: np.ndarray | None = None,
              depth: tuple[np.ndarray, np.ndarray] | None = None,
-             entry: bool = False) -> ColgenResult:
+             entry: bool = False,
+             land: tuple[float, np.ndarray] | None = None) -> ColgenResult:
     """The loop: master over every column so far, price, add, repeat.
 
     `price(y, cash)` is the caller's pricing step: it publishes the duals to
@@ -1117,9 +1207,8 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
             shed_stock=None if shed is None else shed[0],
             shed_capacity=0.0 if shed is None else float(shed[1]),
             prices=prices, market=market, sell_cap=sell_cap,
-            depth=depth, entry=entry)
+            depth=depth, entry=entry, land=land)
         result.rounds += 1
-
         exact = (result.solve.y, result.solve.cash, result.solve.mu)
         # A degenerate first LP has NO unique dual: with an empty shed and only
         # do-nothing columns the whole model is zero and HiGHS hands back σ = 0,
