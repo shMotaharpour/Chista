@@ -193,7 +193,7 @@ class Manager:
         one call that may spend the whole budget. What it finds goes into the
         pool either way.
         """
-        started = time.perf_counter()
+        started = time.perf_counter()   # for the day's own report, not for a deadline
         self.obs, self.config = obs, config
         # Today's horizon, and the pool moved onto it. Before anything reads
         # either: `supply`/`class_of_tile` are day-invariant, but the contractor
@@ -205,7 +205,11 @@ class Manager:
             owned, M._owned_distances(obs, self.steps))
         class_of_tile = self._class_of_tile(obs, of_tile)
 
-        deadline = started + self.cfg.solve_budget_ms / 1000.0
+        # No wall clock: `solve_budget_ms` is None unless a turn budget was configured, and
+        # None threads through as "no deadline" the whole way down.
+        budget_ms = self.cfg.solve_budget_ms
+        deadline = (None if budget_ms is None
+                    else time.perf_counter() + budget_ms / 1000.0)
         # ONE forecast per turn, handed to both consumers: the master prices its
         # objective from it and `market_queue` re-times the day's sells against
         # it. Without the hand-off belief built the same curve twice — 1.1 ms
@@ -490,7 +494,10 @@ class Manager:
                                supply,
                                iter_cap=self.cfg.master_rounds,
                                pool=self.pool,
-                               deadline=time.perf_counter() + budget / 1000.0,
+                               # No wall clock when the config has no turn budget (#156 keeps
+                               # the forecast and the smoothing this branch added to the call).
+                               deadline=(None if budget is None
+                                         else time.perf_counter() + budget / 1000.0),
                                forecast_obj=self.forecast_obj,
                                smoothing=self.cfg.smoothing)
         if not result.used_fallback:

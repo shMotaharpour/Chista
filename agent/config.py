@@ -47,10 +47,16 @@ class Config:
     #: down one search at a time.
     hands_ask_rounds: int = 2
 
-    turn_budget_ms: float = 965.0
+    #: NO WALL CLOCK. The owner's rule for this phase: nothing in the agent may race the
+    #: clock - the day's plan is a DECISION and the round caps are what bound it, not a
+    #: stopwatch. 0.0 disables the per-turn deadline everywhere it is threaded (`Manager`,
+    #: `day.plan`, `colgen.generate`, `equilibrate`); a positive value re-arms it for the
+    #: harness, which really does bill a turn, and that is the only place it belongs.
+    turn_budget_ms: float = 0.0
     #: Held back for compiling and dispatching, so a solve that runs to its
-    #: deadline still leaves the turn a legal answer.
-    reserve_ms: float = 140.0
+    #: deadline still leaves the turn a legal answer. Only meaningful with a
+    #: positive `turn_budget_ms`.
+    reserve_ms: float = 0.0
     #: Print the wall clock between two calls of the agent, with the running
     #: mean and sd of the season so far.
     #:
@@ -116,9 +122,10 @@ class Config:
     #: work) — it is capped low because the churn is not fixed, not because
     #: hiring is bad.
     max_hands: int = 1
-    #: Seconds the day search may spend. None lets it run to its own end,
-    #: which is what an offline measurement wants and a turn does not.
-    search_budget_s: float = 0.25
+    #: Seconds the day search may spend. None lets it run to its own end - and None is the
+    #: default now, for the same reason as `turn_budget_ms`: a search that stops on the clock
+    #: is a sample, not a measurement. Set it to bound a real turn.
+    search_budget_s: float | None = None
     #: Master solves one `plan` may spend correcting the hours it committed.
     fit_rounds: int = 2
     #: Wentges dual-price smoothing (#87 follow-up sweep, 2026-09-22): the
@@ -137,7 +144,7 @@ class Config:
     max_orders_per_turn: int = 10
 
     def __post_init__(self) -> None:
-        if self.turn_budget_ms <= self.reserve_ms:
+        if self.turn_budget_ms and self.turn_budget_ms <= self.reserve_ms:
             raise ValueError(
                 f"a turn budget of {self.turn_budget_ms} ms leaves nothing "
                 f"after the {self.reserve_ms} ms reserve")
@@ -147,8 +154,14 @@ class Config:
             raise ValueError(f"damping {self.damping} is outside (0, 1]")
 
     @property
-    def solve_budget_ms(self) -> float:
-        """What one turn may spend thinking, after the reserve."""
+    def solve_budget_ms(self) -> float | None:
+        """What one turn may spend thinking, after the reserve - or None for no clock.
+
+        None is not zero: zero would mean "no time at all" to every caller that threads it
+        into a deadline, and every one of them reads `None` as "no deadline".
+        """
+        if self.turn_budget_ms <= 0.0:
+            return None
         return self.turn_budget_ms - self.reserve_ms
 
     @classmethod
