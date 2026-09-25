@@ -372,6 +372,7 @@ class MasterResult:
     pool: list = field(default_factory=list)
     classes: tuple = ()            # (reps, counts, class of each owned tile)
     mu: np.ndarray = None          # (n_classes,) convexity duals, signed
+    sells: np.ndarray = None       # (n_goods, days) planned market sales from the LP
     #: True only when a pricing round found no class with a positive reduced
     #: cost. `converged` is kept as its alias for the callers that read it.
     certified: bool = False
@@ -1022,6 +1023,7 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
         result.eta = getattr(cg.solve, "eta", None)
         result.credit = credit_box[0]
         result.defer_cap = getattr(cg.solve, "defer_cap", None)
+        result.sells = getattr(cg.solve, "sells", None)
     converged = cg.certified
 
     # #87's dead-zone clamp, on the COUPLING dual before the publish map:

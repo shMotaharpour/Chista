@@ -161,7 +161,8 @@ def hire_orders(hands: int, hires_today: int, multiplier: int = 1
 
 def sell_rows(obs, harvest_expected: int, cash_needed: float, config=None,
               *, model=None, activity: int | None = None,
-              forecast_obj=None, arrivals: dict | None = None) -> list:
+              forecast_obj=None, arrivals: dict | None = None,
+              master_sells: dict | None = None) -> list:
     """Belief's per-hour SELL queue, or no rows if it cannot build one.
 
     Called through `market_queue`, which is belief's documented entry point and
@@ -179,7 +180,8 @@ def sell_rows(obs, harvest_expected: int, cash_needed: float, config=None,
                         arrivals=arrivals,
                         harvest_expected=int(harvest_expected),
                         cash_needed=float(cash_needed), config=config,
-                        model=model, activity=activity)
+                        model=model, activity=activity,
+                        master_sells=master_sells)
 
 
 def _sellable_obs(obs):
@@ -281,7 +283,8 @@ def merge(sells: list, hires: list, buys: list, *, cap: int = 10,
 def build(obs, chains, *, hands: int, harvest_expected: int = 0,
           config=None, cap: int = 10, model=None, activity: int | None = None,
           forecast_obj=None, wsr_check: bool = True,
-          arrivals: dict | None = None, rank=None) -> DayMarket:
+          arrivals: dict | None = None, rank=None,
+          master_sells: dict | None = None) -> DayMarket:
     """The whole day's market side, from the committed chains.
 
     `rank(order, turn)` orders the sells inside a turn by their value: belief's
@@ -312,7 +315,8 @@ def build(obs, chains, *, hands: int, harvest_expected: int = 0,
     bill += hire_bill
     sells = sell_rows(obs, harvest_expected, float(bill), config,
                       model=model, activity=activity,
-                      forecast_obj=forecast_obj, arrivals=arrivals)
+                      forecast_obj=forecast_obj, arrivals=arrivals,
+                      master_sells=master_sells)
     rows, dropped = merge(sells, hires, buys, cap=cap, rank=rank)
     hire_hours, bought_hours = settle_hours(rows)
     return DayMarket(rows=rows, bill=int(bill), buys=tuple(map(tuple, buys)),

@@ -171,3 +171,25 @@ def test_an_animal_in_the_shed_does_not_take_the_sell_queue_down():
     assert set(trimmed) == set(PRODUCTS), sorted(trimmed)
     assert not set(trimmed) & set(ANIMALS)
     assert trimmed["MILK"] == 3, "the trim ate a product it was meant to keep"
+
+
+def test_master_lp_sells_are_emitted_in_market_orders():
+    """Sales decided by the master LP are emitted in the market queue (#147)."""
+    from offline_lab.kaggle_env import new_environment
+    env = new_environment()
+    env.reset(2)
+    obs = dict(env.state[0].observation)
+    obs["private"] = dict(obs.get("private", {}))
+    obs["private"]["shed"] = {"CARROT": 10}
+
+    # Without master_sells: baseline shed policy hoards (0 CARROT sales)
+    rows_no_master = K.sell_rows(obs, harvest_expected=0, cash_needed=0.0)
+    sells_no_master = sum(o[2] for r in rows_no_master for o in r if o and o[0] == "SELL" and o[1] == "CARROT")
+    assert sells_no_master == 0, f"baseline should have hoarded, but sold: {sells_no_master}"
+
+    # With master_sells: the LP's decision to sell 5 carrots is executed
+    rows_with_master = K.sell_rows(obs, harvest_expected=0, cash_needed=0.0,
+                                   master_sells={"CARROT": 5})
+    sells_with_master = sum(o[2] for r in rows_with_master for o in r if o and o[0] == "SELL" and o[1] == "CARROT")
+    assert sells_with_master == 5, f"expected 5 carrots sold, got {sells_with_master}"
+

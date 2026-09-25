@@ -501,10 +501,22 @@ def compile(day_plan: "DayPlan", obs, *, hands: int | None = None,
 
     fitted = day_plan.day
     pool = int(fitted.pool if hands is None else hands)
+
+    master_sells = {}
+    solve_sells = getattr(getattr(day_plan, "master", None), "sells", None)
+    if solve_sells is not None and getattr(solve_sells, "ndim", 0) == 2 and solve_sells.shape[1] > 0:
+        from agent.world.model import PRODUCTS
+        for gi, prod in enumerate(PRODUCTS):
+            if gi < solve_sells.shape[0]:
+                qty = int(round(float(solve_sells[gi, 0])))
+                if qty > 0:
+                    master_sells[prod] = qty
+
     if not fitted.complete or not fitted.chains:
         rows = K.build(obs, (), hands=0, config=config,
                        model=model, activity=activity,
-                       forecast_obj=forecast_obj).rows
+                       forecast_obj=forecast_obj,
+                       master_sells=master_sells).rows
         return {"units": [[["PASS"]] * TURNS_PER_DAY], "market": rows}
 
     from agent.world.rules import earliest_hire_times
@@ -552,7 +564,8 @@ def compile(day_plan: "DayPlan", obs, *, hands: int | None = None,
                         harvest_expected=harvest_expected, config=config,
                         model=model, activity=activity,
                         forecast_obj=forecast_obj, wsr_check=wsr_check,
-                        arrivals=arrivals, rank=sell_rank())
+                        arrivals=arrivals, rank=sell_rank(),
+                        master_sells=master_sells)
         # Remember what this queue sells so the NEXT build ranks on our own volume
         # too: the ladder prices the lot we put in, and the correction round is
         # exactly the place that number exists.
