@@ -1069,11 +1069,13 @@ def to_mixes(result: "MasterResult", days: int) -> dict[int, "object"]:
     """
     from agent.planner.columns import DAYS, ClassMix, Plan
 
+    zero_row = (0.0,) * DAYS
+
     def pad(row: np.ndarray) -> tuple[float, ...]:
-        out = np.zeros(DAYS, dtype=np.float64)
-        n = min(DAYS, len(row))
-        out[:n] = np.asarray(row, dtype=np.float64)[:n]
-        return tuple(float(v) for v in out)
+        r = tuple(float(v) for v in np.asarray(row, dtype=np.float64)[:DAYS])
+        if len(r) < DAYS:
+            r += (0.0,) * (DAYS - len(r))
+        return r
 
     sigma = np.asarray(result.sigma if result.sigma is not None else [],
                        dtype=np.float64)
@@ -1131,9 +1133,9 @@ def to_mixes(result: "MasterResult", days: int) -> dict[int, "object"]:
                     value=plan_value(col),
                     rows={"labour": pad(col.cost[:, 0]),
                           "cash_out": pad(col.spend),
-                          "wheat_net": pad(np.zeros(days)),
-                          "fert_net": pad(np.zeros(days)),
-                          "stored": pad(np.zeros(days))})
+                          "wheat_net": zero_row,
+                          "fert_net": zero_row,
+                          "stored": zero_row})
         by_class[col.cls].append((plan, float(lam[j]) if j < lam.size else 0.0))
 
     mixes: dict[int, ClassMix] = {}

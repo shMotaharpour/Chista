@@ -551,16 +551,18 @@ class MasterLP:
                     for b in range(tiers):
                         bal[row, col_sell(sellable, d, b)] = 1.0
         prod = np.zeros((items * days, n))
-        if items:
+        if items and n:
+            valid_rids = [(ii, rid) for ii, rid in enumerate(rids) if rid is not None]
             for j, col in enumerate(pool):
                 if col.produce is None:
                     continue
                 produced = np.asarray(col.produce, dtype=np.float64)
-                for ii, rid in enumerate(rids):
-                    if rid is None or rid >= produced.shape[1]:
-                        continue
-                    for d in range(min(days, produced.shape[0])):
-                        prod[ii * days + d, j] = float(produced[d, rid])
+                d_max = min(days, produced.shape[0])
+                if d_max <= 0:
+                    continue
+                for ii, rid in valid_rids:
+                    if rid < produced.shape[1]:
+                        prod[ii * days: ii * days + d_max, j] = produced[:d_max, rid]
             if entry:
                 for ii in range(items):
                     for d in range(days):
