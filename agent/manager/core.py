@@ -453,11 +453,15 @@ class Manager:
 
         `of_tile` covers the tiles the master priced, in board order; the rest
         of the board is a quadrant we have not bought (F042) and has no class.
+        Tiles with states outside the graph get None and do not consume from
+        `walker`, keeping subsequent tiles aligned with their own classes (#152).
         """
-        from agent.obs import decode_world
+        from agent.obs import LOCKED_KEY, decode_world
         view = decode_world(obs, at_day_start=True, graph_keys=self.keys)
         walker = iter(of_tile)
-        return [next(walker, None) if int(k) >= 0 else None
+        return [next(walker, None)
+                if int(k) != LOCKED_KEY and int(k) in self.keys
+                else None
                 for k in np.asarray(view.me.keys).reshape(-1)]
 
 
