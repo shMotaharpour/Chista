@@ -15,7 +15,7 @@ sys.path.insert(0, "/chista/pm/world")
 
 from agent.wsr import tasks as T
 
-CORPUS = pathlib.Path(__file__).parent / "corpus" / "real_days.json"
+CORPUS = pathlib.Path(__file__).parent / "corpus" / "winner_days.json"
 REAL_DAYS = json.loads(CORPUS.read_text())
 
 

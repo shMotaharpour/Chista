@@ -22,7 +22,7 @@ from agent.wsr import beam as B
 from agent.wsr import tasks as T
 from agent.wsr.emit import check_route
 
-CORPUS = pathlib.Path(__file__).parent / "corpus" / "real_days.json"
+CORPUS = pathlib.Path(__file__).parent / "corpus" / "winner_days.json"
 REAL_DAYS = json.loads(CORPUS.read_text())
 BY_SIZE = sorted(REAL_DAYS, key=lambda e: sum(len(ops) for _c, ops, _e in e["chains"]))
 
@@ -67,6 +67,6 @@ def test_a_good_drawn_before_it_is_in_the_shed_is_named() -> None:
 def test_the_searchs_own_routes_draw_no_complaint() -> None:
     """The rules have to stay silent about the days the search builds: a check that starts refusing
     good routes is worse than the one that never ran."""
-    for entry in [BY_SIZE[0], BY_SIZE[2], BY_SIZE[20], BY_SIZE[50]]:
+    for entry in [BY_SIZE[0], BY_SIZE[2], BY_SIZE[10], BY_SIZE[20]]:
         day, tasks, result = _searched(entry)
         assert check_route(day, tasks, result) == [], tasks.n

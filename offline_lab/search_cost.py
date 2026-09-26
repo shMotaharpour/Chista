@@ -16,7 +16,7 @@ archive's spread and the strong players' days - and `--corpus` takes any day fil
 
     .venv/bin/python offline_lab/search_cost.py
     .venv/bin/python offline_lab/search_cost.py --worst 12
-    .venv/bin/python offline_lab/search_cost.py --corpus tests/day_layer/corpus/strong_days.json
+    .venv/bin/python offline_lab/search_cost.py --corpus winner_days.json
 """
 import argparse
 import json
@@ -32,7 +32,7 @@ from agent.wsr import tasks as T
 
 #: The samples the layer is measured on: the archive's spread and the strong players' days. They are
 #: the tests' fixtures, and `--corpus` takes any file the builder wrote.
-SAMPLES = "tests/day_layer/corpus/real_days.json,tests/day_layer/corpus/strong_days.json"
+SAMPLES = "tests/day_layer/corpus/winner_days.json"
 #: The turn's second: one act timeout (F046). A day that takes longer than this cannot be planned
 #: inside the turn it is planned in.
 TURN_MS = 1000.0

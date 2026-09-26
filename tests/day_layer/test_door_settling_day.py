@@ -27,7 +27,7 @@ from agent.wsr.emit import check_route, compile_route
 #: doors are a permutation of the same four tiles.
 OSCILLATING = ("2026-09-16", 109468286, 1)
 
-REAL_DAYS = json.loads((Path(__file__).parent / "corpus" / "real_days.json").read_text())
+REAL_DAYS = json.loads((Path(__file__).parent / "corpus" / "winner_days.json").read_text())
 
 
 def _day(entry):
