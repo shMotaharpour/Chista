@@ -329,51 +329,21 @@ def search(day: Day, tasks: TaskArray, *, beam: int | None = None,
     # and stops there, paying the ladder for a day the farmer could have carried alone.
     floor = max(0, lower_bound(day, tasks) - len(day.units))
     start = floor if hands is None else int(hands)
-    # A caller's ceiling is theirs to set and may be tighter than the day's own bound - the corpus
-    # test asks for no more hands than the game paid, which is exactly that.
     bound = ceiling_for(day, tasks)
     ceiling = bound if max_hands is None else min(int(max_hands), bound)
-    deadline = None if budget_s is None else time.perf_counter() + float(budget_s)
-    # The floor is a proved bound on the workers the day needs, so a range whose top is below it is
-    # answered without searching: no pool the caller allowed can lay the day out, however the route is
-    # arranged. The comparison is against the CEILING and not the starting pool - a caller who names
-    # five and allows six is asking about six, and answering about five would refuse a day that fits.
-    if ceiling < floor:
+    if ceiling < floor or start > ceiling:
         return done(Result(ceiling, [], False, infeasible=True))
-    if start > ceiling:
-        return done(Result(ceiling, [], False, infeasible=True))
-
-    def done(result: Result) -> Result:
-        """The answer with its spare capacity on it. `search` is the only place the pool is known,
-        and the spare is counted against the hands that pool paid for."""
-        return result._replace(spare=spare_turns(day, tasks, result))
 
     def width(pool: int) -> int:
         return beam if beam is not None else beam_for(tasks, len(day.units) + pool)
 
     def seed(pool: int) -> Result | None:
-        # A route is a state for the pool it was searched with: its worker indices are that pool's.
         return warm if warm is not None and warm.pool == pool else None
 
-    if hands is None and ceiling > start:
-        return done(_smallest_pool(day, tasks, width, start, ceiling, deadline, seed))
+    if ceiling > start:
+        return done(_smallest_pool(day, tasks, width, start, ceiling, seed))
 
-    partial: Result | None = None
-    placed = -1
-    for pool in range(start, ceiling + 1):
-        result = _fixed_point(day, tasks, width(pool), pool, deadline, seed(pool))
-        if result.complete:
-            return done(result)
-        if partial is None or _better_route(result, partial):
-            partial, placed = result, len(result.route)
-        elif len(result.route) <= placed:
-            # A bigger pool placed no more of the day than a smaller one, so the workers are not
-            # what the day is short of and every pool above this one is a search for nothing.
-            break
-        if result.out_of_time:
-            # A larger pool costs more and cannot buy back the time, so the loop stops here.
-            break
-    return done(partial if partial is not None else Result(ceiling, [], False))
+    return done(_fixed_point(day, tasks, width(start), start, seed(start)))
 
 
 def _makespan(result: Result) -> int:
@@ -396,7 +366,7 @@ def _better_route(candidate: Result, best: Result) -> bool:
 
 
 def _fixed_point(day: Day, tasks: TaskArray, beam: int, pool: int,
-                 deadline: float | None, warm: Result | None = None) -> Result:
+                 warm: Result | None = None) -> Result:
     """One pool, searched until the pickups and the hands' doors stop moving.
 
     Two things the search prices are properties of the ROUTE it produces rather than of the day: the
@@ -417,7 +387,7 @@ def _fixed_point(day: Day, tasks: TaskArray, beam: int, pool: int,
     stop). The conservative pass is therefore always in hand: a deadline can cut a later pass short,
     and a half-built attempt must never replace the fuller day the first pass found.
     """
-    conservative = _settle(day, tasks, beam, pool, deadline, warm)
+    conservative = _settle(day, tasks, beam, pool, warm=warm)
     if conservative.complete:
         # The day-wide charge already carries the day, so the tightening pass has nothing to win on
         # completeness - and it costs a search per pass, which on a real day is the budget the caller
@@ -427,11 +397,11 @@ def _fixed_point(day: Day, tasks: TaskArray, beam: int, pool: int,
     charge = bags_of(day, tasks, conservative)
     tightened = False
     for _attempt in range(CHARGE_PASSES + 1):
-        candidate = _settle(day, tasks, beam, pool, deadline, warm, charge=charge)
+        candidate = _settle(day, tasks, beam, pool, warm=warm, charge=charge)
         if _consistent(day, tasks, candidate) and _better_route(candidate, best):
             best = candidate
         bags = bags_of(day, tasks, candidate)
-        grown = [max(charged, bag) for charged, bag in zip(charge, bags)]
+        grown = [charged | bag for charged, bag in zip(charge, bags)]
         if grown != charge:
             charge = grown
             continue
@@ -474,7 +444,7 @@ def _consistent(day: Day, tasks: TaskArray, result: Result) -> bool:
 
 
 def _settle(day: Day, tasks: TaskArray, beam: int, pool: int,
-            deadline: float | None, warm: Result | None = None, charge=None) -> Result:
+            warm: Result | None = None, charge=None) -> Result:
     """One pool at one pickup charge, searched until the hands stop moving.
 
     The hands land on the doors that are free WHEN THEY ARE HIRED - each hand at its own hour, and a
@@ -483,34 +453,22 @@ def _settle(day: Day, tasks: TaskArray, beam: int, pool: int,
     they agree - a fixed point, and a cheap one: it converges in two passes or not at all.
     """
     doors = None
-    started = time.perf_counter()
-    result = _run(day, tasks, hands=pool, beam=beam, deadline=deadline, warm=warm, charge=charge)
-    spent = time.perf_counter() - started
+    result = _run(day, tasks, hands=pool, beam=beam, warm=warm, charge=charge)
     for _attempt in range(3):
-        # An attempt costs about what the last one cost, so one that starts with less than that left
-        # comes back cut short - non-empty, much worse, and it would REPLACE the work the attempt
-        # before it placed. That is not a best-of to be patched up afterwards: only the last attempt
-        # is consistent with the positions it priced from, and the compiler re-derives those from the
-        # route, so an earlier attempt kept on merit hands back a route priced from positions the day
-        # does not have. The reserve is what keeps every returned route both consistent and the most
-        # complete one the budget could buy.
-        if deadline is not None and time.perf_counter() + spent >= deadline:
-            break
         nxt = _hand_doors(day, tasks, result, pool)
         if doors is not None and nxt == doors:
             break
         doors = nxt
-        started = time.perf_counter()
-        result = _run(day, tasks, hands=pool, beam=beam, doors=doors, deadline=deadline,
+        result = _run(day, tasks, hands=pool, beam=beam, doors=doors,
                       warm=warm, charge=charge)
-        spent = time.perf_counter() - started
-    # A door fixed point that oscillates: the two configurations are each other's derivation, so the
-    # last attempt was priced from doors the day does not have. What the compiler has to write from is
-    # the doors the ENGINE gives the route it is writing (`_hand_doors`) - the one derivation the day
-    # itself agrees with - so the answer carries those, not the doors the pass went in with.
     final = _hand_doors(day, tasks, result, pool)
     if tuple(result.doors) != final:
-        result = result._replace(doors=final)
+        repriced = _run(day, tasks, hands=pool, beam=beam, doors=final,
+                        warm=warm, charge=charge)
+        if repriced.complete or len(repriced.route) >= len(result.route):
+            result = repriced
+        else:
+            result = result._replace(doors=final)
     return result
 
 
@@ -519,7 +477,7 @@ def _settle(day: Day, tasks: TaskArray, beam: int, pool: int,
 
 
 def _smallest_pool(day: Day, tasks: TaskArray, width, lo: int, hi: int,
-                   deadline: float | None, seed) -> Result:
+                   seed) -> Result:
     """The smallest pool that carries the day, by halving.
 
     The predicate is monotone - a bigger pool is never less able to carry a day - so halving finds
@@ -529,20 +487,19 @@ def _smallest_pool(day: Day, tasks: TaskArray, width, lo: int, hi: int,
     caller can ask for the scan with `hands=` instead.
     """
     best: Result | None = None
+    first_hand = len(day.units)
     while lo < hi:
         mid = (lo + hi) // 2
-        result = _fixed_point(day, tasks, width(mid), mid, deadline, seed(mid))
+        result = _fixed_point(day, tasks, width(mid), mid, seed(mid))
         if result.complete:
-            best, hi = result, mid
+            used = len({int(w) for turn, _, w in result.route if int(turn) >= 0 and int(w) >= first_hand})
+            best, hi = result, min(mid, max(lo, used))
         else:
-            best, lo = result, mid + 1
-        if result.out_of_time:
-            break
-    if lo == hi:
-        final = _fixed_point(day, tasks, width(lo), lo, deadline, seed(lo))
-        if final.complete or best is None:
-            return final
-        if _better_route(final, best):
+            best = result if best is None or _better_route(result, best) else best
+            lo = mid + 1
+    if lo == hi and (best is None or not best.complete or best.pool != lo):
+        final = _fixed_point(day, tasks, width(lo), lo, seed(lo))
+        if final.complete or best is None or _better_route(final, best):
             return final
     return best if best is not None else Result(hi, [], False)
 
@@ -593,7 +550,7 @@ def _warm_row(tasks: TaskArray, warm: Result, done, when, who, free, where, trav
 
 
 def _run(day: Day, tasks: TaskArray, *, hands: int, beam: int,
-         doors=None, deadline: float | None = None,
+         doors=None,
          warm: Result | None = None, charge=None) -> Result:
     """One pool size: search the day, and report how much of it the pool could carry.
 
@@ -634,13 +591,7 @@ def _run(day: Day, tasks: TaskArray, *, hands: int, beam: int,
     # The best state is remembered as the search goes, because the beam's last generation can be
     # empty - a route that dies at the end would otherwise erase the work it had already placed.
     best = _snapshot(done, when, who, free, travel, first_hand, hours)
-    cut = False
     for _step in range(n):
-        # Every eighth step: a step is a fixed amount of work, so the check cannot pay for itself
-        # more often than that, and eight steps is far below the resolution a turn budget needs.
-        if deadline is not None and not (_step & 7) and time.perf_counter() >= deadline:
-            cut = True
-            break
         expanded = _expand(day, tasks, done, when, who, free, where, travel, live, count, load)
         if expanded is None:
             break
@@ -656,7 +607,7 @@ def _run(day: Day, tasks: TaskArray, *, hands: int, beam: int,
     complete = placed == n
     route = [(int(when_best[i]), tasks.ids[i], int(who_best[i]))
              for i in np.argsort(when_best) if done_best[i]]
-    return Result(hands, route, complete, out_of_time=cut,
+    return Result(hands, route, complete,
                   doors=tuple((int(c[0]), int(c[1])) for c in start_pos[first_hand:]))
 
 
@@ -775,16 +726,24 @@ def _bag(tasks: TaskArray, entries: list[tuple[int, str]]) -> dict[int, int]:
 
     Only the goods used before the worker's first DROP: the engine's DROP empties the whole bag
     (`kaggriculture.py:343-356`), so what is still in it goes to the shed with the harvest, and every
-    use after the drop is fetched again (`legs`).
+    use after the drop is fetched again (`legs`). A use the worker's own earlier HARVEST or
+    COLLECT_FERTILIZER covers is not loaded: the good is already in its bag (`tasks.yield_n` units).
     """
     bag: dict[int, int] = {}
+    own: dict[int, int] = {}
     for turn, task_id in sorted(entries):
         row = tasks.ids.index(task_id)
         if int(turn) >= 0 and bool(tasks.is_drop[row]):
             break
         good = int(tasks.items[row])
         if good >= 0:
-            bag[good] = bag.get(good, 0) + 1
+            if own.get(good, 0) > 0:
+                own[good] -= 1
+            else:
+                bag[good] = bag.get(good, 0) + 1
+        made = int(tasks.yields[row])
+        if made >= 0:
+            own[made] = own.get(made, 0) + int(tasks.yield_n[row])
     return bag
 
 
@@ -1013,6 +972,12 @@ def _start_hours(day: Day, hands: int) -> np.ndarray:
     return np.asarray(hours, dtype=np.int16)
 
 
+#: The take-drop-consume ban's per-call carrier: `_expand` derives the banned
+#: (route, worker, column) triples while pricing, before `legal` exists, and
+#: the mask is applied once the tie filter has built the final legality.
+LEGAL_BAN: list = [None]
+
+
 def _expand(day: Day, tasks: TaskArray, done, when, who, free, where, travel, live, count,
             load: DoorLoad | None = None):
     """One task added to every live route: the vectorised step.
@@ -1032,6 +997,7 @@ def _expand(day: Day, tasks: TaskArray, done, when, who, free, where, travel, li
     rows = np.flatnonzero(live)
     if rows.size == 0:
         return None
+    LEGAL_BAN[0] = None
 
     # The frontier: the tasks some live route could place next. Everything past it is illegal for
     # every route, so pricing those columns is pricing a column that is thrown away - and there are
@@ -1048,7 +1014,14 @@ def _expand(day: Day, tasks: TaskArray, done, when, who, free, where, travel, li
     # against one, and end to end that made a hundred tiles 15 per cent SLOWER. The table is one
     # dimension more than the arithmetic needs and one pass less than the machine wants.
     # No cast: the table is int16, the width the arithmetic runs in, so the gather is the answer.
-    hop = DISTANCE[here[:, :, None], tasks.cell_index[index][None, None, :]]
+    # Manhattan distance SEPARATES: |wx-cx| + |wy-cy| as int16 arithmetic is
+    # 2.3x the table gather (measured on the heavy-day shapes: 0.59 vs 1.34 ms
+    # a call) and bit-identical - the table's only job was the abs-diff sum.
+    hx = where[:, :, 1].astype(np.int16, copy=False)[:, :, None]
+    hy = where[:, :, 0].astype(np.int16, copy=False)[:, :, None]
+    cx = tasks.cells[index, 1].astype(np.int16)[None, None, :]
+    cy = tasks.cells[index, 0].astype(np.int16)[None, None, :]
+    hop = np.abs(hx - cx) + np.abs(hy - cy)
     # A DROP is handed over at the door nearest the worker, not at a door fixed when the day was
     # built (`leg_target`): its walk is the worker's own distance to its nearest door.
     drop_here = tasks.is_drop[index]
@@ -1083,6 +1056,31 @@ def _expand(day: Day, tasks: TaskArray, done, when, who, free, where, travel, li
             hop = np.where(refetch, REFETCH[here[:, :, None],
                                             tasks.cell_index[index][None, None, :]], hop)
 
+        # THE OWNER'S BAN (2026-09-25): because the engine's DROP empties the whole bag, a worker's
+        # own take of a good may not be followed by that worker's DROP and then a use of the same
+        # good - the use would need the mid-day refetch the compiler writes (`legs`), and that is
+        # the pattern the owner named as never worth writing. Priced before; now ILLEGAL: a
+        # consumer of good g may not land on worker w whose last DROP turn is AFTER w's last take
+        # of g. A worker whose take is AFTER its last drop still holds g and is fine.
+        n_goods_b = int(max(int(tasks.yields.max()), int(tasks.items.max())) + 1)
+        took_turn = np.full((b, m, n_goods_b), -1, dtype=np.int16)
+        take_rows = np.flatnonzero(tasks.yields >= 0)            # events that ADD a good
+        if take_rows.size:
+            w_of = np.where(who[:b, take_rows] >= 0, who[:b, take_rows], 0)
+            took_scatter = (((np.arange(b)[:, None] * m
+                              + np.minimum(w_of, m - 1)) * n_goods_b
+                             + tasks.yields[take_rows][None, :]).ravel())
+            turn_of = np.broadcast_to(when[:b, take_rows], (b, take_rows.size)).ravel()
+            np.maximum.at(took_turn.reshape(-1), took_scatter, turn_of)
+        g_of = tasks.items[index].clip(0)                        # the consumed good per column
+        own_take = took_turn[:, :, g_of]
+        banned = (needs[None, None, :]
+                  & (last_drop >= 0)[:, :, None]
+                  & (own_take >= 0)
+                  & (last_drop[:, :, None] > own_take))
+        if banned.any():
+            LEGAL_BAN[0] = banned                                # applied after `legal` is built
+
     # The drops. A worker that has already dropped since the harvest a drop banks has an empty bag,
     # so that drop hands over nothing: no trip, no turn, and nobody moves. This is what lets one
     # drop bank several harvests instead of one apiece.
@@ -1104,10 +1102,10 @@ def _expand(day: Day, tasks: TaskArray, done, when, who, free, where, travel, li
     if load is not None and any(load.order):
         # Door work before the goods land (`loads_before`): a worker that has done nothing yet may
         # take it from its own hour, not after its pickups - it is still on the door.
-        fresh = ~done_by_worker(done, who, m)
         own = np.maximum(load.hour[None, :], 0)[:, :, None] + hop
         bare = np.maximum(np.maximum(own, released[:, None, :]), earliest_here[None, None, :])
-        early = (fresh[:, :, None] & load.before[index][None, None, :]
+        early = (~done_by_worker(done, who, m)[:, :, None]
+                 & load.before[index][None, None, :]
                  & (bare < load.first[None, :, None]))
         arrive = np.where(early, own, arrive)
         # A worker whose day so far is that door work has not loaded yet: its next task that is not
@@ -1134,8 +1132,21 @@ def _expand(day: Day, tasks: TaskArray, done, when, who, free, where, travel, li
 
     in_time = finish <= day.horizon
     before_latest = start <= latest_here[None, None, :]
+    fresh = ~done_by_worker(done, who, m)
     legal = (ready & ~done[:, index] & in_time.any(axis=1) & before_latest.any(axis=1))
     legal = legal[:, None, :] & in_time & before_latest
+    # A worker's walk may not begin before the worker exists: a fresh worker's first task at
+    # `start` needs its walk in the turns start-hop..start-1, and the earliest of those is the
+    # worker's own first hour - so the task cannot sit before own_hour + hop. Without this floor
+    # the search committed a first task whose walk crossed the worker's birth and `_room` refused
+    # the day (measured: winner[15] d23_harvest, winner[17] d29_collect_fertilizer). `load.hour`
+    # IS the workers' own first hours (`_start_hours`, carried by `door_load`); with no load the
+    # workers' hours are their raw starts, and `free` holds them (no pickups were priced).
+    own_hour = (load.hour[None, :, None] if load is not None
+                else free[:, :, None])
+    legal = legal & (~fresh[:, :, None]
+                     | (hop == 0)
+                     | (start >= own_hour + hop))
     # A worker tie: a task and the tasks it must share a worker with - a fetch and the op that
     # consumes it, a drop and the good it banks - are one worker's work. A candidate whose mate is
     # already done by somebody else is not a candidate. Without this a drop could be placed on a
@@ -1153,6 +1164,12 @@ def _expand(day: Day, tasks: TaskArray, done, when, who, free, where, travel, li
             same = ((~done_mate)[:, None, :]
                     | (who_mate[:, None, :] == np.arange(m)[None, :, None]))
             legal = legal & (same | ~real[None, None, :])
+    # The owner's ban, applied once `legal` exists: a take that the worker's own drop has since
+    # emptied out of the bag forbids that worker every later use of the same good. It is the
+    # anti-pattern the compiler used to answer with a mid-day refetch pickup - never worth
+    # writing, so it is a rule now, not a price.
+    if LEGAL_BAN[0] is not None:
+        legal = legal & ~LEGAL_BAN[0]
     finish = np.where(legal, finish, BIG)
 
     # On the frontier's own width, not the day's: the selection maps the column it picked back
@@ -1200,7 +1217,8 @@ def _rank_keys(tasks: TaskArray, child_done, child_free, travel, makespan, hands
     bound_rows = np.flatnonzero(tasks.latest < int(tasks.latest.max()))
     # The slack: how many turns are left before the nearest hour passes, over the tasks not yet done.
     # A done task cannot be late, so it is masked out of the minimum.
-    slack = tasks.latest[None, :].astype(np.int32) - child_free.min(axis=1)[:, None]
+    latest = getattr(tasks, "latest32", tasks.latest)
+    slack = latest[None, :] - child_free.min(axis=1)[:, None]
     slack = np.where(child_done, np.int32(1 << 14), slack).min(axis=1)
     placed_bound = (child_done[:, bound_rows].sum(axis=1) if bound_rows.size
                     else np.zeros(child_done.shape[0], dtype=np.int16))
@@ -1209,6 +1227,12 @@ def _rank_keys(tasks: TaskArray, child_done, child_free, travel, makespan, hands
         "slack": (travel, makespan, hands_used, dead, slack),
         "bound": (travel, makespan, hands_used, dead, -placed_bound),
     }
+
+
+#: Which deterministic selection rule `_select` runs (owner 2026-09-25: no lottery):
+#: "hour" - finish hour first, importance among equals; "slack" - urgency (EDF) first.
+SELECT_RULE = "hour"
+SEED = [0]
 
 
 def _select(expanded, tasks: TaskArray, beam: int, first_hand: int, start_hours):
@@ -1247,7 +1271,34 @@ def _select(expanded, tasks: TaskArray, beam: int, first_hand: int, start_hours)
     # placed 86 of a real day's 93 tasks, and at `beam * 16` it placed 93.
     budget = min(legal.size, beam * len(active) * 16)
     if legal.size > budget:
-        shortlist = legal[np.argpartition(flat_hour[legal], budget - 1)[:budget]]
+        # The deterministic selection (owner's ruling 2026-09-25: the answer is never a
+        # lottery). The old cut ranked by FINISH HOUR alone - incomplete: among equally
+        # early candidates it kept whichever the memory layout offered. The complete
+        # criterion, per candidate, is a deterministic sort whose keys say what the old
+        # key could not see:
+        #   SELECT_RULE "hour"    finish hour, then importance (chain_weight desc),
+        #                         then worker id - "early first, important among equals"
+        #   SELECT_RULE "slack"   urgency first (latest - finish, ascending, i.e. EDF),
+        #                         then importance, then worker id
+        # `chain_weight` is the phase-1 column: what the task's miss kills downstream.
+        # Ties always resolve the same way, at every width, so the answer is a function
+        # of the day, never of the layout.
+        col_of = legal % width
+        task_of = index[col_of]
+        importance = -tasks.chain_weight[task_of]
+        worker_of = expanded["worker"][rows].ravel()[legal]
+        parent_of = np.repeat(rows, width)[legal]
+        # Spatial Locality: among equal finish hours and importance, prioritize the
+        # worker with the shortest walk to the tile (minimal hop asc) to prevent
+        # cross-board wandering and produce dense, compact clusters.
+        hop_of = expanded["hop"][parent_of, worker_of, col_of]
+        if SELECT_RULE == "hour":
+            primary = flat_hour[legal]
+        else:
+            latest = getattr(tasks, "latest32", tasks.latest)
+            primary = latest[task_of] - flat_hour[legal].astype(np.int32)
+        order = np.lexsort((worker_of, hop_of, importance, primary))
+        shortlist = legal[order[:budget]]
     else:
         shortlist = legal
 
@@ -1351,19 +1402,15 @@ def _dedupe(done: np.ndarray, free: np.ndarray, where: np.ndarray) -> np.ndarray
     """
     if done.shape[0] <= 1:
         return np.arange(done.shape[0])
-    signature = np.hstack([np.packbits(done, axis=1),
-                           free.view(np.uint8).reshape(done.shape[0], -1),
-                           where.view(np.uint8).reshape(done.shape[0], -1)])
-    # A dictionary over the rows' bytes, not : the two answer the same
-    # thing, and the unique sorts a 2-D array of void rows - 1.667 ms a call at a beam of 256, which
-    # was 81.8 per cent of the selection and about half the whole search. The rows are few, so
-    # walking them in Python costs 0.069 ms for the same answer, twenty-four times less.
-    first: dict[bytes, int] = {}
-    for index, row in enumerate(signature):
-        first.setdefault(row.tobytes(), index)
-    # No sort: a dictionary keeps insertion order and the rows are walked in order, so the first
-    # occurrence of each distinct row is already in increasing order.
-    return np.fromiter(first.values(), dtype=np.int64, count=len(first))
+    signature = np.ascontiguousarray(np.hstack([
+        np.packbits(done, axis=1),
+        free.view(np.uint8).reshape(done.shape[0], -1),
+        where.view(np.uint8).reshape(done.shape[0], -1),
+    ]))
+    dt = np.dtype((np.void, signature.shape[1]))
+    void_arr = signature.view(dt).ravel()
+    _, u_idx = np.unique(void_arr, return_index=True)
+    return np.sort(u_idx)
 
 
 def _last_drop(done, when, who, drop_rows: np.ndarray, workers: int) -> np.ndarray:

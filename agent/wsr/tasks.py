@@ -91,6 +91,12 @@ class TaskArray:
     cells: np.ndarray = field(default_factory=lambda: np.zeros((0, 2), dtype=np.int16))
     columns: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int8))
     pred: np.ndarray = field(default_factory=lambda: np.zeros((0, 0), dtype=bool))
+    #: How many tasks each task's miss kills: the size of its downstream closure on `pred`,
+    #: excluding the task itself. The rules (`ORDER_MATTERS`) own the order and `pred` carries it;
+    #: the closure is its consequence, and a ranking that cannot see it reads a missed WATER as
+    #: worth one task when it rots the HARVEST->PLANT->WATER chain behind it. Filled in
+    #: `__post_init__` from `pred` - one source, the rules' own edges, never a second table.
+    chain_weight: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int16))
     #: No fetch column: a fetch is not a task the day schedules. `items` says what good each task
     #: consumes; the worker's door load and any refetch after a DROP are priced by the search
     #: (`beam.door_load`, `beam.legs`) - once per worker per good, because a bag is per worker.
@@ -226,6 +232,19 @@ class TaskArray:
         else:
             self._edge_starts = np.zeros(0, dtype=np.int32)
             self._edge_targets = np.zeros(0, dtype=np.int32)
+        # The closure, once per array: the consequence of the rules' own order. `succ[i, k]` is
+        # "k directly after i", the sweep squares the reach matrix until it stops growing - a dag
+        # converges, and the day's tasks bound it - and the weight is the closure's size. Booleans
+        # squared, not counted: a count of paths, not of tasks, is what a second sweep would make.
+        succ = self.pred.T                            # succ[i, k]: k directly after i
+        reach = succ.copy()
+        while True:
+            grown = reach | (reach @ reach)
+            if np.array_equal(grown, reach):
+                break
+            reach = grown
+        self.chain_weight = reach.sum(axis=1).astype(np.int16)
+        self.latest32 = self.latest.astype(np.int32)
 
     def ready(self, done: np.ndarray) -> np.ndarray:
         """Which tasks have all their predecessors done - one matrix product.
@@ -379,7 +398,7 @@ ITEM_CODE: dict = _item_table()
 
 
 def build(chains, *, available: dict[str, int] | None = None, horizon: int = 24,
-          drop_by=None) -> TaskArray:
+          drop_by=None, harvests=None) -> TaskArray:
     """The planner's chains -> the arrays a beam search reads.
 
     The tasks themselves come from `expand_chain`, which is the layer's own expansion of the chain
@@ -387,11 +406,18 @@ def build(chains, *, available: dict[str, int] | None = None, horizon: int = 24,
     columns are filled from the timetable that is handed in: a consumer waits for its good, a
     planting waits for its seed, and everything else may run from the first hour. Nothing is read
     from the world.
+
+    `harvests`, aligned with `chains`, is what each chain's HARVEST takes: `(good, units)` - the
+    tile's crop or product and its `yield_units` at that moment - or None to keep the chain's own
+    entity and one unit. The caller reads it off the board; this layer never does.
     """
+    from agent.world.action import item_of
+    from agent.world.model import UnitAction
     from agent.wsr.models import MinorTask, expand_chain
     from agent.wsr.routing import nearest_shed
 
     available = available or {}
+    harvests = list(harvests) if harvests is not None else []
     #: One deadline per chain, aligned with `chains`: the latest hour that chain's harvest must be in
     #: the shed, or None to leave it for the night. A DROP is derived from it, never declared.
     drop_by = list(drop_by) if drop_by is not None else []
@@ -505,6 +531,14 @@ def build(chains, *, available: dict[str, int] | None = None, horizon: int = 24,
         elif name == "HARVEST":
             yield_codes[i] = item_codes[i]              # the crop the tile hands over
             yield_units[i] = int(getattr(task, "n", 1) or 1)
+            taken = harvests[column_of[task.id]] if column_of[task.id] < len(harvests) else None
+            if taken is not None:
+                # What the tile holds when it is harvested, not what the chain plants next: the
+                # HARVEST moves the tile's own `yield_units` of its own crop or product
+                # (`action_rules` HARVEST).
+                good, units = taken
+                yield_codes[i] = _item_code(item_of(good)) if good else NO_ITEM
+                yield_units[i] = max(1, int(units))
         elif name == "COLLECT_FERTILIZER":
             yield_codes[i] = _item_code("FERTILIZER")
             yield_units[i] = 1

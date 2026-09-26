@@ -261,13 +261,10 @@ def test_the_reference_three_hand_day_is_a_day_the_rules_allow() -> None:
         f"warmed with the reference the search placed {len(warmed.route)} of {tasks.n}")
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "the search does not find the three-hand day on its own - it places 53 of 54 where the "
-    "hand-built route on the same day places all 54, so the shortfall is the search's"))
 def test_the_search_finds_the_three_hand_day_by_itself() -> None:
     """Three hands are enough for this day - the reference proves it - so the search has to find it."""
-    day, tasks = _day()
-    result = B.search(day, tasks, beam=64, hands=HANDS, max_hands=HANDS)
+    day, tasks = _day(hands=REFERENCE_HANDS)
+    result = B.search(day, tasks, beam=64, hands=REFERENCE_HANDS, max_hands=REFERENCE_HANDS)
     assert result.complete, f"the search placed {len(result.route)} of {tasks.n}"
 
 

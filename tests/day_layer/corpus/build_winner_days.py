@@ -189,7 +189,10 @@ def extract_winner_day(con, dump: str, ep: int, day: int, player: bool,
         elif r.animal is not None and r.animal is not pd.NA:
             entity[(int(r.x), int(r.y))] = str(r.animal)
 
-    hours = [int(h) for (h,) in con.sql(f"""
+    # The first hour each hand ACTS: hands_steps' first row for a unit is its pre-hire turn (the
+    # engine accepts no op from a unit that does not exist yet - see the PASS mapping below), so a
+    # hand whose row starts at hour h was hired in turn h and acts from h + 1 (F040).
+    hours = [int(h) + 1 for (h,) in con.sql(f"""
         SELECT min(step % 24) FROM '{ROOT}/{dump}/hands_steps.parquet'
         WHERE episode_id={ep} AND player={pl} AND step // 24 = {day}
         GROUP BY unit ORDER BY unit
