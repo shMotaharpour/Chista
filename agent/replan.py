@@ -4,14 +4,14 @@
 `import agent.replan` raises ImportError. The live path is
 `agent/manager/core.py` -> `agent/planner/day.py` -> `agent.wsr`, and this module is
 kept out of it deliberately: `tests/test_planner_reachable.py` holds it in a
-`forbidden` tuple and `tests/test_agent_runtime.py` keeps it out of the spine.
+`forbidden` tuple and `tests/test_agent_main.py` keeps it out of the spine.
 
 Everything below is the record of what the rung was for and what it measured, kept
 because the measurements are the reason the day layer exists at all. Its figures
 predate the day layer; they are not the current ones.
 
-The first heavy rung of the fallback ladder, and the socket `agent/runtime.py`
-already had (`_rung_plan` dispatches `self.plan` when it is not None).
+The first heavy rung of the fallback ladder: `_rung_plan` dispatched `self.plan`
+when it was not None.
 
 It runs **once per day**, at hour 0, and the spine dispatches the stored plan for
 the remaining 23 hours. The graph is day-invariant, so within a day nothing the
@@ -20,9 +20,7 @@ budget for nothing.
 
 It **polls the published deadline** between steps and raises `TimeoutError`
 mid-work. The ladder's between-rung gate can only see a rung that already spent
-the turn; `self._deadline` exists so the rung itself can bail (the drill in
-`tests/test_agent_runtime.py::test_deadline_gates_the_ladder` pins the contract,
-this module is the real thing it was pinning).
+the turn; `self._deadline` existed so the rung itself could bail.
 
 ## Two stand-ins, both named, both somebody else's issue
 

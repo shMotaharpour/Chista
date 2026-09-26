@@ -1,21 +1,26 @@
-"""The spine's guards: the entry point, the dispatcher, the manager's clock, and visible failure.
+"""The entry's guards: the harness contract, the dispatcher, and visible failure.
 
-Run:  .venv/bin/python -m tests.test_agent_runtime
+Run:  .venv/bin/python -m tests.test_agent_main
 
 Contracts under test:
+- The harness's own pick rule lands on the LAST callable in `agent/main.py`, and
+  that callable takes ONE argument: an instance is callable but has no
+  `__code__`, so it would be handed `(obs, config)` and raise. `get_last_callable`
+  is called here, on this file's real source, rather than re-implemented.
 - The entry point returns a shape-valid action dict for any input - a real
-  observation, garbage, None. It never raises.
+  observation, garbage, None. It never raises with `Config.never_raise` ON.
 - Hour 0 calls `Manager.observe` once and `Manager.step` never; every later hour
-  calls `step` with a budget inside the turn's working second (F046/F058).
+  calls `step`. No budget is derived from any clock: there is no clock here.
 - What the manager returns is what the engine gets: the plan is sliced by hour
   under the F031 market cap, and ops for hands that do not exist are dropped.
-- A manager that raises is RECORDED (`Runtime.failures`, `failed_days`) and the
+- A manager that raises is RECORDED (`Agent.failures`, `failed_days`) and the
   turn PASSes. No second policy answers in its place - that is the failure mode
   `docs/ARCHITECTURE.md` section 5 exists to prevent.
-- The wall clock between two calls is measured on every turn after the first,
-  with a running mean and sd (`Runtime.gaps`), and printed only when
-  `Config.log_gaps` asks for it.
-- The spine imports no fallback-ladder module: the ladder is gone, not dormant.
+
+What is NOT here any more: the wall-clock budget, the over-budget anomaly, the
+gap statistics and the retired ladder. Those guards went with `agent/runtime.py`
+- a turn's length is the harness's business, and a spine that measured its own
+clock made the plan follow the machine.
 """
 
 from __future__ import annotations
@@ -30,10 +35,10 @@ import pytest
 
 from agent.config import Config
 from agent.dispatch import MAX_MARKET_ORDERS, PASS_ACTION, dispatch_plan
-from agent.main import agent
-from agent.runtime import RUNTIME, Runtime
+from agent.main import AGENT, Agent, agent
 
-SPINE = pathlib.Path(__file__).resolve().parents[1] / "agent" / "runtime.py"
+ENTRY = pathlib.Path(__file__).resolve().parents[1] / "agent" / "main.py"
+SPINE = ENTRY
 
 
 def _obs(day=0, hour=0, seeds=2, shed=None, money=100):
@@ -75,11 +80,11 @@ class _FakeManager:
         return self.plan
 
 
-def _runtime(fake: _FakeManager, **cfg) -> Runtime:
-    """A Runtime whose manager is the fake (the spine builds one only if None)."""
-    runtime = Runtime(Config(**cfg))
-    runtime.manager = fake                     # type: ignore[assignment]
-    return runtime
+def _agent(fake: _FakeManager, **cfg) -> Agent:
+    """An Agent whose manager is the fake (the entry builds one only if None)."""
+    built = Agent(Config(**cfg))
+    built.manager = fake                     # type: ignore[assignment]
+    return built
 
 
 def _quiet(fn, *args, **kwargs) -> tuple[str, Any]:
@@ -88,6 +93,55 @@ def _quiet(fn, *args, **kwargs) -> tuple[str, Any]:
     with contextlib.redirect_stdout(buf):
         result = fn(*args, **kwargs)
     return buf.getvalue(), result
+
+
+# ------------------------------------------------------- the harness's own rule
+
+def _top_level_callables(src: str) -> list[tuple[str, int | None]]:
+    """`(name, argcount)` for every callable a TOP-LEVEL statement binds, in order.
+
+    A `def` binds a function (its positional count), a `class` binds a class, and
+    an assignment whose value is a call binds whatever the call returns — the
+    instance. Imported names are left out: the harness's `get_last_callable`
+    reads the executed module's globals, and an import lands in them too, but the
+    definition ORDER is what this guard is about.
+    """
+    out: list[tuple[str, int | None]] = []
+    for node in ast.parse(src).body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            out.append((node.name, len(node.args.args)))
+        elif isinstance(node, ast.ClassDef):
+            out.append((node.name, None))
+        elif isinstance(node, ast.Assign) and isinstance(node.value, ast.Call):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    out.append((target.id, None))
+    return out
+
+
+def test_the_harness_picks_the_last_callable_and_it_takes_one_argument() -> None:
+    """The reason this module's shape is what it is, checked against the harness.
+
+    `kaggle_environments.agent.get_last_callable` returns the LAST callable value
+    in the module's globals and `Agent.act` truncates the call to that callable's
+    `co_argcount` — so a one-argument function is handed the observation alone.
+    Anything callable defined after the entry breaks the turn, and so does an
+    instance as the last value: an object has no `__code__`, cannot be truncated,
+    and would be handed `(obs, config)`.
+    """
+    import inspect
+
+    from kaggle_environments.agent import get_last_callable
+
+    src = ENTRY.read_text(encoding="utf-8")
+    picked = get_last_callable(src, path=str(ENTRY))
+    assert inspect.isfunction(picked), type(picked)
+    assert picked.__name__ == agent.__name__ == "agent", picked.__name__
+    assert picked.__code__.co_argcount == 1, picked.__code__.co_argcount
+
+    bound = _top_level_callables(src)
+    assert bound[-1] == ("agent", 1), (
+        f"the entry is not the LAST callable this module binds: {bound}")
 
 
 # --------------------------------------------------------------- the entry point
@@ -99,9 +153,9 @@ def test_entry_point_never_raises() -> None:
     OFF arm is `test_the_never_raise_switch_decides_whether_a_failure_escapes`.
     """
     fake = _FakeManager(raises="observe")
-    runtime = _runtime(fake, never_raise=True)
+    entry = _agent(fake, never_raise=True)
     for bad_input in (None, 42, {}, {"farms": "no"}, _obs()):
-        action = runtime.act(bad_input)
+        action = entry(bad_input)
         assert set(action) == {"farmer", "hands", "market"}, action
         assert isinstance(action["farmer"], list)
         assert isinstance(action["hands"], list)
@@ -111,7 +165,7 @@ def test_entry_point_never_raises() -> None:
 def test_the_never_raise_switch_decides_whether_a_failure_escapes() -> None:
     """Both arms of `Config.never_raise`, on the same failing turn.
 
-    ON: all-PASS, the failure on `Runtime.failures`, the day marked, the `A` line
+    ON: all-PASS, the failure on `Agent.failures`, the day marked, the `A` line
     written. OFF: the same three records, and then the exception comes out with
     its traceback — a hunt wants to know what reached the boundary instead of
     reading a season of PASSed days.
@@ -119,17 +173,17 @@ def test_the_never_raise_switch_decides_whether_a_failure_escapes() -> None:
     The switch decides whether the run CONTINUES, never whether the failure is
     written down: both arms are asserted to leave the same record.
     """
-    caught = _runtime(_FakeManager(raises="observe"), never_raise=True)
-    stdout, action = _quiet(caught.act, _obs(day=4, hour=0))
+    caught = _agent(_FakeManager(raises="observe"), never_raise=True)
+    stdout, action = _quiet(caught, _obs(day=4, hour=0))
     assert action == PASS_ACTION
     assert len(caught.failures) == 1 and caught.failed_days == {4}
     assert "A day=4 hour=0" in stdout and "error=" in stdout, stdout
 
-    loud = _runtime(_FakeManager(raises="observe"), never_raise=False)
+    loud = _agent(_FakeManager(raises="observe"), never_raise=False)
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
         with pytest.raises(RuntimeError, match="observe blew up"):
-            loud.act(_obs(day=4, hour=0))
+            loud(_obs(day=4, hour=0))
     assert len(loud.failures) == 1, loud.failures
     assert "day 4 hour 0" in loud.failures[0]
     assert loud.failed_days == {4}
@@ -140,10 +194,10 @@ def test_the_never_raise_switch_decides_whether_a_failure_escapes() -> None:
 def test_the_never_raise_switch_default_is_the_owners_current_setting() -> None:
     """The DEFAULT is a temporary owner setting, and the guard says which.
 
-    It is OFF right now (the owner's order, 2026-09-23: the hunt wants the
-    traceback) and MUST be ON in the submission. This guard exists so a flip is
-    a deliberate edit that names itself, not a silent drift — it is not a claim
-    that OFF is correct.
+    It is OFF right now (the owner's order: the hunt wants the traceback) and
+    MUST be ON in the submission. This guard exists so a flip is a deliberate
+    edit that names itself, not a silent drift — it is not a claim that OFF is
+    correct.
     """
     assert Config().never_raise is False, (
         "the default flipped: if this is the submission, the harness can now be "
@@ -156,45 +210,47 @@ def test_the_module_level_entry_point_is_legal_on_garbage() -> None:
     This is the one guard that builds the REAL manager, so it restores the
     singleton afterwards and leaves no state for the tests that follow.
     """
-    saved = dict(RUNTIME.__dict__)
+    saved = dict(AGENT.__dict__)
     try:
-        RUNTIME.__dict__.clear()
-        RUNTIME.__dict__.update(Runtime(Config(never_raise=True)).__dict__)
+        AGENT.__dict__.clear()
+        AGENT.__dict__.update(Agent(Config(never_raise=True)).__dict__)
         stdout, action = _quiet(agent, {"farms": []})
         assert set(action) == {"farmer", "hands", "market"}, action
-        assert RUNTIME.failures, "a junk observation must be recorded as a failure"
+        assert AGENT.failures, "a junk observation must be recorded as a failure"
         assert "A day=" in stdout and "error=" in stdout, stdout
     finally:
-        RUNTIME.__dict__.clear()
-        RUNTIME.__dict__.update(saved)
+        AGENT.__dict__.clear()
+        AGENT.__dict__.update(saved)
 
 
-# --------------------------------------------------------------- the manager's clock
+# ------------------------------------------------------------------ the day
 
 def test_hour_zero_observes_and_every_later_hour_steps() -> None:
     """One observe per day, one step per remaining turn - never the other way."""
     fake = _FakeManager()
-    runtime = _runtime(fake)
-    runtime.act(_obs(day=0, hour=0))
+    entry = _agent(fake)
+    entry(_obs(day=0, hour=0))
     assert len(fake.observed) == 1 and fake.stepped == []
     for hour in (1, 7, 23):
-        runtime.act(_obs(day=0, hour=hour))
+        entry(_obs(day=0, hour=hour))
     assert len(fake.observed) == 1, "observe ran more than once in a day"
     assert len(fake.stepped) == 3, fake.stepped
-    runtime.act(_obs(day=1, hour=0))
+    entry(_obs(day=1, hour=0))
     assert len(fake.observed) == 2, "the next day did not observe"
 
 
-def test_the_step_budget_is_inside_the_turn() -> None:
-    """Every step gets a positive budget no larger than the working second."""
+def test_no_budget_is_handed_to_the_manager() -> None:
+    """`step` is called with the observation and nothing else.
+
+    The retired spine derived a per-turn millisecond budget from the clock and
+    passed it down; the manager's own numbers are `Config`'s, and a turn no
+    longer decides how much work happens.
+    """
     fake = _FakeManager()
-    cfg = Config()
-    runtime = _runtime(fake)
-    runtime.act(_obs(hour=0))
-    runtime.act(_obs(hour=1))
-    assert fake.stepped, "no step was made"
-    for budget in fake.stepped:
-        assert 0.0 < budget <= cfg.solve_budget_ms, budget
+    entry = _agent(fake)
+    entry(_obs(hour=0))
+    entry(_obs(hour=1))
+    assert fake.stepped == [None], fake.stepped
 
 
 def test_the_managers_plan_is_what_gets_dispatched() -> None:
@@ -202,14 +258,14 @@ def test_the_managers_plan_is_what_gets_dispatched() -> None:
     plan = {"units": [[["PLANT", "WHEAT"], ["WATER"], ["HARVEST"]]],
             "market": [[["BUY_SEED", "WHEAT", 1]], []]}
     fake = _FakeManager(plan=plan)
-    runtime = _runtime(fake)
-    assert runtime.act(_obs(hour=0))["farmer"] == ["PLANT", "WHEAT"]
-    assert runtime.act(_obs(hour=1))["farmer"] == ["WATER"]
-    assert runtime.act(_obs(hour=2))["farmer"] == ["HARVEST"]
-    assert runtime.act(_obs(hour=3))["farmer"] == ["PASS"]
+    entry = _agent(fake)
+    assert entry(_obs(hour=0))["farmer"] == ["PLANT", "WHEAT"]
+    assert entry(_obs(hour=1))["farmer"] == ["WATER"]
+    assert entry(_obs(hour=2))["farmer"] == ["HARVEST"]
+    assert entry(_obs(hour=3))["farmer"] == ["PASS"]
     # the market row rides on its own hour (the queue is per hour, F031)
-    assert runtime.act(_obs(hour=0))["market"] == [["BUY_SEED", "WHEAT", 1]]
-    assert runtime.act(_obs(hour=1))["market"] == []
+    assert entry(_obs(hour=0))["market"] == [["BUY_SEED", "WHEAT", 1]]
+    assert entry(_obs(hour=1))["market"] == []
 
 
 # --------------------------------------------------------------- visible failure
@@ -221,13 +277,13 @@ def test_a_failing_observe_passes_and_is_recorded() -> None:
     it in `test_the_never_raise_switch_decides_whether_a_failure_escapes`.
     """
     fake = _FakeManager(raises="observe")
-    runtime = _runtime(fake, never_raise=True)
-    stdout, action = _quiet(runtime.act, _obs(day=4, hour=0))
+    entry = _agent(fake, never_raise=True)
+    stdout, action = _quiet(entry, _obs(day=4, hour=0))
     assert action == PASS_ACTION, action
-    assert len(runtime.failures) == 1, runtime.failures
-    assert "day 4 hour 0" in runtime.failures[0]
-    assert "RuntimeError" in runtime.failures[0]
-    assert runtime.failed_days == {4}
+    assert len(entry.failures) == 1, entry.failures
+    assert "day 4 hour 0" in entry.failures[0]
+    assert "RuntimeError" in entry.failures[0]
+    assert entry.failed_days == {4}
     assert "A day=4 hour=0" in stdout and "error=" in stdout, stdout
     # no second policy answered in its place
     assert action["farmer"] == ["PASS"]
@@ -236,48 +292,33 @@ def test_a_failing_observe_passes_and_is_recorded() -> None:
 def test_a_failing_step_passes_and_is_recorded() -> None:
     """A failure on any turn of the day is recorded, not swallowed."""
     fake = _FakeManager(raises="step")
-    runtime = _runtime(fake, never_raise=True)
-    action = runtime.act(_obs(day=2, hour=5))
+    entry = _agent(fake, never_raise=True)
+    action = entry(_obs(day=2, hour=5))
     assert action == PASS_ACTION
-    assert runtime.failed_days == {2}
-    assert "day 2 hour 5" in runtime.failures[0]
+    assert entry.failed_days == {2}
+    assert "day 2 hour 5" in entry.failures[0]
 
 
 def test_a_failure_does_not_stop_the_next_turn() -> None:
     """One bad turn is one bad turn: the next turn still calls the manager."""
     fake = _FakeManager(raises="step")
-    runtime = _runtime(fake, never_raise=True)
-    runtime.act(_obs(hour=1))
+    entry = _agent(fake, never_raise=True)
+    entry(_obs(hour=1))
     fake.raises = None
-    action = runtime.act(_obs(hour=2))
+    action = entry(_obs(hour=2))
     assert action != PASS_ACTION or fake.plan["units"][0][0] == ["PASS"]
-    assert runtime.turns == 2 and len(runtime.failures) == 1
+    assert len(entry.failures) == 1, entry.failures
 
 
 def test_the_day_line_is_written_once_per_day() -> None:
     """The `D` line: one per day, at hour 0, carrying the manager's own numbers."""
     fake = _FakeManager()
-    runtime = _runtime(fake)
-    stdout, _ = _quiet(runtime.act, _obs(day=0, hour=0))
+    entry = _agent(fake)
+    stdout, _ = _quiet(entry, _obs(day=0, hour=0))
     assert stdout.count("D 0 ") == 1, stdout
     assert "certified=" in stdout and "pool=" in stdout
-    stdout, _ = _quiet(runtime.act, _obs(day=0, hour=1))
+    stdout, _ = _quiet(entry, _obs(day=0, hour=1))
     assert "D 0 " not in stdout, "the day line repeated inside the day"
-
-
-def test_an_over_budget_turn_is_logged_as_an_anomaly() -> None:
-    """A turn over the working budget gets an `A` line even when nothing raised."""
-    class _SlowManager(_FakeManager):
-        def step(self, obs=None, budget_ms: float | None = None) -> bool:
-            import time
-            time.sleep(0.05)
-            return super().step(obs, budget_ms)
-
-    runtime = _runtime(_SlowManager(), turn_budget_ms=5.0, reserve_ms=1.0)
-    stdout, action = _quiet(runtime.act, _obs(day=0, hour=1))
-    assert set(action) == {"farmer", "hands", "market"}
-    assert "A day=0 hour=1" in stdout and "over_budget" in stdout, stdout
-    assert runtime.worst_overrun_s > 0.0
 
 
 # --------------------------------------------------------------- the dispatcher
@@ -337,23 +378,24 @@ def test_empty_units_plan_is_legal() -> None:
 # --------------------------------------------------------------- the whole season
 
 def test_full_episode_smoke_with_a_stub_manager() -> None:
-    """719 turns of the spine's own loop: 30 observes, 689 steps, all legal."""
+    """719 turns of the entry's own loop: 30 observes, 689 steps, all legal."""
     fake = _FakeManager(plan={"units": [[["PASS"]]], "market": []})
-    runtime = _runtime(fake)
+    entry = _agent(fake)
     for step in range(719):                    # F048: 719 decisions, not 720
-        action = runtime.act(_obs(day=step // 24, hour=step % 24))
+        action = entry(_obs(day=step // 24, hour=step % 24))
         assert set(action) == {"farmer", "hands", "market"}
     assert len(fake.observed) == 30, len(fake.observed)
     assert len(fake.stepped) == 689, len(fake.stepped)
-    assert runtime.failures == [] and runtime.turns == 719
+    assert entry.failures == []
 
 
-def test_the_spine_imports_no_fallback_ladder() -> None:
-    """Structural: the spine's imports are the manager, the dispatcher, config.
+def test_the_spine_imports_no_fallback_ladder_and_no_runtime() -> None:
+    """Structural: the entry's imports are the manager, the dispatcher, config.
 
     The ladder is gone rather than dormant - `greedy`, `replan` and
-    `market_layer` are not reachable from the entry point any more, and this
-    guard fails the day one of them is imported back in.
+    `market_layer` are not reachable from the entry point any more - and so is
+    the clock: `agent/runtime.py` is retired, and this guard is what fails the
+    day it (or another spine that measures the wall clock) is imported back in.
     """
     tree = ast.parse(SPINE.read_text(encoding="utf-8"))
     imported: set[str] = set()
@@ -366,63 +408,9 @@ def test_the_spine_imports_no_fallback_ladder() -> None:
     assert "agent.dispatch" in imported, imported
     assert "agent.config" in imported, imported
     for doomed in ("agent.greedy", "agent.replan", "agent.market_layer",
-                   "agent.belief.ladder", "agent.planner.master"):
+                   "agent.belief.ladder", "agent.planner.master",
+                   "agent.runtime"):
         assert doomed not in imported, f"{doomed} is back in the spine"
-
-
-# --------------------------------------------------------------- the opponent's turn
-
-def test_the_gap_stats_match_a_direct_computation() -> None:
-    """Welford's running mean and sd, against `statistics` on the same numbers.
-
-    Structural, not timed: the arithmetic is checked on known inputs, and the
-    one rule that is easy to get wrong is that a single reading has no sd.
-    """
-    import statistics
-    from agent.runtime import GapStats
-
-    gaps = GapStats()
-    assert gaps.n == 0 and gaps.mean == 0.0 and gaps.sd == 0.0
-    for value in (10.0, 20.0, 30.0, 40.0):
-        gaps.add(value)
-    assert gaps.n == 4
-    assert gaps.mean == 25.0
-    assert gaps.last_ms == 40.0
-    assert abs(gaps.sd - statistics.stdev([10.0, 20.0, 30.0, 40.0])) < 1e-9
-    single = GapStats()
-    single.add(7.0)
-    assert single.mean == 7.0 and single.sd == 0.0
-
-
-def test_every_call_after_the_first_records_a_gap() -> None:
-    """One reading per turn after the first: the season's own gap count."""
-    fake = _FakeManager()
-    runtime = _runtime(fake)
-    for turn in range(5):
-        runtime.act(_obs(day=0, hour=turn))
-    assert runtime.gaps.n == 4, runtime.gaps.n
-    assert runtime.gaps.last_ms > 0.0
-    assert runtime.gaps.mean > 0.0
-
-
-def test_the_gap_line_is_printed_only_when_the_config_asks() -> None:
-    """`Config.log_gaps`: off by default, and it prints the running stats.
-
-    The quiet arm makes TWO calls: the first turn of a season has no previous
-    return, so a one-call arm would pass whether or not the switch is read at
-    all (found by the R007 drill, which came back with zero red guards).
-    """
-    quiet = _runtime(_FakeManager(), log_gaps=False)
-    _quiet(quiet.act, _obs(day=0, hour=1))          # first call: no gap yet
-    stdout, _ = _quiet(quiet.act, _obs(day=0, hour=2))
-    assert quiet.gaps.n == 1, "the arm did not produce a reading to hide"
-    assert "G turn=" not in stdout, stdout
-    loud = _runtime(_FakeManager(), log_gaps=True)
-    stdout, _ = _quiet(loud.act, _obs(day=0, hour=1))
-    assert "G turn=" not in stdout, "the first turn has no previous return"
-    stdout, _ = _quiet(loud.act, _obs(day=0, hour=2))
-    assert "G turn=" in stdout, stdout
-    assert "gap_ms=" in stdout and "mean_ms=" in stdout and "sd_ms=" in stdout, stdout
 
 
 def main() -> int:
@@ -439,7 +427,7 @@ def main() -> int:
     if failures:
         print(f"{failures} test(s) failed")
         return 1
-    print("all agent spine tests passed")
+    print("all agent entry tests passed")
     return 0
 
 

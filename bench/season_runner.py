@@ -34,7 +34,7 @@ def _one(repo: str, slug: str, seed: int, hands: int, rounds: int | None,
     """Play one season in THIS process and return the result as a dict."""
     sys.path.insert(0, repo)
     from agent.config import Config
-    import agent.runtime as R
+    from agent.main import AGENT
     from offline_lab.fast_sim import FastSim
 
     cfg = Config()
@@ -45,7 +45,7 @@ def _one(repo: str, slug: str, seed: int, hands: int, rounds: int | None,
         object.__setattr__(cfg, "turn_budget_ms", float(budget_ms))
     if search_s:
         object.__setattr__(cfg, "search_budget_s", float(search_s))
-    R.RUNTIME.cfg = cfg
+    AGENT.cfg = cfg
 
     loaded = None
     call = None                      # bound only when a rival is loaded
@@ -65,7 +65,7 @@ def _one(repo: str, slug: str, seed: int, hands: int, rounds: int | None,
         views = sim.observations(copy_state=False)
         o0 = views[0]
         try:
-            action = R.RUNTIME.act(o0, None)
+            action = AGENT(o0)
         except Exception as exc:                       # a crash is a RESULT
             crashes.append(f"{type(exc).__name__}: {exc}")
             action = {"farmer": ["PASS"], "hands": [], "market": []}

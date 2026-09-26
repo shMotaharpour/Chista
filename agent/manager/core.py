@@ -83,7 +83,8 @@ def _sell_hours(plan) -> dict:
 #: `OpponentModel(pretrained=True)` reads `agent/artifact/opponent_counts.npz`
 #: (2,811 states) and takes 1,222 ms measured — more than the whole hour-0 turn
 #: budget (965 ms), so it cannot be loaded inside a turn. It is warmed at import
-#: by `agent/runtime.py` and shared by every manager.
+#: by `agent/main.py`, the one place that builds the agent, and shared by every
+#: manager.
 #:
 #: An artifact that is missing or empty gives `None` rather than an empty table:
 #: the caller then passes no model at all and the queue keeps its uniform spread,

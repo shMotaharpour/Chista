@@ -203,22 +203,22 @@ def test_the_model_re_times_the_sell_hours_on_a_board_that_must_sell():
         "the circuit is supposed to hold the stock to the peak, not spread it")
 
 
-def test_the_runtime_import_warms_the_model_in_a_fresh_process():
-    """1,222 ms at import, never inside a turn (the hour-0 budget is 965 ms).
+def test_the_entry_import_warms_the_model_in_a_fresh_process():
+    """1,222 ms at import, never inside a turn.
 
     Run in a fresh interpreter on purpose: in-process the singleton is already
     warm from whichever test ran first, so the assertion would pass whether or
-    not the runtime still does the warming.
+    not the entry module still does the warming.
     """
     code = (
         f"import sys; sys.path.insert(0, {ROOT!r})\n"
         "import agent.manager.core as MC\n"
-        "assert MC._OPPONENT_TRIED is False, 'warm before the runtime was imported'\n"
-        "import agent.runtime\n"
+        "assert MC._OPPONENT_TRIED is False, 'warm before the entry was imported'\n"
+        "import agent.main\n"
         "print(int(MC._OPPONENT_TRIED), MC.opponent_model() is not None)\n"
     )
     done = subprocess.run([sys.executable, "-c", code],
                           capture_output=True, text=True)
     assert done.returncode == 0, done.stderr[-800:]
     assert done.stdout.strip() == "1 True", (
-        f"importing agent.runtime did not warm the model: {done.stdout!r}")
+        f"importing agent.main did not warm the model: {done.stdout!r}")

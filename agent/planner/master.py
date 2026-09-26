@@ -243,7 +243,7 @@ SELL_BLOCKS: int = 5
 # and 4 on this test's. Measured floors (5 readings each, `test_budget` prints
 # the live numbers): the round 53.8 ms with the #15 price-path forecast at
 # 0.7 ms. The ceiling is that measurement with ~1.2x headroom for the grader's
-# 1.17-1.41x slowdown (agent/runtime.py P-series probes).
+# own 1.17-1.41x slowdown (the P-series probes).
 #
 # The sweep's expensive half is `EP @ p[d] - EC @ w[d]`, and a distance only
 # changes the labour column of `EC`, so a round now prices every distance off

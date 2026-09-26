@@ -196,15 +196,15 @@ def test_the_closure_is_real_and_covers_the_agent() -> None:
     The entry must resolve, and the closure must contain the modules the spine
     is known to load. It used to require `agent/greedy`: `main -> runtime ->
     {greedy, dispatch}` was the M1 spine, and greedy was the policy the runtime
-    fell back to. The ladder is retired (#79) — `agent/runtime.py` has one
-    policy now, the manager — so greedy is required to be ABSENT here (its own
-    guard in `test_agent_runtime.py` lists it with the rest of the retired
-    path), and the manager chain is what must be present.
+    fell back to. The ladder is retired (#79) and so is the clock
+    (`agent/runtime.py`, retired in the manager refactor) — so greedy is required
+    to be ABSENT here (its own guard in `test_agent_main.py` lists it with the
+    rest of the retired path), and the manager chain is what must be present.
     """
     assert ENTRY.is_file(), f"submission entry point missing: {ENTRY}"
     closure, roots = submission_closure()
     names = {p.relative_to(REPO).with_suffix("").as_posix() for p in closure}
-    for required in ("agent/runtime", "agent/dispatch", "agent/manager/core",
+    for required in ("agent/main", "agent/dispatch", "agent/manager/core",
                      "agent/planner/master", "agent/planner/colgen"):
         assert required in names, (
             f"closure misses {required}: the walk is broken ({sorted(names)})"
@@ -219,7 +219,7 @@ def test_the_closure_is_real_and_covers_the_agent() -> None:
 
 
 @contextlib.contextmanager
-def _fake_repo(runtime_body: str):
+def _fake_repo(spine_body: str):
     """A three-file repository in a temp directory, for the tests below.
 
     The first version of these tests wrote the violation into this repo's
@@ -229,6 +229,10 @@ def _fake_repo(runtime_body: str):
     the mutated copy permanently — the exact accident this whole file exists
     to prevent, caused by its own test (review round 2). So the violation
     goes in a repository we build and throw away.
+
+    `spine_body` is the module the fake entry imports — the module a spine
+    lives in, whatever it is called. It was `agent/runtime.py` until that file
+    was retired; the walk only cares that the entry reaches it.
     """
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -237,10 +241,10 @@ def _fake_repo(runtime_body: str):
         (root / "opponents" / "__init__.py").write_text("AGENT_COUNT = 0\n")
         (root / "opponents" / "extract.py").write_text("def audit():\n    pass\n")
         (root / "agent" / "main.py").write_text(
-            "from agent.runtime import RUNTIME\n\n\ndef agent(obs):\n"
-            "    return RUNTIME\n")
+            "from agent.spine import SPINE\n\n\ndef agent(obs):\n"
+            "    return SPINE\n")
         (root / "agent" / "greedy.py").write_text("GREEDY = 1\n")
-        (root / "agent" / "runtime.py").write_text(runtime_body)
+        (root / "agent" / "spine.py").write_text(spine_body)
         yield root, root / "agent" / "main.py"
 
 
@@ -253,7 +257,7 @@ def test_guard_catches_submodule_imports() -> None:
     for stmt in ("import opponents",
                  "from opponents.extract import audit",
                  "import opponents.extract"):
-        body = f"from agent.greedy import GREEDY\n{stmt}\n\nRUNTIME = 1\n"
+        body = f"from agent.greedy import GREEDY\n{stmt}\n\nSPINE = 1\n"
         with _fake_repo(body) as (root, entry):
             closure, _ = submission_closure(entry, root)
             reached = any(FORBIDDEN_ROOT in _imported_roots(p) for p in closure)
@@ -263,7 +267,7 @@ def test_guard_catches_submodule_imports() -> None:
 def test_relative_imports_are_refused_in_the_closure() -> None:
     """The walk cannot resolve relative imports; an unresolved import
     silently shrinks the closure. They are refused, not ignored."""
-    body = "from .greedy import GREEDY\n\nRUNTIME = 1\n"
+    body = "from .greedy import GREEDY\n\nSPINE = 1\n"
     with _fake_repo(body) as (root, entry):
         try:
             submission_closure(entry, root)
@@ -292,7 +296,7 @@ def test_the_tests_do_not_touch_the_repository() -> None:
     """These regression tests build their violations in a temp directory.
     If one ever writes into the real tree again, the file it would target is
     the one the submission loads — so this asserts the tree is untouched."""
-    for name in ("greedy.py", "runtime.py", "main.py", "dispatch.py"):
+    for name in ("greedy.py", "spine.py", "main.py", "dispatch.py"):
         src = REPO / "agent" / name
         if src.is_file():
             assert FORBIDDEN_ROOT not in _imported_roots(src), (
