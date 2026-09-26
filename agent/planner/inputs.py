@@ -26,6 +26,7 @@ from agent.tile_dp.contractor import HORIZON_DAYS, TileContractor
 from agent.tile_dp.graph import TileGraph
 from agent.world.model import N_RESOURCE, PRODUCTS, RESOURCE_ID
 from agent.world.rules import ANIMAL_RULES, CROP_RULES, hire_cost
+from agent.world.terms import EngineTerms
 
 #: A hand hired in turn 0 first acts at hour 1, so it works 23 of the day's 24
 #: turns (F040). The marginal wage is the hire's price over the hours it buys,
@@ -131,6 +132,8 @@ def dual_stand_in(obs: Any, days: int = HORIZON_DAYS,
     # looks cheaper than the man already there. This is the FLOOR, not the
     # answer: the master's tâtonnement moves the internal prices off it.
     w[:, RESOURCE_ID["LABOR"]] = np.maximum(
-        float(hire_cost(int(farm.get("hires_today", 0)))) / HOURS_PER_HAND,
+        float(hire_cost(int(farm.get("hires_today", 0)),
+                        EngineTerms.from_obs(obs).hand_cost_mult))
+        / HOURS_PER_HAND,
         farmer_hour_floor(cfg))
     return p, w

@@ -119,26 +119,31 @@ HIRE_SEQUENCE: tuple[int, ...] = (1, 1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233
                                   377, 610, 987, 1597, 2584, 4181, 6765)
 
 
-#: The engine's multiplier on the hire sequence: `FARM_HAND_COST_MULT`
-#: (kaggriculture.py:101), which an episode may override as `farmHandCostMult`
-#: (:552). ZERO for now, by the owner's order (2026-09-23): the planner is not
-#: given a labour-cost model yet, so it must not price a bill it cannot reason
-#: about. When that model lands the environment is set to the same number.
-#: NOTE: this is the PLANNER's price of a hand. What a hire actually COSTS the
-#: farm is `FARM_HAND_COST_MULT` below, and `agent/world/terms.EngineTerms` is
-#: what resolves that one per run.
+#: THE reference for what a hand costs: the engine's `farmHandCostMult`
+#: (kaggriculture.py:101, overridable per run at :552), as this agent accounts
+#: it. Every reader of a hand's price goes through `hire_cost` below and this
+#: number alone — the hire bill the day pays, the LP's hour prices and the
+#: farmer's hour floor move together when it is set, and there is no second knob
+#: to keep in step.
+#:
+#: ZERO for now, by the owner's order (2026-09-23): the planner is not given a
+#: labour-cost model yet, so it must not price a bill it cannot reason about.
+#: When that model lands, set THIS to the engine's own value (1) and the
+#: environment to the same number.
 HAND_COST_MULT: int = 0
 
-#: The engine's own default multiplier (kaggriculture.py:101): what a hire
-#: really costs, before any episode override. A different number from
-#: `HAND_COST_MULT` above on purpose — see that comment.
-FARM_HAND_COST_MULT: int = 1
 
+def hire_cost(n_already_today: int, mult: int | None = None) -> int:
+    """The price of the next hire, kaggriculture.py:698-699 (`_fib` indexed at 1).
 
-def hire_cost(n_already_today: int) -> int:
-    """The price of the next hire, kaggriculture.py:698-699 (`_fib` indexed at 1)."""
-    return HAND_COST_MULT * HIRE_SEQUENCE[
-        min(n_already_today, len(HIRE_SEQUENCE) - 1)]
+    The ONE formula: `mult · fib(n)`. `mult` is the run's own `farmHandCostMult`
+    when a caller has resolved it (`world/terms.EngineTerms.hand_cost_mult`), and
+    the reference `HAND_COST_MULT` when it has not — so a caller that will pay
+    the bill and a caller that prices an hour read the same product, not two.
+    """
+    factor = HAND_COST_MULT if mult is None else int(mult)
+    return factor * HIRE_SEQUENCE[
+        min(int(n_already_today), len(HIRE_SEQUENCE) - 1)]
 
 
 # --- the town ---------------------------------------------------------------- #

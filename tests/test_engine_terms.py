@@ -38,12 +38,14 @@ def test_without_a_configuration_the_transcription_answers():
     transcription of the engine's defaults is the answer — and it is the SAME
     number, not a copy of it."""
     terms = EngineTerms.from_obs({})
-    assert terms.hand_cost_mult == rules.FARM_HAND_COST_MULT
+    assert terms.hand_cost_mult == rules.HAND_COST_MULT
     assert terms.shed_capacity == rules.SHED_CAPACITY
     assert terms.shop_interval == rules.SHOP_SELL_INTERVAL_TURNS
     assert terms.center_interval == rules.CENTER_SELL_INTERVAL_TURNS
     assert terms.shop_unlock_interval == rules.SHOP_UNLOCK_INTERVAL_DAYS
-    assert terms.hand_cost_mult == 1, "the engine's own default (kaggriculture.py:101)"
+    assert terms.hand_cost_mult == rules.HAND_COST_MULT == 0, (
+        "one reference for what a hand costs (the owner's order: no labour-cost "
+        "model yet), not the engine's 1 sitting beside a separate planner 0")
 
 
 def test_the_observation_configuration_wins_for_what_it_names():
@@ -115,18 +117,34 @@ def test_the_run_multiplier_reaches_the_hire_bill():
     assert len([r for r in built.rows[0] if r and r[0] == "HIRE"]) == 3
 
 
-def test_the_planners_hand_price_is_not_the_engines_bill_multiplier():
-    """Two numbers, on purpose: what a hire costs the FARM (the engine's
-    multiplier, `EngineTerms.hand_cost_mult`) and what the LP PRICES it at
-    (`rules.HAND_COST_MULT`, zero by the owner's order — the planner is not
-    given a labour-cost model yet). Wiring them together is a policy change."""
-    from agent.planner.market import hire_orders
+def test_one_reference_for_what_a_hand_costs():
+    """ONE number, and setting it moves the bill AND the LP's hour price.
 
-    assert rules.HAND_COST_MULT == 0
-    assert EngineTerms().hand_cost_mult == rules.FARM_HAND_COST_MULT == 1
-    assert hire_orders(3, 0, 9)[1] == 0, (
-        "the bill is zero whatever the engine's multiplier says: the planner "
-        "prices a hand at HAND_COST_MULT and that is 0 by the owner's order")
+    `rules.HAND_COST_MULT` is the reference (the owner's accounting of the
+    engine's `farmHandCostMult`), `EngineTerms.hand_cost_mult` defaults to it,
+    and both readers go through `rules.hire_cost` — so there is no second knob
+    that can disagree with the first. It is ZERO today by the owner's order (no
+    labour-cost model yet); the guard is about the wiring, not the value.
+    """
+    from agent.planner import day as D
+    from agent.planner.market import hire_orders
+    from agent.world.rules import HIRE_SEQUENCE
+
+    assert rules.HAND_COST_MULT == 0, "the owner's order, until labour is priced"
+    assert EngineTerms().hand_cost_mult == rules.HAND_COST_MULT
+
+    # Both readers, no argument: the reference answers for both.
+    ladder = int(sum(HIRE_SEQUENCE[:3]))
+    assert hire_orders(3, 0)[1] == D.hire_bill(3, 0) == rules.HAND_COST_MULT * ladder
+
+    # ...and a run that says hands cost 3x fib moves both, once.
+    assert hire_orders(3, 0, 3)[1] == D.hire_bill(3, 0, 3) == 3 * ladder, (
+        "the bill and the LP's hour price disagree about what a hand costs: "
+        "they must be one `rules.hire_cost` call, not two products")
+
+    # The engine's own vocabulary answers the same reference.
+    assert EngineTerms(hand_cost_mult=3).get("farmHandCostMult") == 3
+    assert EngineTerms(hand_cost_mult=3).get("FARM_HAND_COST_MULT") == 3
 
 
 def test_the_manager_holds_the_runs_terms():

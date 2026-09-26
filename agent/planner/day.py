@@ -259,10 +259,15 @@ def hours_for(hands: int, days: int, overhead: float) -> np.ndarray:
     return np.full(days, gross * (1.0 - overhead))
 
 
-def hire_bill(hands: int, hires_today: int = 0, multiplier: int = 1) -> int:
-    """What `hands` hires cost today. Fibonacci, and it resets nightly (F039)."""
+def hire_bill(hands: int, hires_today: int = 0,
+              multiplier: int | None = None) -> int:
+    """What `hands` hires cost today. Fibonacci, and it resets nightly (F039).
+
+    One formula with the LP's: `rules.hire_cost(n, multiplier)`, where
+    `multiplier` is the run's own `farmHandCostMult` when the caller resolved it.
+    """
     from agent.world.rules import hire_cost
-    return sum(hire_cost(int(hires_today) + i) * int(multiplier)
+    return sum(hire_cost(int(hires_today) + i, multiplier)
                for i in range(max(0, int(hands))))
 
 

@@ -24,11 +24,12 @@ no caller carries a second copy of a default:
 path arrived speaking them (`belief.market._get`, `belief.shed._get`) and the
 alternative is a second name for every number.
 
-Deliberately NOT here: the planner's own price of a hand
-(`rules.HAND_COST_MULT = 0`, the owner's order — the planner is not given a
-labour-cost model yet). `hand_cost_mult` is what a hire COSTS the farm; the
-price the LP reasons with is that separate number. Wiring the two together is a
-policy change, not a wiring one.
+What a hand costs has ONE reference: `rules.HAND_COST_MULT` (the owner's
+accounting of the engine's `farmHandCostMult`, zero until a labour-cost model
+lands). `hand_cost_mult` below defaults to it, and every consumer — the hire
+bill the day pays, the LP's hour prices, the farmer's hour floor — goes through
+`rules.hire_cost`, so setting the reference (or an episode's `farmHandCostMult`)
+moves all of them at once. There is no second number to keep in step.
 
 Also NOT here: the per-turn order cap (`rules.MAX_MARKET_ORDERS_PER_TURN`). The
 engine never reads it from a configuration, so there is nothing to resolve — a
@@ -41,7 +42,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, fields
 from typing import Any
 
-from agent.world.rules import (CENTER_SELL_INTERVAL_TURNS, FARM_HAND_COST_MULT,
+from agent.world.rules import (CENTER_SELL_INTERVAL_TURNS, HAND_COST_MULT,
                                SHED_CAPACITY, SHOP_SELL_INTERVAL_TURNS,
                                SHOP_UNLOCK_INTERVAL_DAYS)
 
@@ -71,8 +72,9 @@ class EngineTerms:
     """
 
     #: What the n-th hire of a day costs, per `fib(n)` (kaggriculture.py:101,
-    #: overridable as `farmHandCostMult` at :552).
-    hand_cost_mult: int = FARM_HAND_COST_MULT
+    #: overridable as `farmHandCostMult` at :552) — the single reference for it,
+    #: unless this run's own configuration says otherwise.
+    hand_cost_mult: int = HAND_COST_MULT
     #: The shed's capacity in items, seeds excluded (:553, :867).
     shed_capacity: int = SHED_CAPACITY
     #: Turns between a shop instance's purchases (:733).

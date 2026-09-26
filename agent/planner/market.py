@@ -147,16 +147,20 @@ def buy_orders(chains, seeds: dict, shed: dict,
     return orders, bill
 
 
-def hire_orders(hands: int, hires_today: int, multiplier: int = 1
+def hire_orders(hands: int, hires_today: int, multiplier: int | None = None
                 ) -> tuple[list, int]:
     """`hands` HIRE orders and what they cost.
 
     The n-th hire of a day costs `farmHandCostMult · fib(n)` and the count
     resets at nightfall (F039), so the price depends on how many were already
     taken TODAY — not on how many hands are on the field.
+
+    `multiplier` is the run's own `farmHandCostMult` (from `EngineTerms`) and it
+    is handed to `rules.hire_cost` — the one formula — rather than multiplied in
+    here, because the LP prices an hour off that same function.
     """
     orders = [["HIRE"] for _ in range(max(0, int(hands)))]
-    bill = sum(hire_cost(int(hires_today) + i) * int(multiplier)
+    bill = sum(hire_cost(int(hires_today) + i, multiplier)
                for i in range(max(0, int(hands))))
     return orders, bill
 
@@ -314,10 +318,9 @@ def build(obs, chains, *, hands: int, harvest_expected: int = 0,
                             dict(private.get("shed", {}) or {}), quotes)
     # What a hire costs is the engine's number for THIS run, resolved in one
     # place (`EngineTerms`): the observation's own configuration when the harness
-    # carried one, else the engine's default. This replaces an `or 1` that read
-    # the multiplier out of a dict the shipped path always left None — inert
-    # today only because the planner's own `HAND_COST_MULT` is zero by the
-    # owner's order, and a live wire the day a labour-cost model lands.
+    # carried one, else the reference `rules.HAND_COST_MULT`. It is handed to
+    # `rules.hire_cost` — the same function that prices the LP's hours — so the
+    # bill and the LP can never disagree about what a hand costs.
     terms = EngineTerms.from_obs(obs) if terms is None else terms
     hires, hire_bill = hire_orders(hands if wsr_check else 0,
                                    int(farm.get("hires_today", 0)),
