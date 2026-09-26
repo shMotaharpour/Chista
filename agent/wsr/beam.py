@@ -329,39 +329,24 @@ def search(day: Day, tasks: TaskArray, *, beam: int | None = None,
     # and stops there, paying the ladder for a day the farmer could have carried alone.
     floor = max(0, lower_bound(day, tasks) - len(day.units))
     start = floor if hands is None else int(hands)
-    # A caller's ceiling is theirs to set and may be tighter than the day's own bound - the corpus
-    # test asks for no more hands than the game paid, which is exactly that.
     bound = ceiling_for(day, tasks)
     ceiling = bound if max_hands is None else min(int(max_hands), bound)
-    deadline = None if budget_s is None else time.perf_counter() + float(budget_s)
-    # The floor is a proved bound on the workers the day needs, so a range whose top is below it is
-    # answered without searching: no pool the caller allowed can lay the day out, however the route is
-    # arranged. The comparison is against the CEILING and not the starting pool - a caller who names
-    # five and allows six is asking about six, and answering about five would refuse a day that fits.
-    if ceiling < floor:
+    if ceiling < floor or start > ceiling:
         return done(Result(ceiling, [], False, infeasible=True))
-    if start > ceiling:
-        return done(Result(ceiling, [], False, infeasible=True))
-
-    def done(result: Result) -> Result:
-        """The answer with its spare capacity on it. `search` is the only place the pool is known,
-        and the spare is counted against the hands that pool paid for."""
-        return result._replace(spare=spare_turns(day, tasks, result))
 
     def width(pool: int) -> int:
         return beam if beam is not None else beam_for(tasks, len(day.units) + pool)
 
     def seed(pool: int) -> Result | None:
-        # A route is a state for the pool it was searched with: its worker indices are that pool's.
         return warm if warm is not None and warm.pool == pool else None
 
     if hands is None and ceiling > start:
-        return done(_smallest_pool(day, tasks, width, start, ceiling, deadline, seed))
+        return done(_smallest_pool(day, tasks, width, start, ceiling, seed))
 
     partial: Result | None = None
     placed = -1
     for pool in range(start, ceiling + 1):
-        result = _fixed_point(day, tasks, width(pool), pool, deadline, seed(pool))
+        result = _fixed_point(day, tasks, width(pool), pool, seed(pool))
         if result.complete:
             return done(result)
         if partial is None or _better_route(result, partial):
@@ -396,7 +381,7 @@ def _better_route(candidate: Result, best: Result) -> bool:
 
 
 def _fixed_point(day: Day, tasks: TaskArray, beam: int, pool: int,
-                 deadline: float | None, warm: Result | None = None) -> Result:
+                 warm: Result | None = None) -> Result:
     """One pool, searched until the pickups and the hands' doors stop moving.
 
     Two things the search prices are properties of the ROUTE it produces rather than of the day: the
@@ -417,7 +402,7 @@ def _fixed_point(day: Day, tasks: TaskArray, beam: int, pool: int,
     stop). The conservative pass is therefore always in hand: a deadline can cut a later pass short,
     and a half-built attempt must never replace the fuller day the first pass found.
     """
-    conservative = _settle(day, tasks, beam, pool, deadline, warm)
+    conservative = _settle(day, tasks, beam, pool, warm=warm)
     if conservative.complete:
         # The day-wide charge already carries the day, so the tightening pass has nothing to win on
         # completeness - and it costs a search per pass, which on a real day is the budget the caller
@@ -427,7 +412,7 @@ def _fixed_point(day: Day, tasks: TaskArray, beam: int, pool: int,
     charge = bags_of(day, tasks, conservative)
     tightened = False
     for _attempt in range(CHARGE_PASSES + 1):
-        candidate = _settle(day, tasks, beam, pool, deadline, warm, charge=charge)
+        candidate = _settle(day, tasks, beam, pool, warm=warm, charge=charge)
         if _consistent(day, tasks, candidate) and _better_route(candidate, best):
             best = candidate
         bags = bags_of(day, tasks, candidate)
@@ -474,7 +459,7 @@ def _consistent(day: Day, tasks: TaskArray, result: Result) -> bool:
 
 
 def _settle(day: Day, tasks: TaskArray, beam: int, pool: int,
-            deadline: float | None, warm: Result | None = None, charge=None) -> Result:
+            warm: Result | None = None, charge=None) -> Result:
     """One pool at one pickup charge, searched until the hands stop moving.
 
     The hands land on the doors that are free WHEN THEY ARE HIRED - each hand at its own hour, and a
@@ -483,38 +468,20 @@ def _settle(day: Day, tasks: TaskArray, beam: int, pool: int,
     they agree - a fixed point, and a cheap one: it converges in two passes or not at all.
     """
     doors = None
-    started = time.perf_counter()
-    result = _run(day, tasks, hands=pool, beam=beam, deadline=deadline, warm=warm, charge=charge)
-    spent = time.perf_counter() - started
+    result = _run(day, tasks, hands=pool, beam=beam, warm=warm, charge=charge)
     for _attempt in range(3):
-        # An attempt costs about what the last one cost, so one that starts with less than that left
-        # comes back cut short - non-empty, much worse, and it would REPLACE the work the attempt
-        # before it placed. That is not a best-of to be patched up afterwards: only the last attempt
-        # is consistent with the positions it priced from, and the compiler re-derives those from the
-        # route, so an earlier attempt kept on merit hands back a route priced from positions the day
-        # does not have. The reserve is what keeps every returned route both consistent and the most
-        # complete one the budget could buy.
-        if deadline is not None and time.perf_counter() + spent >= deadline:
-            break
         nxt = _hand_doors(day, tasks, result, pool)
         if doors is not None and nxt == doors:
             break
         doors = nxt
-        started = time.perf_counter()
-        result = _run(day, tasks, hands=pool, beam=beam, doors=doors, deadline=deadline,
+        result = _run(day, tasks, hands=pool, beam=beam, doors=doors,
                       warm=warm, charge=charge)
-        spent = time.perf_counter() - started
-    # A door fixed point that oscillates: the two configurations are each other's derivation, so the
-    # last attempt can carry doors it was not priced from - and the compiler writes the walks from
-    # the CARRIED doors, so priced hops and written walks disagree (measured: winner[15]
-    # d23_harvest, winner[17] d29_collect_fertilizer fail `_room`). One final pass from the carried
-    # doors re-prices the route from the doors it will be written from; its own doors are kept - the
-    # consistency is the point, and re-deriving once more would re-break it on an oscillating day.
     final = _hand_doors(day, tasks, result, pool)
     if tuple(result.doors) != final:
-        if deadline is None or time.perf_counter() < deadline:
-            result = _run(day, tasks, hands=pool, beam=beam, doors=final,
-                          deadline=deadline, warm=warm, charge=charge)
+        repriced = _run(day, tasks, hands=pool, beam=beam, doors=final,
+                        warm=warm, charge=charge)
+        if repriced.complete or len(repriced.route) >= len(result.route):
+            result = repriced
         else:
             result = result._replace(doors=final)
     return result
@@ -525,7 +492,7 @@ def _settle(day: Day, tasks: TaskArray, beam: int, pool: int,
 
 
 def _smallest_pool(day: Day, tasks: TaskArray, width, lo: int, hi: int,
-                   deadline: float | None, seed) -> Result:
+                   seed) -> Result:
     """The smallest pool that carries the day, by halving.
 
     The predicate is monotone - a bigger pool is never less able to carry a day - so halving finds
@@ -537,15 +504,13 @@ def _smallest_pool(day: Day, tasks: TaskArray, width, lo: int, hi: int,
     best: Result | None = None
     while lo < hi:
         mid = (lo + hi) // 2
-        result = _fixed_point(day, tasks, width(mid), mid, deadline, seed(mid))
+        result = _fixed_point(day, tasks, width(mid), mid, seed(mid))
         if result.complete:
             best, hi = result, mid
         else:
             best, lo = result, mid + 1
-        if result.out_of_time:
-            break
     if lo == hi:
-        final = _fixed_point(day, tasks, width(lo), lo, deadline, seed(lo))
+        final = _fixed_point(day, tasks, width(lo), lo, seed(lo))
         if final.complete or best is None:
             return final
         if _better_route(final, best):
@@ -599,7 +564,7 @@ def _warm_row(tasks: TaskArray, warm: Result, done, when, who, free, where, trav
 
 
 def _run(day: Day, tasks: TaskArray, *, hands: int, beam: int,
-         doors=None, deadline: float | None = None,
+         doors=None,
          warm: Result | None = None, charge=None) -> Result:
     """One pool size: search the day, and report how much of it the pool could carry.
 
@@ -640,13 +605,7 @@ def _run(day: Day, tasks: TaskArray, *, hands: int, beam: int,
     # The best state is remembered as the search goes, because the beam's last generation can be
     # empty - a route that dies at the end would otherwise erase the work it had already placed.
     best = _snapshot(done, when, who, free, travel, first_hand, hours)
-    cut = False
     for _step in range(n):
-        # Every eighth step: a step is a fixed amount of work, so the check cannot pay for itself
-        # more often than that, and eight steps is far below the resolution a turn budget needs.
-        if deadline is not None and not (_step & 7) and time.perf_counter() >= deadline:
-            cut = True
-            break
         expanded = _expand(day, tasks, done, when, who, free, where, travel, live, count, load)
         if expanded is None:
             break
@@ -662,7 +621,7 @@ def _run(day: Day, tasks: TaskArray, *, hands: int, beam: int,
     complete = placed == n
     route = [(int(when_best[i]), tasks.ids[i], int(who_best[i]))
              for i in np.argsort(when_best) if done_best[i]]
-    return Result(hands, route, complete, out_of_time=cut,
+    return Result(hands, route, complete,
                   doors=tuple((int(c[0]), int(c[1])) for c in start_pos[first_hand:]))
 
 

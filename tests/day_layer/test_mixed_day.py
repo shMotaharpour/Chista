@@ -405,7 +405,7 @@ def test_fixed_point_charge_growth_unions_goods_instead_of_subset_max(monkeypatc
     monkeypatch.setattr(B, "_consistent", lambda d, t, r: True)
     monkeypatch.setattr(B, "_better_route", lambda c, b: False)
 
-    B._fixed_point(day, tasks, beam=1, pool=1, deadline=None)
+    B._fixed_point(day, tasks, beam=1, pool=1)
 
     assert any(frozenset({0, 1, 2}) in c for c in charges_seen), (
         f"charge should have grown to include {0, 1, 2}, but saw: {charges_seen}"
