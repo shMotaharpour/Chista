@@ -505,12 +505,18 @@ def _settle(day: Day, tasks: TaskArray, beam: int, pool: int,
                       warm=warm, charge=charge)
         spent = time.perf_counter() - started
     # A door fixed point that oscillates: the two configurations are each other's derivation, so the
-    # last attempt was priced from doors the day does not have. What the compiler has to write from is
-    # the doors the ENGINE gives the route it is writing (`_hand_doors`) - the one derivation the day
-    # itself agrees with - so the answer carries those, not the doors the pass went in with.
+    # last attempt can carry doors it was not priced from - and the compiler writes the walks from
+    # the CARRIED doors, so priced hops and written walks disagree (measured: winner[15]
+    # d23_harvest, winner[17] d29_collect_fertilizer fail `_room`). One final pass from the carried
+    # doors re-prices the route from the doors it will be written from; its own doors are kept - the
+    # consistency is the point, and re-deriving once more would re-break it on an oscillating day.
     final = _hand_doors(day, tasks, result, pool)
     if tuple(result.doors) != final:
-        result = result._replace(doors=final)
+        if deadline is None or time.perf_counter() < deadline:
+            result = _run(day, tasks, hands=pool, beam=beam, doors=final,
+                          deadline=deadline, warm=warm, charge=charge)
+        else:
+            result = result._replace(doors=final)
     return result
 
 
@@ -1151,10 +1157,10 @@ def _expand(day: Day, tasks: TaskArray, done, when, who, free, where, travel, li
     if load is not None and any(load.order):
         # Door work before the goods land (`loads_before`): a worker that has done nothing yet may
         # take it from its own hour, not after its pickups - it is still on the door.
-        fresh = ~done_by_worker(done, who, m)
         own = np.maximum(load.hour[None, :], 0)[:, :, None] + hop
         bare = np.maximum(np.maximum(own, released[:, None, :]), earliest_here[None, None, :])
-        early = (fresh[:, :, None] & load.before[index][None, None, :]
+        early = (~done_by_worker(done, who, m)[:, :, None]
+                 & load.before[index][None, None, :]
                  & (bare < load.first[None, :, None]))
         arrive = np.where(early, own, arrive)
         # A worker whose day so far is that door work has not loaded yet: its next task that is not
@@ -1181,8 +1187,21 @@ def _expand(day: Day, tasks: TaskArray, done, when, who, free, where, travel, li
 
     in_time = finish <= day.horizon
     before_latest = start <= latest_here[None, None, :]
+    fresh = ~done_by_worker(done, who, m)
     legal = (ready & ~done[:, index] & in_time.any(axis=1) & before_latest.any(axis=1))
     legal = legal[:, None, :] & in_time & before_latest
+    # A worker's walk may not begin before the worker exists: a fresh worker's first task at
+    # `start` needs its walk in the turns start-hop..start-1, and the earliest of those is the
+    # worker's own first hour - so the task cannot sit before own_hour + hop. Without this floor
+    # the search committed a first task whose walk crossed the worker's birth and `_room` refused
+    # the day (measured: winner[15] d23_harvest, winner[17] d29_collect_fertilizer). `load.hour`
+    # IS the workers' own first hours (`_start_hours`, carried by `door_load`); with no load the
+    # workers' hours are their raw starts, and `free` holds them (no pickups were priced).
+    own_hour = (load.hour[None, :, None] if load is not None
+                else free[:, :, None])
+    legal = legal & (~fresh[:, :, None]
+                     | (hop == 0)
+                     | (start >= own_hour + hop))
     # A worker tie: a task and the tasks it must share a worker with - a fetch and the op that
     # consumes it, a drop and the good it banks - are one worker's work. A candidate whose mate is
     # already done by somebody else is not a candidate. Without this a drop could be placed on a
