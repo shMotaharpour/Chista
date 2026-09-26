@@ -431,7 +431,12 @@ def _fixed_point(day: Day, tasks: TaskArray, beam: int, pool: int,
         if _consistent(day, tasks, candidate) and _better_route(candidate, best):
             best = candidate
         bags = bags_of(day, tasks, candidate)
-        grown = [max(charged, bag) for charged, bag in zip(charge, bags)]
+        # The charge GROWS BY UNION: `max` on frozensets compares by superset, so
+        # max({0,1}, {1,2}) keeps {0,1} and a new good the candidate's bag loads
+        # was silently dropped from the charge - the worker was priced without a
+        # good its own route consumes (123 pass-events on 25 corpus days,
+        # e.g. winner[8] worker 4 loading fertilizer 16 next to charge {8}).
+        grown = [charged | bag for charged, bag in zip(charge, bags)]
         if grown != charge:
             charge = grown
             continue
