@@ -340,25 +340,10 @@ def search(day: Day, tasks: TaskArray, *, beam: int | None = None,
     def seed(pool: int) -> Result | None:
         return warm if warm is not None and warm.pool == pool else None
 
-    if hands is None and ceiling > start:
+    if ceiling > start:
         return done(_smallest_pool(day, tasks, width, start, ceiling, seed))
 
-    partial: Result | None = None
-    placed = -1
-    for pool in range(start, ceiling + 1):
-        result = _fixed_point(day, tasks, width(pool), pool, seed(pool))
-        if result.complete:
-            return done(result)
-        if partial is None or _better_route(result, partial):
-            partial, placed = result, len(result.route)
-        elif len(result.route) <= placed:
-            # A bigger pool placed no more of the day than a smaller one, so the workers are not
-            # what the day is short of and every pool above this one is a search for nothing.
-            break
-        if result.out_of_time:
-            # A larger pool costs more and cannot buy back the time, so the loop stops here.
-            break
-    return done(partial if partial is not None else Result(ceiling, [], False))
+    return done(_fixed_point(day, tasks, width(start), start, seed(start)))
 
 
 def _makespan(result: Result) -> int:
@@ -502,18 +487,19 @@ def _smallest_pool(day: Day, tasks: TaskArray, width, lo: int, hi: int,
     caller can ask for the scan with `hands=` instead.
     """
     best: Result | None = None
+    first_hand = len(day.units)
     while lo < hi:
         mid = (lo + hi) // 2
         result = _fixed_point(day, tasks, width(mid), mid, seed(mid))
         if result.complete:
-            best, hi = result, mid
+            used = len({int(w) for turn, _, w in result.route if int(turn) >= 0 and int(w) >= first_hand})
+            best, hi = result, min(mid, max(lo, used))
         else:
-            best, lo = result, mid + 1
-    if lo == hi:
+            best = result if best is None or _better_route(result, best) else best
+            lo = mid + 1
+    if lo == hi and (best is None or not best.complete or best.pool != lo):
         final = _fixed_point(day, tasks, width(lo), lo, seed(lo))
-        if final.complete or best is None:
-            return final
-        if _better_route(final, best):
+        if final.complete or best is None or _better_route(final, best):
             return final
     return best if best is not None else Result(hi, [], False)
 
