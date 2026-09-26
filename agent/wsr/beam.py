@@ -1417,19 +1417,15 @@ def _dedupe(done: np.ndarray, free: np.ndarray, where: np.ndarray) -> np.ndarray
     """
     if done.shape[0] <= 1:
         return np.arange(done.shape[0])
-    signature = np.hstack([np.packbits(done, axis=1),
-                           free.view(np.uint8).reshape(done.shape[0], -1),
-                           where.view(np.uint8).reshape(done.shape[0], -1)])
-    # A dictionary over the rows' bytes, not : the two answer the same
-    # thing, and the unique sorts a 2-D array of void rows - 1.667 ms a call at a beam of 256, which
-    # was 81.8 per cent of the selection and about half the whole search. The rows are few, so
-    # walking them in Python costs 0.069 ms for the same answer, twenty-four times less.
-    first: dict[bytes, int] = {}
-    for index, row in enumerate(signature):
-        first.setdefault(row.tobytes(), index)
-    # No sort: a dictionary keeps insertion order and the rows are walked in order, so the first
-    # occurrence of each distinct row is already in increasing order.
-    return np.fromiter(first.values(), dtype=np.int64, count=len(first))
+    signature = np.ascontiguousarray(np.hstack([
+        np.packbits(done, axis=1),
+        free.view(np.uint8).reshape(done.shape[0], -1),
+        where.view(np.uint8).reshape(done.shape[0], -1),
+    ]))
+    dt = np.dtype((np.void, signature.shape[1]))
+    void_arr = signature.view(dt).ravel()
+    _, u_idx = np.unique(void_arr, return_index=True)
+    return np.sort(u_idx)
 
 
 def _last_drop(done, when, who, drop_rows: np.ndarray, workers: int) -> np.ndarray:

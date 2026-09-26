@@ -412,6 +412,27 @@ def test_fixed_point_charge_growth_unions_goods_instead_of_subset_max(monkeypatc
     )
 
 
+def test_fast_vectorized_dedupe_preserves_unique_states() -> None:
+    """_dedupe eliminates identical state rows while keeping unique rows in sorted order."""
+    import numpy as np
+    import agent.wsr.beam as B
+
+    # 4 rows, row 0 and row 2 are identical, row 1 and row 3 are unique
+    done = np.array([
+        [True, False, True],
+        [False, True, False],
+        [True, False, True],
+        [False, False, False],
+    ], dtype=bool)
+    free = np.array([[1], [2], [1], [3]], dtype=np.int16)
+    where = np.array([[[0, 0]], [[1, 1]], [[0, 0]], [[2, 2]]], dtype=np.int16)
+
+    kept = B._dedupe(done, free, where)
+    # Kept should contain indices 0, 1, 3
+    assert np.array_equal(kept, np.array([0, 1, 3], dtype=np.int64)), f"unexpected dedupe indices: {kept}"
+
+
+
 
 
 
