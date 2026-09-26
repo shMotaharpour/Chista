@@ -269,9 +269,22 @@ class Manager:
         # `s_{d-1}`: `s_0` is the statement "the tiles are needed tomorrow", i.e. buy today.
         ramp = self.day.master.land
         self.land_ramp = None if ramp is None else np.asarray(ramp, dtype=np.float64)
+        # #192: the LP wanting the purchase and the farm being able to PAY for it are two different
+        # statements. The engine settles BUY_LAND at rank 0 of the hour-0 market, in the same turn
+        # as the day's other orders and before that day's sales land, so the coins have to be in
+        # hand when the market opens. The gate records its three inputs either way, so a refusal is
+        # visible next time instead of inferred from a purchase that did not happen.
+        self.land_gate = {"ramp0": None if self.land_ramp is None else float(self.land_ramp[0]),
+                          "price": None if step is None else float(step[1]),
+                          "money": float(supply.money), "bought": 0}
         if (self.land_ramp is not None and self.land_ramp.size
                 and float(self.land_ramp[0]) >= 0.5):
-            self.lands_today = 1
+            if step is not None and float(supply.money) >= float(step[1]):
+                self.lands_today = 1
+                self.land_gate["bought"] = 1
+            else:
+                self.land_note = (f"the LP wanted the purchase but the purse holds "
+                                  f"{float(supply.money):,.0f} against {0 if step is None else step[1]:,}")
         self.plan = D.compile(self.day, obs, hands=self.day.hands,
                               config=config, model=self.opponent,
                               activity=self._activity(),
