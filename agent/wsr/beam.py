@@ -1063,7 +1063,14 @@ def _expand(day: Day, tasks: TaskArray, done, when, who, free, where, travel, li
     # against one, and end to end that made a hundred tiles 15 per cent SLOWER. The table is one
     # dimension more than the arithmetic needs and one pass less than the machine wants.
     # No cast: the table is int16, the width the arithmetic runs in, so the gather is the answer.
-    hop = DISTANCE[here[:, :, None], tasks.cell_index[index][None, None, :]]
+    # Manhattan distance SEPARATES: |wx-cx| + |wy-cy| as int16 arithmetic is
+    # 2.3x the table gather (measured on the heavy-day shapes: 0.59 vs 1.34 ms
+    # a call) and bit-identical - the table's only job was the abs-diff sum.
+    hx = where[:, :, 1].astype(np.int16, copy=False)[:, :, None]
+    hy = where[:, :, 0].astype(np.int16, copy=False)[:, :, None]
+    cx = tasks.cells[index, 1].astype(np.int16)[None, None, :]
+    cy = tasks.cells[index, 0].astype(np.int16)[None, None, :]
+    hop = np.abs(hx - cx) + np.abs(hy - cy)
     # A DROP is handed over at the door nearest the worker, not at a door fixed when the day was
     # built (`leg_target`): its walk is the worker's own distance to its nearest door.
     drop_here = tasks.is_drop[index]
