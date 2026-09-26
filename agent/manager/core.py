@@ -1,10 +1,9 @@
-"""The turn's clock, and the memory between days.
+"""The memory between days: what one solve found, kept for the next.
 
-Everything that decides is in `planner/`. What is left is real work all the
-same, and it is the work nobody had done: giving the solve a deadline it will
-respect, and keeping what one day found so the next does not pay for it again.
+Everything that decides is in `planner/`. What is left here is real work all the
+same: keeping what one day found so the next does not pay for it again.
 
-## Why the memory matters more than the deadline
+## Why the memory matters
 
 A cold master solve on a day-0 board is 58 pricing rounds and 936 ms. Handed
 its own column pool back it certifies the SAME objective in one round and
@@ -30,10 +29,9 @@ which is also where the columns the LP gave no weight to are dropped.
 
 ## What the 24 turns are for
 
-`actTimeout` is per turn, and hours 1..23 replay a plan already made — about
-23 free seconds a day, 690 a season. Today's plan has to exist at hour 0, so
-those turns cannot help it. They go into the pool, which is what tomorrow's
-hour 0 starts from.
+Today's plan has to exist at hour 0 — the units act that turn, so that is the
+turn the day's solve belongs to. Hours 1..23 are what the pool is built in: they
+improve tomorrow's hour 0, which starts from a pool closer to done.
 
 ## It does not catch its own errors
 
@@ -45,7 +43,6 @@ manager failed, and passes.
 
 from __future__ import annotations
 
-import time
 from typing import Any
 
 import numpy as np
@@ -81,8 +78,9 @@ def _sell_hours(plan) -> dict:
 #: The pretrained rival model, loaded ONCE per process (#95).
 #:
 #: `OpponentModel(pretrained=True)` reads `agent/artifact/opponent_counts.npz`
-#: (2,811 states) and takes 1,222 ms measured — more than the whole hour-0 turn
-#: budget (965 ms), so it cannot be loaded inside a turn. It is warmed at import
+#: (2,811 states) and takes 1,222 ms measured — more than F046's one-second turn
+#: (and the ~0.965 s the harness bills against), so it cannot be loaded inside a
+#: turn. It is warmed at import
 #: by `agent/main.py`, the one place that builds the agent, and shared by every
 #: manager.
 #:
@@ -180,13 +178,12 @@ class Manager:
         self.pool_day = day
 
     def observe(self, obs, config=None) -> None:
-        """Start a day: solve inside the turn's budget and commit a plan.
+        """Start a day: solve, and commit the plan the units act on.
 
         Today's plan must exist NOW — the units act this turn — so this is the
-        one call that may spend the whole budget. What it finds goes into the
-        pool either way.
+        call the day's solve belongs to. What it finds goes into the pool either
+        way.
         """
-        started = time.perf_counter()
         self.obs, self.config = obs, config
         # Today's horizon, and the pool moved onto it. Before anything reads
         # either: `supply`/`class_of_tile` are day-invariant, but the contractor
@@ -198,7 +195,6 @@ class Manager:
             owned, M._owned_distances(obs, self.steps))
         class_of_tile = self._class_of_tile(obs, of_tile)
 
-        deadline = started + self.cfg.solve_budget_ms / 1000.0
         # ONE forecast per turn, handed to both consumers: the master prices its
         # objective from it and `market_queue` re-times the day's sells against
         # it. Without the hand-off belief built the same curve twice — 1.1 ms
@@ -213,9 +209,8 @@ class Manager:
                           class_of_tile=class_of_tile,
                           iter_cap=self.cfg.master_rounds,
                           hands=0, max_hands=self.cfg.max_hands,
-                          budget_s=self.cfg.search_budget_s,
                           rounds=self.cfg.fit_rounds,
-                          pool=self.pool, deadline=deadline,
+                          pool=self.pool,
                           forecast_obj=self.forecast_obj,
                           smoothing=self.cfg.smoothing)
         self.pool = list(self.day.master.pool)
@@ -415,7 +410,7 @@ class Manager:
             return None
         return int(self.tracker.activity_bucket(self.tracker.step))
 
-    def step(self, obs=None, budget_ms: float | None = None) -> bool:
+    def step(self, obs=None) -> bool:
         """Spend a turn improving the pool. Today's plan is not touched.
 
         It cannot be: the units have already acted on it. What this buys is
@@ -429,7 +424,6 @@ class Manager:
         self._watch(obs)
         if self.obs is None or self.certified:
             return self.certified
-        budget = self.cfg.solve_budget_ms if budget_ms is None else budget_ms
         days = int(np.asarray(self.contractor.days))
         hands = getattr(self.day, "hands", 0) if self.day is not None else 0
         supply = M.supply_from_obs(self.obs)
@@ -445,7 +439,6 @@ class Manager:
                                supply,
                                iter_cap=self.cfg.master_rounds,
                                pool=self.pool,
-                               deadline=time.perf_counter() + budget / 1000.0,
                                forecast_obj=self.forecast_obj,
                                smoothing=self.cfg.smoothing)
         if not result.used_fallback:

@@ -31,15 +31,12 @@ ARTIFACT = Path(__file__).resolve().parent / "artifact" / "config.json"
 class Config:
     """The tuned numbers. Every field is a quantity; none is a mode.
 
-    One field is a boolean — `log_gaps` — and it is here on purpose: it selects
-    no plan path (the same turns are played with it on or off), it only decides
-    whether the evidence is printed. A field that changes WHICH policy runs is
+    One field is a boolean — `never_raise` — and it is here on purpose: it
+    selects no plan path (the same policy runs either way), it only decides
+    whether a failure is VISIBLE. A field that changes WHICH policy runs is
     still a switch in a new coat and still does not belong here.
     """
 
-    # --- the turn's clock --------------------------------------------------
-    #: The working budget inside one turn, in ms. F046: one free second per
-    #: turn, unbankable, and the harness bills ~35 ms more than measured.
     #: How many times the manager may re-ask the day layer before accepting the
     #: answer it has (the day layer's own cap is `DEFAULT_ASK_ROUNDS`; this is the
     #: owner's, and an episode may override it as `handsAskRounds`). Fixed, not
@@ -47,27 +44,11 @@ class Config:
     #: down one search at a time.
     hands_ask_rounds: int = 2
 
-    turn_budget_ms: float = 965.0
-    #: Held back for compiling and dispatching, so a solve that runs to its
-    #: deadline still leaves the turn a legal answer.
-    reserve_ms: float = 140.0
-    #: Print the wall clock between two calls of the agent, with the running
-    #: mean and sd of the season so far.
-    #:
-    #: Off by default: 719 `G` lines belong to a run whose log we mean to read,
-    #: not to every local season. Turn it on for the submission we care about.
-    #: The gap is measured from the end of our previous turn to the start of
-    #: this one, so on the grader — where the two seats run one after the other
-    #: (F058) — it carries the engine's own overhead plus, above that floor,
-    #: whatever the opponent spent thinking: the one reading of the rival's
-    #: resource use a submission can take from inside.
-    log_gaps: bool = False
-
     # --- the never-raise boundary -----------------------------------------
     #: Whether a failed turn is CAUGHT and passed, or re-raised.
     #:
     #: ON — the submission's contract: the harness is never handed an exception.
-    #: The failure is recorded on `Runtime.failures`, its day marked, the turn
+    #: The failure is recorded on `Agent.failures`, its day marked, the turn
     #: answers all-PASS, and the `A` line says so.
     #: OFF — the same record and the same `A` line, and then the exception is
     #: RE-RAISED with its traceback, so a run that reaches the boundary says WHAT
@@ -81,20 +62,20 @@ class Config:
     #:
     #: It is not a policy switch and not a fallback ladder: the plan, the market
     #: orders and the dispatcher are untouched by it. What it decides is whether
-    #: a failure is VISIBLE, which is the class `log_gaps` belongs to — and like
-    #: `log_gaps` it is display-only and says so here.
+    #: a failure is VISIBLE, which is why it is allowed here where a
+    #: path-choosing flag is not — and it says so next to the field.
     never_raise: bool = False
 
     # --- the master --------------------------------------------------------
     #: Pricing rounds one `equilibrate` may spend. The certificate usually
     #: arrives well inside it (58 rounds cold on a day-0 board, 1 warm); the
-    #: cap is what stops a board that will not converge from eating the turn.
+    #: cap is what stops a board that will not converge from running forever.
     #: Column-generation rounds per solve, and the round count is a DECISION, not
     #: a race with the clock: consulting the clock between rounds made two runs of
     #: the same seed disagree (18,312 against 28,890 with every RNG in our code
-    #: seeded and the threads pinned to one), and letting the rounds run unbounded
-    #: pushed every turn past the harness's own limit. One round is what the
-    #: 825 ms of a turn actually affords, so it is what we ask for.
+    #: seeded and the threads pinned to one). One is what this tree has been run
+    #: and measured at; with the clock out of the loop the cap is the only stop,
+    #: so raising it is a policy decision to take on a measurement.
     master_rounds: int = 1
     #: Damping on the price the rest of the agent reads. It may not touch the
     #: pricing step — the reduced-cost test is only a reduced cost of the LP
@@ -116,9 +97,6 @@ class Config:
     #: work) — it is capped low because the churn is not fixed, not because
     #: hiring is bad.
     max_hands: int = 1
-    #: Seconds the day search may spend. None lets it run to its own end,
-    #: which is what an offline measurement wants and a turn does not.
-    search_budget_s: float = 0.25
     #: Master solves one `plan` may spend correcting the hours it committed.
     fit_rounds: int = 2
     #: Wentges dual-price smoothing (#87 follow-up sweep, 2026-09-22): the
@@ -137,19 +115,10 @@ class Config:
     max_orders_per_turn: int = 10
 
     def __post_init__(self) -> None:
-        if self.turn_budget_ms <= self.reserve_ms:
-            raise ValueError(
-                f"a turn budget of {self.turn_budget_ms} ms leaves nothing "
-                f"after the {self.reserve_ms} ms reserve")
         if not 1 <= self.max_hands <= 16:
             raise ValueError(f"max_hands {self.max_hands} is outside 1..16")
         if not 0.0 < self.damping <= 1.0:
             raise ValueError(f"damping {self.damping} is outside (0, 1]")
-
-    @property
-    def solve_budget_ms(self) -> float:
-        """What one turn may spend thinking, after the reserve."""
-        return self.turn_budget_ms - self.reserve_ms
 
     @classmethod
     def load(cls, path: Path | None = None) -> "Config":

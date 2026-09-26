@@ -163,7 +163,7 @@ def test_the_tracker_is_fed_every_turn_and_reads_our_own_seat():
 
     for _ in range(3):
         env.step([dict(PASS), dict(PASS)])
-    manager.step(env.state[0].observation, budget_ms=50)
+    manager.step(env.state[0].observation)
 
     assert manager.tracker.player == int(obs.get("player", 0)), (
         "the tracker is watching the wrong seat")

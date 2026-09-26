@@ -251,7 +251,7 @@ def replan_day(runtime, obs, graph: TileGraph | None = None,
         master = equilibrate(runtime, obs, contractor,
                              supply_from_obs(obs),
                              w_warm=getattr(runtime, "_master_w", None),
-                             owned=owned, poll=lambda: _poll(deadline))
+                             owned=owned)
         runtime._master_w = master.w            # tomorrow's warm start
         runtime._master_last = master           # the plan record's evidence
         p, w = master.p, master.w

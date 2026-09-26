@@ -19,7 +19,6 @@ This is M4. Nothing here decides anything: it asks, and it reports.
 
 from __future__ import annotations
 
-import time
 from typing import Any
 from dataclasses import replace, dataclass
 
@@ -200,7 +199,7 @@ def availability(obs, chains) -> dict:
 
 def fit(chains, *, hands: int, available: dict | None = None,
         hire_times: tuple[int, ...] | None = None,
-        budget_s: float | None = None, beam: int | None = None,
+        beam: int | None = None,
         hours_committed: float = 0.0, warm=None) -> DayFit:
     """Hand the day to wsr and report what it made of it.
 
@@ -232,8 +231,7 @@ def fit(chains, *, hands: int, available: dict | None = None,
                             else earliest_hire_times(hands)))
     floor = max(0, B.lower_bound(day, tasks) - len(day.units))
     result = B.search(day, tasks, beam=beam,
-                      hands=min(floor, hands), max_hands=hands,
-                      budget_s=budget_s, warm=warm)
+                      hands=min(floor, hands), max_hands=hands, warm=warm)
 
     hours = float(max((turn for turn, _t, _w in result.route), default=0) + 1) \
         * max(1, result.pool)
@@ -298,9 +296,9 @@ def _better(candidate: "DayPlan", best: "DayPlan") -> bool:
 
 
 def plan(obs, contractor, supply, *, class_of_tile, iter_cap: int = 200,
-         hands: int = 0, budget_s: float | None = None,
+         hands: int = 0,
          rounds: int = 3, tolerance: float = 0.02,
-         pool: list | None = None, deadline: float | None = None,
+         pool: list | None = None,
          max_hands: int | None = None, w_warm=None,
          forecast_obj=None, smoothing: float = 0.0) -> DayPlan:
     """Enumerate the pool of hands, and keep the day worth the most net of it.
@@ -356,25 +354,23 @@ def plan(obs, contractor, supply, *, class_of_tile, iter_cap: int = 200,
     ceiling = int(hands if max_hands is None else max_hands)
     carried = list(pool or [])
     chosen: DayPlan | None = None
-    # Largest pool FIRST. The first solve is the cold one and the budget may
-    # cut the enumeration after it, so whichever offer runs first is the one a
-    # short turn keeps — and more hands is where the value is (0 hands 34,197,
-    # eight hands 166,449 for 54 coins). Walking down from the ceiling means a
-    # cut enumeration keeps a good day instead of the emptiest one.
+    # Every offer is solved, largest pool FIRST: more hands is where the value
+    # is (0 hands 34,197, eight hands 166,449 for 54 coins), so a caller that
+    # caps the enumeration shorter than this keeps a good day instead of the
+    # emptiest one. What this function no longer does is cut the walk short on a
+    # clock: the offers are all priced and the best NET wins.
     for offer in range(max(0, ceiling), -1, -1):
         current = _solve_at(obs, contractor, supply, class_of_tile, offer,
-                            iter_cap, budget_s, rounds, tolerance, carried,
-                            deadline, w_warm, forecast_obj, smoothing)
+                            iter_cap, rounds, tolerance, carried,
+                            w_warm, forecast_obj, smoothing)
         carried = list(current.master.pool)
         if chosen is None or current.net > chosen.net:
             chosen = current
-        if deadline is not None and time.perf_counter() >= deadline:
-            break
     return chosen
 
 
 def _solve_at(obs, contractor, supply, class_of_tile, hands, iter_cap,
-              budget_s, rounds, tolerance, pool, deadline, w_warm=None,
+              rounds, tolerance, pool, w_warm=None,
               forecast_obj=None, smoothing: float = 0.0) -> DayPlan:
     """One pool size: solve, assign, ask wsr, and price the hands."""
     from agent.planner import columns as C
@@ -395,7 +391,7 @@ def _solve_at(obs, contractor, supply, class_of_tile, hands, iter_cap,
             shed_capacity=supply.shed_capacity)
         result = M.equilibrate(object(), obs, contractor, current,
                                w_warm=w_warm, iter_cap=iter_cap, pool=pool,
-                               deadline=deadline, forecast_obj=forecast_obj,
+                               forecast_obj=forecast_obj,
                                smoothing=smoothing)
         mixes = M.to_mixes(result, contractor.days)
         choices = C.assign_by_quota(class_of_tile, mixes)
@@ -421,7 +417,7 @@ def _solve_at(obs, contractor, supply, class_of_tile, hands, iter_cap,
             float(np.asarray(mixes[c.class_key].plans[c.plan_index]
                              .row("labour"))[0])
             for c in choices if c is not None)
-        fitted = fit(chains, hands=hands, budget_s=budget_s,
+        fitted = fit(chains, hands=hands,
                      available=availability(obs, chains),
                      hours_committed=committed)
         if not fitted.complete and fitted.reason == "hours":
@@ -438,7 +434,7 @@ def _solve_at(obs, contractor, supply, class_of_tile, hands, iter_cap,
             # whether a re-ask is allowed at all, and this function has no config
             # in hand — the loop that reads it lives in the manager.
             if int(fitted.floor) > int(hands) and DEFAULT_ASK_ROUNDS > 0:
-                again = fit(chains, hands=int(fitted.floor), budget_s=budget_s,
+                again = fit(chains, hands=int(fitted.floor),
                             available=availability(obs, chains),
                             hours_committed=committed)
                 if again.complete:
@@ -466,11 +462,10 @@ def _solve_at(obs, contractor, supply, class_of_tile, hands, iter_cap,
         pool = list(result.pool)
         if fitted.complete or not chains:
             return candidate
-        if deadline is not None and time.perf_counter() >= deadline:
-            return candidate
         if fitted.reason == "budget":
-            # wsr ran out of time, not out of hours. Shrinking the supply on
-            # that would price the search's clock into the farm's day.
+            # wsr's own search stopped before placing everything — its report,
+            # not a clock this layer set. Shrinking the supply on that would
+            # price the search's own stopping rule into the farm's day.
             return candidate
         applied *= max(1.0 + tolerance, float(fitted.overhead))
         hours = hours_for(hands, days) / applied

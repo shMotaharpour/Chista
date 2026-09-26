@@ -1,8 +1,10 @@
-"""The manager: the turn's clock, and the memory between days.
+"""The manager: the memory between days.
 
-It decides nothing — `planner/` does — so what is asserted here is the two
-things it owns. A solve that respects the budget it was given, and a column
-pool carried forward that means the same thing on the day it is reused.
+It decides nothing — `planner/` does — so what is asserted here is what it owns:
+a column pool carried forward that means the same thing on the day it is reused,
+and the numbers it hands the day layer. There is no clock in it any more: a turn
+that measured its own wall clock made how much work happened depend on the
+machine.
 
 R007: every guard was broken and seen red before it was trusted.
 """
@@ -10,7 +12,6 @@ R007: every guard was broken and seen red before it was trusted.
 from __future__ import annotations
 
 import sys
-import time
 from pathlib import Path
 
 import numpy as np
@@ -24,11 +25,6 @@ from agent.world.rules import TURNS_PER_DAY
 
 
 # --- config: numbers, and the ones that are not legal ---------------------
-
-def test_a_turn_budget_inside_its_own_reserve_is_rejected():
-    with pytest.raises(ValueError, match="leaves nothing after"):
-        Config(turn_budget_ms=100.0, reserve_ms=100.0)
-
 
 def test_an_unknown_config_key_is_an_error_not_a_shrug(tmp_path):
     """A number that is not read is a number that is not tuned."""
@@ -46,58 +42,6 @@ def test_a_round_trip_through_the_artifact_keeps_every_number(tmp_path):
     out = tmp_path / "config.json"
     Config(damping=0.35, max_hands=6).dump(out)
     assert Config.load(out) == Config(damping=0.35, max_hands=6)
-
-
-# --- the clock ------------------------------------------------------------
-
-def test_the_solve_stops_inside_the_budget_it_was_given():
-    """A round costs what the last one cost, so one that cannot finish is not
-    started — and the answer degrades instead of overrunning.
-
-    The deadline used to be assigned over inside `equilibrate` by the rung's
-    own (absent) one, so a caller that passed a budget got none: 25 turns of a
-    season went past 965 ms, the worst at 2.7 s.
-    """
-    from agent.planner import columns as C
-    from agent.planner import day as D
-    from agent.planner import master as M
-    from agent.planner.colgen import classes_of
-    from agent.planner.inputs import GRAPH_PATH, load_contractor
-    from agent.obs import decode_world
-    from agent.tile_dp.graph import TileGraph
-    from offline_lab.kaggle_env import new_environment
-
-    env = new_environment({"seed": 0})
-    env.reset(2)
-    obs = env.state[0].observation
-    graph = TileGraph.load(GRAPH_PATH)
-    contractor = load_contractor(days=20)
-    _r, _c, of_tile = classes_of(M._owned_states(object(), obs),
-                                 M._owned_distances(obs, C.shed_distance()))
-    view = decode_world(obs, at_day_start=True,
-                        graph_keys=frozenset(graph.key_index))
-    walker = iter(of_tile)
-    class_of_tile = [next(walker, None) if int(k) >= 0 else None
-                     for k in np.asarray(view.me.keys).reshape(-1)]
-
-    seen = []
-    for budget_ms in (150.0, 400.0):
-        started = time.perf_counter()
-        result = D.plan(obs, contractor, M.supply_from_obs(obs),
-                        class_of_tile=class_of_tile, iter_cap=200, hands=4,
-                        budget_s=0.25, rounds=2, pool=[],
-                        deadline=started + budget_ms / 1000.0)
-        elapsed = (time.perf_counter() - started) * 1000.0
-        assert elapsed < budget_ms * 1.5 + 60, (
-            f"a {budget_ms:.0f} ms budget took {elapsed:.0f} ms")
-        assert result.master.stopped == "budget", (
-            f"the solve was not stopped by the clock: "
-            f"{result.master.stopped!r}")
-        seen.append(result.master.objective)
-
-    assert seen[1] >= seen[0], (
-        f"more time bought a worse answer: {seen[0]:.0f} at 150 ms, "
-        f"{seen[1]:.0f} at 400 ms")
 
 
 # --- the memory -----------------------------------------------------------
@@ -230,7 +174,7 @@ def test_step_warms_same_lp_as_hour_zero():
         return real_equilibrate(*args, **kwargs)
 
     with patch.object(M, "equilibrate", side_effect=spy_equilibrate):
-        manager.step(obs, budget_ms=50.0)
+        manager.step(obs)
 
     assert "forecast_obj" in called_kwargs, "step() did not pass forecast_obj"
     assert called_kwargs["forecast_obj"] is getattr(manager, "forecast_obj", object()), "step() passed different forecast_obj"

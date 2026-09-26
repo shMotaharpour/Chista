@@ -65,8 +65,8 @@ w_next = np.maximum(w_next, 0)               # R006, projected every round
 ```
 
 - Warm start: yesterday's published `w` (`(days, N_RESOURCE)` form, as
-  the runtime caches it) — F035 says the market moves slowly; starting
-  from scratch every day wastes the budget.
+  the manager hands it back) — F035 says the market moves slowly; starting
+  from scratch every day spends rounds rediscovering what is already priced.
 - **The publish is `max(engine quote, dual)` on every purchasable
   input.** A coupling dual is the INTERNAL shadow price of sharing a
   stock the farm already owns; the farm can also buy the item at the
@@ -80,11 +80,13 @@ w_next = np.maximum(w_next, 0)               # R006, projected every round
   1. every coupling dual moved less than `TOL_DUAL` this round
      (dual-stationarity — one coin is the smallest change that can move
      an engine decision: quotes are integer coins),
-  2. `ITER_CAP` rounds spent — the budget decides this, never the
+  2. `ITER_CAP` rounds spent — the cap decides this, never the
      convergence test (#12 brief §4: never let the loop decide).
-- Interruptible at every round: `poll()` between rounds; on
-  `TimeoutError` the caller still holds the incumbent `(p, w_lag)` —
-  always a usable answer (#9's deadline contract).
+- The loop is not interruptible by a clock. It used to poll a deadline
+  between rounds; a round count that follows the machine makes two runs of
+  one seed disagree (18,312 against 28,890 with every RNG in our code seeded
+  and the threads pinned to one), so the cap above is the only other stop.
+  Whatever the loop has found when it stops is a usable incumbent.
 
 ## Fallback (required, not optional — #12 brief §3)
 
@@ -106,7 +108,6 @@ the observation through `dual_stand_in` (#32).
 
 from __future__ import annotations
 
-import time
 from dataclasses import dataclass, field, replace
 
 import numpy as np
@@ -224,10 +225,11 @@ TOL_DUAL = 1.0
 # re-pricing sweep (~9.3 ms measured, tests/test_master.py::test_budget
 # prints the breakdown), not the LP: 8 rounds measured ~80 ms total on
 # this box. The #12 acceptance ceiling (full CG round ≤ 45 ms) is met
-# by a SINGLE round; the cap of 8 is the OSCILLATION budget and the
-# loop must be left earlier by the deadline. TODO(#12): re-derive the
-# cap from timing_contended on the grader (A4) when the rung is wired;
-# the cap must come off the contended number, not this floor.
+# by a SINGLE round; the cap of 8 is the OSCILLATION budget, and since the
+# deadline is gone it is the ONLY stop besides the reduced-cost certificate.
+# The managers ask for `Config.master_rounds` (1), so the cap bites only for a
+# caller that asks for more: a board that will not converge stops here rather
+# than running forever.
 ITER_CAP_DEFAULT = 8
 
 #: How many depth blocks the master prices a day's sells with. The curve is
@@ -692,9 +694,8 @@ def priced_contractor(contractor, obs):
 def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
                 w_warm: np.ndarray | None = None,
                 iter_cap: int = ITER_CAP_DEFAULT,
-                poll=None, owned: list[int] | None = None,
+                owned: list[int] | None = None,
                 pool: list | None = None,
-                deadline: float | None = None,
                 forecast_obj=None,
                 smoothing: float = 0.0,
                 entry: bool = False) -> MasterResult:
@@ -719,11 +720,11 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
     bound 33,765.5 against an objective of 34,008.8.
 
     Stopping early still leaves a usable incumbent: the last `(p, published_w)`
-    pair is on the result at every point.
+    pair is on the result at every point, so a round cap or a non-certificate
+    answer is usable rather than lost work.
 
     Never raises for solver trouble — the fallback publishes the warm
-    prices and says so. `poll()` (the rung's deadline bail) may raise:
-    the incumbent `(p, w_lag)` is on the result object either way.
+    prices and says so.
     """
     # The horizon is the season that is LEFT (F029), never a fixed look-ahead:
     # a day-0 plan starts at 30 days and shrinks by one a day, so the DP's
@@ -766,16 +767,6 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
     # prices and SAYS so.
     if not HAS_SCIPY:
         return _fallback("scipy unavailable: linprog not importable")
-    # The rung's own deadline object, if it handed one over. It is NOT the
-    # `deadline` argument — that is a wall-clock instant the caller already
-    # computed, and this line used to assign over it, so a caller that passed
-    # one got the rung's None instead and the loop ran to its natural end. A
-    # season had 25 turns over a 965 ms budget, the worst at 2.7 s.
-    rung = getattr(runtime, "_deadline", None)
-    t_end = (time.perf_counter() + rung.remaining_ms() / 1000.0 - 0.020
-             if rung is not None else None)
-    if deadline is not None:
-        t_end = deadline if t_end is None else min(t_end, deadline)
 
     # ---- the column-generation loop -------------------------------------
     # One subproblem per CLASS, not per tile: tiles in the same graph state
@@ -987,8 +978,6 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
         # market path moves (see `_repriced_pool`).
         cg = colgen.generate(price, supply.hours, supply.money, counts, days,
                              N_COUPLING, idle, rounds=max(1, iter_cap),
-                             poll=poll,
-                             deadline=t_end,
                              shed=(supply.shed_stock, supply.shed_capacity),
                              prices=p_mkt,
                              market=SELLABLE,
@@ -1191,8 +1180,8 @@ def _owned_states(runtime, obs) -> list[int]:
     # The graph is cast once per PROCESS, here. It used to be cached on the
     # runtime object (`runtime._replan_resources`), which is why `equilibrate`
     # needed a rung to be handed one at all - a coordinator that writes to the
-    # thing that calls it is not a coordinator. `runtime` stays in the
-    # signature for the deadline `poll` and nothing else.
+    # thing that calls it is not a coordinator. `runtime` is still in the
+    # signature and is no longer read for anything.
     graph = _shipped_graph()
     view = decode_world(obs, at_day_start=True,
                         graph_keys=frozenset(graph.key_index))

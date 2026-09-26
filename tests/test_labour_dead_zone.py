@@ -77,7 +77,7 @@ def test_the_published_labour_dual_never_enters_the_dead_zone() -> None:
     from agent.manager.core import Manager
     PASS = {"farmer": ["PASS"], "hands": [], "market": []}
     env = new_environment(configuration={"seed": 3})
-    m = Manager(Config(turn_budget_ms=400.0, reserve_ms=100.0))
+    m = Manager(Config())
     clamped = [0]
 
     def me(obs, config=None):

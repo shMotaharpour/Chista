@@ -70,8 +70,8 @@ class _FakeManager:
         if self.raises == "observe":
             raise RuntimeError("observe blew up")
 
-    def step(self, obs=None, budget_ms: float | None = None) -> bool:
-        self.stepped.append(budget_ms)
+    def step(self, obs=None) -> bool:
+        self.stepped.append(obs)
         if self.raises == "step":
             raise RuntimeError("step blew up")
         return self.certified
@@ -239,18 +239,19 @@ def test_hour_zero_observes_and_every_later_hour_steps() -> None:
     assert len(fake.observed) == 2, "the next day did not observe"
 
 
-def test_no_budget_is_handed_to_the_manager() -> None:
+def test_the_step_call_hands_the_manager_one_argument() -> None:
     """`step` is called with the observation and nothing else.
 
     The retired spine derived a per-turn millisecond budget from the clock and
-    passed it down; the manager's own numbers are `Config`'s, and a turn no
-    longer decides how much work happens.
+    passed it down as a second argument. A `step(obs)` manager cannot be handed
+    one, and a budget derived from the clock is what this refactor removed.
     """
     fake = _FakeManager()
     entry = _agent(fake)
+    obs = _obs(hour=1)
     entry(_obs(hour=0))
-    entry(_obs(hour=1))
-    assert fake.stepped == [None], fake.stepped
+    entry(obs)
+    assert fake.stepped == [obs], fake.stepped
 
 
 def test_the_managers_plan_is_what_gets_dispatched() -> None:

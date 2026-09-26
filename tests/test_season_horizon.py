@@ -263,7 +263,7 @@ def test_the_manager_moves_the_pool_and_the_horizon_with_the_day():
     from agent.config import Config
     from agent.manager import core as MC
 
-    manager = MC.Manager(Config(turn_budget_ms=400.0, reserve_ms=100.0))
+    manager = MC.Manager(Config())
     manager.observe(_obs_at(0), {"farmHandCostMult": 1})
     assert manager.contractor.days == 30, "day 0 prices the whole season"
     pool0 = list(manager.pool)
@@ -325,7 +325,7 @@ def test_the_manager_prunes_on_the_mix_of_the_solve_that_made_the_pool(monkeypat
     monkeypatch.setattr(M, "equilibrate", spy)
     monkeypatch.setattr(MC, "advance_pool", spy_advance)
 
-    manager = MC.Manager(Config(turn_budget_ms=400.0, reserve_ms=100.0))
+    manager = MC.Manager(Config())
     manager.observe(_obs_at(0), {"farmHandCostMult": 1})
     assert handed == {}, "the day-0 observe rolled a day it had not seen yet"
     day0_pool = list(manager.pool)
@@ -333,10 +333,10 @@ def test_the_manager_prunes_on_the_mix_of_the_solve_that_made_the_pool(monkeypat
 
     # Hours 1..23 of the SAME day: a fresh `generate`, so the pool comes back
     # reordered ([idle, warm, new]) and its mix belongs to the new order.
-    manager.step(_obs_at(0), budget_ms=300)
+    manager.step(_obs_at(0))
     assert len(solves) >= 2, (
-        "the day-0 observe certified inside its budget, so no step solve "
-        "reordered the pool: this guard needs a day that is still solving")
+        "the day-0 observe certified in ONE round, so no step solve reordered "
+        "the pool: this guard needs a day that is still solving")
     last = solves[-1]
     assert last.pool and np.asarray(last.lam).size, "the step left no mix behind"
     assert np.array_equal(np.asarray(manager.lam, dtype=float),

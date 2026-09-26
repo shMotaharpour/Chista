@@ -35,7 +35,6 @@ scalar price can produce it because both are priced at the same prices.
 from __future__ import annotations
 
 import os as _os
-import time
 from typing import NamedTuple
 from dataclasses import dataclass, field, replace
 
@@ -880,8 +879,8 @@ class ColgenResult:
     solve: MasterSolve | None = None
     rounds: int = 0
     #: True only when a pricing round found NO class with rc > RC_TOL. That is
-    #: the optimality certificate. False means the budget or the round cap
-    #: stopped the loop, and the mix is an incumbent, not an optimum.
+    #: the optimality certificate. False means the round cap stopped the loop,
+    #: and the mix is an incumbent, not an optimum.
     certified: bool = False
     stopped: str = ""             # why the loop ended, when it was not certified
     rc_history: list = field(default_factory=list)
@@ -1019,8 +1018,8 @@ def advance_pool(pool: list[Column], lam: np.ndarray | None = None,
 
 
 def generate(price, supply_hours, money, counts, days, n_coupling,
-             idle_columns, *, rounds: int = 12, poll=None,
-             deadline=None, warm: list | None = None,
+             idle_columns, *, rounds: int = 12,
+             warm: list | None = None,
              smoothing: float = 0.0, shed: tuple | None = None,
              prices: np.ndarray | None = None,
              market: tuple[int, ...] = (),
@@ -1028,6 +1027,11 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
              depth: tuple[np.ndarray, np.ndarray] | None = None,
              entry: bool = False) -> ColgenResult:
     """The loop: master over every column so far, price, add, repeat.
+
+    The loop's ONLY stop besides the certificate is `rounds`: no clock is read
+    between rounds, because a round count that depends on the machine makes two
+    runs of one seed disagree (18,312 against 28,890 with every RNG in our code
+    seeded and the threads pinned to one).
 
     `price(y, cash)` is the caller's pricing step: it publishes the duals to
     the contractor and hands back `(values, columns)` — one dual-priced plan
@@ -1064,7 +1068,6 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
                         produce=column.produce))
     seen = {(c.cls, c.key) for c in result.pool}
 
-    spent = 0.0
     # --- Wentges dual price smoothing -----------------------------------
     # The pricing step is fed `α·π_best + (1−α)·π_LP`, where π_best is the
     # dual that gave the BEST Lagrangian bound so far — the stability centre —
@@ -1106,12 +1109,6 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
     # One LP object for the whole day: the rounds share a basis (see MasterLP).
     solver = MasterLP()
     for _ in range(max(1, rounds)):
-        if poll is not None:
-            poll()
-        if deadline is not None and time.perf_counter() + spent >= deadline:
-            result.stopped = "budget"
-            return result
-        started = time.perf_counter()
         result.solve = solver.solve(
             result.pool, counts, supply_hours, money, days, n_coupling,
             shed_stock=None if shed is None else shed[0],
@@ -1269,8 +1266,6 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
             result.stopped = (f"stalled: rc {float(np.max(rc)):.6g} above tol "
                               f"{tol:.6g} on a column the pool holds")
             return result
-
-        spent = max(spent, time.perf_counter() - started)
 
     result.stopped = "round cap"
     return result

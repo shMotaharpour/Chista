@@ -11,11 +11,11 @@ Covers the brief's test list (§6):
 - cap honoured: the loop stops at the cap and says so (`converged`);
 - fallback fires when scipy is unavailable, and the agent still gets a
   publishable price set;
-- budget: 8 rounds measured, the cap carries the measurement.
+- cap: 8 rounds measured, the round cap carries the measurement.
 
 The board is a real `TileContractor` over the shipped graph with real
-owned states from `agent/obs` — no fake agent objects (the master's
-only runtime touchpoints are `_deadline` and `_replan_resources`).
+owned states from `agent/obs` — no fake agent objects, and the `runtime`
+argument the master still takes is read for nothing at all.
 """
 
 from __future__ import annotations
@@ -44,12 +44,16 @@ def _contractor():
 
 
 class _RT:
-    """The master's runtime surface: deadline + cached (graph, contractor)."""
+    """A stand-in for the runtime argument the master no longer reads.
+
+    `equilibrate(runtime, ...)` is still called with one (every call site has it
+    in scope), and the graph it used to cache here is cast once per process
+    inside the module instead. Kept as a marker so the call shape stays the one
+    the manager uses.
+    """
 
     def __init__(self) -> None:
-        c = _contractor()
-        self._replan_resources = (c.graph, c)
-        self._deadline = None
+        _contractor()                       # cast it, for the process's sake
 
 
 def _obs(state_ids: list[int], graph) -> dict:
@@ -281,7 +285,7 @@ def test_alpha_sweep_is_the_evidence() -> None:
     Measured honestly on this board: the priced column set is degenerate
     (one tile, one profitable chain + idle), so the LP's extreme duals
     flip the regime and tâtonnement OSCILLATES at every α — no α
-    converges, the cap/deadline is the stop. The evidence recorded here
+    converges, the round cap is the stop. The evidence recorded here
     is the total dual travel (sum of per-round moves) at each α: α = 0.5
     is kept because it damps the publish fastest toward the dual
     trajectory without overshoot flips in the publish itself; the sweep
@@ -510,7 +514,7 @@ def test_a_bought_input_never_reaches_the_tiles_cheaper_than_its_quote() -> None
     from agent.planner.master import PURCHASE_IDS
 
     rt = _RT()
-    obs = _obs(_bare_ids(4), rt._replan_resources[0])
+    obs = _obs(_bare_ids(4), _contractor().graph)
     # money slack, so `ahead` stays 0; quotes from the observation, because
     # `_supply` leaves them at zero and against zeros nothing can fail.
     supply = replace(_supply(hours=8.0, seeds=2),
