@@ -91,6 +91,12 @@ class TaskArray:
     cells: np.ndarray = field(default_factory=lambda: np.zeros((0, 2), dtype=np.int16))
     columns: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int8))
     pred: np.ndarray = field(default_factory=lambda: np.zeros((0, 0), dtype=bool))
+    #: How many tasks each task's miss kills: the size of its downstream closure on `pred`,
+    #: excluding the task itself. The rules (`ORDER_MATTERS`) own the order and `pred` carries it;
+    #: the closure is its consequence, and a ranking that cannot see it reads a missed WATER as
+    #: worth one task when it rots the HARVEST->PLANT->WATER chain behind it. Filled in
+    #: `__post_init__` from `pred` - one source, the rules' own edges, never a second table.
+    chain_weight: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int16))
     #: No fetch column: a fetch is not a task the day schedules. `items` says what good each task
     #: consumes; the worker's door load and any refetch after a DROP are priced by the search
     #: (`beam.door_load`, `beam.legs`) - once per worker per good, because a bag is per worker.
@@ -226,6 +232,18 @@ class TaskArray:
         else:
             self._edge_starts = np.zeros(0, dtype=np.int32)
             self._edge_targets = np.zeros(0, dtype=np.int32)
+        # The closure, once per array: the consequence of the rules' own order. `succ[i, k]` is
+        # "k directly after i", the sweep squares the reach matrix until it stops growing - a dag
+        # converges, and the day's tasks bound it - and the weight is the closure's size. Booleans
+        # squared, not counted: a count of paths, not of tasks, is what a second sweep would make.
+        succ = self.pred.T                            # succ[i, k]: k directly after i
+        reach = succ.copy()
+        while True:
+            grown = reach | (reach @ reach)
+            if np.array_equal(grown, reach):
+                break
+            reach = grown
+        self.chain_weight = reach.sum(axis=1).astype(np.int16)
 
     def ready(self, done: np.ndarray) -> np.ndarray:
         """Which tasks have all their predecessors done - one matrix product.

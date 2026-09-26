@@ -1211,6 +1211,12 @@ def _rank_keys(tasks: TaskArray, child_done, child_free, travel, makespan, hands
     }
 
 
+#: Which deterministic selection rule `_select` runs (owner 2026-09-25: no lottery):
+#: "hour" - finish hour first, importance among equals; "slack" - urgency (EDF) first.
+SELECT_RULE = "hour"
+SEED = [0]
+
+
 def _select(expanded, tasks: TaskArray, beam: int, first_hand: int, start_hours):
     """Keep the best `beam` children, ranked BEFORE they are built.
 
@@ -1247,7 +1253,29 @@ def _select(expanded, tasks: TaskArray, beam: int, first_hand: int, start_hours)
     # placed 86 of a real day's 93 tasks, and at `beam * 16` it placed 93.
     budget = min(legal.size, beam * len(active) * 16)
     if legal.size > budget:
-        shortlist = legal[np.argpartition(flat_hour[legal], budget - 1)[:budget]]
+        # The deterministic selection (owner's ruling 2026-09-25: the answer is never a
+        # lottery). The old cut ranked by FINISH HOUR alone - incomplete: among equally
+        # early candidates it kept whichever the memory layout offered. The complete
+        # criterion, per candidate, is a deterministic sort whose keys say what the old
+        # key could not see:
+        #   SELECT_RULE "hour"    finish hour, then importance (chain_weight desc),
+        #                         then worker id - "early first, important among equals"
+        #   SELECT_RULE "slack"   urgency first (latest - finish, ascending, i.e. EDF),
+        #                         then importance, then worker id
+        # `chain_weight` is the phase-1 column: what the task's miss kills downstream.
+        # Ties always resolve the same way, at every width, so the answer is a function
+        # of the day, never of the layout.
+        col_of = legal % width
+        task_of = index[col_of]
+        importance = -tasks.chain_weight[task_of]
+        worker_of = expanded["worker"][rows].ravel()[legal]
+        if SELECT_RULE == "hour":
+            primary = flat_hour[legal]
+        else:
+            primary = (tasks.latest[task_of].astype(np.int32)
+                       - flat_hour[legal].astype(np.int32))
+        order = np.lexsort((worker_of, importance, primary))
+        shortlist = legal[order[:budget]]
     else:
         shortlist = legal
 
