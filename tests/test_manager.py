@@ -162,3 +162,84 @@ def test_the_plan_is_legal_before_any_day_is_observed():
     plan = Manager().best()
     assert plan["units"] and len(plan["units"][0]) == TURNS_PER_DAY
     assert all(op == ["PASS"] for op in plan["units"][0])
+
+
+def test_unmodelled_tile_does_not_shift_classes_of_subsequent_tiles():
+    """An unmodelled tile key must get None and NOT shift subsequent tiles (#152)."""
+    import copy
+    from offline_lab.kaggle_env import new_environment
+    from agent.planner.colgen import classes_of
+    from agent.planner import master as M
+    from agent.planner import columns as C
+
+    env = new_environment({"seed": 0})
+    env.reset(2)
+    obs = copy.deepcopy(env.state[0].observation)
+    manager = Manager()
+
+    # Base line: all 25 tiles modelled
+    owned0 = M._owned_states(object(), obs)
+    dists0 = M._owned_distances(obs, manager.steps)
+    _, _, of_tile0 = classes_of(owned0, dists0)
+    normal = manager._class_of_tile(obs, of_tile0)
+
+    # Inject an unmodelled state at row 0, col 2
+    obs["farms"][0]["tiles"][0][2] = {
+        "kind": "PLANT", "crop": "WHEAT", "planted_day": 0, "yield_units": 2
+    }
+    owned1 = M._owned_states(object(), obs)
+    dists1 = M._owned_distances(obs, manager.steps)
+    reps1, _, of_tile1 = classes_of(owned1, dists1)
+    shifted = manager._class_of_tile(obs, of_tile1)
+
+    # Tile (0, 2) must be None because its state is not modelled
+    assert shifted[2] is None, f"unmodelled tile should be None, got {shifted[2]}"
+    # Last owned tile (row 4, col 4 -> index 44) must NOT be None
+    assert shifted[44] is not None, "last owned tile was shifted out to None"
+    # Tile (0, 3) must match its own state and distance, not be shifted from tile 2
+    assert reps1[shifted[3]] == (0, int(manager.steps[3])), (
+        f"tile 3 class shifted: got {reps1[shifted[3]]}, expected (0, {manager.steps[3]})"
+    )
+    # Tile (4, 4) must match its own state and distance
+    assert reps1[shifted[44]] == (0, int(manager.steps[44])), (
+        f"tile 44 class shifted: got {reps1[shifted[44]]}, expected (0, {manager.steps[44]})"
+    )
+
+
+def test_step_warms_same_lp_as_hour_zero():
+    """Hours 1-23 must warm the hour-0 LP (forecast, smoothing, hands) (#156)."""
+    from offline_lab.kaggle_env import new_environment
+    from unittest.mock import patch
+    from agent.planner import master as M
+    from agent.planner import day as D
+
+    env = new_environment({"seed": 0})
+    env.reset(2)
+    obs = dict(env.state[0].observation)
+    manager = Manager()
+    manager.observe(obs)
+    manager.certified = False
+
+    called_kwargs = {}
+    called_args = []
+    real_equilibrate = M.equilibrate
+
+    def spy_equilibrate(*args, **kwargs):
+        called_args.extend(args)
+        called_kwargs.update(kwargs)
+        return real_equilibrate(*args, **kwargs)
+
+    with patch.object(M, "equilibrate", side_effect=spy_equilibrate):
+        manager.step(obs, budget_ms=50.0)
+
+    assert "forecast_obj" in called_kwargs, "step() did not pass forecast_obj"
+    assert called_kwargs["forecast_obj"] is getattr(manager, "forecast_obj", object()), "step() passed different forecast_obj"
+    assert "smoothing" in called_kwargs, "step() did not pass smoothing"
+    assert called_kwargs["smoothing"] == manager.cfg.smoothing, "step() passed wrong smoothing"
+    called_supply = called_args[3] if len(called_args) > 3 else called_kwargs.get("supply")
+    assert called_supply is not None
+    days = int(np.asarray(manager.contractor.days))
+    expected_hours = D.hours_for(getattr(manager.day, "hands", 0), days)
+    assert np.allclose(called_supply.hours, expected_hours), "step() used 0-hands supply instead of day.hands"
+
+

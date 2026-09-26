@@ -372,6 +372,7 @@ class MasterResult:
     pool: list = field(default_factory=list)
     classes: tuple = ()            # (reps, counts, class of each owned tile)
     mu: np.ndarray = None          # (n_classes,) convexity duals, signed
+    sells: np.ndarray = None       # (n_goods, days) planned market sales from the LP
     #: True only when a pricing round found no class with a positive reduced
     #: cost. `converged` is kept as its alias for the callers that read it.
     certified: bool = False
@@ -1022,6 +1023,7 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
         result.eta = getattr(cg.solve, "eta", None)
         result.credit = credit_box[0]
         result.defer_cap = getattr(cg.solve, "defer_cap", None)
+        result.sells = getattr(cg.solve, "sells", None)
     converged = cg.certified
 
     # #87's dead-zone clamp, on the COUPLING dual before the publish map:
@@ -1067,11 +1069,13 @@ def to_mixes(result: "MasterResult", days: int) -> dict[int, "object"]:
     """
     from agent.planner.columns import DAYS, ClassMix, Plan
 
+    zero_row = (0.0,) * DAYS
+
     def pad(row: np.ndarray) -> tuple[float, ...]:
-        out = np.zeros(DAYS, dtype=np.float64)
-        n = min(DAYS, len(row))
-        out[:n] = np.asarray(row, dtype=np.float64)[:n]
-        return tuple(float(v) for v in out)
+        r = tuple(float(v) for v in np.asarray(row, dtype=np.float64)[:DAYS])
+        if len(r) < DAYS:
+            r += (0.0,) * (DAYS - len(r))
+        return r
 
     sigma = np.asarray(result.sigma if result.sigma is not None else [],
                        dtype=np.float64)
@@ -1129,9 +1133,9 @@ def to_mixes(result: "MasterResult", days: int) -> dict[int, "object"]:
                     value=plan_value(col),
                     rows={"labour": pad(col.cost[:, 0]),
                           "cash_out": pad(col.spend),
-                          "wheat_net": pad(np.zeros(days)),
-                          "fert_net": pad(np.zeros(days)),
-                          "stored": pad(np.zeros(days))})
+                          "wheat_net": zero_row,
+                          "fert_net": zero_row,
+                          "stored": zero_row})
         by_class[col.cls].append((plan, float(lam[j]) if j < lam.size else 0.0))
 
     mixes: dict[int, ClassMix] = {}

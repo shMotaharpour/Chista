@@ -151,6 +151,7 @@ def plan_sales(stock: Mapping[str, int], forecast, *, day: int, hour: int = 0,
                end_day: int = SEASON_DAYS - 1,
                capacity: int = SHED_CAPACITY,
                hour_plan: dict[str, dict[int, int]] | None = None,
+               master_sells: Mapping[str, int] | None = None,
                ) -> tuple[Sale, ...]:
     """How much of which item to sell on which turn, and why.
 
@@ -236,6 +237,10 @@ def plan_sales(stock: Mapping[str, int], forecast, *, day: int, hour: int = 0,
                 units = min(need, held[item] - take.get(item, 0))
                 _release(item, units, "shed-guard")
                 need -= units
+        if master_sells:
+            for item, units in master_sells.items():
+                if item in held and int(units) > 0:
+                    _release(item, int(units), "master-lp")
         need_cash = max(0.0, float(cash_needed) - float(money))
         if need_cash > 0:
             for item in _order_of_preference():
@@ -401,7 +406,8 @@ def _after_arrival(queue: list, arrivals: dict, cap: int = MAX_ORDERS_PER_TURN
 def market_queue(obs: Any, forecast_obj=None, *, harvest_expected: int = 0,
                  cash_needed: float = 0.0, config: Any = None,
                  sort_market=None, model=None, activity: int | None = None,
-                 arrivals: dict | None = None
+                 arrivals: dict | None = None,
+                 master_sells: Mapping[str, int] | None = None,
                  ) -> list[list[list]]:
     """The market half of one day's plan, from the observation alone.
 
@@ -435,7 +441,8 @@ def market_queue(obs: Any, forecast_obj=None, *, harvest_expected: int = 0,
     sales = plan_sales(state.sellable(), fc, day=day, hour=hour,
                        harvest_expected=incoming,
                        money=_money(obs), cash_needed=cash_needed,
-                       capacity=capacity)
+                       capacity=capacity,
+                       master_sells=master_sells)
     if model is not None and sales:
         # the circuit re-times the day's sell queue: the quantities come
         # from the rules above, the HOURS from the trained model. The lots
@@ -451,7 +458,8 @@ def market_queue(obs: Any, forecast_obj=None, *, harvest_expected: int = 0,
                                harvest_expected=incoming,
                                money=_money(obs), cash_needed=cash_needed,
                                capacity=capacity,
-                               hour_plan=hour_plan)
+                               hour_plan=hour_plan,
+                               master_sells=master_sells)
         except Exception:
             pass                        # degrade to the uniform spread
     queue = orders_by_hour(sales)
