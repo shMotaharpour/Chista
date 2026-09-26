@@ -17,6 +17,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from agent.planner import market as K
+from agent.world.terms import EngineTerms
 from agent.tile_dp.chains import chain_id_of, chain_ops
 from agent.world.rules import TURNS_PER_DAY
 
@@ -148,8 +149,10 @@ def test_an_animal_in_the_shed_does_not_take_the_sell_queue_down():
     obs["private"]["shed"]["GOOSE"] = 1
     obs["private"]["shed"]["MILK"] = 3
 
+    # The run's terms, resolved the one way they ever are: this episode's own
+    # configuration (the engine's, not a literal) through `EngineTerms`.
     rows = K.sell_rows(obs, harvest_expected=0, cash_needed=0.0,
-                       config=env.configuration)
+                       terms=EngineTerms.from_obs(obs, env.configuration))
     assert isinstance(rows, list)
 
     # A shed that holds only products is handed over untouched — the trim is

@@ -22,7 +22,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from agent.planner import day as D
-from agent.world.rules import MAX_ORDERS_PER_TURN, hire_hour
+from agent.world.rules import MAX_MARKET_ORDERS_PER_TURN, hire_hour
 from agent.wsr import beam as B
 
 CHAINS = tuple(((x, y), ("PLANT", "WATER"), "WHEAT")
@@ -69,10 +69,10 @@ def test_the_hours_are_the_callers_and_the_tuple_is_the_count() -> None:
     """
     from agent.world.rules import earliest_hire_times
 
-    bound = earliest_hire_times(MAX_ORDERS_PER_TURN + 2)
+    bound = earliest_hire_times(MAX_MARKET_ORDERS_PER_TURN + 2)
     day = B.Day(chains=CHAINS, available=AVAILABLE, hire_times=bound)
     assert day.hire_times == bound
-    assert day.hands == len(bound) == MAX_ORDERS_PER_TURN + 2
+    assert day.hands == len(bound) == MAX_MARKET_ORDERS_PER_TURN + 2
     assert bound[0] == 1 and bound[-1] == 2, bound      # ten orders a turn (F031)
     empty = B.Day(chains=CHAINS, available=AVAILABLE)
     assert empty.hire_times == () and empty.hands == 0  # the farmer walks alone

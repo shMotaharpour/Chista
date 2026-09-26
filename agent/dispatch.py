@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from typing import Any
 
-MAX_MARKET_ORDERS = 10     # F031; the engine drops the 11th silently
+from agent.world.rules import MAX_MARKET_ORDERS_PER_TURN
 
 PASS_ACTION = {"farmer": ["PASS"], "hands": [], "market": []}
 
@@ -71,7 +71,7 @@ def dispatch_plan(plan, obs) -> dict:
         # doing): everyone passes, the market orders still ride
         market = market_at(plan.get("market", []), hour)
         return {"farmer": ["PASS"], "hands": [],
-                "market": market[:MAX_MARKET_ORDERS]}
+                "market": market[:MAX_MARKET_ORDERS_PER_TURN]}
 
     farmer = list(units[0][hour]) if hour < len(units[0]) else ["PASS"]
     # F031: a HIRE behind a short purse is refused SILENTLY, so the day's
@@ -88,9 +88,9 @@ def dispatch_plan(plan, obs) -> dict:
         else:
             hands.append(["PASS"])
     market = market_at(plan.get("market", []), hour)
-    if len(market) > MAX_MARKET_ORDERS:
+    if len(market) > MAX_MARKET_ORDERS_PER_TURN:
         # F031: the engine drops the 11th silently - never send one
-        market = market[:MAX_MARKET_ORDERS]
+        market = market[:MAX_MARKET_ORDERS_PER_TURN]
     # #15: `plan["market"]` is a per-hour queue (`market[hour] -> [orders]`),
     # built by `day/inventory.py::market_queue`: the cap is per TURN
     # (F031), so a 24-turn day has 240 slots, and a large forced sale is

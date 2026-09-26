@@ -5,7 +5,7 @@ days — the DP needs the whole season to value what it plants — and every day
 farm moves forward one, the horizon shrinks by one. Two things follow, and both
 are guarded here:
 
-- the master prices `SEASON_DAYS - day` days, so no row of its product price
+- the master prices `DAYS - day` days, so no row of its product price
   path is a day the season does not have. The path used to be padded
   (`path[min(day, len(path) - 1)]`), which repeated the last modelled quote over
   days the forecast never walked — measured on a real day-26 board, `p` carried
@@ -82,7 +82,7 @@ class _Path:
 def test_the_horizon_on_a_late_board_is_the_season_that_is_left():
     """A day-26 board prices 4 days, and every row of `p` is one of them.
 
-    Both halves are the guard. The horizon is `SEASON_DAYS - day`, and the rows
+    Both halves are the guard. The horizon is `DAYS - day`, and the rows
     of the product price path are the quotes for days 26, 27, 28 and 29 — not
     four copies of a padded quote, and not the twenty rows a fixed look-ahead
     gives (days 26..45, sixteen past the season).
@@ -118,17 +118,17 @@ def test_the_horizon_is_the_season_and_the_two_season_constants_agree():
     """Day 0 prices the whole season, day 29 one day, and the 30s agree.
 
     The horizon rule reads the tile DP's own season length (the horizon its
-    sweep can run over) while belief spells the same season `SEASON_DAYS`
-    (F029). Two constants for one fact drift silently, so the guard pins them
-    equal — and pins the ends of the shrink, which is the owner's rule: the plan
+    sweep can run over) while the world spells the season `DAYS` (F029). Two
+    constants for one fact drift silently, so the guard pins them equal — and
+    pins the ends of the shrink, which is the owner's rule: the plan
     STARTS at 30 days on day 0 and each day the farm moves forward one, the
     horizon shrinks by one.
     """
-    from agent.belief.shed import SEASON_DAYS
+    from agent.world.rules import DAYS
     from agent.tile_dp.contractor import HORIZON_DAYS
 
-    assert HORIZON_DAYS == SEASON_DAYS, (
-        f"the DP's season ({HORIZON_DAYS}) and belief's ({SEASON_DAYS}) have "
+    assert HORIZON_DAYS == DAYS, (
+        f"the DP's season ({HORIZON_DAYS}) and the world's ({DAYS}) have "
         f"drifted apart")
     assert M.season_horizon({"day": 0}) == 30
     assert M.season_horizon({"day": 1}) == 29

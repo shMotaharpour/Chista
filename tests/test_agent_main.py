@@ -34,7 +34,8 @@ from typing import Any
 import pytest
 
 from agent.config import Config
-from agent.dispatch import MAX_MARKET_ORDERS, PASS_ACTION, dispatch_plan
+from agent.dispatch import PASS_ACTION, dispatch_plan
+from agent.world.rules import MAX_MARKET_ORDERS_PER_TURN
 from agent.main import AGENT, Agent, agent
 
 ENTRY = pathlib.Path(__file__).resolve().parents[1] / "agent" / "main.py"
@@ -352,7 +353,7 @@ def test_dispatch_market_cap_f031() -> None:
     plan = {"units": [[["PASS"]]],
             "market": [[["BUY_SEED", "WHEAT", 1]] * 15]}
     a = dispatch_plan(plan, _obs(hour=0))
-    assert len(a["market"]) == MAX_MARKET_ORDERS == 10
+    assert len(a["market"]) == MAX_MARKET_ORDERS_PER_TURN == 10
     assert dispatch_plan(plan, _obs(hour=1))["market"] == []   # per turn
 
 

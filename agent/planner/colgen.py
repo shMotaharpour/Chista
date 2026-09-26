@@ -336,7 +336,7 @@ class MasterLP:
 
         The sells are TWO TIERS because the town's appetite is finite and the
         market past it is not: a sale that is not sold into the town's own demand
-        is sold at `SELL_DEEP_FACTOR` of the price, which is what makes the
+        is sold at `Config.sell_deep_factor` of the price, which is what makes the
         revenue concave in the quantity sold — and what keeps σ, the value of a
         unit in the shed, from being the best price on the path.
         """
@@ -423,7 +423,7 @@ class MasterLP:
         # The per-block price and size: the objective, the bounds, the cash rows
         # and the balance rows all read THESE, built once. With a curve they are
         # the ladder's own blocks; without one they are the day's quote and
-        # `SELL_DEEP_FACTOR` of it, which is the model that shipped.
+        # `Config.sell_deep_factor` of it, which is the model that shipped.
         block_price = np.zeros((n_goods, days, tiers), dtype=np.float64)
         block_units = np.full((n_goods, days, tiers), np.inf, dtype=np.float64)
         if items and n_goods:
@@ -868,7 +868,8 @@ class ColgenResult:
     pool: list[Column] = field(default_factory=list)
     solve: MasterSolve | None = None
     rounds: int = 0
-    #: True only when a pricing round found NO class with rc > RC_TOL. That is
+    #: True only when a pricing round found NO class above the reduced-cost
+    #: tolerance (`Config.rc_tol`/`rc_rel_tol`, read by `rc_tolerance`). That is
     #: the optimality certificate. False means the round cap stopped the loop,
     #: and the mix is an incumbent, not an optimum.
     certified: bool = False

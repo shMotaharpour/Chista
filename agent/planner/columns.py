@@ -46,8 +46,10 @@ import numpy as np
 
 from agent.world.model import N_RESOURCE, RESOURCE_ID, RES_LABOR
 
-# F029: 720 turns of 24 = 30 days, and the season ends with no liquidation.
-DAYS = 30
+# F029: 720 turns of 24 = 30 days, and the season ends with no liquidation —
+# one definition, the world's (`world/rules.DAYS`), re-exported under the name
+# this module's callers use for the plan's horizon.
+from agent.world.rules import DAYS
 LABOR_ID = RESOURCE_ID[RES_LABOR]
 
 # The coupling rows of #12's brief, in the order they publish them.

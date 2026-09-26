@@ -24,7 +24,7 @@ import pytest
 from offline_lab.kaggle_env import new_environment
 from agent.config import Config
 from agent.planner import master as M
-from agent.planner.inputs import (FARMER_HOUR_FLOOR, dual_stand_in,
+from agent.planner.inputs import (dual_stand_in, farmer_hour_floor,
                                   load_contractor)
 from agent.world.model import RESOURCE_ID
 
@@ -42,8 +42,8 @@ def test_the_floor_prices_the_farmer_not_the_first_hand() -> None:
            "farms": [{"hires_today": 0, "hands": []}], "player": 0}
     _p, w = dual_stand_in(obs, days=20)
     floor = float(w[0, RESOURCE_ID["LABOR"]])
-    assert floor >= FARMER_HOUR_FLOOR, floor
-    assert FARMER_HOUR_FLOOR > 1.0, (
+    assert floor >= farmer_hour_floor(), floor
+    assert farmer_hour_floor() > 1.0, (
         "a ~0.04/h floor prices destruction at nothing (#87's replay)")
 
 
@@ -60,13 +60,13 @@ def test_the_dead_edge_is_the_last_live_price() -> None:
     w[:, 0] = DEAD_EDGE
     board = c.price(p, np.asarray(w), owned, travel_hours=0)
     assert float(board.tile_values[0]) > 0.0, (
-        f"LABOUR_DEAD_EDGE={DEAD_EDGE} is inside the DP's dead zone: "
+        f"Config.labour_dead_edge={DEAD_EDGE} is inside the DP's dead zone: "
         "the bare tile prices at 0 there — the clamp would freeze the farm")
     w[:, 0] = DEAD_EDGE + 10.0
     board = c.price(p, np.asarray(w), owned, travel_hours=0)
     assert float(board.tile_values[0]) == 0.0, (
         "the dead zone moved UP past the edge+10: re-measure "
-        "LABOUR_DEAD_EDGE from the sweep")
+        "Config.labour_dead_edge from the sweep")
 
 
 @pytest.mark.epic

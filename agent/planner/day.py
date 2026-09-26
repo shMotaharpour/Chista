@@ -23,6 +23,7 @@ from typing import Any
 from dataclasses import replace, dataclass
 
 from agent.config import Config
+from agent.world.terms import EngineTerms
 
 import numpy as np
 
@@ -479,7 +480,8 @@ def _solve_at(obs, contractor, supply, class_of_tile, hands, iter_cap,
 
 def compile(day_plan: "DayPlan", obs, *, hands: int | None = None,
             rival_supply: dict | None = None,
-            config=None, model=None, activity: int | None = None,
+            terms: "EngineTerms | None" = None, model=None,
+            activity: int | None = None,
             forecast_obj=None) -> dict:
     """A `DayPlan` -> the `{"units": [...], "market": [...]}` the dispatcher slices.
 
@@ -512,7 +514,7 @@ def compile(day_plan: "DayPlan", obs, *, hands: int | None = None,
                     master_sells[prod] = qty
 
     if not fitted.complete or not fitted.chains:
-        rows = K.build(obs, (), hands=0, config=config,
+        rows = K.build(obs, (), hands=0, terms=terms,
                        model=model, activity=activity,
                        forecast_obj=forecast_obj,
                        master_sells=master_sells).rows
@@ -560,7 +562,7 @@ def compile(day_plan: "DayPlan", obs, *, hands: int | None = None,
     def queue(harvest_expected: int, hands: int, wsr_check: bool,
               arrivals: dict | None = None):
         built = K.build(obs, fitted.chains, hands=hands,
-                        harvest_expected=harvest_expected, config=config,
+                        harvest_expected=harvest_expected, terms=terms,
                         model=model, activity=activity,
                         forecast_obj=forecast_obj, wsr_check=wsr_check,
                         arrivals=arrivals, rank=sell_rank(),

@@ -48,6 +48,7 @@ from typing import Any
 import numpy as np
 
 from agent.config import Config
+from agent.world.terms import EngineTerms
 from agent.planner import columns as C
 from agent.planner import day as D
 from agent.planner import master as M
@@ -130,7 +131,11 @@ class Manager:
         self.plan: dict = dict(IDLE_PLAN)
         self.day: D.DayPlan | None = None
         self.obs = None
-        self.config = None
+        #: The engine's own numbers for this run, resolved once per turn
+        #: (`world/terms.EngineTerms`): the wage multiplier, the shed's
+        #: capacity, the town's intervals. Before the first `observe` the
+        #: engine's own defaults are the honest answer.
+        self.terms = EngineTerms()
         self.certified = False
         #: The sells the committed plan projects ({step: {good: units}}), fed
         #: into the NEXT day's forecast (`forecast(our_sells=)`). #110's
@@ -183,8 +188,14 @@ class Manager:
         Today's plan must exist NOW — the units act this turn — so this is the
         call the day's solve belongs to. What it finds goes into the pool either
         way.
+
+        `config` is the run's configuration when a caller has it in hand (the
+        harness hands one to a two-argument entry; ours takes `obs` alone, so
+        the shipped path does not), and `EngineTerms` resolves it against the
+        observation's own and the world's transcription in one place.
         """
-        self.obs, self.config = obs, config
+        self.obs = obs
+        self.terms = EngineTerms.from_obs(obs, config)
         # Today's horizon, and the pool moved onto it. Before anything reads
         # either: `supply`/`class_of_tile` are day-invariant, but the contractor
         # is not, and `_forecast` sizes its walk from the horizon.
@@ -204,7 +215,7 @@ class Manager:
         # YESTERDAY projects go into today's path (the day-over-day fixed
         # point). Measured on a day-3 MILK-heavy plan, the flat path overstated
         # its earn by ~16% — the ladder walks down under your own supply too.
-        self.forecast_obj = self._forecast(obs, config)
+        self.forecast_obj = self._forecast(obs, self.terms)
         # The solve's numbers are the injected config's, not arguments spelled
         # out here: `D.plan` reads them (round caps, hands, the hours overhead,
         # the smoothing) so a measurement injects one object and nothing has a
@@ -222,7 +233,7 @@ class Manager:
         self._project_own_sells()
         self._watch(obs)
         self.plan = D.compile(self.day, obs, hands=self.day.hands,
-                              config=config, model=self.opponent,
+                              terms=self.terms, model=self.opponent,
                               activity=self._activity(),
                               forecast_obj=self.forecast_obj,
                               # The rival's dated supply, gated to the days their
@@ -230,7 +241,7 @@ class Manager:
                               # rank. One day is all the rank reads.
                               rival_supply=self._rival_hours(obs, 1))
 
-    def _forecast(self, obs, config):
+    def _forecast(self, obs, terms):
         """This turn's market forecast, or None when belief cannot build one.
 
         `market_queue` builds its own when it is not handed one, so a failure
@@ -254,7 +265,7 @@ class Manager:
         try:
             from agent.belief.market import forecast
             horizon = M.season_horizon(obs)
-            return forecast(obs, days=horizon, config=config,
+            return forecast(obs, days=horizon, config=terms,
                             our_sells=self.own_sells or None,
                             rival_supply=self._rival_supply(obs, horizon),
                             rival_sells=self._rival_hours(obs, horizon) or None)

@@ -151,7 +151,8 @@ def agent(obs) -> dict:
     One argument because the harness truncates the call to this function's
     argcount — and because the run configuration is not this agent's to depend
     on: the numbers it carried (`farmHandCostMult`, `shedCapacity`, the town's
-    intervals) are transcribed from the engine in `agent/world/`, which is what
-    a submission that ships `agent/` alone can actually read.
+    intervals) are read through `agent/world/terms.EngineTerms`, which takes the
+    observation's own `configuration` when the harness put one there and the
+    world's transcription of the engine's default when it did not, in ONE place.
     """
     return AGENT(obs)

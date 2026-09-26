@@ -77,11 +77,13 @@ w_next = np.maximum(w_next, 0)               # R006, projected every round
   (Measured consequence: with slack stocks the duals sit at zero and
   the publish correctly falls back to the engine's own prices.)
 - **Stop conditions** (in this order):
-  1. every coupling dual moved less than `TOL_DUAL` this round
-     (dual-stationarity — one coin is the smallest change that can move
-     an engine decision: quotes are integer coins),
-  2. `ITER_CAP` rounds spent — the cap decides this, never the
-     convergence test (#12 brief §4: never let the loop decide).
+  1. the column-generation CERTIFICATE: a pricing round found no class whose
+     reduced cost clears `Config.rc_tol` on this board's objective, i.e. the
+     pool already holds everything worth holding (`cg.certified`),
+  2. the round cap (`cfg.iter_cap`, the manager asks with `cfg.master_rounds`)
+     — the cap decides this, never a self-declared convergence (#12 brief §4:
+     never let the loop decide). A dual-movement threshold was once claimed as
+     a stop here and never was one; `converged` is the certificate's alias.
 - The loop is not interruptible by a clock. It used to poll a deadline
   between rounds; a round count that follows the machine makes two runs of
   one seed disagree (18,312 against 28,890 with every RNG in our code seeded
@@ -131,6 +133,7 @@ except ImportError:                     # scipy is optional at import time
 from agent.config import Config
 from agent.planner import colgen
 from agent.planner.inputs import dual_stand_in
+from agent.world.terms import EngineTerms
 from agent.world.model import (ANIMALS, CROPS, N_RESOURCE, PRODUCTS,
                                RESOURCE_ID, RES_LABOR, SHED_ITEMS)
 from agent.tile_dp.contractor import HORIZON_DAYS, PricedBoard
@@ -230,7 +233,7 @@ class CouplingSupply:
 
     Sources (R005), day-0 flat model:
     - `hours`: 24·(1 + hands) − hands (F040: a hand hired at hour 0
-      first acts at hour 1), times (1 − HOURS_OVERHEAD).
+      first acts at hour 1), times `(1 - cfg.hours_overhead)`.
     - `seed_stock`: the private purse counts (F001: seeds bypass the
       shed), shared evenly across the horizon — TODO(#12 M4): the
       per-day cash model replaces the flat split.
@@ -288,7 +291,7 @@ class MasterResult:
     lam: np.ndarray               # (n_cols,) the final LP mix (fractional)
     objective: float              # LP objective at the final round
     rounds: int
-    converged: bool               # dual movement fell under TOL_DUAL
+    converged: bool               # `cg.certified` (the pricing certificate)
     used_fallback: bool = False
     fallback_reason: str = ""
     p_source: str = ""            # where the product price path came from
@@ -429,17 +432,13 @@ def _sell_cap(obs, days: int) -> np.ndarray:
 
 
 def _shed_capacity(obs) -> int:
-    """The shed's capacity: the run's own override, else the world's constant.
+    """The shed's capacity for this run, resolved in one place.
 
-    The engine reads `configuration["shedCapacity"]` (default 100, world rules
-    `SHED_CAPACITY`). The observation does not normally carry the configuration,
-    so the constant is the answer in practice; a harness that does put it there
-    is honoured.
+    `EngineTerms` is what decides (the observation's own configuration when the
+    harness carried one, else the world's transcription of the engine's default,
+    kaggriculture.py:553); this function is only the call site.
     """
-    config = obs.get("configuration") if isinstance(obs, dict) else None
-    if isinstance(config, dict) and "shedCapacity" in config:
-        return int(config["shedCapacity"])
-    return int(SHED_CAPACITY)
+    return int(EngineTerms.from_obs(obs).shed_capacity)
 
 
 def supply_from_obs(obs, cfg: "Config | None" = None) -> CouplingSupply:
@@ -517,7 +516,7 @@ def _validate_cost(cost: np.ndarray) -> None:
 
 
 def _product_price_path(obs, days: int, p_flat: np.ndarray,
-                        config=None, forecast_obj=None) -> tuple[np.ndarray, str]:
+                        forecast_obj=None) -> tuple[np.ndarray, str]:
     """The product rows of `p`: the market forecast (#15), or flat quotes.
 
     F035: prices rise through the season, so the flat stand-in under-prices
@@ -537,7 +536,7 @@ def _product_price_path(obs, days: int, p_flat: np.ndarray,
         # curve prices the master's objective and re-times the day's sells, and
         # building it twice was 1.1 + 1.4 ms of the turn.
         fc = (forecast_obj if forecast_obj is not None
-              else _forecast(obs, days=days, config=config))
+              else _forecast(obs, days=days))
         # Every row of `p` must be a day the season HAS, and the path is indexed
         # from the observation's own day (`price_paths(from_day=first_day)`), so
         # a forecast that covers the horizon puts day `days - 1` on the season's
@@ -608,7 +607,7 @@ def season_horizon(obs) -> int:
 
     The season's length is read from the tile DP's own constant, because that
     is the horizon the sweep can run over at all — belief spells the same 30
-    `SEASON_DAYS` (F029) and `tests/test_season_horizon.py` pins the two
+    `world.rules.DAYS` (F029) and `tests/test_season_horizon.py` pins the two
     together, so a drift is a red test rather than a horizon nobody can price.
 
     `max(1, ...)`: a day past the last one has no horizon at all, and a caller
@@ -695,7 +694,7 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
     cfg = Config() if cfg is None else cfg
     iter_cap = int(cfg.iter_cap if iter_cap is None else iter_cap)
     days = int(contractor.days)
-    p_mkt_full, w_stand_full = dual_stand_in(obs)
+    p_mkt_full, w_stand_full = dual_stand_in(obs, cfg=cfg)
     p = p_mkt_full[:days]
     # #15: the product rows of `p` come from the market forecast (F035's
     # rising path); the flat stand-in is the documented fallback.
