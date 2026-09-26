@@ -17,7 +17,7 @@ Two effects, separated:
    5,400 coins; the LP's flat-price model pays 5,691 — a 291-coin (5.4%)
    overstatement on exactly the plan sizes #110 is about.
 
-The two-tier structure (`SELL_DEEP_FACTOR = 0.5`) models the cliff past
+The two-tier structure (`Config.sell_deep_factor = 0.5`) models the cliff past
 the appetite, not the gentle ladder move inside it. This guard pins the
 5.4% number so the fix (a ladder-aware shallow price or an
 inventory-marginal objective term) has a baseline to beat.

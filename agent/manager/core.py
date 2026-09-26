@@ -189,7 +189,7 @@ class Manager:
         # either: `supply`/`class_of_tile` are day-invariant, but the contractor
         # is not, and `_forecast` sizes its walk from the horizon.
         self._roll_day(obs)
-        supply = M.supply_from_obs(obs)
+        supply = M.supply_from_obs(obs, self.cfg)
         owned = M._owned_states(object(), obs)
         _reps, _counts, of_tile = classes_of(
             owned, M._owned_distances(obs, self.steps))
@@ -205,14 +205,16 @@ class Manager:
         # point). Measured on a day-3 MILK-heavy plan, the flat path overstated
         # its earn by ~16% — the ladder walks down under your own supply too.
         self.forecast_obj = self._forecast(obs, config)
+        # The solve's numbers are the injected config's, not arguments spelled
+        # out here: `D.plan` reads them (round caps, hands, the hours overhead,
+        # the smoothing) so a measurement injects one object and nothing has a
+        # second copy of a decision.
         self.day = D.plan(obs, self.contractor, supply,
                           class_of_tile=class_of_tile,
-                          iter_cap=self.cfg.master_rounds,
-                          hands=0, max_hands=self.cfg.max_hands,
-                          rounds=self.cfg.fit_rounds,
+                          hands=0,
                           pool=self.pool,
                           forecast_obj=self.forecast_obj,
-                          smoothing=self.cfg.smoothing)
+                          cfg=self.cfg)
         self.pool = list(self.day.master.pool)
         self.lam = self.day.master.lam
         self.duals = self.day.master.w
@@ -426,9 +428,9 @@ class Manager:
             return self.certified
         days = int(np.asarray(self.contractor.days))
         hands = getattr(self.day, "hands", 0) if self.day is not None else 0
-        supply = M.supply_from_obs(self.obs)
+        supply = M.supply_from_obs(self.obs, self.cfg)
         if hands > 0:
-            hours = D.hours_for(hands, days)
+            hours = D.hours_for(hands, days, self.cfg.hours_overhead)
             supply = M.CouplingSupply(
                 hours=hours, seed_stock=supply.seed_stock,
                 animal_stock=supply.animal_stock, fert_stock=supply.fert_stock,
@@ -440,7 +442,8 @@ class Manager:
                                iter_cap=self.cfg.master_rounds,
                                pool=self.pool,
                                forecast_obj=self.forecast_obj,
-                               smoothing=self.cfg.smoothing)
+                               smoothing=self.cfg.smoothing,
+                               cfg=self.cfg)
         if not result.used_fallback:
             self.pool = list(result.pool)
             self.lam = result.lam           # the mix of THIS pool, in its order

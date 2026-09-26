@@ -1,4 +1,20 @@
-"""Every number the agent is tuned on, in one place. Numbers only.
+"""Every number the manager is tuned on, in ONE place. Numbers only.
+
+This module is the single home of the agent's tunable quantities. Nothing in
+`manager/`, `planner/` or `tile_dp/` may hold a cap of its own: a limit that
+lives next to the code that reads it cannot be injected (the `Agent` class takes
+this object), cannot be dumped for a measurement (`Config.dump`), and drifts
+into a second copy of a decision.
+
+Two kinds of number live elsewhere, on purpose:
+
+- **Engine facts** (`world/`, cited to the engine's own lines): the season's
+  length, the board, the shed's capacity, the hire ladder, the town's intervals.
+  They are not tunable and the manager READS them — from `world` or from the
+  run's own configuration when the observation carries one — rather than
+  restating them.
+- **Model structure** that a solver needs as an argument (a horizon, a class
+  key) is not config either; it is passed in.
 
 Config holds NUMBERS. It never holds a value that selects a code path.
 `use_master=True` is `CHISTA_REPLAN` in a new coat, and five of those switches
@@ -37,13 +53,6 @@ class Config:
     still a switch in a new coat and still does not belong here.
     """
 
-    #: How many times the manager may re-ask the day layer before accepting the
-    #: answer it has (the day layer's own cap is `DEFAULT_ASK_ROUNDS`; this is the
-    #: owner's, and an episode may override it as `handsAskRounds`). Fixed, not
-    #: per-hand: offering 5 and carrying the day with 1 must report 1, not walk
-    #: down one search at a time.
-    hands_ask_rounds: int = 2
-
     # --- the never-raise boundary -----------------------------------------
     #: Whether a failed turn is CAUGHT and passed, or re-raised.
     #:
@@ -66,24 +75,67 @@ class Config:
     #: path-choosing flag is not — and it says so next to the field.
     never_raise: bool = False
 
-    # --- the master --------------------------------------------------------
-    #: Pricing rounds one `equilibrate` may spend. The certificate usually
-    #: arrives well inside it (58 rounds cold on a day-0 board, 1 warm); the
-    #: cap is what stops a board that will not converge from running forever.
+    # --- the master (the column-generation solve) -------------------------
     #: Column-generation rounds per solve, and the round count is a DECISION, not
     #: a race with the clock: consulting the clock between rounds made two runs of
     #: the same seed disagree (18,312 against 28,890 with every RNG in our code
     #: seeded and the threads pinned to one). One is what this tree has been run
-    #: and measured at; with the clock out of the loop the cap is the only stop,
-    #: so raising it is a policy decision to take on a measurement.
+    #: and measured at; with the clock out of the loop the cap is the only stop
+    #: besides the reduced-cost certificate, so raising it is a policy decision to
+    #: take on a measurement.
     master_rounds: int = 1
-    #: Damping on the price the rest of the agent reads. It may not touch the
-    #: pricing step — the reduced-cost test is only a reduced cost of the LP
-    #: whose duals it used.
-    damping: float = 0.5
+    #: The LP loop's own cap when a caller asks for no specific number (the
+    #: library default; the manager always asks for `master_rounds`). 8 is the
+    #: measured oscillation budget: the full loop's cost is the contractor's
+    #: re-pricing sweep (~9.3 ms a round measured), so eight rounds is ~80 ms on
+    #: the box the figures were taken on, and a board that has not settled by then
+    #: is oscillating rather than converging.
+    iter_cap: int = 8
+    #: How many depth blocks the master prices a day's sells with. The curve is
+    #: belief's (`belief.depth.sell_blocks`); the count is this LP's own modelling
+    #: resolution — a maximising LP fills the rich blocks first by itself, so more
+    #: blocks price the same curve more finely and cost one column block each
+    #: (5 blocks x 9 goods x 30 days = 1,350 columns of the model).
+    sell_blocks: int = 5
+    #: What a unit sold BEYOND the town's own appetite fetches, as a fraction of
+    #: the day's price. That tier is the legacy two-tier model, used when the
+    #: caller hands in no depth curve; with a curve the ladder's own blocks carry
+    #: the price. Measured on the day-0 board: the first 100 MILK units average
+    #: 62.0 against a 160 quote and the first 200 MELON units 132.6 against a 250
+    #: quote, so one flat fraction is neither a bound nor an estimate — it is the
+    #: crudest cut of a staircase, kept for the path with no forecast.
+    sell_deep_factor: float = 0.5
+    #: Tâtonnement damping on the price the REST of the agent reads. It may not
+    #: touch the pricing step — the reduced-cost test is only a reduced cost of
+    #: the LP whose duals it used. 0.5 is the measured sweep over (0.2, 0.35, 0.5,
+    #: 0.7) on a fixed two-class board (pinned in `tests/test_master.py`): it
+    #: reached dual-stationarity in the fewest rounds.
+    alpha: float = 0.5
+    #: The reduced-cost tolerance: below it a plan is within the pricer's own noise
+    #: of the pool's plans and adding it fattens the master for nothing. The
+    #: absolute floor is float32's epsilon, and `rc_rel_tol` carries it onto the
+    #: objective's scale, because `rc` is a difference of coins: at an objective of
+    #: 35,772 a 1e-6-absolute test was refusing to certify on the pricer's own
+    #: rounding (measured: the loop stalled on rc 2.24e-4 and certified the SAME
+    #: objective, 35,772.2194, once the tolerance was read as `1e-6 * |objective|`).
+    rc_tol: float = 1e-6
+    rc_rel_tol: float = 1e-6
 
-    # --- the day -----------------------------------------------------------
-    #: The largest hand pool the day layer may offer. wsr caps at 16.
+    # --- the labour model the rows price ------------------------------------
+    #: The labour row's travel/carry overhead: `H_d = 24*(1 + hands) - hands`, times
+    #: this. #12's brief puts it at "start at 35 % and measure"; the day layer's own
+    #: measurement (fewer hours bought fewer tiles and a LONGER route, 1.14x-1.29x)
+    #: is why this stays a flat factor instead of a feedback scalar.
+    hours_overhead: float = 0.35
+    #: The clamp on the published labour dual. The tile DP's answer is the idle
+    #: chain above ~147 coins/hour on this graph (measured sweep on the day-0 board:
+    #: bare-tile value 420 at w=100, 60 at 140, 15 at 145, 0 at 147), so the clamp
+    #: sits at the last live price: a wage past this edge cannot move any tile, and
+    #: a diverging tâtonnement degraded to a frozen board would freeze the farm.
+    labour_dead_edge: float = 145.0
+
+    # --- the day ------------------------------------------------------------
+    #: The largest hand pool the day layer may offer.
     #:
     #: One, measured. Three seasons at each setting, medians:
     #:
@@ -99,6 +151,17 @@ class Config:
     max_hands: int = 1
     #: Master solves one `plan` may spend correcting the hours it committed.
     fit_rounds: int = 2
+    #: The step the hours correction takes when the day did NOT fit: each round
+    #: re-solves with `hours / applied`, where `applied` grows by at least
+    #: `max(1 + hours_tolerance, the route's own overhead)`. A day that fits is
+    #: never corrected back up (the search starts at the arithmetic floor, so a
+    #: complete answer is not evidence of slack).
+    hours_tolerance: float = 0.02
+    #: How many times the day layer may re-ask its own search for a pool the day
+    #: actually fits in. Fixed and small on purpose (each ask is a whole search):
+    #: offering 5 hands and carrying the day with 1 must report 1, not walk down
+    #: one search at a time.
+    ask_rounds: int = 2
     #: Wentges dual-price smoothing (#87 follow-up sweep, 2026-09-22): the
     #: pricing step is fed `alpha*centre + (1-alpha)*LP`, where centre is the
     #: best-bound incumbent. Measured on the day-0 board with the exact
@@ -110,15 +173,23 @@ class Config:
     #: either way, so the win is concentrated on cold/certifying solves.
     smoothing: float = 0.7
 
-    # --- the market --------------------------------------------------------
-    #: Orders per turn the engine accepts (F031). A cap, not a target.
-    max_orders_per_turn: int = 10
-
     def __post_init__(self) -> None:
+        #: A typo guard, not an engine cap: the engine's own limit on a hand pool is
+        #: the hire ladder (`world/rules.hire_hour`: the k-th hand of a day acts from
+        #: `k//10 + 1`), and the day's work bounds it from above in any case.
         if not 1 <= self.max_hands <= 16:
             raise ValueError(f"max_hands {self.max_hands} is outside 1..16")
-        if not 0.0 < self.damping <= 1.0:
-            raise ValueError(f"damping {self.damping} is outside (0, 1]")
+        if not 0.0 < self.alpha <= 1.0:
+            raise ValueError(f"alpha {self.alpha} is outside (0, 1]")
+        if self.master_rounds < 1 or self.iter_cap < 1:
+            raise ValueError("a round cap below 1 is not a cap")
+        if self.sell_blocks < 1:
+            raise ValueError(f"sell_blocks {self.sell_blocks} is below 1")
+        if self.rc_tol <= 0.0 or self.rc_rel_tol <= 0.0:
+            raise ValueError("the reduced-cost tolerances must be positive")
+        if not 0.0 <= self.hours_overhead < 1.0:
+            raise ValueError(
+                f"hours_overhead {self.hours_overhead} is outside [0, 1)")
 
     @classmethod
     def load(cls, path: Path | None = None) -> "Config":

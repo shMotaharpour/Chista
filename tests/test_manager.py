@@ -29,7 +29,7 @@ from agent.world.rules import TURNS_PER_DAY
 def test_an_unknown_config_key_is_an_error_not_a_shrug(tmp_path):
     """A number that is not read is a number that is not tuned."""
     bad = tmp_path / "config.json"
-    bad.write_text('{"damping": 0.4, "dampign": 0.9}')
+    bad.write_text('{"alpha": 0.4, "alpah": 0.9}')
     with pytest.raises(ValueError, match="unknown config keys"):
         Config.load(bad)
 
@@ -40,8 +40,8 @@ def test_a_missing_config_file_is_the_ordinary_case(tmp_path):
 
 def test_a_round_trip_through_the_artifact_keeps_every_number(tmp_path):
     out = tmp_path / "config.json"
-    Config(damping=0.35, max_hands=6).dump(out)
-    assert Config.load(out) == Config(damping=0.35, max_hands=6)
+    Config(alpha=0.35, max_hands=6).dump(out)
+    assert Config.load(out) == Config(alpha=0.35, max_hands=6)
 
 
 # --- the memory -----------------------------------------------------------
@@ -183,7 +183,8 @@ def test_step_warms_same_lp_as_hour_zero():
     called_supply = called_args[3] if len(called_args) > 3 else called_kwargs.get("supply")
     assert called_supply is not None
     days = int(np.asarray(manager.contractor.days))
-    expected_hours = D.hours_for(getattr(manager.day, "hands", 0), days)
+    expected_hours = D.hours_for(getattr(manager.day, "hands", 0), days,
+                                 manager.cfg.hours_overhead)
     assert np.allclose(called_supply.hours, expected_hours), "step() used 0-hands supply instead of day.hands"
 
 

@@ -22,15 +22,17 @@ import numpy as np
 import pytest
 
 from offline_lab.kaggle_env import new_environment
+from agent.config import Config
 from agent.planner import master as M
 from agent.planner.inputs import (FARMER_HOUR_FLOOR, dual_stand_in,
                                   load_contractor)
 from agent.world.model import RESOURCE_ID
 
 #: The measured dead edge on this graph: bare-tile value 420 at w=100,
-#: 15 at 145, 0 at 147 (the #87 sweep, re-measured). The constant in master.py must
-#: stay at the last LIVE price, not inside the dead zone.
-DEAD_EDGE = M.LABOUR_DEAD_EDGE
+#: 15 at 145, 0 at 147 (the #87 sweep, re-measured). The shipped number is
+#: `Config.labour_dead_edge` and it must stay at the last LIVE price, not
+#: inside the dead zone.
+DEAD_EDGE = Config().labour_dead_edge
 
 
 def test_the_floor_prices_the_farmer_not_the_first_hand() -> None:

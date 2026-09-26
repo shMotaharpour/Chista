@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import importlib
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -248,20 +249,22 @@ def test_the_certificate_is_reachable_on_a_real_board():
 
 
 def test_the_optimum_does_not_depend_on_the_damping_constant():
-    """`ALPHA` shapes what the agent READS, never what the loop proves.
+    """`Config.alpha` shapes what the agent READS, never what the loop proves.
 
     This test used to assert that damping reached the optimum in fewer rounds,
     which was true while the pricing step was fed damped duals — and that was
     the bug: the reduced-cost test `value + mu` is only a reduced cost of the
     LP the duals came from, so pricing at anything else stops it being about
     that LP. The stall detector caught it (rc 1597 on a column the pool already
-    held, forever). Pricing now uses the master's own duals, and `ALPHA` only
-    damps `result.w`, the published price the rest of the agent consumes.
+    held, forever). Pricing now uses the master's own duals, and `Config.alpha`
+    only damps `result.w`, the published price the rest of the agent consumes.
 
     So the invariant is the stronger one: the certified optimum is the same
-    number whatever `ALPHA` is. If it ever is not, damping has leaked back into
-    the pricing path.
+    number whatever the alpha is. If it ever is not, damping has leaked back
+    into the pricing path. The alpha is injected (`cfg=replace(...)`), so the
+    guard reads the same door the manager does.
     """
+    from agent.config import Config
     from agent.planner import master as M
     from agent.planner.inputs import load_contractor
     from offline_lab.kaggle_env import new_environment
@@ -272,18 +275,15 @@ def test_the_optimum_does_not_depend_on_the_damping_constant():
     contractor = load_contractor(days=20)
     supply = M.supply_from_obs(obs)
 
-    original = M.ALPHA
+    base = Config()
     runs = {}
-    try:
-        for alpha in (0.3, 1.0):
-            M.ALPHA = alpha
-            runs[alpha] = M.equilibrate(object(), obs, contractor, supply,
-                                        iter_cap=150)
-    finally:
-        M.ALPHA = original
+    for alpha in (0.3, 1.0):
+        runs[alpha] = M.equilibrate(object(), obs, contractor, supply,
+                                    iter_cap=150,
+                                    cfg=replace(base, alpha=alpha))
 
     for alpha, res in runs.items():
-        assert res.certified, f"ALPHA={alpha}: no certificate ({res.stopped})"
+        assert res.certified, f"alpha={alpha}: no certificate ({res.stopped})"
     assert runs[0.3].objective == pytest.approx(runs[1.0].objective, rel=1e-9), (
         f"the optimum moved with the damping constant: "
         f"{runs[0.3].objective:.6f} vs {runs[1.0].objective:.6f} — damping has "

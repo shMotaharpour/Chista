@@ -22,11 +22,7 @@ from __future__ import annotations
 from typing import Any
 from dataclasses import replace, dataclass
 
-#: How many times the manager may re-ask the day layer before it accepts the
-#: answer it has. FIXED and small on purpose: each ask is a whole search, and the
-#: loop is not "until it fits" — a day that still does not fit is a day to lay
-#: less on. An episode may override it as `handsAskRounds`.
-DEFAULT_ASK_ROUNDS = 2
+from agent.config import Config
 
 import numpy as np
 
@@ -249,7 +245,7 @@ def fit(chains, *, hands: int, available: dict | None = None,
                   spare=int(result.spare), floor=int(floor))
 
 
-def hours_for(hands: int, days: int, overhead: float = 0.35) -> np.ndarray:
+def hours_for(hands: int, days: int, overhead: float) -> np.ndarray:
     """The labour a day holds with `hands` hired, per day of the horizon.
 
     `24·(1 + hands) − hands`: the farmer's full day plus one per hand, less the
@@ -295,12 +291,13 @@ def _better(candidate: "DayPlan", best: "DayPlan") -> bool:
             < abs(best.day.overhead - 1.0) - 1e-9)
 
 
-def plan(obs, contractor, supply, *, class_of_tile, iter_cap: int = 200,
+def plan(obs, contractor, supply, *, class_of_tile, iter_cap: int | None = None,
          hands: int = 0,
-         rounds: int = 3, tolerance: float = 0.02,
+         rounds: int | None = None, tolerance: float | None = None,
          pool: list | None = None,
          max_hands: int | None = None, w_warm=None,
-         forecast_obj=None, smoothing: float = 0.0) -> DayPlan:
+         forecast_obj=None, smoothing: float | None = None,
+         cfg: "Config | None" = None) -> DayPlan:
     """Enumerate the pool of hands, and keep the day worth the most net of it.
 
     **Hiring is a decision, and it was not one.** `supply.hours` came from
@@ -351,6 +348,13 @@ def plan(obs, contractor, supply, *, class_of_tile, iter_cap: int = 200,
     from agent.planner import columns as C
     from agent.planner import master as M
 
+    cfg = Config() if cfg is None else cfg
+    iter_cap = int(cfg.master_rounds if iter_cap is None else iter_cap)
+    rounds = int(cfg.fit_rounds if rounds is None else rounds)
+    tolerance = (float(cfg.hours_tolerance) if tolerance is None
+                 else float(tolerance))
+    smoothing = float(cfg.smoothing if smoothing is None else smoothing)
+    max_hands = int(cfg.max_hands if max_hands is None else max_hands)
     ceiling = int(hands if max_hands is None else max_hands)
     carried = list(pool or [])
     chosen: DayPlan | None = None
@@ -362,7 +366,7 @@ def plan(obs, contractor, supply, *, class_of_tile, iter_cap: int = 200,
     for offer in range(max(0, ceiling), -1, -1):
         current = _solve_at(obs, contractor, supply, class_of_tile, offer,
                             iter_cap, rounds, tolerance, carried,
-                            w_warm, forecast_obj, smoothing)
+                            w_warm, forecast_obj, smoothing, cfg)
         carried = list(current.master.pool)
         if chosen is None or current.net > chosen.net:
             chosen = current
@@ -371,13 +375,15 @@ def plan(obs, contractor, supply, *, class_of_tile, iter_cap: int = 200,
 
 def _solve_at(obs, contractor, supply, class_of_tile, hands, iter_cap,
               rounds, tolerance, pool, w_warm=None,
-              forecast_obj=None, smoothing: float = 0.0) -> DayPlan:
+              forecast_obj=None, smoothing: float = 0.0,
+              cfg: "Config | None" = None) -> DayPlan:
     """One pool size: solve, assign, ask wsr, and price the hands."""
     from agent.planner import columns as C
     from agent.planner import master as M
 
+    cfg = Config() if cfg is None else cfg
     days = int(np.asarray(supply.hours).size)
-    hours = hours_for(hands, days)
+    hours = hours_for(hands, days, cfg.hours_overhead)
     best: DayPlan | None = None
     applied = 1.0
     candidate: DayPlan | None = None
@@ -392,7 +398,7 @@ def _solve_at(obs, contractor, supply, class_of_tile, hands, iter_cap,
         result = M.equilibrate(object(), obs, contractor, current,
                                w_warm=w_warm, iter_cap=iter_cap, pool=pool,
                                forecast_obj=forecast_obj,
-                               smoothing=smoothing)
+                               smoothing=smoothing, cfg=cfg)
         mixes = M.to_mixes(result, contractor.days)
         choices = C.assign_by_quota(class_of_tile, mixes)
         choices = protect_at_risk_assignments(choices, mixes, obs)
@@ -429,11 +435,9 @@ def _solve_at(obs, contractor, supply, class_of_tile, hands, iter_cap,
             #
             # "budget" is never re-asked: more hands do not buy more time.
             fitted = replace(fitted, short=max(0, int(fitted.floor) - int(hands)))
-            # The cap is the manager's (`Config.hands_ask_rounds`, an episode may
-            # override it as `handsAskRounds`); the day layer only needs to know
-            # whether a re-ask is allowed at all, and this function has no config
-            # in hand — the loop that reads it lives in the manager.
-            if int(fitted.floor) > int(hands) and DEFAULT_ASK_ROUNDS > 0:
+            # `Config.ask_rounds` is the cap, and it is the CONFIG's number, not
+            # a module constant beside it: zero means no re-ask at all.
+            if int(fitted.floor) > int(hands) and int(cfg.ask_rounds) > 0:
                 again = fit(chains, hands=int(fitted.floor),
                             available=availability(obs, chains),
                             hours_committed=committed)
@@ -468,7 +472,7 @@ def _solve_at(obs, contractor, supply, class_of_tile, hands, iter_cap,
             # price the search's own stopping rule into the farm's day.
             return candidate
         applied *= max(1.0 + tolerance, float(fitted.overhead))
-        hours = hours_for(hands, days) / applied
+        hours = hours_for(hands, days, cfg.hours_overhead) / applied
 
     return best if best is not None else candidate
 
