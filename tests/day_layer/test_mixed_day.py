@@ -317,3 +317,60 @@ def test_shortlist_tie_break_favors_chain_weight() -> None:
     assert hasattr(B, "SELECT_RULE"), "beam must define SELECT_RULE"
 
 
+def test_take_drop_consume_pattern_is_forbidden_by_expand() -> None:
+    """A worker may not consume a good if its last DROP was after its last take of that good."""
+    import numpy as np
+    from agent.wsr.tasks import TaskArray
+    import agent.wsr.beam as B
+
+    from agent.world.model import UnitAction
+    import agent.wsr.tasks as T
+
+    # Task 0: HARVEST yielding good 1 (e.g. wheat)
+    # Task 1: DROP banking task 0
+    # Task 2: FEED consuming good 1
+    pred = np.zeros((3, 3), dtype=bool)
+    pred[1, 0] = True  # DROP after HARVEST
+    actions = np.zeros(3, dtype=np.int8)
+    actions[1] = T.ACTION_CODE[UnitAction.DROP]
+    tasks = TaskArray(
+        ids=["harvest", "drop", "feed"],
+        ops=[("HARVEST",), ("DROP",), ("FEED",)],
+        actions=actions,
+        items=np.array([-1, -1, 1], dtype=np.int8),      # feed needs good 1
+        yields=np.array([1, -1, -1], dtype=np.int8),     # harvest gives good 1
+        yield_n=np.array([1, 0, 0], dtype=np.int8),
+        banks=np.array([-1, 0, -1], dtype=np.int16),     # drop banks task 0
+        ties=np.zeros((3, 0), dtype=np.int16),
+        cells=np.zeros((3, 2), dtype=np.int16),
+        columns=np.zeros(3, dtype=np.int8),
+        pred=pred,
+        earliest=np.zeros(3, dtype=np.int8),
+        latest=np.full(3, 24, dtype=np.int8),
+    )
+
+    # State: 1 route, 1 worker.
+    # Worker 0 did HARVEST at turn 2, and DROP at turn 4.
+    # Feed (task 2) is ready and unplaced.
+    done = np.array([[True, True, False]], dtype=bool)
+    when = np.array([[2, 4, -1]], dtype=np.int16)
+    who = np.array([[0, 0, -1]], dtype=np.int16)
+    free = np.array([[5]], dtype=np.int16)  # free at turn 5
+    where = np.zeros((1, 1, 2), dtype=np.int16)
+    travel = np.zeros((1, 1), dtype=np.int16)
+    live = np.array([True], dtype=bool)
+    count = np.array([[1, 1, 0]], dtype=np.int16)  # pred counts satisfied
+
+    day = B.Day(chains=(), available={})
+    expanded = B._expand(day, tasks, done, when, who, free, where, travel, live, count)
+    assert expanded is not None
+
+    # The frontier only holds task 2 (feed).
+    # Its finish hour on worker 0 should be BIG because the take-drop-consume pattern is forbidden.
+    feed_col = int(np.flatnonzero(expanded["index"] == 2)[0])
+    finish_hour = expanded["finish"][0, 0, feed_col]
+    assert finish_hour >= B.BIG, f"feed should be forbidden (finish={finish_hour} < BIG)"
+
+
+
+

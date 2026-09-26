@@ -1013,6 +1013,12 @@ def _start_hours(day: Day, hands: int) -> np.ndarray:
     return np.asarray(hours, dtype=np.int16)
 
 
+#: The take-drop-consume ban's per-call carrier: `_expand` derives the banned
+#: (route, worker, column) triples while pricing, before `legal` exists, and
+#: the mask is applied once the tie filter has built the final legality.
+LEGAL_BAN: list = [None]
+
+
 def _expand(day: Day, tasks: TaskArray, done, when, who, free, where, travel, live, count,
             load: DoorLoad | None = None):
     """One task added to every live route: the vectorised step.
@@ -1032,6 +1038,7 @@ def _expand(day: Day, tasks: TaskArray, done, when, who, free, where, travel, li
     rows = np.flatnonzero(live)
     if rows.size == 0:
         return None
+    LEGAL_BAN[0] = None
 
     # The frontier: the tasks some live route could place next. Everything past it is illegal for
     # every route, so pricing those columns is pricing a column that is thrown away - and there are
@@ -1082,6 +1089,31 @@ def _expand(day: Day, tasks: TaskArray, done, when, who, free, where, travel, li
         if refetch.any():
             hop = np.where(refetch, REFETCH[here[:, :, None],
                                             tasks.cell_index[index][None, None, :]], hop)
+
+        # THE OWNER'S BAN (2026-09-25): because the engine's DROP empties the whole bag, a worker's
+        # own take of a good may not be followed by that worker's DROP and then a use of the same
+        # good - the use would need the mid-day refetch the compiler writes (`legs`), and that is
+        # the pattern the owner named as never worth writing. Priced before; now ILLEGAL: a
+        # consumer of good g may not land on worker w whose last DROP turn is AFTER w's last take
+        # of g. A worker whose take is AFTER its last drop still holds g and is fine.
+        n_goods_b = int(max(int(tasks.yields.max()), int(tasks.items.max())) + 1)
+        took_turn = np.full((b, m, n_goods_b), -1, dtype=np.int16)
+        take_rows = np.flatnonzero(tasks.yields >= 0)            # events that ADD a good
+        if take_rows.size:
+            w_of = np.where(who[:b, take_rows] >= 0, who[:b, take_rows], 0)
+            took_scatter = (((np.arange(b)[:, None] * m
+                              + np.minimum(w_of, m - 1)) * n_goods_b
+                             + tasks.yields[take_rows][None, :]).ravel())
+            turn_of = np.broadcast_to(when[:b, take_rows], (b, take_rows.size)).ravel()
+            np.maximum.at(took_turn.reshape(-1), took_scatter, turn_of)
+        g_of = tasks.items[index].clip(0)                        # the consumed good per column
+        own_take = took_turn[:, :, g_of]
+        banned = (needs[None, None, :]
+                  & (last_drop >= 0)[:, :, None]
+                  & (own_take >= 0)
+                  & (last_drop[:, :, None] > own_take))
+        if banned.any():
+            LEGAL_BAN[0] = banned                                # applied after `legal` is built
 
     # The drops. A worker that has already dropped since the harvest a drop banks has an empty bag,
     # so that drop hands over nothing: no trip, no turn, and nobody moves. This is what lets one
@@ -1153,6 +1185,12 @@ def _expand(day: Day, tasks: TaskArray, done, when, who, free, where, travel, li
             same = ((~done_mate)[:, None, :]
                     | (who_mate[:, None, :] == np.arange(m)[None, :, None]))
             legal = legal & (same | ~real[None, None, :])
+    # The owner's ban, applied once `legal` exists: a take that the worker's own drop has since
+    # emptied out of the bag forbids that worker every later use of the same good. It is the
+    # anti-pattern the compiler used to answer with a mid-day refetch pickup - never worth
+    # writing, so it is a rule now, not a price.
+    if LEGAL_BAN[0] is not None:
+        legal = legal & ~LEGAL_BAN[0]
     finish = np.where(legal, finish, BIG)
 
     # On the frontier's own width, not the day's: the selection maps the column it picked back
