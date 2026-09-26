@@ -432,6 +432,36 @@ def test_fast_vectorized_dedupe_preserves_unique_states() -> None:
     assert np.array_equal(kept, np.array([0, 1, 3], dtype=np.int64)), f"unexpected dedupe indices: {kept}"
 
 
+def test_worker_harvest_feeds_animal_without_door_pickup() -> None:
+    """A worker that harvests wheat can feed an animal with its own wheat without loading at the door."""
+    import numpy as np
+    import agent.wsr.beam as B
+    from agent.wsr.tasks import TaskArray
+    from agent.world.model import UnitAction
+
+    # 2 tasks on worker 0: turn 1 HARVEST (yields wheat=1), turn 3 FEED (needs wheat=1)
+    tasks = TaskArray(
+        ids=["harvest_wheat", "feed_cow"],
+        ops=[("HARVEST",), ("FEED",)],
+        actions=np.array([5, 4], dtype=np.int8),
+        items=np.array([-1, 1], dtype=np.int8),      # feed needs wheat (1)
+        yields=np.array([1, -1], dtype=np.int8),     # harvest yields wheat (1)
+        yield_n=np.array([1, 0], dtype=np.int8),     # 1 unit harvested
+        banks=np.array([-1, -1], dtype=np.int16),
+        ties=np.zeros((2, 0), dtype=np.int16),
+        cells=np.zeros((2, 2), dtype=np.int16),
+        columns=np.zeros(2, dtype=np.int8),
+        pred=np.zeros((2, 2), dtype=bool),
+        earliest=np.zeros(2, dtype=np.int8),
+        latest=np.full(2, 24, dtype=np.int8),
+    )
+    entries = [(1, "harvest_wheat"), (3, "feed_cow")]
+    bag = B._bag(tasks, entries)
+    # The worker used its own harvested wheat, so 0 wheat is charged at the door!
+    assert bag.get(1, 0) == 0, f"wheat was charged at the door despite in-field harvest: {bag}"
+
+
+
 
 
 
