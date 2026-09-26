@@ -372,5 +372,46 @@ def test_take_drop_consume_pattern_is_forbidden_by_expand() -> None:
     assert finish_hour >= B.BIG, f"feed should be forbidden (finish={finish_hour} < BIG)"
 
 
+def test_fixed_point_charge_growth_unions_goods_instead_of_subset_max(monkeypatch) -> None:
+    """When charge updates in _fixed_point, sets of goods must union rather than dropping disjoint goods."""
+    import agent.wsr.beam as B
+    from agent.wsr.tasks import TaskArray
+
+    day = B.Day(chains=(), available={})
+    tasks = TaskArray()
+    res1 = B.Result(pool=1, route=[(0, "t1", 0)], complete=False)
+    res2 = B.Result(pool=1, route=[(0, "t2", 0)], complete=False)
+
+    calls = [0]
+    charges_seen = []
+    def fake_settle(*args, **kwargs):
+        calls[0] += 1
+        if "charge" in kwargs and kwargs["charge"] is not None:
+            charges_seen.append(kwargs["charge"])
+        return res1 if calls[0] == 1 else res2
+
+    bags_sequence = [
+        [frozenset({0, 1})],   # initial conservative bags
+        [frozenset({1, 2})],   # candidate bags
+    ]
+    bag_idx = [0]
+    def fake_bags_of(d, t, r):
+        b = bags_sequence[min(bag_idx[0], len(bags_sequence) - 1)]
+        bag_idx[0] += 1
+        return b
+
+    monkeypatch.setattr(B, "_settle", fake_settle)
+    monkeypatch.setattr(B, "bags_of", fake_bags_of)
+    monkeypatch.setattr(B, "_consistent", lambda d, t, r: True)
+    monkeypatch.setattr(B, "_better_route", lambda c, b: False)
+
+    B._fixed_point(day, tasks, beam=1, pool=1, deadline=None)
+
+    assert any(frozenset({0, 1, 2}) in c for c in charges_seen), (
+        f"charge should have grown to include {0, 1, 2}, but saw: {charges_seen}"
+    )
+
+
+
 
 

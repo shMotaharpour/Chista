@@ -431,7 +431,7 @@ def _fixed_point(day: Day, tasks: TaskArray, beam: int, pool: int,
         if _consistent(day, tasks, candidate) and _better_route(candidate, best):
             best = candidate
         bags = bags_of(day, tasks, candidate)
-        grown = [max(charged, bag) for charged, bag in zip(charge, bags)]
+        grown = [charged | bag for charged, bag in zip(charge, bags)]
         if grown != charge:
             charge = grown
             continue
