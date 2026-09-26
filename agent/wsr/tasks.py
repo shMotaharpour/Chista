@@ -244,6 +244,7 @@ class TaskArray:
                 break
             reach = grown
         self.chain_weight = reach.sum(axis=1).astype(np.int16)
+        self.latest32 = self.latest.astype(np.int32)
 
     def ready(self, done: np.ndarray) -> np.ndarray:
         """Which tasks have all their predecessors done - one matrix product.

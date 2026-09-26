@@ -1231,7 +1231,8 @@ def _rank_keys(tasks: TaskArray, child_done, child_free, travel, makespan, hands
     bound_rows = np.flatnonzero(tasks.latest < int(tasks.latest.max()))
     # The slack: how many turns are left before the nearest hour passes, over the tasks not yet done.
     # A done task cannot be late, so it is masked out of the minimum.
-    slack = tasks.latest[None, :].astype(np.int32) - child_free.min(axis=1)[:, None]
+    latest = getattr(tasks, "latest32", tasks.latest)
+    slack = latest[None, :] - child_free.min(axis=1)[:, None]
     slack = np.where(child_done, np.int32(1 << 14), slack).min(axis=1)
     placed_bound = (child_done[:, bound_rows].sum(axis=1) if bound_rows.size
                     else np.zeros(child_done.shape[0], dtype=np.int16))
@@ -1300,12 +1301,17 @@ def _select(expanded, tasks: TaskArray, beam: int, first_hand: int, start_hours)
         task_of = index[col_of]
         importance = -tasks.chain_weight[task_of]
         worker_of = expanded["worker"][rows].ravel()[legal]
+        parent_of = np.repeat(rows, width)[legal]
+        # Spatial Locality: among equal finish hours and importance, prioritize the
+        # worker with the shortest walk to the tile (minimal hop asc) to prevent
+        # cross-board wandering and produce dense, compact clusters.
+        hop_of = expanded["hop"][parent_of, worker_of, col_of]
         if SELECT_RULE == "hour":
             primary = flat_hour[legal]
         else:
-            primary = (tasks.latest[task_of].astype(np.int32)
-                       - flat_hour[legal].astype(np.int32))
-        order = np.lexsort((worker_of, importance, primary))
+            latest = getattr(tasks, "latest32", tasks.latest)
+            primary = latest[task_of] - flat_hour[legal].astype(np.int32)
+        order = np.lexsort((worker_of, hop_of, importance, primary))
         shortlist = legal[order[:budget]]
     else:
         shortlist = legal

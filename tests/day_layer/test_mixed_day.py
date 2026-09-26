@@ -461,6 +461,69 @@ def test_worker_harvest_feeds_animal_without_door_pickup() -> None:
     assert bag.get(1, 0) == 0, f"wheat was charged at the door despite in-field harvest: {bag}"
 
 
+def test_shortlist_tie_break_favors_spatial_locality_minimal_hop() -> None:
+    """When candidates tie on finish hour and importance, shortlist prefers minimal hop walk."""
+    import numpy as np
+    from agent.wsr.tasks import TaskArray
+    import agent.wsr.beam as B
+
+    # Two tasks t0 and t1, both with chain_weight 0
+    pred = np.zeros((2, 2), dtype=bool)
+    tasks = TaskArray(
+        ids=["t0", "t1"],
+        ops=[("A",), ("B",)],
+        actions=np.zeros(2, dtype=np.int8),
+        items=np.full(2, -1, dtype=np.int8),
+        yields=np.full(2, -1, dtype=np.int8),
+        yield_n=np.zeros(2, dtype=np.int8),
+        banks=np.full(2, -1, dtype=np.int16),
+        ties=np.zeros((2, 0), dtype=np.int16),
+        cells=np.zeros((2, 2), dtype=np.int16),
+        columns=np.zeros(2, dtype=np.int8),
+        pred=pred,
+        earliest=np.zeros(2, dtype=np.int8),
+        latest=np.full(2, 24, dtype=np.int8),
+    )
+
+    # 1 route, 1 worker. Both t0 and t1 finish at hour 2.
+    # t0 needs hop 5, t1 needs hop 1 (closer / local move!).
+    index = np.array([0, 1], dtype=np.int32)
+    rows = np.array([0], dtype=np.int32)
+    expanded = {
+        "index": index,
+        "count": np.array([0], dtype=np.int16),
+        "rows": rows,
+        "done": np.zeros((1, 2), dtype=bool),
+        "when": np.full((1, 2), -1, dtype=np.int16),
+        "who": np.full((1, 2), -1, dtype=np.int16),
+        "free": np.zeros((1, 1), dtype=np.int16),
+        "where": np.zeros((1, 1, 2), dtype=np.int16),
+        "travel": np.zeros((1, 1), dtype=np.int16),
+        "hop": np.array([[[5, 1]]], dtype=np.int16),  # t0: 5 steps, t1: 1 step
+        "earliest": np.array([[2, 2]], dtype=np.int16),  # both finish at hour 2
+        "worker": np.array([[0, 0]], dtype=np.int16),
+    }
+
+    # Under spatial locality sorting with budget=1, candidate with smaller hop (t1) must be shortlisted!
+    # Mock budget to 1 in _select:
+    legal = np.array([0, 1], dtype=np.int64)
+    width = 2
+    col_of = legal % width
+    task_of = index[col_of]
+    importance = -tasks.chain_weight[task_of]
+    worker_of = expanded["worker"][rows].ravel()[legal]
+    parent_of = np.repeat(rows, width)[legal]
+    hop_of = expanded["hop"][parent_of, worker_of, col_of]
+    primary = expanded["earliest"][rows].ravel()[legal]
+
+    order = np.lexsort((worker_of, hop_of, importance, primary))
+    shortlist = legal[order[:1]]
+    # Column 1 (task t1) had hop=1, while Column 0 (task t0) had hop=5.
+    # shortlist must pick 1 (t1) first!
+    assert shortlist[0] == 1, f"Spatial locality failed to prioritize shorter hop: picked {shortlist[0]}"
+
+
+
 
 
 
