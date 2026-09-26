@@ -1040,6 +1040,7 @@ def _expand(day: Day, tasks: TaskArray, done, when, who, free, where, travel, li
     # The door load itself is paid before the worker's first task that is not door work
     # (`start_hours`, `door_load`); a trip here is the refetch after a DROP.
     trip = np.zeros(hop.shape, dtype=bool)
+    has = np.ones(hop.shape, dtype=bool)
     needs = tasks.items[index] >= 0
     if needs.any():
         carried = _carried(done, who, tasks, m, when, last_drop)  # (b, m, goods)
@@ -1179,7 +1180,7 @@ def _expand(day: Day, tasks: TaskArray, done, when, who, free, where, travel, li
     worker = finish.argmin(axis=1)                           # (b, w): and by which worker
     return dict(rows=rows, finish=finish, hop=hop, earliest=earliest, worker=worker,
                 done=done, when=when, who=who, free=free, where=where, travel=travel,
-                idle=idle, index=index, count=count)
+                idle=idle, index=index, count=count, has=has)
 
 
 def _rankings_for(tasks: TaskArray) -> tuple[str, ...]:
@@ -1297,7 +1298,11 @@ def _select(expanded, tasks: TaskArray, beam: int, first_hand: int, start_hours)
         else:
             latest = getattr(tasks, "latest32", tasks.latest)
             primary = latest[task_of] - flat_hour[legal].astype(np.int32)
-        order = np.lexsort((worker_of, hop_of, importance, primary))
+        needs_item = tasks.items[task_of] >= 0
+        has_in_bag = expanded["has"][parent_of, worker_of, col_of]
+        self_serve = needs_item & has_in_bag
+        self_serve_bonus = -self_serve.astype(np.int8)
+        order = np.lexsort((worker_of, self_serve_bonus, hop_of, importance, primary))
         shortlist = legal[order[:budget]]
     else:
         shortlist = legal
