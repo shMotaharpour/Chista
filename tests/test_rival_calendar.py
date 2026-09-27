@@ -2,6 +2,11 @@
 public, so their scheduled payouts are a dated supply curve, and the
 curve must price into the forecast's price path (#110's rival half).
 
+The contract (owner, 2026-09-27): events sit on the FIRST day a
+production can be collected and carry the FLOOR of units — a guarantee,
+not a guess. `units_hint` is the fertilised expectation read off their
+public tile.
+
 Run:  .venv/bin/python -m tests.test_rival_calendar   (also under pytest)
 """
 
@@ -16,35 +21,11 @@ from agent.tile_dp.tile_state import TileState, TileZeroCode
 from agent.world.model import Crop, TileKind
 
 
-def _key_for(kind: TileKind, crop, age: int, yield_units: int = 0) -> int:
-    st = TileState(kind=kind, crop=crop, animal=None, structure=None,
-                   age=age, consec=0, unfed=0, fert_left=0, care_bank=0,
-                   yield_units=yield_units)
-    return st.pack().code if hasattr(st.pack(), "code") else int(st.pack())
-
-
-def _obs_with_rival_board(cells: dict[tuple[int, int], int], day: int,
-                          goods_order) -> dict:
-    """An observation whose rival farm carries the given packed keys."""
-    rival_tiles = [[("LOCKED" if True else None) for _ in range(10)]
-                   for _ in range(10)]
-    # the observation exposes the RIVAL board as strings to us; build it
-    # from the packed keys through the decode's own inverse: pack -> the
-    # engine's tile dict. The decode reads `farms[1]["tiles"]` raw values,
-    # so give it real engine-shape dicts where a tile is planted.
-    from agent.world.model import Crop
-    for (x, y), key in cells.items():
-        st = TileState.unpack(TileZeroCode(key))
-        crop = (st.crop.value if hasattr(st.crop, "value") else str(st.crop))
-        rival_tiles[y][x] = {"kind": "PLANT", "crop": crop,
-                             "age": st.age, "yield_units": st.yield_units,
-                             "watered_today": False,
-                             "fertilized_until_day": 0,
-                             "planted_day": day - st.age - 6}
-    for y in range(10):
-        for x in range(10):
-            if not isinstance(rival_tiles[y][x], dict):
-                rival_tiles[y][x] = "LOCKED"
+def _plant_obs(cells: dict[tuple[int, int], dict], day: int) -> dict:
+    """An observation whose rival farm carries the given engine-shape tiles."""
+    rival_tiles = [["LOCKED" for _ in range(10)] for _ in range(10)]
+    for (x, y), tile in cells.items():
+        rival_tiles[y][x] = dict(tile)
     return {
         "day": day, "hour": 0, "step": day * 24, "player": 0,
         "farms": [
@@ -59,53 +40,92 @@ def _obs_with_rival_board(cells: dict[tuple[int, int], int], day: int,
     }
 
 
-def _melon_key(age: int, units: int) -> int:
-    st = TileState(kind=TileKind.PLANT, crop=Crop.MELON, animal=None,
-                   structure=None, age=age, consec=0, unfed=0, fert_left=0,
-                   care_bank=0, yield_units=units)
-    return int(st.pack())
+def _melon(planted: int, yu: int, fert: int = -1) -> dict:
+    return {"kind": "PLANT", "crop": "MELON", "planted_day": planted,
+            "yield_units": yu, "watered_today": False,
+            "fertilized_until_day": fert, "consecutive_unwatered": 0}
 
 
-def test_a_planted_rival_tile_lands_on_its_payout_day() -> None:
-    """MELON at its origin age (6): planted today, payout on day+12
-    (crop_last_day counts from planting)."""
-    from agent.world.tile import crop_last_day, crop_age_origin
-    from agent.world.model import Crop
-    day = 3
-    units = 6
-    key = _melon_key(crop_age_origin(Crop.MELON), units)
-    obs = _obs_with_rival_board({(2, 2): key}, day, ("WHEAT", "MELON"))
-    events = harvest_events(obs, horizon=30)
-    expected_day = day + crop_last_day(Crop.MELON)
-    assert any(ev.day == expected_day and ev.good == "MELON"
-               and ev.units == units for ev in events), events
-    curve = supply_curve(obs, ("MELON",), horizon=30)
-    assert curve[expected_day, 0] == units
+def _straw(planted: int, yu: int, fert: int = -1) -> dict:
+    return {"kind": "PLANT", "crop": "STRAWBERRY", "planted_day": planted,
+            "yield_units": yu, "watered_today": False,
+            "fertilized_until_day": fert, "consecutive_unwatered": 0}
+
+
+def _wheat(planted: int, yu: int, fert: int = -1) -> dict:
+    return {"kind": "PLANT", "crop": "WHEAT", "planted_day": planted,
+            "yield_units": yu, "watered_today": False,
+            "fertilized_until_day": fert, "consecutive_unwatered": 0}
+
+
+def _events(cells, day) -> list[RivalHarvestEvent]:
+    return harvest_events(_plant_obs(cells, day), horizon=40)
+
+
+def test_one_shot_floor_is_what_the_tile_carries_on_the_first_collectable_day() -> None:
+    """MELON planted day 3, read day 10 (real age 7 > window start 6):
+    everything it carries is collectable TODAY — the pre-fix module dated
+    this +12 days late (the `st.age - origin` sign bug)."""
+    evs = _events({(2, 2): _melon(3, 4)}, 10)
+    assert [(e.day, e.units) for e in evs] == [(10, 4)], evs
+
+
+def test_one_shot_future_tile_schedules_the_window_start_with_a_zero_floor() -> None:
+    """MELON planted day 8, read day 10 (real age 2): the earliest payout is
+    the window's start, day 14. Nothing is GUARANTEED (an unwatered melon
+    yields 0) so the floor is 0; the hint carries the unwatered accrual."""
+    evs = _events({(2, 2): _melon(8, 0)}, 10)
+    assert [(e.day, e.units, e.units_hint) for e in evs] == [(14, 0, 1)], evs
+
+
+def test_a_mature_one_shot_tile_is_collectable_today() -> None:
+    evs = _events({(2, 2): _melon(-2, 6)}, 10)
+    assert [(e.day, e.units) for e in evs] == [(10, 6)], evs
+
+
+def test_ongoing_schedule_fires_every_remaining_interval_step() -> None:
+    """STRAWBERRY planted day 0, read day 11 (real age 11): production ages
+    10/12/14/16; age 10 is past and its units are in the tile, so the first
+    remaining step (age 12 = day 13) carries the floor of 2, then 1 each."""
+    evs = _events({(2, 2): _straw(0, 2)}, 11)
+    assert [(e.day, e.units) for e in evs] == [(12, 2), (14, 1), (16, 1)], evs
+
+
+def test_the_weed_deadline_is_never_an_event() -> None:
+    """crop_last_day is the tile's death, not a payout (the rule the
+    measurement rejected): a melon's schedule has exactly one event."""
+    evs = _events({(2, 2): _melon(3, 4)}, 10)
+    assert len(evs) == 1, evs
+
+
+def test_the_fertilised_hint_reads_their_public_tile() -> None:
+    """Their fertiliser is a public fact: while `fertilized_until_day`
+    covers the event's day, a scheduled accrual is worth 2, not 1."""
+    evs = _events({(2, 2): _straw(0, 2, fert=13)}, 11)
+    assert evs[0].units == 2 and evs[0].units_hint == 4, evs   # 2 held + fert step
+    assert evs[1].units == 1 and evs[1].units_hint == 1, evs   # day 14 uncovered
+    evs = _events({(2, 2): _wheat(0, 0, fert=2)}, 1)
+    assert evs[0].units == 0 and evs[0].units_hint == 2, evs
+
+
+def test_the_curve_sums_the_floor_and_the_expected_view() -> None:
+    obs = _plant_obs({(2, 2): _straw(0, 2, fert=13)}, 11)
+    floor = supply_curve(obs, ("STRAWBERRY",), 40)
+    expect = supply_curve(obs, ("STRAWBERRY",), 40, expected=True)
+    assert floor[12, 0] == 2.0 and floor[14, 0] == 1.0, floor[:20, 0]
+    assert expect[12, 0] == 4.0 and expect[14, 0] == 1.0, expect[:20, 0]
 
 
 def test_an_already_past_payout_never_reappears() -> None:
-    """A tile whose window passed (age past last day) schedules nothing."""
-    key = _melon_key(20, 6)          # past melon's last day (12)
-    obs = _obs_with_rival_board({(1, 1): key}, 5, ("WHEAT", "MELON"))
-    curve = supply_curve(obs, ("MELON",), horizon=30)
-    assert curve.sum() == 0.0, curve
-
-
-def test_the_curve_sums_across_tiles_and_days() -> None:
-    """Two melon tiles on different schedules produce two bumps."""
-    day = 0
-    obs = _obs_with_rival_board({(1, 1): _melon_key(6, 6),
-                                 (5, 5): _melon_key(6, 5)}, 13, ("MELON",))
-    curve = supply_curve(obs, ("MELON",), horizon=30)
-    assert abs(curve[:, 0].sum() - 11.0) < 1e-9, curve[:, 0]
-    assert (curve[:, 0] > 0).sum() >= 1
-
-
-def _carrot_key(age: int, units: int) -> int:
-    st = TileState(kind=TileKind.PLANT, crop=Crop.CARROT, animal=None,
-                   structure=None, age=age, consec=0, unfed=0, fert_left=0,
-                   care_bank=0, yield_units=units)
-    return int(st.pack())
+    """A one-shot tile past its whole life decodes as a WEED and schedules
+    nothing; a young tile's only event is its window start."""
+    from agent.world.tile import TileHourZero
+    dead = {"kind": "PLANT", "crop": "MELON", "planted_day": -20,
+            "yield_units": 6, "watered_today": False,
+            "fertilized_until_day": -1, "consecutive_unwatered": 0}
+    assert TileHourZero.decode(dead, 10).kind is TileKind.WEED
+    evs = _events({(1, 1): dead}, 10)
+    assert evs == [], evs
 
 
 def test_the_dated_curve_moves_the_path_on_the_day_it_lands() -> None:
@@ -114,19 +134,15 @@ def test_the_dated_curve_moves_the_path_on_the_day_it_lands() -> None:
     `forecast`'s walk adds the rival's supply per turn. A flat residual spreads
     one number over every day, so it moves the whole path; a calendar entry is
     dated, so the path BEFORE its day must be untouched and the path from it on
-    must be lower. That difference is what the wire buys, and it is exactly what
-    a flat spread fails.
-
-    The curve is built by hand here, not through `harvest_events`: this guard is
-    about the FORECAST's consumption of a dated curve, and the calendar's own
-    fixture arithmetic is guarded by the three checks above. CARROT, because its
-    path is the one that responds to supply (MELON's quote is flat at 250-280
-    whatever the supply — a guard written on it cannot fail).
-    """
+    must be lower. The curve is built by hand here, not through
+    `harvest_events`: this guard is about the FORECAST's consumption of a dated
+    curve. CARROT, because its path is the one that responds to supply (MELON's
+    quote is flat at 250-280 whatever the supply — a guard written on it cannot
+    fail)."""
     from agent.belief.market import forecast, PRODUCTS
 
     day, horizon = 3, 30
-    obs = _obs_with_rival_board({}, day, ("CARROT",))
+    obs = _plant_obs({}, day)
     col = tuple(PRODUCTS).index("CARROT")
     landing = day + 4
     curve = np.zeros((horizon, len(PRODUCTS)))
@@ -168,36 +184,3 @@ def test_the_dated_curve_moves_the_path_on_the_day_it_lands() -> None:
                     config=cfg)
     assert [float(flat.price_of("CARROT", d)) for d in range(day, first)] != \
         [float(plain.price_of("CARROT", d)) for d in range(day, first)]
-
-
-def test_a_wrong_shaped_curve_is_refused() -> None:
-    """`rival_supply` is a `(days, 9)` contract, and a wrong shape raises."""
-    from agent.belief.market import forecast
-
-    obs = _obs_with_rival_board({}, 0, ("MELON",))
-    try:
-        forecast(obs, days=30, rival_supply=np.zeros((5, 3)),
-                 config={"farmHandCostMult": 1})
-    except ValueError:
-        pass
-    else:
-        raise AssertionError("a wrong-shaped rival_supply must be refused")
-
-
-def main() -> int:
-    tests = [(k, v) for k, v in sorted(globals().items())
-             if k.startswith("test_") and callable(v)]
-    failures = 0
-    for name, fn in tests:
-        try:
-            fn()
-            print(f"PASS {name}")
-        except Exception as exc:                       # noqa: BLE001
-            failures += 1
-            print(f"FAIL {name}: {type(exc).__name__}: {exc}")
-    print(f"{len(tests) - failures}/{len(tests)} rival-calendar checks passed")
-    return 1 if failures else 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
