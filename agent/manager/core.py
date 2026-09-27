@@ -220,9 +220,25 @@ class Manager:
         # out here: `D.plan` reads them (round caps, hands, the hours overhead,
         # the smoothing) so a measurement injects one object and nothing has a
         # second copy of a decision.
+        # The day's hand count is the owner's estimate off the chains the LAST
+        # turn produced (a day's chains need a solve to exist, so the first turn
+        # of the season has nothing to estimate from and asks for none). The
+        # HOURS the hands start at stay the hourly secretary's: `plan` prices the
+        # day on the queue's own `hire_hours` (F040).
+        from agent.planner import hands as H
+        _prev = (list(getattr(self.day.day, "chains", ()) or ())
+                 if self.day is not None else [])
+        _quads = 1
+        try:
+            _unlocked = obs["farms"][int(obs.get("player", 0))].get("unlocked")
+            if _unlocked:
+                _quads = len(_unlocked)
+        except (KeyError, TypeError, IndexError):
+            _quads = 1
+        self.hand_estimate = H.estimate(_prev, _quads)
         self.day = D.plan(obs, self.contractor, supply,
                           class_of_tile=class_of_tile,
-                          hands=0,
+                          hands=self.hand_estimate,
                           pool=self.pool,
                           forecast_obj=self.forecast_obj,
                           cfg=self.cfg)
