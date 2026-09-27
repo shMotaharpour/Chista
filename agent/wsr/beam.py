@@ -69,7 +69,7 @@ MIN_BEAM, MAX_BEAM = 8, 64
 #: How many times the pickup charge is re-derived before the conservative day is handed back. The
 #: charge only grows (each pass keeps the larger of the two) and is bounded by the day's own
 #: distinct-good count, so this is a ceiling on an iteration that has usually settled by the first.
-CHARGE_PASSES = 3
+CHARGE_PASSES = 1
 
 #: The rankings the selection keeps its beam under, each with a beam of its own. No single key is
 #: right: the earliest finish keeps the most work placed and is blind to an hour that is nearly gone,
