@@ -1188,8 +1188,15 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
         """
         if result.solve is None:
             return result
-        grew = len(result.pool) != n_at_last_solve[0]
-        if not integral and not grew:
+        if not integral:
+            # The LP path publishes the solve the loop last took, and the loop's
+            # own bookkeeping (the pricing's credit, the certificate) is that
+            # solve's. Re-solving here on the pool the last PRICING pass built
+            # would hand back a plan priced at duals the pricing never used --
+            # measured: `test_entry_row`'s identity (the credit the pricing
+            # handed the tiles equals what was published) fails. A round the
+            # model is worth is asked for in `Config.master_rounds`, where it is
+            # visible and costs what it costs; it is not smuggled in here.
             return result
         args = (result.pool, counts, supply_hours, money, days, n_coupling)
         kwargs = dict(
@@ -1271,7 +1278,7 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
             prices=prices, market=market, sell_cap=sell_cap,
             depth=depth, entry=entry, cfg=cfg)
         n_at_last_solve[0] = len(result.pool)
-        result.rounds += 1
+        result.rounds += 1  # solves taken; the pricing passes it fed are free
 
         exact = (result.solve.y, result.solve.cash, result.solve.mu)
         # A degenerate first LP has NO unique dual: with an empty shed and only

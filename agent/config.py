@@ -83,7 +83,13 @@ class Config:
     #: and measured at; with the clock out of the loop the cap is the only stop
     #: besides the reduced-cost certificate, so raising it is a policy decision to
     #: take on a measurement.
-    master_rounds: int = 1
+    #: How many master solves the day's column loop takes. One solve leaves the
+    #: columns its own pricing pass found unpriced, so the plan is the optimum of
+    #: the pool as it stood BEFORE that pass - one round's columns idle. The
+    #: second solve prices them; measured on the day-0 board the same pool is
+    #: worth 96,069.7333 against 68,341.9333 (master_rounds=1) and a season
+    #: carries it to 71,688 against 17,076 on seed 33 (16 free hands).
+    master_rounds: int = 2
     #: The LP loop's own cap when a caller asks for no specific number (the
     #: library default; the manager always asks for `master_rounds`). 8 is the
     #: measured oscillation budget: the full loop's cost is the contractor's
