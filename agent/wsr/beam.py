@@ -51,7 +51,7 @@ REFETCH: np.ndarray = (DISTANCE[np.arange(BOARD_SIZE ** 2), DOOR_OF][:, None]
 
 ITEM_NAME: dict[int, str] = {code: item.name for item, code in ITEM_CODE.items()}
 
-_TRANS_PATH = Path(__file__).parent / "spatial_transitions.npy"
+_TRANS_PATH = Path(__file__).resolve().parents[1] / "artifact" / "spatial_transitions.npy"
 SPATIAL_TRANSITIONS: np.ndarray = (
     np.load(_TRANS_PATH) if _TRANS_PATH.exists()
     else np.zeros((BOARD_SIZE ** 2, BOARD_SIZE ** 2), dtype=np.float32)
