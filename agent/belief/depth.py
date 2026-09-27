@@ -288,20 +288,23 @@ def day_envelope(fc: MarketForecast, goods, first_day: int, days: int
     same surface the hourly layer will use, not a second forecast.
     """
     from agent.belief.market import TURNS_PER_DAY, hourly_prices
+    goods = tuple(goods)
     n_goods = len(goods)
-    days = max(1, int(days))
-    # ONE table for every good: the surface is priced once (items=all goods) and
-    # each good's day is an argmax over its own 24 rows. Asking per good priced
-    # the whole 9-good surface nine times and kept a column of it.
-    table = hourly_prices(fc, days=days, items=tuple(goods))
-    prices = np.zeros((n_goods, days), dtype=np.int64)
-    hours = np.zeros((n_goods, days), dtype=np.int64)
-    for gi in range(n_goods):
-        col = np.asarray(table[:, gi]).reshape(days, TURNS_PER_DAY)
-        best = np.argmax(col, axis=1)
-        hours[gi] = best
-        prices[gi] = col[np.arange(days), best]
-    return prices, hours
+    nd = max(1, int(days))
+    prices = np.zeros((n_goods, nd), dtype=np.int64)
+    hours = np.zeros((n_goods, nd), dtype=np.int64)
+    if not n_goods:
+        return prices, hours
+    # ONE table for every good, then one argmax over the hour axis. The old
+    # shape asked `hourly_prices` for a good at a time — nine walks of the same
+    # market and nine Python passes over the days — and `np.argmax` takes the
+    # FIRST maximum, which is the hour the per-day loop picked.
+    table = hourly_prices(fc, days=nd, items=goods)
+    per_day = table.reshape(nd, TURNS_PER_DAY, n_goods)
+    hours = np.argmax(per_day, axis=1).astype(np.int64)          # (nd, n_goods)
+    prices = np.take_along_axis(per_day, hours[:, None, :], axis=1)[:, 0, :]
+    # The caller's own layout is (n_goods, days): the table is day-major.
+    return prices.T.copy(), hours.T.copy()
 
 
 def sell_blocks(fc: MarketForecast, goods, first_day: int, days: int,
