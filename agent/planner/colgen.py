@@ -1105,6 +1105,14 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
     cfg = Config() if cfg is None else cfg
     rounds = int(cfg.iter_cap if rounds is None else rounds)
 
+    #: How many columns the pool held when the loop's last solve ran. The loop
+    #: ADDS columns after that solve, so on a cap exit the solve it exited with
+    #: was priced on a SMALLER pool than the one the decision sees (measured on
+    #: the day-0 board: published 68,341.9333 against 96,069.7333 for the same
+    #: pool). One more LP solve closes that, and it is only needed when the pool
+    #: actually grew.
+    n_at_last_solve = [0]
+
     def decide() -> "ColgenResult":
         """The integral decision solve, on the pool the LP loop built.
 
@@ -1114,15 +1122,26 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
         a poorer pool than the LP's own. Same matrix, same columns, one extra
         solve: the LP drives the generation, the MIP takes the decision.
         """
-        if integral and result.solve is not None:
-            args = (result.pool, counts, supply_hours, money, days, n_coupling)
-            kwargs = dict(
-                shed_stock=None if shed is None else shed[0],
-                shed_capacity=0.0 if shed is None else float(shed[1]),
-                prices=prices, market=market, sell_cap=sell_cap,
-                depth=depth, entry=entry, cfg=cfg)
-            result.lp_final = solver.solve(*args, **kwargs)
+        if result.solve is None:
+            return result
+        grew = len(result.pool) != n_at_last_solve[0]
+        if not integral and not grew:
+            return result
+        args = (result.pool, counts, supply_hours, money, days, n_coupling)
+        kwargs = dict(
+            shed_stock=None if shed is None else shed[0],
+            shed_capacity=0.0 if shed is None else float(shed[1]),
+            prices=prices, market=market, sell_cap=sell_cap,
+            depth=depth, entry=entry, cfg=cfg)
+        final = solver.solve(*args, **kwargs)
+        if integral:
+            # The MIP decides; the LP beside it is what has marginals, and it is
+            # the half that says how much the integer answer cost (the gate: a
+            # MIP can never beat its own relaxation).
+            result.lp_final = final
             result.solve = solver.solve(*args, integral=True, **kwargs)
+        else:
+            result.solve = final
         return result
     index_of = {c.cls_key: c.cls for c in result.pool if c.cls_key}
     for column in (warm or []):
@@ -1185,6 +1204,7 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
             shed_capacity=0.0 if shed is None else float(shed[1]),
             prices=prices, market=market, sell_cap=sell_cap,
             depth=depth, entry=entry, cfg=cfg)
+        n_at_last_solve[0] = len(result.pool)
         result.rounds += 1
 
         exact = (result.solve.y, result.solve.cash, result.solve.mu)
