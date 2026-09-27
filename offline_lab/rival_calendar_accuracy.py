@@ -84,34 +84,48 @@ def measure(date: str, seat: int = 1) -> None:
         WHERE d.crop IS NOT NULL AND d.planted_day IS NOT NULL
     """).fetchall()
 
-    rule_delta: Counter[int] = Counter()          # pred(planted+last) - truth
-    law_age: dict[str, Counter[int]] = defaultdict(Counter)   # truth - planted
+    # Three predictors, one truth (the harvest day). The floor predicts the
+    # EARLIEST collectable day — a predictor is correct on an event when its
+    # day <= truth, and it never over-promises; the within-k scoring is its
+    # tightness. The old rule (planted+crop_last_day) and the first-fix rule
+    # (one-shot: window end) are scored the same way for the comparison.
+    def floor_day(spec: dict) -> int:
+        return (spec["maxy"] if spec["ongoing"] else first_collectable(spec))
+
+    old_delta: Counter[int] = Counter()
+    floor_gap: Counter[int] = Counter()      # truth - predicted (>=0 means safe)
+    law_age: dict[str, Counter[int]] = defaultdict(Counter)
     for crop, planted, hday in rows:
         spec = RULES.get(str(crop))
         if spec is None:
             continue
         age = int(hday) - int(planted)
         law_age[str(crop)][age] += 1
-        rule_delta[age - last_day(spec)] += 1
-    n = sum(rule_delta.values())
+        old_delta[age - last_day(spec)] += 1
+        floor_gap[age - floor_day(spec)] += 1
+    n = sum(old_delta.values())
     print(f"store {date}, seat {seat}: {n} recorded rival harvest events")
     if not n:
         print("nothing measured")
         return
-    within = sum(v for k, v in rule_delta.items() if abs(k) <= 1)
-    exact = rule_delta[0]
-    print(f"[rule as written: planted+crop_last_day]")
-    print(f"  exact {exact/n:6.1%}   within ±1 {within/n:6.1%}   (acceptance >= 90%)")
+    w = sum(v for k, v in old_delta.items() if abs(k) <= 1)
+    print("[OLD rule: planted+crop_last_day]")
+    print(f"  exact {old_delta[0]/n:6.1%}   within ±1 {w/n:6.1%}   (acceptance >= 90%)")
+    safe = sum(v for k, v in floor_gap.items() if k >= 0)
+    tight = sum(v for k, v in floor_gap.items() if 0 <= k <= 3)
+    print("[NEW floor: first collectable day (window start / max_yield_day)]")
+    print(f"  never-late {safe/n:6.1%}   within +3 days of truth {tight/n:6.1%}")
+    print(f"  mean gap (truth - floor) "
+          f"{sum(k*v for k, v in floor_gap.items())/n:+.2f} days")
     for crop, spec in RULES.items():
         ages = law_age[crop]
         ctotal = sum(ages.values())
         if not ctotal:
             continue
         top = sorted(ages.items(), key=lambda kv: -kv[1])[:5]
-        cov = sum(n for _, n in top) / ctotal
+        cov = sum(nn for _, nn in top) / ctotal
         print(f"  {crop:11s} n={ctotal:6d}  top harvest ages {top} cover {cov:.0%}"
-              f"   [rule predicts age {last_day(spec)},"
-              f" first collectable age {first_collectable(spec)}]")
+              f"   [floor day {floor_day(spec)}, old rule {last_day(spec)}]")
 
 
 if __name__ == "__main__":
