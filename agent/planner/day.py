@@ -306,7 +306,7 @@ def plan(obs, contractor, supply, *, class_of_tile, iter_cap: int | None = None,
          terms: "EngineTerms | None" = None,
          rounds: int | None = None, tolerance: float | None = None,
          pool: list | None = None,
-         max_hands: int | None = None, w_warm=None, warm=None,
+         max_hands: int | None = None, w_warm=None,
          forecast_obj=None, smoothing: float | None = None,
          cfg: "Config | None" = None) -> DayPlan:
     """Enumerate the pool of hands, and keep the day worth the most net of it.
@@ -380,8 +380,7 @@ def plan(obs, contractor, supply, *, class_of_tile, iter_cap: int | None = None,
     for offer in range(max(0, ceiling), -1, -1):
         current = _solve_at(obs, contractor, supply, class_of_tile, offer,
                             iter_cap, rounds, tolerance, carried,
-                            w_warm, forecast_obj, smoothing, cfg, terms,
-                            warm=warm)
+                            w_warm, forecast_obj, smoothing, cfg, terms)
         carried = list(current.master.pool)
         if chosen is None or current.net > chosen.net:
             chosen = current
@@ -392,7 +391,7 @@ def _solve_at(obs, contractor, supply, class_of_tile, hands, iter_cap,
               rounds, tolerance, pool, w_warm=None,
               forecast_obj=None, smoothing: float = 0.0,
               cfg: "Config | None" = None,
-              terms: "EngineTerms | None" = None, warm=None) -> DayPlan:
+              terms: "EngineTerms | None" = None) -> DayPlan:
     """One pool size: solve, assign, ask wsr, and price the hands."""
     from agent.planner import columns as C
     from agent.planner import master as M
@@ -442,7 +441,7 @@ def _solve_at(obs, contractor, supply, class_of_tile, hands, iter_cap,
             for c in choices if c is not None)
         fitted = fit(chains, hands=hands,
                      available=availability(obs, chains),
-                     hours_committed=committed, warm=warm)
+                     hours_committed=committed)
         if not fitted.complete and fitted.reason == "hours":
             # wsr's OWN number, not a count of retries: `floor` is the arithmetic
             # minimum the day's work needs, and the search already started there
@@ -457,7 +456,7 @@ def _solve_at(obs, contractor, supply, class_of_tile, hands, iter_cap,
             if int(fitted.floor) > int(hands) and int(cfg.ask_rounds) > 0:
                 again = fit(chains, hands=int(fitted.floor),
                             available=availability(obs, chains),
-                            hours_committed=committed, warm=warm)
+                            hours_committed=committed)
                 if again.complete:
                     fitted = again
         # A complete answer needs no second ask for a leaner pool: the search
@@ -499,11 +498,8 @@ def compile(day_plan: "DayPlan", obs, *, hands: int | None = None,
             rival_supply: dict | None = None,
             terms: "EngineTerms | None" = None, model=None,
             activity: int | None = None,
-            forecast_obj=None, warm=None, route_box: dict | None = None) -> dict:
+            forecast_obj=None) -> dict:
     """A `DayPlan` -> the `{"units": [...], "market": [...]}` the dispatcher slices.
-
-    `warm` is last turn's route for this same day and `route_box`, when given,
-    receives this call's (`agent/wsr/README.md`, caller guideline 1).
 
     The unit ops come from the day layer's own compiler, against the doors the
     search priced the hands on — `Result.doors`, the only positions
@@ -625,8 +621,15 @@ def compile(day_plan: "DayPlan", obs, *, hands: int | None = None,
             out[good] = max(int(out.get(good, 0)), int(hour))
         return out
 
-    def priced(hire_times):
-        """The day, the route and the queue it implies, from one set of hours."""
+    def priced(hire_times, warm=None):
+        """The day, the route and the queue it implies, from one set of hours.
+
+        `warm` is the route from a PREVIOUS call at the SAME pool. That is
+        the only place a warm start means anything here: wsr's warm row
+        carries the earlier route's own workers and `when`s, so it is legal
+        only while the hand count is unchanged and the tasks move up or
+        down. Change the pool and the row describes a day with different
+        hands (owner, 2026-09-27)."""
         day = B.Day(chains=tuple(fitted.chains), available=available,
                     hire_times=hire_times)
         result = B.search(day, tasks, hands=pool, max_hands=pool, warm=warm)
@@ -667,19 +670,11 @@ def compile(day_plan: "DayPlan", obs, *, hands: int | None = None,
         # the committed queue knows the real one, so if its hires land in other
         # hours the day is priced again on them. The invariant is that the day the
         # engine executes is the day the queue's own timetable priced.
-        again = priced(tuple(market.hire_hours))
+        # SAME pool, same tasks, the queue's hours: the one re-solve a warm
+        # start is for.
+        again = priced(tuple(market.hire_hours), warm=result)
         if again[1].complete:
             day, result, ops, harvest = again
             market = queue(harvest, result.pool, wsr_check=True,
                            arrivals=arrival_hours(ops))
-    if route_box is not None:
-        # The route this day committed, handed back to the caller that will
-        # re-solve this same day next turn: wsr takes a previous route as a warm
-        # start (`Result.state` is plain arrays — done/when/who/free/where/travel
-        # — copied into a beam row rather than re-derived). `DayPlan` is a frozen
-        # dataclass and the ops dict is the engine's contract, so the box is the
-        # one place that may carry it; the manager empties it at the day boundary,
-        # where a route built from yesterday's tasks means nothing
-        # (agent/wsr/README.md, caller guideline 1).
-        route_box["result"] = result
     return to_plan(ops, market=market.rows)
