@@ -402,7 +402,6 @@ def test_day_29_days_carry_sell_deadlines() -> None:
 #: (`test_the_game_route_of_a_short_day_is_one_the_model_allows`), so each is a
 #: search shortfall, not a model that forbids the game's play.
 KNOWN_SHORT = {
-    ("2026-09-16", 109471187, 14),
     ("2026-09-16", 109471187, 15),
     ("2026-09-16", 109471187, 16),
     ("2026-09-16", 109466080, 14),

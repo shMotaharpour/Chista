@@ -1294,7 +1294,13 @@ def _select(expanded, tasks: TaskArray, beam: int, first_hand: int, start_hours)
         # cross-board wandering and produce dense, compact clusters.
         hop_of = expanded["hop"][parent_of, worker_of, col_of]
         if SELECT_RULE == "hour":
-            primary = flat_hour[legal]
+            # Adaptive Workload Critical-Path Balancing:
+            # Smoothly pulls critical-path chain tasks earlier in the day
+            # based on remaining daylight hours and task volume (alpha).
+            h_rem = np.maximum(0, 24 - flat_hour[legal]).astype(np.int32)
+            cw = tasks.chain_weight[task_of].astype(np.int32)
+            alpha = 1 if tasks.n <= 130 else 2
+            primary = flat_hour[legal].astype(np.int32) * 48 - cw * h_rem * alpha
         else:
             latest = getattr(tasks, "latest32", tasks.latest)
             primary = latest[task_of] - flat_hour[legal].astype(np.int32)
