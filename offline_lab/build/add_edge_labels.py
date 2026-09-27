@@ -20,9 +20,17 @@ The owner's method, confirmed on one tile end-to-end (probe_one_tile.py):
   5. A transition no edge explains is LAB_OUT_OF_GRAPH (counted by kind);
      day 29 has no next state and labels LAB_LAST_DAY.
 
+Two entry points:
+    label_shard(shard_path, replay_path) — the CLI/one-file path
+    label_replay(shard_dict, replay_path, graph, voc) — the notebook path:
+      labels an in-memory shard dict and adds the summary counters
+      (lab_matched / lab_no_action / lab_out_of_graph / lab_phantom_total)
+      the build report reads.
+
 Adds per shard (format 1 extension, see FORMAT.md):
     lab_ptr (n+1,) int64 · lab_cell (ΣL,) int16 · lab_chain (ΣL,) int32
-    lab_phantom (ΣL,) int16 · lab_from_kind (ΣL,) int8
+    lab_item (ΣL,) int16 · lab_phantom (ΣL,) int16 · lab_from_kind (ΣL,) int8
+    lab_matched / lab_no_action / lab_out_of_graph / lab_phantom_total (scalars)
 """
 
 from __future__ import annotations
@@ -40,7 +48,7 @@ if str(ROOT) not in sys.path:
 import numpy as np
 
 from agent.planner.inputs import GRAPH_PATH as _GRAPH_PATH
-from agent.tile_dp.chains import chain_ops
+from agent.tile_dp.chains import ENTITY_OF_CODE, chain_ops
 from agent.tile_dp.graph import TileGraph
 from agent.tile_dp.tile_state import KIND_CODES
 
@@ -66,18 +74,18 @@ def _tile_signature(tile) -> tuple:
     return tuple(sorted((k, str(v)) for k, v in tile.items()))
 
 
-def main() -> None:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--replays", nargs="+", required=True,
-                    help="the raw replay JSONs, for the per-turn tile diffs")
-    ap.add_argument("--shards", nargs="+", required=True)
-    args = ap.parse_args()
+def _label_shard_arrays(sh: dict, steps: list, graph: TileGraph,
+                        voc: list[str], entity_codes: dict[str, int]
+                        ) -> tuple[dict, Counter]:
+    """The label pass over one in-memory shard dict + its raw replay.
 
-    graph = TileGraph.load(_GRAPH_PATH)
+    `sh` maps field name -> np.ndarray (the shard's own arrays); returns the
+    label arrays to merge in, plus the shard's summary counters.
+    """
     key_index = graph.key_index
     state_keys = np.asarray(graph.state_keys, dtype=np.int64)
 
-    # Edge index: from_state_id -> to_state_id -> [(op bag WITH COUNTS, chain_id, edge row)]
+    # Edge index: from_state_id -> to_state_key -> [(op bag WITH COUNTS, chain_id, row)]
     by_transition: dict[int, dict[int, list]] = defaultdict(lambda: defaultdict(list))
     for sid in range(graph.n_states):
         lo, hi = graph.edges_of(sid)
@@ -87,23 +95,164 @@ def main() -> None:
             bag = Counter(str(op) for op in chain_ops(chain_id))
             by_transition[sid][int(state_keys[to_id])].append((bag, chain_id, row))
 
-    #: The graph's own entity names -> the shard's item-vocabulary codes. The
-    #: edge entity is the crop a PLANT plants or the species a PLACE places;
-    #: the training loss consumes the vocabulary code directly.
     kind_code = {sid: kind_code_of[graph.state_of(sid).kind]
                  for sid in range(graph.n_states)}
+
+    n = len(sh["seat"])
+    index_of = {(int(sh["seat"][i]), int(sh["day"][i])): i for i in range(n)}
+    op_cell, op_code, op_ptr = sh["op_cell"], sh["op_code"], sh["op_ptr"]
+    n_steps = len(steps)
+
+    lab_cell: list[int] = []
+    lab_chain: list[int] = []
+    lab_item: list[int] = []
+    lab_phantom: list[int] = []
+    lab_from_kind: list[int] = []
+    lab_ptr = np.zeros(n + 1, dtype=np.int64)
+    stats: Counter = Counter()
+
+    for i in range(n):
+        seat, day = int(sh["seat"][i]), int(sh["day"][i])
+        tiles = sh["tiles_own"][i]
+
+        cell_hours: dict[int, dict[int, Counter]] = defaultdict(lambda: defaultdict(Counter))
+        for j in range(int(op_ptr[i]), int(op_ptr[i + 1])):
+            name = str(voc[op_code[j]])
+            if name in NON_TILE_OPS:
+                continue
+            cell = int(op_cell[j])
+            if cell >= 0:
+                cell_hours[cell][int(sh["op_hour"][j])][name] += 1
+
+        nxt = index_of.get((seat, day + 1))
+
+        for cell in range(100):
+            from_key = int(tiles[cell])
+            if from_key < 0:                 # LOCKED sentinel
+                continue
+            sid_f = key_index.get(from_key)
+            if sid_f is None:
+                stats["unmodelled_from"] += 1
+                continue
+
+            hours = cell_hours.get(cell, {})
+            y, x = divmod(cell, 10)
+
+            effective: Counter = Counter()
+            phantom = 0
+            for h, counts in hours.items():
+                t = day * 24 + h
+                if t >= n_steps:
+                    continue
+                if h == 24:                  # crosses the nightly reset
+                    effective.update(counts)
+                    continue
+                changed = _tile_signature(
+                    steps[t - 1][seat]["observation"]["farms"][seat]["tiles"][y][x]) \
+                    != _tile_signature(
+                        steps[t][seat]["observation"]["farms"][seat]["tiles"][y][x])
+                if changed:
+                    effective.update(counts)
+                else:
+                    phantom += int(sum(counts.values()))
+                    stats["phantom"] += int(sum(counts.values()))
+
+            if nxt is None:                  # day 29: no next-day state
+                lab_cell.append(cell)
+                lab_chain.append(LAB_LAST_DAY)
+                lab_item.append(-1)
+                lab_phantom.append(phantom)
+                lab_from_kind.append(kind_code[sid_f])
+                stats["last_day"] += 1
+                continue
+
+            to_key = int(sh["tiles_own"][nxt][cell])
+            cands = by_transition.get(sid_f, {}).get(to_key, [])
+            if not cands:
+                lab_cell.append(cell)
+                lab_chain.append(LAB_OUT_OF_GRAPH)
+                lab_item.append(-1)
+                lab_phantom.append(phantom + int(sum(effective.values())))
+                lab_from_kind.append(kind_code[sid_f])
+                stats["out_of_graph"] += 1
+                continue
+
+            best = None
+            for bag, chain_id, row in cands:
+                if not all(effective.get(op, 0) >= cnt for op, cnt in bag.items()):
+                    continue
+                key = (-sum(bag.values()), chain_id)   # max coverage, then lowest id
+                if best is None or key < best[0]:
+                    best = (key, chain_id, row)
+            if best is None:
+                lab_cell.append(cell)
+                lab_chain.append(LAB_OUT_OF_GRAPH)
+                lab_item.append(-1)
+                lab_phantom.append(phantom + int(sum(effective.values())))
+                lab_from_kind.append(kind_code[sid_f])
+                stats["opset_gap"] += 1
+                continue
+
+            _key, chain_id, row = best
+            # The edge's own entity (a PLANT's crop, a PLACE's species) — the
+            # training loss consumes it directly. The transition already fixes
+            # it; this is a read, not an inference.
+            entity_code = int(graph.edge_entity[row])
+            entity_name = ENTITY_OF_CODE[entity_code] if entity_code else None
+            item_code = entity_codes.get(entity_name, -1) if entity_name else -1
+            lab_cell.append(cell)
+            lab_chain.append(chain_id)
+            lab_item.append(item_code)
+            lab_phantom.append(phantom)
+            lab_from_kind.append(kind_code[sid_f])
+            bag_empty = not _chain_has_ops(chain_id)
+            stats["matched" if not bag_empty else "no_action"] += 1
+
+        lab_ptr[i + 1] = len(lab_cell)
+
+    arrays = {
+        "lab_ptr": lab_ptr,
+        "lab_cell": np.array(lab_cell, dtype=np.int16),
+        "lab_chain": np.array(lab_chain, dtype=np.int32),
+        "lab_item": np.array(lab_item, dtype=np.int16),
+        "lab_phantom": np.array(lab_phantom, dtype=np.int16),
+        "lab_from_kind": np.array(lab_from_kind, dtype=np.int8),
+    }
+    summary = Counter({k: v for k, v in stats.items()})
+    return arrays, summary
+
+
+def _chain_has_ops(chain_id: int) -> bool:
+    return any(True for _ in chain_ops(chain_id))
+
+
+def label_replay(shard: dict, replay_path, graph: TileGraph) -> dict:
+    """The notebook path: label an in-memory shard dict IN PLACE (adds `lab_*`
+    arrays + summary scalars) and return it."""
+    from offline_lab.build.kaggle_dataset import Vocab  # noqa: F401 (par with builder)
+    raw = json.load(open(replay_path))
+    steps = raw["steps"]
+    voc_list = shard["vocab_list"]           # the builder stashes its table
+    entity_codes = shard["vocab_entity_codes"]
+    arrays, summary = _label_shard_arrays(shard, steps, graph, voc_list, entity_codes)
+    shard.update(arrays)
+    for k, v in summary.items():
+        shard[f"lab_{k}"] = np.int64(v)
+    return shard
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--replays", nargs="+", required=True)
+    ap.add_argument("--shards", nargs="+", required=True)
+    args = ap.parse_args()
+
+    graph = TileGraph.load(_GRAPH_PATH)
 
     replay_of = {}
     for path in args.replays:
         path = Path(path)
         replay_of[int(path.name.split("-")[1])] = path
-
-    #: The entity-name -> vocabulary-code table. The vocabulary is per build
-    #: (`vocab.json`), so the codes are read from the FIRST shard's table and
-    #: reused for every shard of the same build.
-    from agent.tile_dp.chains import ENTITY_NAMES, ENTITY_OF_CODE
-    first_voc = json.loads((Path(args.shards[0]).parent / "vocab.json").read_text())["list"]
-    _ENTITY_OF = {name: first_voc.index(name) for name in ENTITY_NAMES}
 
     totals: Counter = Counter()
     for shard_path in args.shards:
@@ -111,142 +260,22 @@ def main() -> None:
         sh = np.load(shard_path, allow_pickle=False)
         n = int(sh["n_samples"])
         episode_id = int(sh["episode_id"][0])
-        raw = json.load(open(replay_of[episode_id]))
-        steps = raw["steps"]
-        n_steps = len(steps)
         voc = json.loads((shard_path.parent / "vocab.json").read_text())["list"]
+        entity_codes = {name: i for i, name in enumerate(voc)}
 
-        index_of = {(int(sh["seat"][i]), int(sh["day"][i])): i for i in range(n)}
-        op_cell, op_code = sh["op_cell"], sh["op_code"]
-        op_ptr = sh["op_ptr"]
-
-        lab_cell: list[int] = []
-        lab_chain: list[int] = []
-        lab_item: list[int] = []
-        lab_phantom: list[int] = []
-        lab_from_kind: list[int] = []
-        lab_ptr = np.zeros(n + 1, dtype=np.int64)
-        shard_stats: Counter = Counter()
-
-        for i in range(n):
-            seat, day = int(sh["seat"][i]), int(sh["day"][i])
-            tiles = sh["tiles_own"][i]
-
-            # 1. the day's tile ops per cell, with the hours they ran
-            cell_hours: dict[int, dict[int, Counter]] = defaultdict(lambda: defaultdict(Counter))
-            for j in range(int(op_ptr[i]), int(op_ptr[i + 1])):
-                name = str(voc[op_code[j]])
-                if name in NON_TILE_OPS:
-                    continue
-                cell = int(op_cell[j])
-                if cell >= 0:
-                    cell_hours[cell][int(sh["op_hour"][j])][name] += 1
-
-            nxt = index_of.get((seat, day + 1))
-
-            for cell in range(100):
-                from_key = int(tiles[cell])
-                if from_key < 0:            # LOCKED sentinel
-                    continue
-                sid_f = key_index.get(from_key)
-                if sid_f is None:           # not modelled even after remap
-                    shard_stats["unmodelled_from"] += 1
-                    continue
-
-                hours = cell_hours.get(cell, {})
-                y, x = divmod(cell, 10)
-
-                # 2. per-action effect: which op-hours changed the tile
-                effective: Counter = Counter()
-                phantom = 0
-                for h, counts in hours.items():
-                    t = day * 24 + h        # hour 1..24 -> absolute step
-                    if t >= n_steps:
-                        continue
-                    if h == 24:             # crosses the nightly reset
-                        effective.update(counts)
-                        continue
-                    changed = _tile_signature(
-                        steps[t - 1][seat]["observation"]["farms"][seat]["tiles"][y][x]) \
-                        != _tile_signature(
-                            steps[t][seat]["observation"]["farms"][seat]["tiles"][y][x])
-                    if changed:
-                        effective.update(counts)
-                    else:
-                        phantom += int(sum(counts.values()))
-                        shard_stats["phantom"] += int(sum(counts.values()))
-
-                if nxt is None:             # day 29: no next-day state
-                    lab_cell.append(cell)
-                    lab_chain.append(LAB_LAST_DAY)
-                    lab_item.append(-1)
-                    lab_phantom.append(phantom)
-                    lab_from_kind.append(kind_code[sid_f])
-                    shard_stats["last_day"] += 1
-                    continue
-
-                # 4. the transition's candidates, matched by op COUNTS
-                to_key = int(sh["tiles_own"][nxt][cell])
-                cands = by_transition.get(sid_f, {}).get(to_key, [])
-                if not cands:
-                    lab_cell.append(cell)
-                    lab_chain.append(LAB_OUT_OF_GRAPH)
-                    lab_item.append(-1)
-                    lab_phantom.append(phantom + int(sum(effective.values())))
-                    lab_from_kind.append(kind_code[sid_f])
-                    shard_stats["out_of_graph"] += 1
-                    continue
-
-                best = None
-                for bag, chain_id, row in cands:
-                    if not all(effective.get(op, 0) >= cnt
-                               for op, cnt in bag.items()):
-                        continue
-                    key = (-sum(bag.values()), chain_id)   # max coverage, then lowest id
-                    if best is None or key < best[0]:
-                        best = (key, chain_id, row)
-                if best is None:
-                    lab_cell.append(cell)
-                    lab_chain.append(LAB_OUT_OF_GRAPH)
-                    lab_item.append(-1)
-                    lab_phantom.append(phantom + int(sum(effective.values())))
-                    lab_from_kind.append(kind_code[sid_f])
-                    shard_stats["opset_gap"] += 1
-                    continue
-
-                _key, chain_id, row = best
-                # The edge's own entity, from the graph: a PLANT chain's crop
-                # and a PLACE chain's species — the label the training loss
-                # consumes directly. The entity is the transition's own fact
-                # (candidates are filtered to it), so this is a read, not an
-                # inference.
-                entity_code = int(graph.edge_entity[row])
-                entity_name = ENTITY_OF_CODE[entity_code] if entity_code else None
-                item_code = _ENTITY_OF[entity_name] if entity_name else -1
-                lab_cell.append(cell)
-                lab_chain.append(chain_id)
-                lab_item.append(item_code)
-                lab_phantom.append(phantom)
-                lab_from_kind.append(kind_code[sid_f])
-                shard_stats["matched" if bag else "no_action"] += 1
-
-            lab_ptr[i + 1] = len(lab_cell)
-
-        out = {k: sh[k] for k in sh.files if not k.startswith("lab_")}
-        out.update(
-            lab_ptr=lab_ptr,
-            lab_cell=np.array(lab_cell, dtype=np.int16),
-            lab_chain=np.array(lab_chain, dtype=np.int32),
-            lab_item=np.array(lab_item, dtype=np.int16),
-            lab_phantom=np.array(lab_phantom, dtype=np.int16),
-            lab_from_kind=np.array(lab_from_kind, dtype=np.int8),
-        )
-        np.savez_compressed(shard_path, **out)
-        totals.update(shard_stats)
-        print(f"{shard_path.name}: matched={shard_stats['matched']} "
-              f"no_action={shard_stats['no_action']} "
-              f"out_of_graph={shard_stats['out_of_graph'] + shard_stats['opset_gap']} "
-              f"phantom={shard_stats['phantom']}")
+        shard_dict = {k: sh[k] for k in sh.files if not k.startswith("lab_")}
+        arrays, summary = _label_shard_arrays(
+            shard_dict, json.load(open(replay_of[episode_id]))["steps"],
+            graph, voc, entity_codes)
+        shard_dict.update(arrays)
+        for k, v in summary.items():
+            shard_dict[f"lab_{k}"] = np.int64(v)
+        np.savez_compressed(shard_path, **shard_dict)
+        totals.update(summary)
+        print(f"{shard_path.name}: matched={summary['matched']} "
+              f"no_action={summary['no_action']} "
+              f"out_of_graph={summary['out_of_graph']} "
+              f"phantom={summary['phantom_total']}")
 
     print(f"\nTOTAL: {dict(totals)}")
 
