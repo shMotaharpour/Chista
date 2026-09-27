@@ -201,10 +201,14 @@ def fit(chains, *, hands: int, available: dict | None = None,
     """Hand the day to wsr and report what it made of it.
 
     `hands` is the pool offered, all of them from hour 1 — a hand hired in turn
-    0 first acts at hour 1 (F040). Offering them all and letting the search
-    grow from the arithmetic floor is what keeps the cost predictable; asking
-    wsr to find the smallest pool ITSELF is a halving search and costs several
-    times a turn.
+    0 first acts at hour 1 (F040). The search is given the RANGE `floor..hands`
+    and finds the smallest pool itself: wsr's `_smallest_pool` halves the
+    interval (O(log2 N)) and contracts its ceiling to the hands it actually
+    used, which is both the cheap way to ask and the only way to learn the
+    answer is smaller than `hands`. There is no wall-clock deadline to pass —
+    wsr is bounded structurally by the task count and the beam width, so
+    identical inputs give bit-identical routes (agent/wsr/README.md, caller
+    guidelines 3 and 4).
     """
     from agent.wsr import beam as B
     from agent.wsr import tasks as T
@@ -302,7 +306,7 @@ def plan(obs, contractor, supply, *, class_of_tile, iter_cap: int | None = None,
          terms: "EngineTerms | None" = None,
          rounds: int | None = None, tolerance: float | None = None,
          pool: list | None = None,
-         max_hands: int | None = None, w_warm=None,
+         max_hands: int | None = None, w_warm=None, warm=None,
          forecast_obj=None, smoothing: float | None = None,
          cfg: "Config | None" = None) -> DayPlan:
     """Enumerate the pool of hands, and keep the day worth the most net of it.
@@ -437,7 +441,7 @@ def _solve_at(obs, contractor, supply, class_of_tile, hands, iter_cap,
             for c in choices if c is not None)
         fitted = fit(chains, hands=hands,
                      available=availability(obs, chains),
-                     hours_committed=committed)
+                     hours_committed=committed, warm=warm)
         if not fitted.complete and fitted.reason == "hours":
             # wsr's OWN number, not a count of retries: `floor` is the arithmetic
             # minimum the day's work needs, and the search already started there
@@ -452,7 +456,7 @@ def _solve_at(obs, contractor, supply, class_of_tile, hands, iter_cap,
             if int(fitted.floor) > int(hands) and int(cfg.ask_rounds) > 0:
                 again = fit(chains, hands=int(fitted.floor),
                             available=availability(obs, chains),
-                            hours_committed=committed)
+                            hours_committed=committed, warm=warm)
                 if again.complete:
                     fitted = again
         # A complete answer needs no second ask for a leaner pool: the search
@@ -494,8 +498,11 @@ def compile(day_plan: "DayPlan", obs, *, hands: int | None = None,
             rival_supply: dict | None = None,
             terms: "EngineTerms | None" = None, model=None,
             activity: int | None = None,
-            forecast_obj=None) -> dict:
+            forecast_obj=None, warm=None, route_box: dict | None = None) -> dict:
     """A `DayPlan` -> the `{"units": [...], "market": [...]}` the dispatcher slices.
+
+    `warm` is last turn's route for this same day and `route_box`, when given,
+    receives this call's (`agent/wsr/README.md`, caller guideline 1).
 
     The unit ops come from the day layer's own compiler, against the doors the
     search priced the hands on — `Result.doors`, the only positions
@@ -621,7 +628,7 @@ def compile(day_plan: "DayPlan", obs, *, hands: int | None = None,
         """The day, the route and the queue it implies, from one set of hours."""
         day = B.Day(chains=tuple(fitted.chains), available=available,
                     hire_times=hire_times)
-        result = B.search(day, tasks, hands=pool, max_hands=pool)
+        result = B.search(day, tasks, hands=pool, max_hands=pool, warm=warm)
         ops = compile_route(day, tasks, result, horizon=TURNS_PER_DAY)
         harvest = sum(int(units) for _hour, _item, units in ops.arrivals)
         return day, result, ops, harvest
@@ -652,4 +659,14 @@ def compile(day_plan: "DayPlan", obs, *, hands: int | None = None,
             day, result, ops, harvest = again
             market = queue(harvest, result.pool, wsr_check=True,
                            arrivals=arrival_hours(ops))
+    if route_box is not None:
+        # The route this day committed, handed back to the caller that will
+        # re-solve this same day next turn: wsr takes a previous route as a warm
+        # start (`Result.state` is plain arrays — done/when/who/free/where/travel
+        # — copied into a beam row rather than re-derived). `DayPlan` is a frozen
+        # dataclass and the ops dict is the engine's contract, so the box is the
+        # one place that may carry it; the manager empties it at the day boundary,
+        # where a route built from yesterday's tasks means nothing
+        # (agent/wsr/README.md, caller guideline 1).
+        route_box["result"] = result
     return to_plan(ops, market=market.rows)

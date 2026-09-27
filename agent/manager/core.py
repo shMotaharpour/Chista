@@ -137,6 +137,12 @@ class Manager:
         #: engine's own defaults are the honest answer.
         self.terms = EngineTerms()
         self.certified = False
+        #: wsr's warm start: the route the LAST turn committed for THIS day. The
+        #: engine clears the field overnight and a route is built from a day's
+        #: tasks, so the box is emptied at the day boundary and handed back on
+        #: every re-solve inside the day (agent/wsr/README.md, guideline 1).
+        self.route_box: dict = {}
+        self.warm_day: int | None = None
         #: The sells the committed plan projects ({step: {good: units}}), fed
         #: into the NEXT day's forecast (`forecast(our_sells=)`). #110's
         #: own-supply half: the plan moves the price path it was priced on.
@@ -220,12 +226,19 @@ class Manager:
         # out here: `D.plan` reads them (round caps, hands, the hours overhead,
         # the smoothing) so a measurement injects one object and nothing has a
         # second copy of a decision.
+        # At the day boundary the box is emptied; inside the day every re-solve
+        # starts from the route the last turn committed.
+        today = int(obs.get("day", 0)) if isinstance(obs, dict) else 0
+        if self.warm_day != today:
+            self.route_box.clear()
+            self.warm_day = today
         self.day = D.plan(obs, self.contractor, supply,
                           class_of_tile=class_of_tile,
                           hands=0,
                           pool=self.pool,
                           forecast_obj=self.forecast_obj,
-                          cfg=self.cfg)
+                          cfg=self.cfg,
+                          warm=self.route_box.get("result"))
         self.pool = list(self.day.master.pool)
         self.lam = self.day.master.lam
         self.duals = self.day.master.w
@@ -236,6 +249,8 @@ class Manager:
                               terms=self.terms, model=self.opponent,
                               activity=self._activity(),
                               forecast_obj=self.forecast_obj,
+                              warm=self.route_box.get("result"),
+                              route_box=self.route_box,
                               # The rival's dated supply, gated to the days their
                               # board says have goods: the risk half of the sell
                               # rank. One day is all the rank reads.
