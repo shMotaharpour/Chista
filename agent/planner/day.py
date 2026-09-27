@@ -380,7 +380,8 @@ def plan(obs, contractor, supply, *, class_of_tile, iter_cap: int | None = None,
     for offer in range(max(0, ceiling), -1, -1):
         current = _solve_at(obs, contractor, supply, class_of_tile, offer,
                             iter_cap, rounds, tolerance, carried,
-                            w_warm, forecast_obj, smoothing, cfg, terms)
+                            w_warm, forecast_obj, smoothing, cfg, terms,
+                            warm=warm)
         carried = list(current.master.pool)
         if chosen is None or current.net > chosen.net:
             chosen = current
@@ -391,7 +392,7 @@ def _solve_at(obs, contractor, supply, class_of_tile, hands, iter_cap,
               rounds, tolerance, pool, w_warm=None,
               forecast_obj=None, smoothing: float = 0.0,
               cfg: "Config | None" = None,
-              terms: "EngineTerms | None" = None) -> DayPlan:
+              terms: "EngineTerms | None" = None, warm=None) -> DayPlan:
     """One pool size: solve, assign, ask wsr, and price the hands."""
     from agent.planner import columns as C
     from agent.planner import master as M
@@ -629,6 +630,18 @@ def compile(day_plan: "DayPlan", obs, *, hands: int | None = None,
         day = B.Day(chains=tuple(fitted.chains), available=available,
                     hire_times=hire_times)
         result = B.search(day, tasks, hands=pool, max_hands=pool, warm=warm)
+        if warm is not None:
+            # A warm start is an optimization, and it is only legal while the
+            # day it was built for still holds: the warm row carries that route's
+            # own `when`/`who`, so a schedule the compiler refuses is a route
+            # wsr's `check_route` accepted and `compile_route` did not (measured:
+            # `d4_build_pasture on worker 0 at turn 0 ... only -2 are free`).
+            # Search again without it rather than lose the turn.
+            from agent.wsr.emit import check_route as _check
+            # `check_route` returns its COMPLAINTS: a non-empty list is a route
+            # the compiler will not take (`fit` reads it the same way).
+            if _check(day, tasks, result):
+                result = B.search(day, tasks, hands=pool, max_hands=pool)
         ops = compile_route(day, tasks, result, horizon=TURNS_PER_DAY)
         harvest = sum(int(units) for _hour, _item, units in ops.arrivals)
         return day, result, ops, harvest
