@@ -198,7 +198,7 @@ def test_the_appetite_row_is_vacuous_with_a_curve() -> None:
     depth = None
     from agent.belief.depth import sell_blocks
     depth = sell_blocks(fc, goods, int(obs.get("day", 0)), horizon,
-                        int(supply.shed_capacity), blocks=M.SELL_BLOCKS)
+                        int(supply.shed_capacity), blocks=Config().sell_blocks)
     units, prices = depth
     assert units.shape[0] == len(goods) and units.shape[1] == horizon
     assert units.sum(axis=2).min() >= 1, "every good/day needs at least one block"

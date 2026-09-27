@@ -26,8 +26,8 @@ from agent.planner.columns import (Choice, ClassMix, DAYS, Plan, ROW_NAMES,
                              rounded_value, row_use, violations)
 from agent.planner.land import (Candidate, LandPlanner, LandResult, best_land,
                           candidates, prefix_cost)
-from agent.planner.master import (ALPHA, COUPLING_IDS, ITER_CAP_DEFAULT, MARKET_IDS,
-                            MasterResult, TOL_DUAL, CouplingSupply,
+from agent.planner.master import (COUPLING_IDS, MARKET_IDS,
+                            MasterResult, CouplingSupply,
                             equilibrate, published_duals, supply_from_obs)
 from agent.planner.repair import (Drop, RepairResult, land_step_price, order_cost,
                             repair_day)
@@ -38,8 +38,8 @@ __all__ = [
     "demote_to_feasible", "plan_from_board",
     "Candidate", "LandPlanner", "LandResult", "best_land", "candidates",
     "prefix_cost",
-    "ALPHA", "COUPLING_IDS", "ITER_CAP_DEFAULT", "MARKET_IDS",
-    "MasterResult", "TOL_DUAL", "CouplingSupply", "equilibrate",
+    "COUPLING_IDS", "MARKET_IDS",
+    "MasterResult", "CouplingSupply", "equilibrate",
     "published_duals", "supply_from_obs",
     "Drop", "RepairResult", "repair_day", "order_cost", "land_step_price",
 ]

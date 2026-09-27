@@ -29,23 +29,19 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 
 
-def _one(repo: str, slug: str, seed: int, hands: int, rounds: int | None,
-         budget_ms: float | None = None, search_s: float | None = None) -> dict:
+def _one(repo: str, slug: str, seed: int, hands: int,
+         rounds: int | None, config: dict | None = None) -> dict:
     """Play one season in THIS process and return the result as a dict."""
     sys.path.insert(0, repo)
     from agent.config import Config
-    import agent.runtime as R
+    from agent.main import AGENT
     from offline_lab.fast_sim import FastSim
 
     cfg = Config()
     object.__setattr__(cfg, "max_hands", int(hands))
     if rounds:
         object.__setattr__(cfg, "master_rounds", int(rounds))
-    if budget_ms:
-        object.__setattr__(cfg, "turn_budget_ms", float(budget_ms))
-    if search_s:
-        object.__setattr__(cfg, "search_budget_s", float(search_s))
-    R.RUNTIME.cfg = cfg
+    AGENT.cfg = cfg
 
     loaded = None
     call = None                      # bound only when a rival is loaded
@@ -58,14 +54,21 @@ def _one(repo: str, slug: str, seed: int, hands: int, rounds: int | None,
             return {"farmer": ["PASS"], "hands": [], "market": []}
         return call(loaded, obs, None)
 
-    sim = FastSim({"episodeSteps": 720, "seed": int(seed)})
+    sim = FastSim({"episodeSteps": 720, "seed": int(seed),
+                   **({} if config is None else config)})
     ours = theirs = 0.0
     crashes: list[str] = []
     for _ in range(719):
         views = sim.observations(copy_state=False)
         o0 = views[0]
         try:
-            action = R.RUNTIME.act(o0, None)
+            # TWO arguments, exactly as `kaggle_environments.agent.Agent.act`
+            # calls the entry (`agent.py:171-172`): the run's own configuration
+            # is the only channel a run's numbers (`farmHandCostMult`,
+            # `shedCapacity`, the town's intervals) arrive through. Calling the
+            # entry with the observation alone measured the world's transcribed
+            # defaults instead of this arm's configuration.
+            action = AGENT(o0, sim.configuration)
         except Exception as exc:                       # a crash is a RESULT
             crashes.append(f"{type(exc).__name__}: {exc}")
             action = {"farmer": ["PASS"], "hands": [], "market": []}
@@ -85,19 +88,19 @@ def main() -> int:
     ap.add_argument("--jobs", type=int, default=3)
     ap.add_argument("--hands", type=int, default=1)
     ap.add_argument("--rounds", type=int, default=None)
-    # The clock knobs are OURS, not FastSim's: FastSim has no per-turn cap, but the
-    # manager still reads Config.turn_budget_ms and the day search its
-    # search_budget_s, so a measurement that leaves them at the shipped 965 ms is
-    # still measuring a machine's speed rather than a plan.
-    ap.add_argument("--budget-ms", type=float, default=None)
-    ap.add_argument("--search-s", type=float, default=None)
+    # No clock knobs: the manager derives no budget from the wall clock any
+    # more, so a season on FastSim measures the plan and not the machine.
     ap.add_argument("--one", nargs=2, metavar=("RIVAL", "SEED"), help="child form")
+    # Any subset of the game's configuration schema, as JSON: this is how an arm
+    # like "hands are free" is expressed (`--config '{"farmHandCostMult": 0}'`)
+    # without touching the agent, because it IS the environment's own number.
+    ap.add_argument("--config", default="{}", help="env configuration overrides")
     args = ap.parse_args()
 
     if args.one:
         slug, seed = args.one
         print(json.dumps(_one(args.agents, slug, int(seed), args.hands,
-                              args.rounds, args.budget_ms, args.search_s)),
+                              args.rounds, json.loads(args.config))),
               flush=True)
         return 0
 
@@ -110,13 +113,10 @@ def main() -> int:
     def run(job):
         slug, seed = job
         cmd = [sys.executable, str(Path(__file__).resolve()), "--one", slug,
-               str(seed), "--agents", args.agents, "--hands", str(args.hands)]
+               str(seed), "--agents", args.agents, "--hands", str(args.hands),
+               "--config", args.config]
         if args.rounds:
             cmd += ["--rounds", str(args.rounds)]
-        if args.budget_ms:
-            cmd += ["--budget-ms", str(args.budget_ms)]
-        if args.search_s:
-            cmd += ["--search-s", str(args.search_s)]
         started = time.time()
         proc = subprocess.run(cmd, capture_output=True, text=True, cwd=str(REPO))
         out = (proc.stdout or "").strip().splitlines()

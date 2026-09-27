@@ -20,27 +20,36 @@ from typing import Any
 import numpy as np
 
 from agent.artifact import artifact_path
+from agent.config import Config
 from agent.obs import LOCKED_KEY, WorldView, _nearest_modelled
 from agent.tile_dp.contractor import HORIZON_DAYS, TileContractor
 from agent.tile_dp.graph import TileGraph
 from agent.world.model import N_RESOURCE, PRODUCTS, RESOURCE_ID
 from agent.world.rules import ANIMAL_RULES, CROP_RULES, hire_cost
+from agent.world.terms import EngineTerms
 
 #: A hand hired in turn 0 first acts at hour 1, so it works 23 of the day's 24
 #: turns (F040). The marginal wage is the hire's price over the hours it buys,
 #: not over the day.
 HOURS_PER_HAND = 23
 
-#: The floor price of the FARMER's own hour (#87 item 1). The old floor —
-#: the marginal hand's 1-coin hire over 23 hours, 0.043/h — made destroying
-#: and rebuilding a pasture free, because at that price nothing the farm
-#: owns is worth preserving. The farmer's hour is what a chain first
-#: consumes, and its honest floor is what one working day of his produces
-#: for the farm's own pipeline: one MILK (the cheapest animal product,
-#: ~160 at season quotes) over the 24·(1−0.35) ≈ 15.6 working hours the
-#: overhead model grants. ~10.3/h. Not the answer — the floor the master's
-#: tâtonnement starts from.
-FARMER_HOUR_FLOOR: float = 160.0 / (24.0 * (1.0 - 0.35))
+def farmer_hour_floor(cfg: "Config | None" = None) -> float:
+    """The floor price of the FARMER's own hour (#87 item 1).
+
+    The old floor — the marginal hand's 1-coin hire over 23 hours, 0.043/h —
+    made destroying and rebuilding a pasture free, because at that price nothing
+    the farm owns is worth preserving. The farmer's hour is what a chain first
+    consumes, and its honest floor is what one working day of his produces for
+    the farm's own pipeline: one MILK (the cheapest animal product, ~160 at
+    season quotes) over the `24·(1 − cfg.hours_overhead)` working hours the
+    overhead model grants — ~10.3/h at the shipped overhead. Not the answer:
+    the floor the master's tâtonnement starts from.
+
+    The overhead is READ, not restated: it is a manager number (`Config`), and a
+    second copy of 0.35 here would keep the old floor after the overhead moved.
+    """
+    cfg = Config() if cfg is None else cfg
+    return 160.0 / (24.0 * (1.0 - float(cfg.hours_overhead)))
 
 GRAPH_PATH = artifact_path("tile_graph", ".npz")
 
@@ -79,7 +88,8 @@ def unit_state_ids(view: WorldView, graph: TileGraph) -> list[int | None]:
     return ids
 
 
-def dual_stand_in(obs: Any, days: int = HORIZON_DAYS) -> tuple[np.ndarray, np.ndarray]:
+def dual_stand_in(obs: Any, days: int = HORIZON_DAYS,
+                  cfg: "Config | None" = None) -> tuple[np.ndarray, np.ndarray]:
     """The master's duals (#12), stood in for by the engine's own quotes.
 
     Every component has a source (R005): products are the observation's own
@@ -122,6 +132,8 @@ def dual_stand_in(obs: Any, days: int = HORIZON_DAYS) -> tuple[np.ndarray, np.nd
     # looks cheaper than the man already there. This is the FLOOR, not the
     # answer: the master's tâtonnement moves the internal prices off it.
     w[:, RESOURCE_ID["LABOR"]] = np.maximum(
-        float(hire_cost(int(farm.get("hires_today", 0)))) / HOURS_PER_HAND,
-        FARMER_HOUR_FLOOR)
+        float(hire_cost(int(farm.get("hires_today", 0)),
+                        EngineTerms.from_obs(obs).hand_cost_mult))
+        / HOURS_PER_HAND,
+        farmer_hour_floor(cfg))
     return p, w

@@ -23,6 +23,7 @@ import numpy as np
 
 from agent.belief.market import PRODUCTS, forecast
 from agent.belief.depth import sell_blocks
+from agent.config import Config
 import agent.planner.master as M
 from agent.planner import colgen
 from tests.test_master_depth import _board, _loaded_supply, _solve_one_tile
@@ -115,9 +116,9 @@ def _unused_the_same_day_drop_is_priced_at_the_last_market_hour() -> None:
     fc = forecast(obs, days=horizon)
     goods = [M.SHED_ITEMS[ii] for ii in M.SELLABLE]
     day0, _p0 = sell_blocks(fc, goods, 0, horizon, int(supply.shed_capacity),
-                            blocks=M.SELL_BLOCKS)
+                            blocks=Config().sell_blocks)
     _u23, p23 = sell_blocks(fc, goods, 0, horizon, int(supply.shed_capacity),
-                            blocks=M.SELL_BLOCKS, hour=23)
+                            blocks=Config().sell_blocks, hour=23)
     assert p23.shape == _p0.shape
     assert not np.allclose(p23, _p0), (
         "the last market hour must price differently from hour 0 on this board, "
@@ -165,7 +166,7 @@ def test_an_unsellable_harvest_still_has_to_be_accounted_for() -> None:
     fc = forecast(obs, days=horizon)
     goods = [M.SHED_ITEMS[ii] for ii in M.SELLABLE]
     depth = sell_blocks(fc, goods, int(obs.get("day", 0)), horizon,
-                        int(supply.shed_capacity), blocks=M.SELL_BLOCKS)
+                        int(supply.shed_capacity), blocks=Config().sell_blocks)
     produce = np.zeros((horizon, N_RESOURCE), dtype=np.float64)
     produce[horizon - 1, RESOURCE_ID["ANIMAL_GOOSE"]] = 1.0
     goose_col = colgen.Column(

@@ -35,25 +35,13 @@ scalar price can produce it because both are priced at the same prices.
 from __future__ import annotations
 
 import os as _os
-import time
 from typing import NamedTuple
 from dataclasses import dataclass, field, replace
 
 import numpy as np
 
+from agent.config import Config
 from agent.world.model import RESOURCE_ID, SHED_ITEMS
-
-
-#: What a unit sold BEYOND the town's own appetite fetches, as a fraction of the
-#: day's price. The town eats a known amount over the horizon (`drain_forecast`,
-#: net of the rival's own supply) and that is the shallow tier; everything past
-#: it still sells, because the market always buys — just cheaper. What a volume
-#: sale really gets is a walk down the market's own curve, and the engine's curve
-#: is an integer staircase (`kaggriculture.py::market_price`); one flat fraction
-#: is the first cut of it, and it is the cut the concavity needs: with tier 2
-#: cheaper than tier 1 the LP fills the shallow tier first on its own, so no
-#: iteration is required to make the two-tier revenue exact.
-SELL_DEEP_FACTOR: float = 0.5
 
 
 def _lost_sale_cost(prices, market, d: int) -> float:
@@ -97,26 +85,23 @@ except Exception:                                  # noqa: BLE001
 
 #: A reduced cost must clear this to be worth a column. Below it the plan is
 #: within solver noise of the ones already in the pool, and adding it fattens
-#: the master for nothing (lesson 1.9 §4.4: dedupe or the master fattens).
-RC_TOL = 1e-6
-
-#: ...and a reduced cost lives on the OBJECTIVE's scale, so the floor above is
-#: not enough on its own: `rc` is a difference of coins, and 1e-6 absolute is
-#: below the noise floor of any board worth a few thousand.
+#: the master for nothing (lesson 1.9 §4.4: dedupe or the master fattens) — and
+#: a reduced cost lives on the OBJECTIVE's scale, so the floor is read as
+#: `max(cfg.rc_tol, cfg.rc_rel_tol · |objective|)`: `rc` is a difference of
+#: coins, and 1e-6 absolute is below the noise floor of any board worth a few
+#: thousand.
 #:
 #: The pricer's own precision is the binding one. `TileContractor` sweeps in
 #: float32 (`DTYPE`), so every class value carries ~1.2e-7 relative error, and
-#: the LP's duals come back in float64 from HiGHS. On the real board below, the
-#: loop stalled on `rc 2.24e-4` — 6.3e-9 relative at an objective of 35,772,
-#: i.e. inside the pricer's own noise — and the column it wanted was already in
-#: the pool: raising the tolerance to 1e-3 certified the SAME objective
-#: (35,772.2194) with the same bound (35,772.2202). A tolerance is therefore
-#: read as `max(RC_TOL, RC_REL_TOL · |objective|)`, and the constant is float32's
-#: epsilon with room for a horizon's accumulation.
-RC_REL_TOL = 1e-6
+#: the LP's duals come back in float64 from HiGHS. On a real board the loop
+#: stalled on `rc 2.24e-4` — 6.3e-9 relative at an objective of 35,772, i.e.
+#: inside the pricer's own noise — and the column it wanted was already in the
+#: pool: raising the tolerance to 1e-3 certified the SAME objective
+#: (35,772.2194) with the same bound (35,772.2202). The two constants are
+#: `Config.rc_tol` and `Config.rc_rel_tol`; this function is their only reader.
 
 
-def rc_tolerance(objective: float) -> float:
+def rc_tolerance(objective: float, cfg: "Config | None" = None) -> float:
     """The reduced-cost tolerance for a board whose LP objective is this.
 
     One definition, read by the loop that certifies and by the guards that check
@@ -126,7 +111,9 @@ def rc_tolerance(objective: float) -> float:
     about 4.3e-3 at an objective of 35,772. Anything below that is the pricer's
     own rounding, and refusing to certify on it is refusing to certify at all.
     """
-    return max(RC_TOL, RC_REL_TOL * abs(float(objective)))
+    cfg = Config() if cfg is None else cfg
+    return max(float(cfg.rc_tol),
+               float(cfg.rc_rel_tol) * abs(float(objective)))
 
 
 @dataclass(frozen=True)
@@ -318,7 +305,8 @@ class MasterLP:
               market: tuple[int, ...] = (),
               sell_cap: np.ndarray | None = None,
               depth: tuple[np.ndarray, np.ndarray] | None = None,
-              entry: bool = False) -> MasterSolve:
+              entry: bool = False,
+              cfg: "Config | None" = None) -> MasterSolve:
         """The restricted master over the pool, with the SHED as a stock.
 
         Variables: `lambda_j >= 0` per column, then per day the sells, the stock
@@ -348,11 +336,12 @@ class MasterLP:
 
         The sells are TWO TIERS because the town's appetite is finite and the
         market past it is not: a sale that is not sold into the town's own demand
-        is sold at `SELL_DEEP_FACTOR` of the price, which is what makes the
+        is sold at `Config.sell_deep_factor` of the price, which is what makes the
         revenue concave in the quantity sold — and what keeps σ, the value of a
         unit in the shed, from being the best price on the path.
         """
         names = SHED_ITEMS
+        cfg = Config() if cfg is None else cfg
         items = len(names) if shed_stock is not None else 0
         rids = [_resource_of(n) for n in names]
         n_goods = len(market)
@@ -434,14 +423,14 @@ class MasterLP:
         # The per-block price and size: the objective, the bounds, the cash rows
         # and the balance rows all read THESE, built once. With a curve they are
         # the ladder's own blocks; without one they are the day's quote and
-        # `SELL_DEEP_FACTOR` of it, which is the model that shipped.
+        # `Config.sell_deep_factor` of it, which is the model that shipped.
         block_price = np.zeros((n_goods, days, tiers), dtype=np.float64)
         block_units = np.full((n_goods, days, tiers), np.inf, dtype=np.float64)
         if items and n_goods:
             px = np.asarray(prices, dtype=np.float64)
             for b in range(tiers):
                 if depth is None:
-                    factor = 1.0 if b == 0 else SELL_DEEP_FACTOR
+                    factor = 1.0 if b == 0 else float(cfg.sell_deep_factor)
                     block_price[:, :, b] = factor * px[:days, :n_goods].T
                 else:
                     block_price[:, :, b] = np.asarray(
@@ -879,9 +868,10 @@ class ColgenResult:
     pool: list[Column] = field(default_factory=list)
     solve: MasterSolve | None = None
     rounds: int = 0
-    #: True only when a pricing round found NO class with rc > RC_TOL. That is
-    #: the optimality certificate. False means the budget or the round cap
-    #: stopped the loop, and the mix is an incumbent, not an optimum.
+    #: True only when a pricing round found NO class above the reduced-cost
+    #: tolerance (`Config.rc_tol`/`rc_rel_tol`, read by `rc_tolerance`). That is
+    #: the optimality certificate. False means the round cap stopped the loop,
+    #: and the mix is an incumbent, not an optimum.
     certified: bool = False
     stopped: str = ""             # why the loop ended, when it was not certified
     rc_history: list = field(default_factory=list)
@@ -1019,15 +1009,22 @@ def advance_pool(pool: list[Column], lam: np.ndarray | None = None,
 
 
 def generate(price, supply_hours, money, counts, days, n_coupling,
-             idle_columns, *, rounds: int = 12, poll=None,
-             deadline=None, warm: list | None = None,
+             idle_columns, *, rounds: int | None = None,
+             warm: list | None = None,
              smoothing: float = 0.0, shed: tuple | None = None,
              prices: np.ndarray | None = None,
              market: tuple[int, ...] = (),
              sell_cap: np.ndarray | None = None,
              depth: tuple[np.ndarray, np.ndarray] | None = None,
-             entry: bool = False) -> ColgenResult:
+             entry: bool = False,
+             cfg: "Config | None" = None) -> ColgenResult:
     """The loop: master over every column so far, price, add, repeat.
+
+    The loop's ONLY stop besides the certificate is `rounds` (default:
+    `cfg.iter_cap`): no clock is read
+    between rounds, because a round count that depends on the machine makes two
+    runs of one seed disagree (18,312 against 28,890 with every RNG in our code
+    seeded and the threads pinned to one).
 
     `price(y, cash)` is the caller's pricing step: it publishes the duals to
     the contractor and hands back `(values, columns)` — one dual-priced plan
@@ -1050,6 +1047,8 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
     # Columns for classes this instance does not have are dropped: a class
     # index is an index into THIS board's classes and means nothing in another.
     result = ColgenResult(pool=list(idle_columns))
+    cfg = Config() if cfg is None else cfg
+    rounds = int(cfg.iter_cap if rounds is None else rounds)
     index_of = {c.cls_key: c.cls for c in result.pool if c.cls_key}
     for column in (warm or []):
         target = index_of.get(column.cls_key)
@@ -1064,7 +1063,6 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
                         produce=column.produce))
     seen = {(c.cls, c.key) for c in result.pool}
 
-    spent = 0.0
     # --- Wentges dual price smoothing -----------------------------------
     # The pricing step is fed `α·π_best + (1−α)·π_LP`, where π_best is the
     # dual that gave the BEST Lagrangian bound so far — the stability centre —
@@ -1106,18 +1104,12 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
     # One LP object for the whole day: the rounds share a basis (see MasterLP).
     solver = MasterLP()
     for _ in range(max(1, rounds)):
-        if poll is not None:
-            poll()
-        if deadline is not None and time.perf_counter() + spent >= deadline:
-            result.stopped = "budget"
-            return result
-        started = time.perf_counter()
         result.solve = solver.solve(
             result.pool, counts, supply_hours, money, days, n_coupling,
             shed_stock=None if shed is None else shed[0],
             shed_capacity=0.0 if shed is None else float(shed[1]),
             prices=prices, market=market, sell_cap=sell_cap,
-            depth=depth, entry=entry)
+            depth=depth, entry=entry, cfg=cfg)
         result.rounds += 1
 
         exact = (result.solve.y, result.solve.cash, result.solve.mu)
@@ -1150,8 +1142,9 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
             sell_duals = (np.asarray(result.solve.rho, dtype=np.float64),
                           np.asarray(result.solve.appetite, dtype=np.float64))
         # The reduced-cost tolerance for THIS board: an absolute floor, raised to
-        # the pricer's own precision on the objective's scale (see RC_REL_TOL).
-        tol = rc_tolerance(result.solve.objective)
+        # the pricer's own precision on the objective's scale (`Config.rc_tol`
+        # and `Config.rc_rel_tol`, read by `rc_tolerance`).
+        tol = rc_tolerance(result.solve.objective, cfg)
         added, rc = 0, np.zeros(0)
         for attempt in range(2):
             # Attempt 0 prices at the smoothed dual; attempt 1 is the MISPRICE
@@ -1269,8 +1262,6 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
             result.stopped = (f"stalled: rc {float(np.max(rc)):.6g} above tol "
                               f"{tol:.6g} on a column the pool holds")
             return result
-
-        spent = max(spent, time.perf_counter() - started)
 
     result.stopped = "round cap"
     return result

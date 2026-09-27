@@ -18,11 +18,12 @@ def test_the_committed_plan_records_its_projected_sells() -> None:
 
     env = new_environment(configuration={"seed": 2})
     obs = env.state[0].observation
-    # NOT a tight budget: the master returns NO plan at all when the deadline
-    # cuts it (measured: 400 ms -> 0 market orders, own_sells empty; 1000 ms and
-    # 3000 ms -> 29 keys). A guard that goes red when the day search gets heavier
-    # is measuring speed, not the wiring (#110).
-    m = Manager(Config(turn_budget_ms=3000.0, reserve_ms=100.0))
+    # The master returned NO plan at all under a tight deadline (measured:
+    # 400 ms -> 0 market orders, own_sells empty; 1000 and 3000 ms -> 29 keys),
+    # which is why this guard used to buy itself three seconds. There is no
+    # deadline to buy any more: the solve runs to its round cap, so the guard
+    # measures the wiring and not the machine (#110).
+    m = Manager(Config())
     m.observe(obs, None)
     assert m.own_sells, "the committed plan projected no sells at all"
     steps = sorted(m.own_sells)
@@ -44,11 +45,11 @@ def test_the_next_day_is_priced_on_the_plan_it_inherits() -> None:
 
     sim = FastSim({"episodeSteps": 720, "seed": 2})
     env = new_environment(configuration={"seed": 2})
-    # NOT a tight budget: the master returns NO plan at all when the deadline
-    # cuts it (measured: 400 ms -> 0 market orders, own_sells empty; 1000 ms and
-    # 3000 ms -> 29 keys). A guard that goes red when the day search gets heavier
-    # is measuring speed, not the wiring (#110).
-    m = Manager(Config(turn_budget_ms=3000.0, reserve_ms=100.0))
+    # The master returned NO plan at all under a tight deadline (measured:
+    # 400 ms -> 0 market orders, own_sells empty; 1000 and 3000 ms -> 29 keys),
+    # so this guard used to buy itself three seconds. With no deadline in the
+    # loop there is nothing to buy: the solve runs to its round cap.
+    m = Manager(Config())
     m.observe(sim.observations()[0], None)
     sells = dict(m.own_sells)
     for turn in range(24):

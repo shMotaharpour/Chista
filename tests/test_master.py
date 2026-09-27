@@ -11,25 +11,29 @@ Covers the brief's test list (§6):
 - cap honoured: the loop stops at the cap and says so (`converged`);
 - fallback fires when scipy is unavailable, and the agent still gets a
   publishable price set;
-- budget: 8 rounds measured, the cap carries the measurement.
+- cap: 8 rounds measured, the round cap carries the measurement.
 
 The board is a real `TileContractor` over the shipped graph with real
-owned states from `agent/obs` — no fake agent objects (the master's
-only runtime touchpoints are `_deadline` and `_replan_resources`).
+owned states from `agent/obs` — no fake agent objects, and the `runtime`
+argument the master still takes is read for nothing at all.
 """
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import numpy as np
 import pytest
 
+from agent.config import Config
 from agent.planner.inputs import load_contractor
-from agent.planner.master import (ALPHA, COUPLING_IDS, ITER_CAP_DEFAULT, N_COUPLING, ROUND_BUDGET_MS, TOL_DUAL, CouplingSupply, equilibrate, published_duals, supply_from_obs)
+from agent.planner.master import (COUPLING_IDS, N_COUPLING, CouplingSupply, equilibrate, published_duals, supply_from_obs)
 from agent.world.model import RESOURCE_ID
-# #15's own budget for the price-path forecast the master now calls; the
-# round's hard ceiling is ROUND_BUDGET_MS (sweep + LP) PLUS this, so the two
-# never get folded into each other and neither can hide a regression.
-MARKET_LAYER_BUDGET_MS = 10.0
+
+#: The margin a dual must clear a slack row's published floor by before the
+#: assertion below calls it "priced above the engine quote". A unit of coins,
+#: local to this guard: the tolerance is not a number the agent runs on.
+DUAL_MARGIN = 1.0
 
 # --- fixtures ------------------------------------------------------------
 
@@ -44,12 +48,16 @@ def _contractor():
 
 
 class _RT:
-    """The master's runtime surface: deadline + cached (graph, contractor)."""
+    """A stand-in for the runtime argument the master no longer reads.
+
+    `equilibrate(runtime, ...)` is still called with one (every call site has it
+    in scope), and the graph it used to cache here is cast once per process
+    inside the module instead. Kept as a marker so the call shape stays the one
+    the manager uses.
+    """
 
     def __init__(self) -> None:
-        c = _contractor()
-        self._replan_resources = (c.graph, c)
-        self._deadline = None
+        _contractor()                       # cast it, for the process's sake
 
 
 def _obs(state_ids: list[int], graph) -> dict:
@@ -234,7 +242,7 @@ def test_slack_row_zero_dual() -> None:
     assert res.converged
     _, w_stand = dual_stand_in(obs)
     floor = published_duals(w_stand[:res.w.shape[0]], res.w.shape[0])
-    above = res.w > floor + TOL_DUAL
+    above = res.w > floor + DUAL_MARGIN
     assert not above.any(), (
         f"slack rows priced above the engine quote: "
         f"{np.argwhere(above)[:5].tolist()} "
@@ -258,7 +266,7 @@ def test_duals_non_negative_every_round() -> None:
             return c.price(p, w, owned, travel_hours=travel_hours)
 
     res = equilibrate(rt, obs, _Spy(), _supply(),
-                      iter_cap=ITER_CAP_DEFAULT)
+                      iter_cap=Config().iter_cap)
     assert res.rounds >= 1
     assert all(v >= 0.0 for v in seen), f"negative w reached the contractor: {seen}"
     assert res.duals.min() >= 0.0 and res.w.min() >= 0.0
@@ -276,39 +284,41 @@ def test_monotone_supply_never_lowers_objective() -> None:
 
 
 def test_alpha_sweep_is_the_evidence() -> None:
-    """The checked-in price trajectory behind ALPHA (brief §4/§7).
+    """The checked-in price trajectory behind `Config.alpha` (brief §4/§7).
 
     Measured honestly on this board: the priced column set is degenerate
     (one tile, one profitable chain + idle), so the LP's extreme duals
     flip the regime and tâtonnement OSCILLATES at every α — no α
-    converges, the cap/deadline is the stop. The evidence recorded here
+    converges, the round cap is the stop. The evidence recorded here
     is the total dual travel (sum of per-round moves) at each α: α = 0.5
     is kept because it damps the publish fastest toward the dual
     trajectory without overshoot flips in the publish itself; the sweep
-    runs on every test pass so the numbers stay alive (R005: the
-    constant names this sweep).
+    runs on every test pass so the numbers stay alive (R005: the shipped
+    number is `Config.alpha`, and the sweep is its evidence).
+
+    The α is injected, not monkeypatched: `equilibrate(cfg=...)` is the same
+    door the manager and a measurement use, so this guard also holds the
+    injection itself (a config that stopped reaching the damping would show
+    up here as four identical travels).
     """
     rt, c = _RT(), _contractor()
     obs = _obs(_bare_ids(3), c.graph)
     supply = _supply()
+    base = Config()
     travel_at = {}
-    import agent.planner.master as M
-    saved = M.ALPHA
-    try:
-        for alpha in (0.2, 0.35, 0.5, 0.7):
-            M.ALPHA = alpha
-            res = equilibrate(rt, obs, c, supply, iter_cap=16)
-            travel_at[alpha] = sum(res.history)
-    finally:
-        M.ALPHA = saved
+    for alpha in (0.2, 0.35, 0.5, 0.7):
+        res = equilibrate(rt, obs, c, supply, iter_cap=16,
+                          cfg=replace(base, alpha=alpha))
+        travel_at[alpha] = sum(res.history)
     print(f"alpha sweep (total dual travel, lower = calmer): "
-          f"{ {a: round(t) for a, t in travel_at.items()} } (ALPHA={ALPHA})")
-    # the publish oscillation at ALPHA must not be worse than 1.5x the
+          f"{ {a: round(t) for a, t in travel_at.items()} } "
+          f"(Config.alpha={base.alpha})")
+    # the publish oscillation at Config.alpha must not be worse than 1.5x the
     # calmest damping on this board — a sanity band, not a crown
     calmest = min(travel_at.values())
-    assert travel_at[ALPHA] <= calmest * 1.5 + 1.0, (
-        f"ALPHA={ALPHA} travel {travel_at[ALPHA]} vs calmest {calmest}: "
-        "re-measure and re-pin ALPHA")
+    assert travel_at[base.alpha] <= calmest * 1.5 + 1.0, (
+        f"alpha={base.alpha} travel {travel_at[base.alpha]} vs calmest "
+        f"{calmest}: re-measure and re-pin Config.alpha")
 
 
 def test_cap_honoured_and_reported() -> None:
@@ -318,7 +328,7 @@ def test_cap_honoured_and_reported() -> None:
     res = equilibrate(rt, obs, c, _supply(), iter_cap=3)
     assert res.rounds <= 3
     assert res.converged == (res.rounds < 3 and
-                             (not res.history or res.history[-1] < TOL_DUAL))
+                             (not res.history or res.history[-1] < DUAL_MARGIN))
 
 
 def test_warm_start_shapes_match() -> None:
@@ -510,7 +520,7 @@ def test_a_bought_input_never_reaches_the_tiles_cheaper_than_its_quote() -> None
     from agent.planner.master import PURCHASE_IDS
 
     rt = _RT()
-    obs = _obs(_bare_ids(4), rt._replan_resources[0])
+    obs = _obs(_bare_ids(4), _contractor().graph)
     # money slack, so `ahead` stays 0; quotes from the observation, because
     # `_supply` leaves them at zero and against zeros nothing can fail.
     supply = replace(_supply(hours=8.0, seeds=2),

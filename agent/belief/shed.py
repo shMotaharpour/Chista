@@ -40,10 +40,7 @@ from typing import Any, Iterable, Mapping, Sequence
 import numpy as np
 
 from agent.belief.market import PRODUCTS, TURNS_PER_DAY
-
-SHED_CAPACITY = 100          # engine default; the run's config can override it
-MAX_ORDERS_PER_TURN = 10     # F031 - the engine drops the 11th silently
-SEASON_DAYS = 30             # F029
+from agent.world.rules import (DAYS, MAX_MARKET_ORDERS_PER_TURN, SHED_CAPACITY)
 
 # SELL takes products only (engine `_parse_order`); the shed's other keys
 # are animals, placed by PLACE, never quoted by the market.
@@ -148,7 +145,7 @@ def _guard_margin(capacity: int) -> int:
 def plan_sales(stock: Mapping[str, int], forecast, *, day: int, hour: int = 0,
                harvest_expected: int = 0,
                money: float = 0.0, cash_needed: float = 0.0,
-               end_day: int = SEASON_DAYS - 1,
+               end_day: int = DAYS - 1,
                capacity: int = SHED_CAPACITY,
                hour_plan: dict[str, dict[int, int]] | None = None,
                master_sells: Mapping[str, int] | None = None,
@@ -261,7 +258,7 @@ def plan_sales(stock: Mapping[str, int], forecast, *, day: int, hour: int = 0,
             # (`first_day`), not from season day 0: scanning
             # `range(day, forecast.days)` mixes the two spaces, and the
             # range collapses to empty once `day >= days` (day 15 of a
-            # 30-day season with `days = SEASON_DAYS - day`), which made the
+            # 30-day season with `days = DAYS - day`), which made the
             # comparison read today's price against itself and fire on a
             # rising path. Scan the forecast's own horizon instead.
             first = int(getattr(forecast, "first_day", int(day)))
@@ -370,14 +367,14 @@ def _assert_within_cap(queue: list[list[list]]) -> None:
     letting the engine drop the 11th in silence.
     """
     for hour, row in enumerate(queue):
-        if len(row) > MAX_ORDERS_PER_TURN:
+        if len(row) > MAX_MARKET_ORDERS_PER_TURN:
             raise ValueError(
                 f"hour {hour} queues {len(row)} market orders; the engine "
-                f"executes {MAX_ORDERS_PER_TURN} and drops the rest in "
+                f"executes {MAX_MARKET_ORDERS_PER_TURN} and drops the rest in "
                 "silence (F031)")
 
 
-def _after_arrival(queue: list, arrivals: dict, cap: int = MAX_ORDERS_PER_TURN
+def _after_arrival(queue: list, arrivals: dict, cap: int = MAX_MARKET_ORDERS_PER_TURN
                    ) -> list:
     """No SELL before its good is IN THE SHED.
 
@@ -433,7 +430,7 @@ def market_queue(obs: Any, forecast_obj=None, *, harvest_expected: int = 0,
     state = shed_state(obs, capacity=capacity)
     day = int(obs.get("day", 0)) if isinstance(obs, dict) else 0
     hour = int(obs.get("hour", 0)) if isinstance(obs, dict) else 0
-    fc = forecast_obj or _forecast(obs, days=SEASON_DAYS - day, config=config)
+    fc = forecast_obj or _forecast(obs, days=DAYS - day, config=config)
     # The night drop empties EVERY unit's bag into the shed wherever that
     # unit stands (`_drop_inventories_to_shed`), so the guard's incoming is
     # what the bags already hold plus whatever the day still harvests.

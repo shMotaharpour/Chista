@@ -104,7 +104,7 @@ def test_the_manager_hands_the_record_to_the_model(monkeypatch):
     manager.observe(env.state[0].observation, {"farmHandCostMult": 1})
     for _ in range(3):
         env.step([dict(PASS), dict(PASS)])
-        manager.step(env.state[0].observation, budget_ms=0.0)
+        manager.step(env.state[0].observation)
 
     assert seen, "the manager never handed a flow record to the model"
     assert len(seen) >= 3, f"only {len(seen)} of the watched turns reached the model"

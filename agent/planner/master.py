@@ -65,8 +65,8 @@ w_next = np.maximum(w_next, 0)               # R006, projected every round
 ```
 
 - Warm start: yesterday's published `w` (`(days, N_RESOURCE)` form, as
-  the runtime caches it) — F035 says the market moves slowly; starting
-  from scratch every day wastes the budget.
+  the manager hands it back) — F035 says the market moves slowly; starting
+  from scratch every day spends rounds rediscovering what is already priced.
 - **The publish is `max(engine quote, dual)` on every purchasable
   input.** A coupling dual is the INTERNAL shadow price of sharing a
   stock the farm already owns; the farm can also buy the item at the
@@ -77,14 +77,18 @@ w_next = np.maximum(w_next, 0)               # R006, projected every round
   (Measured consequence: with slack stocks the duals sit at zero and
   the publish correctly falls back to the engine's own prices.)
 - **Stop conditions** (in this order):
-  1. every coupling dual moved less than `TOL_DUAL` this round
-     (dual-stationarity — one coin is the smallest change that can move
-     an engine decision: quotes are integer coins),
-  2. `ITER_CAP` rounds spent — the budget decides this, never the
-     convergence test (#12 brief §4: never let the loop decide).
-- Interruptible at every round: `poll()` between rounds; on
-  `TimeoutError` the caller still holds the incumbent `(p, w_lag)` —
-  always a usable answer (#9's deadline contract).
+  1. the column-generation CERTIFICATE: a pricing round found no class whose
+     reduced cost clears `Config.rc_tol` on this board's objective, i.e. the
+     pool already holds everything worth holding (`cg.certified`),
+  2. the round cap (`cfg.iter_cap`, the manager asks with `cfg.master_rounds`)
+     — the cap decides this, never a self-declared convergence (#12 brief §4:
+     never let the loop decide). A dual-movement threshold was once claimed as
+     a stop here and never was one; `converged` is the certificate's alias.
+- The loop is not interruptible by a clock. It used to poll a deadline
+  between rounds; a round count that follows the machine makes two runs of
+  one seed disagree (18,312 against 28,890 with every RNG in our code seeded
+  and the threads pinned to one), so the cap above is the only other stop.
+  Whatever the loop has found when it stops is a usable incumbent.
 
 ## Fallback (required, not optional — #12 brief §3)
 
@@ -106,7 +110,6 @@ the observation through `dual_stand_in` (#32).
 
 from __future__ import annotations
 
-import time
 from dataclasses import dataclass, field, replace
 
 import numpy as np
@@ -127,8 +130,10 @@ except ImportError:                     # scipy is optional at import time
     linprog = None
     HAS_SCIPY = False
 
+from agent.config import Config
 from agent.planner import colgen
 from agent.planner.inputs import dual_stand_in
+from agent.world.terms import EngineTerms
 from agent.world.model import (ANIMALS, CROPS, N_RESOURCE, PRODUCTS,
                                RESOURCE_ID, RES_LABOR, SHED_ITEMS)
 from agent.tile_dp.contractor import HORIZON_DAYS, PricedBoard
@@ -208,68 +213,18 @@ SEED_IDS = tuple(RESOURCE_ID[f"SEED_{c}"] for c in
 ANIMAL_IDS = tuple(RESOURCE_ID[f"ANIMAL_{a}"] for a in
                    ("GOOSE", "COW", "SHEEP"))
 
-# Tâtonnement damping. α = 0.5 is the MEASURED choice: the sweep over
-# (0.2, 0.35, 0.5, 0.7) on a fixed two-class board is pinned in
-# tests/test_master.py::test_alpha_sweep_is_the_evidence (the checked-in
-# price trajectory the #12 brief asks for); 0.5 reached dual-stationarity
-# fewest rounds on it. R005: the sweep lives in the test, this constant
-# names it.
-ALPHA = 0.5
-
-# Dual-stationarity tolerance: one coin. Engine quotes are integer
-# coins; a smaller dual move cannot change any hire / buy decision.
-TOL_DUAL = 1.0
-
-# Iteration cap. The full loop's cost is dominated by the contractor's
-# re-pricing sweep (~9.3 ms measured, tests/test_master.py::test_budget
-# prints the breakdown), not the LP: 8 rounds measured ~80 ms total on
-# this box. The #12 acceptance ceiling (full CG round ≤ 45 ms) is met
-# by a SINGLE round; the cap of 8 is the OSCILLATION budget and the
-# loop must be left earlier by the deadline. TODO(#12): re-derive the
-# cap from timing_contended on the grader (A4) when the rung is wired;
-# the cap must come off the contended number, not this floor.
-ITER_CAP_DEFAULT = 8
-
-#: How many depth blocks the master prices a day's sells with. The curve is
-#: belief's (`belief.depth.sell_blocks`); the count is this LP's own modelling
-#: choice, and a maximising LP fills the rich blocks first by itself.
-SELL_BLOCKS: int = 5
-
-# A single master round (contractor sweeps + LP solve), measured.
+# The solve's own numbers are NOT here. Every cap the master runs under lives in
+# `agent/config.Config` and arrives as `cfg=` (`Agent(config)` injects it, and
+# `Config.load`/`dump` ship it beside the agent), so a measurement can run a
+# different set without editing this module and two callers cannot disagree
+# about one decision. What is left in this file is STRUCTURE: the row
+# vocabulary, the column layout, the bound identity.
 #
-# It used to be one sweep per distinct STATE. The subproblem is exact now — the
-# walk is charged inside the DP's own objective — so the board is priced once
-# per distinct DISTANCE instead, which is 4 sweeps on the guard's day-0 board
-# and 4 on this test's. Measured floors (5 readings each, `test_budget` prints
-# the live numbers): the round 53.8 ms with the #15 price-path forecast at
-# 0.7 ms. The ceiling is that measurement with ~1.2x headroom for the grader's
-# 1.17-1.41x slowdown (agent/runtime.py P-series probes).
-#
-# The sweep's expensive half is `EP @ p[d] - EC @ w[d]`, and a distance only
-# changes the labour column of `EC`, so a round now prices every distance off
-# ONE base sweep (`TileContractor.price_many`): measured on a day-0 board, 9
-# distances cost 35.9 ms one sweep each against 16.6 ms off one base, 2.16x.
-# What is left per distance — the day loop and the plan recovery — cannot be
-# shared: batching the day loop over a distance axis measured 0.48x, i.e.
-# slower, because that loop is numpy dispatch over 12,000 edges per day rather
-# than arithmetic on one big array.
-ROUND_BUDGET_MS = 65.0
-
-# The M3 overhead the #12 brief names for H_d ("start at 35% and
-# measure"): hours the day's routing/carry will eat.
-# TODO(#14): replace with the realised fraction the day reports.
-HOURS_OVERHEAD = 0.35
-
-# The labour dead zone (#87). The tile DP's answer is identically the idle
-# chain above ~147 coins/hour on this graph (measured sweep on the day-0
-# board: bare-tile value 420 at w=100, 60 at 140, 15 at 145, 0 at 147 — the clamp
-# sits at the last live price (145), the edge itself is ~146's hourly profit). A published wage beyond
-# that edge cannot move any tile: the farm freezes with 16-18 of 25 tiles
-# idle and the purse never rises (the #87 season table). The guard CLAMPS
-# the published labour dual to the last live price and records the clamp,
-# so a diverging tâtonnement degrades to the busiest legal wage instead of
-# silently freezing the board.
-LABOUR_DEAD_EDGE: float = 145.0
+# The two numbers this block used to hold and no longer needs:
+# - the iteration cap: `Config.iter_cap` (the library default) and
+#   `Config.master_rounds` (what the manager asks for);
+# - `ROUND_BUDGET_MS`, a wall-clock ceiling that only a test read: with the
+#   clock out of the loop nothing in the agent may bound work by time.
 
 
 @dataclass(frozen=True)
@@ -278,7 +233,7 @@ class CouplingSupply:
 
     Sources (R005), day-0 flat model:
     - `hours`: 24·(1 + hands) − hands (F040: a hand hired at hour 0
-      first acts at hour 1), times (1 − HOURS_OVERHEAD).
+      first acts at hour 1), times `(1 - cfg.hours_overhead)`.
     - `seed_stock`: the private purse counts (F001: seeds bypass the
       shed), shared evenly across the horizon — TODO(#12 M4): the
       per-day cash model replaces the flat split.
@@ -336,7 +291,7 @@ class MasterResult:
     lam: np.ndarray               # (n_cols,) the final LP mix (fractional)
     objective: float              # LP objective at the final round
     rounds: int
-    converged: bool               # dual movement fell under TOL_DUAL
+    converged: bool               # `cg.certified` (the pricing certificate)
     used_fallback: bool = False
     fallback_reason: str = ""
     p_source: str = ""            # where the product price path came from
@@ -477,27 +432,25 @@ def _sell_cap(obs, days: int) -> np.ndarray:
 
 
 def _shed_capacity(obs) -> int:
-    """The shed's capacity: the run's own override, else the world's constant.
+    """The shed's capacity for this run, resolved in one place.
 
-    The engine reads `configuration["shedCapacity"]` (default 100, world rules
-    `SHED_CAPACITY`). The observation does not normally carry the configuration,
-    so the constant is the answer in practice; a harness that does put it there
-    is honoured.
+    `EngineTerms` is what decides (the observation's own configuration when the
+    harness carried one, else the world's transcription of the engine's default,
+    kaggriculture.py:553); this function is only the call site.
     """
-    config = obs.get("configuration") if isinstance(obs, dict) else None
-    if isinstance(config, dict) and "shedCapacity" in config:
-        return int(config["shedCapacity"])
-    return int(SHED_CAPACITY)
+    return int(EngineTerms.from_obs(obs).shed_capacity)
 
 
-def supply_from_obs(obs) -> CouplingSupply:
+def supply_from_obs(obs, cfg: "Config | None" = None) -> CouplingSupply:
     """The farm's day-0 coupling supply from the observation (R005).
 
-    Hours: 24·(1 + hands) − hands (F040), times (1 − 35 %) overhead
-    (the #12 brief's M3 constant). Purse/shed counts via the same
+    Hours: 24·(1 + hands) − hands (F040), times `(1 - cfg.hours_overhead)`
+    (the #12 brief's M3 constant — the flat stand-in for the walking a route
+    does beyond what a column charges). Purse/shed counts via the same
     `private` fields the decode reads; animals per species from the
     shed (BUY_ANIMAL deposits there, `_commit_unit`).
     """
+    cfg = Config() if cfg is None else cfg
     farms = obs.get("farms", []) if isinstance(obs, dict) else []
     player = int(obs.get("player", 0)) if isinstance(obs, dict) else 0
     farm = farms[player] if len(farms) > player else {}
@@ -507,7 +460,7 @@ def supply_from_obs(obs) -> CouplingSupply:
 
     hands = len(farm.get("hands", []) or [])
     gross = 24.0 * (1 + hands) - hands          # F040
-    hours = np.full(30, gross * (1.0 - HOURS_OVERHEAD))
+    hours = np.full(30, gross * (1.0 - cfg.hours_overhead))
     seed_stock = np.array([int(seeds.get(c, 0)) for c in CROPS],
                           dtype=np.int64)
     animal_stock = np.array([int(shed.get(a, 0)) for a in ANIMALS],
@@ -563,7 +516,7 @@ def _validate_cost(cost: np.ndarray) -> None:
 
 
 def _product_price_path(obs, days: int, p_flat: np.ndarray,
-                        config=None, forecast_obj=None) -> tuple[np.ndarray, str]:
+                        forecast_obj=None) -> tuple[np.ndarray, str]:
     """The product rows of `p`: the market forecast (#15), or flat quotes.
 
     F035: prices rise through the season, so the flat stand-in under-prices
@@ -583,7 +536,7 @@ def _product_price_path(obs, days: int, p_flat: np.ndarray,
         # curve prices the master's objective and re-times the day's sells, and
         # building it twice was 1.1 + 1.4 ms of the turn.
         fc = (forecast_obj if forecast_obj is not None
-              else _forecast(obs, days=days, config=config))
+              else _forecast(obs, days=days))
         # Every row of `p` must be a day the season HAS, and the path is indexed
         # from the observation's own day (`price_paths(from_day=first_day)`), so
         # a forecast that covers the horizon puts day `days - 1` on the season's
@@ -654,7 +607,7 @@ def season_horizon(obs) -> int:
 
     The season's length is read from the tile DP's own constant, because that
     is the horizon the sweep can run over at all — belief spells the same 30
-    `SEASON_DAYS` (F029) and `tests/test_season_horizon.py` pins the two
+    `world.rules.DAYS` (F029) and `tests/test_season_horizon.py` pins the two
     together, so a drift is a red test rather than a horizon nobody can price.
 
     `max(1, ...)`: a day past the last one has no horizon at all, and a caller
@@ -691,13 +644,13 @@ def priced_contractor(contractor, obs):
 
 def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
                 w_warm: np.ndarray | None = None,
-                iter_cap: int = ITER_CAP_DEFAULT,
-                poll=None, owned: list[int] | None = None,
+                iter_cap: int | None = None,
+                owned: list[int] | None = None,
                 pool: list | None = None,
-                deadline: float | None = None,
                 forecast_obj=None,
                 smoothing: float = 0.0,
-                entry: bool = False) -> MasterResult:
+                entry: bool = False,
+                cfg: "Config | None" = None) -> MasterResult:
     """Column generation over the tile classes; always publishable.
 
     One round is one Dantzig-Wolfe round (lesson 1.9): the LP solves over EVERY
@@ -719,11 +672,16 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
     bound 33,765.5 against an objective of 34,008.8.
 
     Stopping early still leaves a usable incumbent: the last `(p, published_w)`
-    pair is on the result at every point.
+    pair is on the result at every point, so a round cap or a non-certificate
+    answer is usable rather than lost work.
 
     Never raises for solver trouble — the fallback publishes the warm
-    prices and says so. `poll()` (the rung's deadline bail) may raise:
-    the incumbent `(p, w_lag)` is on the result object either way.
+    prices and says so.
+
+    `cfg` is the injected `agent/config.Config`: every cap this solve runs under
+    (the round cap, the damping, the depth blocks, the reduced-cost tolerances,
+    the labour clamp) comes from it, and a caller with no config gets the shipped
+    defaults — one definition, one place.
     """
     # The horizon is the season that is LEFT (F029), never a fixed look-ahead:
     # a day-0 plan starts at 30 days and shrinks by one a day, so the DP's
@@ -733,8 +691,10 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
     # and everything below reads the same `days`: the LP's rows, the columns,
     # the bound.
     contractor = priced_contractor(contractor, obs)
+    cfg = Config() if cfg is None else cfg
+    iter_cap = int(cfg.iter_cap if iter_cap is None else iter_cap)
     days = int(contractor.days)
-    p_mkt_full, w_stand_full = dual_stand_in(obs)
+    p_mkt_full, w_stand_full = dual_stand_in(obs, cfg=cfg)
     p = p_mkt_full[:days]
     # #15: the product rows of `p` come from the market forecast (F035's
     # rising path); the flat stand-in is the documented fallback.
@@ -766,16 +726,6 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
     # prices and SAYS so.
     if not HAS_SCIPY:
         return _fallback("scipy unavailable: linprog not importable")
-    # The rung's own deadline object, if it handed one over. It is NOT the
-    # `deadline` argument — that is a wall-clock instant the caller already
-    # computed, and this line used to assign over it, so a caller that passed
-    # one got the rung's None instead and the loop ran to its natural end. A
-    # season had 25 turns over a 965 ms budget, the worst at 2.7 s.
-    rung = getattr(runtime, "_deadline", None)
-    t_end = (time.perf_counter() + rung.remaining_ms() / 1000.0 - 0.020
-             if rung is not None else None)
-    if deadline is not None:
-        t_end = deadline if t_end is None else min(t_end, deadline)
 
     # ---- the column-generation loop -------------------------------------
     # One subproblem per CLASS, not per tile: tiles in the same graph state
@@ -899,8 +849,10 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
                 exact[:, rid] = np.maximum(exact[:, rid] - float(supply.quotes[i]),
                                            0.0)
         state["w"] = np.maximum(
-            np.maximum((1.0 - ALPHA) * state["w"] + ALPHA * y, 0.0), w_floor)
-        state["cash"] = (1.0 - ALPHA) * state["cash"] + ALPHA * np.asarray(cash)
+            np.maximum((1.0 - cfg.alpha) * state["w"] + cfg.alpha * y, 0.0),
+            w_floor)
+        state["cash"] = ((1.0 - cfg.alpha) * state["cash"]
+                         + cfg.alpha * np.asarray(cash))
         # One board per distinct DISTANCE, not per state: the walk is charged on
         # the labour column of every worked day, so it has to be inside the DP's
         # own objective (`TileContractor._travel_edge_costs`), and a class is
@@ -977,7 +929,7 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
                                                 int(obs.get("day", 0)), days)
             depth = sell_blocks(forecast_obj, goods, int(obs.get("day", 0)),
                                 days, int(supply.shed_capacity),
-                                blocks=SELL_BLOCKS, hours=env_hour)
+                                blocks=int(cfg.sell_blocks), hours=env_hour)
         except Exception:                       # noqa: BLE001 - the flat tier stands
             depth = None
 
@@ -987,8 +939,7 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
         # market path moves (see `_repriced_pool`).
         cg = colgen.generate(price, supply.hours, supply.money, counts, days,
                              N_COUPLING, idle, rounds=max(1, iter_cap),
-                             poll=poll,
-                             deadline=t_end,
+                             cfg=cfg,
                              shed=(supply.shed_stock, supply.shed_capacity),
                              prices=p_mkt,
                              market=SELLABLE,
@@ -1030,11 +981,13 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
     # a published labour wage past the DP's dead edge (~147 on this graph)
     # cannot move any tile, and the season table showed the tâtonnement
     # reaching 947-2131 there. Clamping degrades to the busiest legal wage
-    # and records how often the raw loop wanted past it.
+    # and records how often the raw loop wanted past it. The edge is
+    # `Config.labour_dead_edge`.
     lab_ix = COUPLING_IDS.index(LABOR_ID)
-    clamped = int(np.sum(w_cur[:, lab_ix] > LABOUR_DEAD_EDGE))
+    edge = float(cfg.labour_dead_edge)
+    clamped = int(np.sum(w_cur[:, lab_ix] > edge))
     w_cur = w_cur.copy()
-    w_cur[:, lab_ix] = np.minimum(w_cur[:, lab_ix], LABOUR_DEAD_EDGE)
+    w_cur[:, lab_ix] = np.minimum(w_cur[:, lab_ix], edge)
     result.labour_clamped_cells = clamped
 
     result.converged = converged
@@ -1191,8 +1144,8 @@ def _owned_states(runtime, obs) -> list[int]:
     # The graph is cast once per PROCESS, here. It used to be cached on the
     # runtime object (`runtime._replan_resources`), which is why `equilibrate`
     # needed a rung to be handed one at all - a coordinator that writes to the
-    # thing that calls it is not a coordinator. `runtime` stays in the
-    # signature for the deadline `poll` and nothing else.
+    # thing that calls it is not a coordinator. `runtime` is still in the
+    # signature and is no longer read for anything.
     graph = _shipped_graph()
     view = decode_world(obs, at_day_start=True,
                         graph_keys=frozenset(graph.key_index))

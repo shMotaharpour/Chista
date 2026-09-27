@@ -29,7 +29,8 @@ import numpy as np
 
 from agent.world.model import PRODUCTS
 from agent.world.rules import (ANIMAL_RULES, LAND_PRICES, SHED_ACCESS,
-                               SHED_CAPACITY)
+                               SHED_CAPACITY,
+                               hire_cost)
 from agent.world.prices import MARKET_I0, PRICE_FLOOR, price_of, price_table
 from agent.belief.schemas import (CENTER_INTERVAL, CENTER_PRODUCTS, DUAL,
                                   MAX_ORDERS, SELL_ONLY, SHOP_BASKET,
@@ -58,12 +59,13 @@ class FlowRecord:
 
 
 def fib_hire_costs(n_hands: int) -> int:
-    """Engine hire cost of `n` hands hired in one day: `sum(_fib(0..n-1))`, `_fib(0)=1`."""
-    a, b, total = 1, 1, 0
-    for _ in range(max(0, n_hands)):
-        total += a
-        a, b = b, a + b
-    return total
+    """Engine hire cost of `n` hands hired in one day: `sum(_fib(0..n-1))`.
+
+    The ladder is `rules.HIRE_SEQUENCE` (one definition, cited to the engine's
+    own table) and the multiplier is the reference in `rules.hire_cost`, so this
+    is a sum over that table and not a second Fibonacci.
+    """
+    return int(sum(hire_cost(i) for i in range(max(0, int(n_hands)))))
 
 
 def land_cost(n_extra_quadrants: int) -> int:

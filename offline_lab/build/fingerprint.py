@@ -1,6 +1,6 @@
 """The build's own fingerprint: did the RECIPE change since the artifact was made?
 
-`agent/tile_dp/contract.py` already stamps what the RUNTIME can check — the chain
+`agent/tile_dp/contract.py` already stamps what the agent can check at runtime — the chain
 registry, the engine, the day length, the key layout — and it says plainly why it
 stops there:
 

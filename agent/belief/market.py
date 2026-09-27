@@ -82,6 +82,9 @@ import numpy as np
 from kaggle_environments.envs.kaggriculture import kaggriculture as K
 
 from agent.belief.schemas import SHOP_BASKET
+from agent.world.rules import (CENTER_SELL_INTERVAL_TURNS,
+                               SHOP_SELL_INTERVAL_TURNS,
+                               SHOP_UNLOCK_INTERVAL_DAYS, TURNS_PER_DAY)
 
 # The vocabulary and the tables all come from the engine (R002): a shop
 # table or a product list edited there must move this module with it.
@@ -92,7 +95,6 @@ TOWN_CENTER_PRODUCTS: tuple[str, ...] = tuple(K.TOWN_CENTER_PRODUCTS)
 MAX_SHOP_INSTANCES: int = int(K.MAX_SHOP_INSTANCES)
 PRICE_FLOOR: int = int(K.PRICE_FLOOR)
 
-TURNS_PER_DAY = 24          # engine default (turnsPerDay); F029/F048 pin 30 days
 UNLOCK_POLICIES = ("none", "mean")
 
 _PROD_INDEX = {item: i for i, item in enumerate(PRODUCTS)}
@@ -283,9 +285,16 @@ def forecast(obs: Any, *, days: int = 30,
     inv0 = np.asarray(state.inventory, dtype=np.float64)
     shops = [str(s) for s in
              (obs.get("town", {}).get("unlocked_shops", ()) or ())]
-    shop_interval = max(1, int(_get(config, "townShopSellInterval", 4)))
-    center_interval = max(1, int(_get(config, "townCenterSellInterval", 24)))
-    unlock_interval = max(1, int(_get(config, "townShopUnlockInterval", 3)))
+    # The engine's own defaults (kaggriculture.py:733-734, :867), and the run may
+    # override each one: the key names are the engine's, `terms` is what resolves
+    # them, and the defaults here are the world's transcription — not a second
+    # copy of the number.
+    shop_interval = max(1, int(_get(config, "townShopSellInterval",
+                                    SHOP_SELL_INTERVAL_TURNS)))
+    center_interval = max(1, int(_get(config, "townCenterSellInterval",
+                                      CENTER_SELL_INTERVAL_TURNS)))
+    unlock_interval = max(1, int(_get(config, "townShopUnlockInterval",
+                                      SHOP_UNLOCK_INTERVAL_DAYS)))
 
     sells = {int(k): dict(v) for k, v in (our_sells or {}).items()}
     res = {item: float(n) for item, n in (residual or {}).items()}

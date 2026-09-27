@@ -36,7 +36,7 @@ from typing import Any, Iterable
 from agent.world.rules import (ANIMAL_RULES, CROP_RULES, LAND_PRICES,
                                hire_cost)
 
-from agent.dispatch import MAX_MARKET_ORDERS
+from agent.world.rules import MAX_MARKET_ORDERS_PER_TURN
 
 # The market ops that need money are ranked by F032's settle order, which lives
 # in the world's reference module (`world.action_rules.SETTLE_RANK`) — this file
@@ -238,7 +238,7 @@ def repair_day(plan: dict, obs: Any) -> RepairResult:
     land_bought = 0                 # carried through the walk: land escalates (B1)
     kept_market: list[list[str]] = []
     for order in market:
-        if len(kept_market) >= MAX_MARKET_ORDERS:
+        if len(kept_market) >= MAX_MARKET_ORDERS_PER_TURN:
             drops.append(Drop("market", tuple(order),
                               "F031: an 11th order is dropped silently"))
             continue

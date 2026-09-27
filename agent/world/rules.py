@@ -119,18 +119,27 @@ HIRE_SEQUENCE: tuple[int, ...] = (1, 1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233
                                   377, 610, 987, 1597, 2584, 4181, 6765)
 
 
-#: The engine's multiplier on the hire sequence: `FARM_HAND_COST_MULT`
-#: (kaggriculture.py:101), which an episode may override as `farmHandCostMult`
-#: (:552). ZERO for now, by the owner's order (2026-09-23): the planner is not
-#: given a labour-cost model yet, so it must not price a bill it cannot reason
-#: about. When that model lands the environment is set to the same number.
-HAND_COST_MULT: int = 0
+#: THE reference for what a hand costs: the engine's own default for
+#: `farmHandCostMult` (kaggriculture.py:101, kaggriculture.json →
+#: configuration.farmHandCostMult.default = 1, overridable per run at :552). The
+#: run's own value resolves through `world/terms.EngineTerms`, which defaults to
+#: this; every reader of a hand's price — the hire bill the day pays, the LP's
+#: hour price, the farmer's hour floor — goes through `hire_cost` below, so
+#: setting either the reference or the run's configuration moves all of them.
+FARM_HAND_COST_MULT: int = 1
 
 
-def hire_cost(n_already_today: int) -> int:
-    """The price of the next hire, kaggriculture.py:698-699 (`_fib` indexed at 1)."""
-    return HAND_COST_MULT * HIRE_SEQUENCE[
-        min(n_already_today, len(HIRE_SEQUENCE) - 1)]
+def hire_cost(n_already_today: int, mult: int | None = None) -> int:
+    """The price of the next hire, kaggriculture.py:698-699 (`_fib` indexed at 1).
+
+    The ONE formula: `mult · fib(n)`. `mult` is the run's own `farmHandCostMult`
+    when a caller has resolved it (`world/terms.EngineTerms.hand_cost_mult`), and
+    the reference `FARM_HAND_COST_MULT` when it has not — so a caller that will
+    pay the bill and a caller that prices an hour read the same product, not two.
+    """
+    factor = FARM_HAND_COST_MULT if mult is None else int(mult)
+    return factor * HIRE_SEQUENCE[
+        min(int(n_already_today), len(HIRE_SEQUENCE) - 1)]
 
 
 # --- the town ---------------------------------------------------------------- #
@@ -195,21 +204,21 @@ END_OF_DAY_ORDER: tuple[str, ...] = (
 ANIMAL_STRUCTURE: dict[str, str] = {a: spec["structure"] for a, spec in ANIMAL_RULES.items()}
 
 
-#: The engine's default board and its per-turn market limit: it executes this many orders a
-#: turn and drops the rest in silence.
+#: The engine's default board. Its per-turn market limit is
+#: `MAX_MARKET_ORDERS_PER_TURN` at the top of this module — one definition, also
+#: read by the hire ladder below (a hire IS a market order).
 DEFAULT_BOARD: int = 10
-MAX_ORDERS_PER_TURN: int = 10
 
 
 def hire_hour(k: int) -> int:
     """The earliest hour the k-th hand of a day (0-based) can act.
 
     A hand hired in turn t acts from hour t + 1 (F040), and a turn settles at most
-    `MAX_ORDERS_PER_TURN` orders (F031), so even with every slot of a turn given to hires a day's
+    `MAX_MARKET_ORDERS_PER_TURN` orders (F031), so even with every slot of a turn given to hires a day's
     first ten hands act from hour 1 at the earliest, the next ten from hour 2. A queue that puts
     other orders ahead of the hires in a turn starts them later than this.
     """
-    return int(k) // MAX_ORDERS_PER_TURN + 1
+    return int(k) // MAX_MARKET_ORDERS_PER_TURN + 1
 
 
 def earliest_hire_times(hands: int) -> tuple[int, ...]:
