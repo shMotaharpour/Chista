@@ -30,7 +30,7 @@ REPO = Path(__file__).resolve().parent.parent
 
 
 def _one(repo: str, slug: str, seed: int, hands: int,
-         rounds: int | None) -> dict:
+         rounds: int | None, config: dict | None = None) -> dict:
     """Play one season in THIS process and return the result as a dict."""
     sys.path.insert(0, repo)
     from agent.config import Config
@@ -54,14 +54,21 @@ def _one(repo: str, slug: str, seed: int, hands: int,
             return {"farmer": ["PASS"], "hands": [], "market": []}
         return call(loaded, obs, None)
 
-    sim = FastSim({"episodeSteps": 720, "seed": int(seed)})
+    sim = FastSim({"episodeSteps": 720, "seed": int(seed),
+                   **({} if config is None else config)})
     ours = theirs = 0.0
     crashes: list[str] = []
     for _ in range(719):
         views = sim.observations(copy_state=False)
         o0 = views[0]
         try:
-            action = AGENT(o0)
+            # TWO arguments, exactly as `kaggle_environments.agent.Agent.act`
+            # calls the entry (`agent.py:171-172`): the run's own configuration
+            # is the only channel a run's numbers (`farmHandCostMult`,
+            # `shedCapacity`, the town's intervals) arrive through. Calling the
+            # entry with the observation alone measured the world's transcribed
+            # defaults instead of this arm's configuration.
+            action = AGENT(o0, sim.configuration)
         except Exception as exc:                       # a crash is a RESULT
             crashes.append(f"{type(exc).__name__}: {exc}")
             action = {"farmer": ["PASS"], "hands": [], "market": []}
@@ -84,12 +91,16 @@ def main() -> int:
     # No clock knobs: the manager derives no budget from the wall clock any
     # more, so a season on FastSim measures the plan and not the machine.
     ap.add_argument("--one", nargs=2, metavar=("RIVAL", "SEED"), help="child form")
+    # Any subset of the game's configuration schema, as JSON: this is how an arm
+    # like "hands are free" is expressed (`--config '{"farmHandCostMult": 0}'`)
+    # without touching the agent, because it IS the environment's own number.
+    ap.add_argument("--config", default="{}", help="env configuration overrides")
     args = ap.parse_args()
 
     if args.one:
         slug, seed = args.one
         print(json.dumps(_one(args.agents, slug, int(seed), args.hands,
-                              args.rounds)),
+                              args.rounds, json.loads(args.config))),
               flush=True)
         return 0
 
@@ -102,7 +113,8 @@ def main() -> int:
     def run(job):
         slug, seed = job
         cmd = [sys.executable, str(Path(__file__).resolve()), "--one", slug,
-               str(seed), "--agents", args.agents, "--hands", str(args.hands)]
+               str(seed), "--agents", args.agents, "--hands", str(args.hands),
+               "--config", args.config]
         if args.rounds:
             cmd += ["--rounds", str(args.rounds)]
         started = time.time()
