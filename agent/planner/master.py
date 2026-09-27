@@ -292,6 +292,14 @@ class MasterResult:
     objective: float              # LP objective at the final round
     rounds: int
     converged: bool               # `cg.certified` (the pricing certificate)
+    #: True when the DECISION solve was the MIP: `lam` is then integral and the
+    #: solve's own duals are zero placeholders, so every published price below
+    #: came from `lp_final` — the LP solve of the SAME matrix and the same pool,
+    #: which is the only side of a MIP that has marginals at all.
+    integral: bool = False
+    #: That LP solve, when it happened (`integral` only). The pricing certificate
+    #: and the gate "the MIP cannot beat its own relaxation" are both read here.
+    lp_final: object = None
     used_fallback: bool = False
     fallback_reason: str = ""
     p_source: str = ""            # where the product price path came from
@@ -645,6 +653,7 @@ def priced_contractor(contractor, obs):
 def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
                 w_warm: np.ndarray | None = None,
                 iter_cap: int | None = None,
+                integral: bool = False,
                 owned: list[int] | None = None,
                 pool: list | None = None,
                 forecast_obj=None,
@@ -939,7 +948,7 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
         # market path moves (see `_repriced_pool`).
         cg = colgen.generate(price, supply.hours, supply.money, counts, days,
                              N_COUPLING, idle, rounds=max(1, iter_cap),
-                             cfg=cfg,
+                             cfg=cfg, integral=integral,
                              shed=(supply.shed_stock, supply.shed_capacity),
                              prices=p_mkt,
                              market=SELLABLE,
@@ -963,17 +972,25 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
     result.stopped = cg.stopped
     result.history = list(cg.rc_history)
     if cg.solve is not None:
+        # Two sides of one matrix. The DECISION (what to do) is the solve's own;
+        # the PRICES (what a tile, a coin and a good are worth) can only come from
+        # an LP, because a MIP has no marginals — so when the decision solve was
+        # integral, every dual-derived field is read from the LP solve of the same
+        # pool and the zero placeholders never leave this function.
+        result.integral = bool(getattr(cg.solve, "integral", False))
+        result.lp_final = cg.lp_final if result.integral else None
+        dual_src = cg.lp_final if result.integral else cg.solve
         result.lam = cg.solve.lam
         result.objective = cg.solve.objective
         result.duals = state["w"]
-        result.mu = cg.solve.mu
-        result.sigma = cg.solve.sigma
-        result.cash_lp = cg.solve.cash
-        result.now = getattr(cg.solve, "now", None)
-        result.defer = getattr(cg.solve, "defer", None)
-        result.eta = getattr(cg.solve, "eta", None)
+        result.mu = dual_src.mu
+        result.sigma = dual_src.sigma
+        result.cash_lp = dual_src.cash
+        result.now = getattr(dual_src, "now", None)
+        result.defer = getattr(dual_src, "defer", None)
+        result.eta = getattr(dual_src, "eta", None)
         result.credit = credit_box[0]
-        result.defer_cap = getattr(cg.solve, "defer_cap", None)
+        result.defer_cap = getattr(dual_src, "defer_cap", None)
         result.sells = getattr(cg.solve, "sells", None)
     converged = cg.certified
 

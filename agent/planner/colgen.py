@@ -191,6 +191,11 @@ class MasterSolve:
     #: board of sellable goods the LP never WANTS to defer there, so no behaviour
     #: can fail for it.
     defer_cap: np.ndarray = None
+    #: True when this solve handed the matrix to HiGHS as a MIP: `lam` is then
+    #: INTEGRAL and every dual field is a zero placeholder, not a price (a MIP
+    #: has no marginals). The generator keeps pricing off the LP solve of the
+    #: same matrix, which is where the real duals come from.
+    integral: bool = False
 
     def __post_init__(self) -> None:
         for name in ("sigma", "tau", "rho", "appetite", "sells"):
@@ -306,6 +311,7 @@ class MasterLP:
               sell_cap: np.ndarray | None = None,
               depth: tuple[np.ndarray, np.ndarray] | None = None,
               entry: bool = False,
+              integral: bool = False,
               cfg: "Config | None" = None) -> MasterSolve:
         """The restricted master over the pool, with the SHED as a stock.
 
@@ -333,6 +339,13 @@ class MasterLP:
         discards the night flush's overflow, so the LP must be able to as well,
         and it is CHARGED the sale it lost or dumping is the LP's cheapest way
         out of every constraint.
+
+        `integral=True` hands the SAME matrix to HiGHS as a MIP: the `lambda`
+        columns become integer (a column is a tile COUNT, and half a tile is not a
+        plan), and nothing else changes. A MIP has no duals — its marginals are not
+        shadow prices — so the PRICING loop must keep reading them from the LP solve
+        of the same matrix (`integral=False`); this flag is for the DECISION solve,
+        never for the generator.
 
         The sells are TWO TIERS because the town's appetite is finite and the
         market past it is not: a sale that is not sold into the town's own demand
@@ -645,9 +658,19 @@ class MasterLP:
         matrix.value_ = csc.data
         lp.a_matrix_ = matrix
 
+        if integral:
+            # A column is a tile COUNT: half a tile is not a plan, and the LP's
+            # fractional lambda is the reason the committed day was rounded by
+            # quota afterwards. The rest of the layout is continuous.
+            kinds = [_highspy._core.HighsVarType.kInteger] * n
+            kinds += [_highspy._core.HighsVarType.kContinuous] * (n_cols - n)
+            lp.integrality_ = kinds
+
         self._highs.passModel(lp)
         layout = (n_coupling, days, items, n_goods, n_classes)
-        if self._basis is not None and self._layout == layout:
+        # A MIP has no basis to warm from (and passing one is refused): the
+        # generator's LP solve is the one that keeps the warm start.
+        if not integral and self._basis is not None and self._layout == layout:
             self._highs.setBasis(_extended_basis(self._basis, n_cols,
                                                  lp.num_row_))
         self._highs.run()
@@ -663,6 +686,30 @@ class MasterLP:
 
         # HiGHS's ≤-row duals are ≤ 0 in min form; the shadow prices are −them,
         # clamped onto R006's orthant before anything downstream sees them.
+        if integral:
+            # A MIP returns no meaningful marginals. Scheduled tiles are integral
+            # and the prices that priced them came from the LP solve of this same
+            # matrix; publishing zeros here says "no prices", never "prices of 0".
+            values = np.asarray(solution.col_value, dtype=np.float64)
+            sells = np.zeros((n_goods, days), dtype=np.float64)
+            for b in range(tiers):
+                start = n + b * half
+                sells += (values[start:start + half].reshape(n_goods, days)
+                          if half else 0.0)
+            return MasterSolve(
+                lam=values[:n], y=np.zeros((days, n_coupling)),
+                cash=np.zeros(days), mu=np.zeros(n_classes),
+                objective=-float(self._highs.getObjectiveValue()),
+                sigma=np.zeros((days, items)), tau=np.zeros(days),
+                rho=np.zeros(n_goods), appetite=appetite_rhs, sells=sells,
+                now=(values[now0:defer0].reshape(items, days).T if entry else None),
+                defer=(values[defer0:defer0 + items * days].reshape(items, days).T
+                       if entry else None),
+                eta=None,
+                defer_cap=(np.asarray(upper[defer0:defer0 + items * days]
+                                      ).reshape(items, days).T if entry else None),
+                integral=True)
+
         marg = np.asarray(solution.row_dual, dtype=np.float64)
         y = np.maximum(-marg[:n_coupling * days], 0.0).reshape(n_coupling, days).T
         off = n_coupling * days
@@ -704,7 +751,7 @@ class MasterLP:
         now = (values[now0:defer0].reshape(items, days).T if entry else None)
         defer = (values[defer0:defer0 + items * days].reshape(items, days).T
                  if entry else None)
-        return MasterSolve(lam=values[:n], y=y, cash=cash, mu=mu,
+        return MasterSolve(lam=values[:n], y=y, cash=cash, mu=mu, integral=False,
                            objective=-float(self._highs.getObjectiveValue()),
                            sigma=sigma, tau=tau, rho=rho,
                            appetite=appetite_rhs, sells=sells,
@@ -866,6 +913,13 @@ class ColgenResult:
     """The mix, the duals, and whether the answer carries a proof."""
 
     pool: list[Column] = field(default_factory=list)
+    #: The LP solve on the FINAL pool, when that is a different solve from
+    #: `solve` (i.e. on the integral path). It exists because the two must be
+    #: compared on ONE pool: the loop ADDS columns after its last LP solve, so
+    #: the solve it exited with was priced on a SMALLER pool than the one a
+    #: decision solve sees. A MIP on the final pool against a stale LP is not a
+    #: comparison; this is the other half of it.
+    lp_final: "MasterSolve | None" = None
     solve: MasterSolve | None = None
     rounds: int = 0
     #: True only when a pricing round found NO class above the reduced-cost
@@ -1017,6 +1071,7 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
              sell_cap: np.ndarray | None = None,
              depth: tuple[np.ndarray, np.ndarray] | None = None,
              entry: bool = False,
+             integral: bool = False,
              cfg: "Config | None" = None) -> ColgenResult:
     """The loop: master over every column so far, price, add, repeat.
 
@@ -1049,6 +1104,26 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
     result = ColgenResult(pool=list(idle_columns))
     cfg = Config() if cfg is None else cfg
     rounds = int(cfg.iter_cap if rounds is None else rounds)
+
+    def decide() -> "ColgenResult":
+        """The integral decision solve, on the pool the LP loop built.
+
+        It must run AFTER the loop: a MIP returns no marginals, so a round that
+        solved the master integrally prices the next round at zeros — measured,
+        the pool stayed at 18 columns instead of 27 and the decision was taken on
+        a poorer pool than the LP's own. Same matrix, same columns, one extra
+        solve: the LP drives the generation, the MIP takes the decision.
+        """
+        if integral and result.solve is not None:
+            args = (result.pool, counts, supply_hours, money, days, n_coupling)
+            kwargs = dict(
+                shed_stock=None if shed is None else shed[0],
+                shed_capacity=0.0 if shed is None else float(shed[1]),
+                prices=prices, market=market, sell_cap=sell_cap,
+                depth=depth, entry=entry, cfg=cfg)
+            result.lp_final = solver.solve(*args, **kwargs)
+            result.solve = solver.solve(*args, integral=True, **kwargs)
+        return result
     index_of = {c.cls_key: c.cls for c in result.pool if c.cls_key}
     for column in (warm or []):
         target = index_of.get(column.cls_key)
@@ -1251,7 +1326,7 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
             # retry above guarantees the test was made there. The mix is
             # optimal over the full column set and the subproblems proved it.
             result.certified = True
-            return result
+            return decide()
         if added == 0:
             # Every improving column was already in the pool, at the true
             # duals. That is not a proof: the pricing step says a plan beats
@@ -1261,7 +1336,7 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
             # arithmetic is coarser than the tolerance (see RC_REL_TOL).
             result.stopped = (f"stalled: rc {float(np.max(rc)):.6g} above tol "
                               f"{tol:.6g} on a column the pool holds")
-            return result
+            return decide()
 
     result.stopped = "round cap"
-    return result
+    return decide()
