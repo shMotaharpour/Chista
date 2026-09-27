@@ -430,7 +430,7 @@ def search(day: Day, tasks: TaskArray, *, beam: int | None = None,
     # their own warm, that takes priority and the memory is not consulted.
     if warm is None:
         from agent.wsr import warm as _warm_mod
-        _cands = _warm_mod.candidates_for(day, tasks)
+        _cands = _warm_mod.candidates_for(day, tasks, hands)
         if _cands:
             warm = _cands[0]
 

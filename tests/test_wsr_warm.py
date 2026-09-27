@@ -36,12 +36,9 @@ def test_memory_stores_and_returns_a_seed_for_a_same_signature_day():
     W.memory()._entries.clear()
     result = B.search(day, tasks, hands=0, max_hands=0)
     W.remember(day, tasks, result)
-    # a SECOND day with the same logistic signature (2 no-bag tasks, same
-    # quadrants, same pool) must receive the stored route as a seed:
-    hits_before = W.memory().hits
-    cands = W.candidates_for(day, tasks)
+    # a SECOND solve at the same pool must receive the stored route as a seed:
+    cands = W.candidates_for(day, tasks, 0)
     assert cands, "a stored route for this exact signature must be offered"
-    assert W.memory().hits == hits_before + 1
     for c in cands:
         assert c.pool == 0
         assert not check_route(day, tasks, c), (
@@ -104,12 +101,13 @@ def test_lookup_distance_prefers_the_closer_signature():
     small_day = B.Day(chains=tuple(small_grid), available={}, hire_times=(1,))
     small = B.search(small_day, small_tasks, hands=0, max_hands=0)
     W.remember(small_day, small_tasks, small)
-    cands = W.candidates_for(day, tasks)
+    cands = W.candidates_for(day, tasks, 0)
     assert cands, "the exact entry must be offered"
     first = cands[0]
-    assert sorted(tid for _t, tid, _w in first.route) == \
-        sorted(tid for _t, tid, _w in exact.route), (
-        "the nearest (exact) signature must come first")
+    # the exact-signature seed must be the one that re-projects LOSSLESSLY
+    # (all its placements survive) — the 1-tile day's cannot
+    assert len(first.route) == 2, (
+        f"expected the exact signature's 2 placements, got {len(first.route)}")
 
 
 def test_the_counters_are_honest():

@@ -130,7 +130,12 @@ def sig_distance(a: dict, b: dict) -> float:
     """Distance in the signature space: category densities dominate, tiles and
     the hands-per-hour vector break near-ties. All terms are scale-free."""
     if a["pool"] != b["pool"]:
-        return float("inf")          # a warm row for another pool is unusable
+        # The signature's own pool is derived from `hire_times` (one entry per
+        # hand); a seed stored at another pool is a different worker-day. The
+        # stored entry's `pool` field is authoritative — `store` overrides it
+        # with the pool actually searched — so distance ignores this field and
+        # the pool gate lives in `lookup`.
+        return 0.0                  # compared via the entry's own pool field
     n_q = len(a["quadrants"])
     d = 0.0
     for qa, qb in zip(a["quadrants"], b["quadrants"]):
@@ -175,14 +180,23 @@ class WarmMemory:
         """Add a solved route as a future seed. `verified=False` stores it
         anyway (offline build), flagged so lookups prefer verified entries."""
         sig = signature(day, tasks)
+        sig["pool"] = int(result.pool)   # the seed is for the pool it solved with
         cats = _task_categories(tasks)
         id_to_idx = {str(tid): i for i, tid in enumerate(tasks.ids)}
+        # the seed's OWN per-worker first hours: workers the pool loop grew
+        # (index >= len(hire_times)) have a first hour only the route knows.
+        # `beam` is imported here (emit already imports beam: no top-level cycle)
+        from agent.wsr.beam import _start_hours
+        first_hours = {w: int(_start_hours(day, result.pool)[w])
+                       for w in sorted({int(w) for _t, _i, w in result.route})}
         self._entries.append({
             "sig": sig,
             "pool": int(result.pool),
             "route": [(int(t), str(tid), int(w)) for t, tid, w in result.route],
             "categories": [cats[id_to_idx[str(tid)]] if str(tid) in id_to_idx
                            else "self_suff" for _t, tid, _w in result.route],
+            "first_hours": first_hours,
+            "doors": [list(d) for d in result.doors],
             "complete": bool(result.complete),
             "verified": bool(verified),
         })
@@ -190,14 +204,16 @@ class WarmMemory:
             self._entries = self._entries[-4096:]
 
     # -- lookup ------------------------------------------------------------
-    def lookup(self, day, tasks) -> list:
+    def lookup(self, day, tasks, hands: int | None = None) -> list:
         """Up to WARM_K verified, re-timed, compile-checked warm Results for
-        this day — nearest signature first. [] when nothing fits."""
+        this day — nearest signature first. `hands` is the pool the caller is
+        about to search with: only seeds for THAT pool are offered (the
+        `warm.pool == pool` gate in the beam would drop anything else)."""
         sig = signature(day, tasks)
-        pool = sig["pool"]
+        pool = int(hands) if hands is not None else int(sig["pool"])
         scored = []
         for entry in self._entries:
-            if entry.get("verified", False):
+            if entry.get("verified", False) and entry.get("pool") == pool:
                 d = sig_distance(sig, entry["sig"])
                 if d == d and d != float("inf"):
                     scored.append((d, entry))
@@ -272,36 +288,74 @@ class WarmMemory:
             route.append((turn, best, worker))
         if not route:
             return None
-        re_timed = self._retime(route, tasks, day, pool)
+        re_timed = self._retime(route, tasks, day, pool,
+                                first_hours=entry.get("first_hours"))
         if re_timed is None:
             return None
         warm = re_timed
+        warm = warm._replace(doors=tuple(tuple(d) for d in entry.get("doors", ())))
         if check_route(day, tasks, warm):
             return None
         try:
-            compile_route(day, tasks, warm)
-        except ValueError:
+            compile_route(day, tasks, warm, horizon=int(day.horizon))
+        except (ValueError, IndexError):
             return None
         return warm
 
-    def _retime(self, route, tasks, day, pool):
+    def _retime(self, route, tasks, day, pool, first_hours=None):
         """Greedy legal-hours pass over a projected route: keep the placement
         ORDER per worker, move each op to the earliest hour that satisfies the
         task's window, the worker's own first hour and the walk from the
-        worker's previous cell."""
-        from agent.wsr.routing import walk
+        worker's previous cell. A placement whose window cannot be met is
+        DROPPED from the seed (a partial seed is legal; an out-of-day turn is
+        not). Predecessor edges are honoured: an op runs after every task its
+        chain orders before it — a re-timing that breaks `pred` would seed a
+        row whose children all die in `_expand`.
+
+        `first_hours` is the seed's OWN per-worker first acting hour, stored
+        alongside the route at build time: a worker the pool loop grew (its
+        index beyond `hire_times`) still has a first hour, and only the entry
+        knows it."""
         board = int(getattr(tasks, "board_size", 10) or 10)
+        from agent.wsr.beam import day_first_good, _start_hours
         at: dict[int, tuple[int, int]] = {}
         free: dict[int, int] = {}
         done_at: dict[int, int] = {}
         out = []
+        first_hours = first_hours or {}
+        start_hours = _start_hours(day, pool)
         for _turn, idx, worker in sorted(route, key=lambda x: (x[0], x[1])):
+            if worker >= len(start_hours):
+                continue
             cell = (int(tasks.cells[idx][0]), int(tasks.cells[idx][1]))
-            t = free.get(worker, int(day.hire_times[worker]) if worker < len(day.hire_times) else 1)
-            t = max(t, int(tasks.earliest[idx]))
-            t += abs(at.get(worker, (board // 2, board // 2))[0] - cell[0]) \
+            if worker in free:
+                base = free[worker] + 1
+            elif worker in first_hours:
+                base = int(first_hours[worker])
+            elif worker < len(start_hours):
+                base = int(start_hours[worker])
+            else:
+                continue          # a worker with no first hour cannot act
+            walk = abs(at.get(worker, (board // 2, board // 2))[0] - cell[0]) \
                  + abs(at.get(worker, (board // 2, board // 2))[1] - cell[1])
-            t = min(t, int(tasks.latest[idx]))
+            # the walk happens when the worker is free; arrival = start + walk
+            t = max(base + walk, int(tasks.earliest[idx]))
+            # predecessors, from the rules' own edges: every pred placed by THIS
+            # re-timing must be done first; preds outside the seed leave the op
+            # to the search (the placement is skipped, not forced).
+            preds = [int(j) for j in np.nonzero(tasks.pred[idx])[0]]
+            if preds:
+                if any(j not in done_at for j in preds):
+                    continue
+                t = max(t, max(done_at[j] for j in preds) + 1)
+            # A bag consumer needs its good LOADED at the door first: its load
+            # turn is the worker's own first hour, and the walk back counts.
+            # The door-load model lives in `beam.door_load`; the re-timer only
+            # needs the consumer's earliest turn pushed past it.
+            if str(tasks.ops[idx][0]) in CONSUMERS:
+                t = max(t, int(day_first_good(tasks)) + 1)
+            if t > int(tasks.latest[idx]) or t >= int(day.horizon):
+                continue          # outside the window or off the day: skip
             done_at[idx] = t
             free[worker] = t + 1
             at[worker] = cell
@@ -326,10 +380,10 @@ def memory() -> WarmMemory:
     return _MEMORY
 
 
-def candidates_for(day, tasks) -> list:
+def candidates_for(day, tasks, hands: int | None = None) -> list:
     """The entry point `search` calls when the caller passed no warm: up to
     WARM_K verified seeds, nearest signature first."""
-    return memory().lookup(day, tasks)
+    return memory().lookup(day, tasks, hands)
 
 
 def remember(day, tasks, result, *, verified: bool = True) -> None:
