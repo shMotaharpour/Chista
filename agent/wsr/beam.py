@@ -284,6 +284,72 @@ def ceiling_for(day: Day, tasks: TaskArray) -> int:
     offered = len(day.units) + len(day.hire_times)
     return min(work_bound, offered)
 
+def _repair_unplaced(day: Day, tasks: TaskArray, result: Result) -> Result:
+    """Fast targeted repair: try to place any remaining unplaced leaf/slack tasks."""
+    from agent.wsr.emit import check_route, compile_route
+
+    placed_ids = {t for _, t, _ in result.route}
+    unplaced = [tid for tid in tasks.ids if tid not in placed_ids]
+    if not unplaced or len(unplaced) > 12:
+        return result
+
+    curr_route = list(result.route)
+    when_dict = {tid: t for t, tid, w in curr_route if t >= 0}
+    by_worker: dict[int, list[tuple[int, str]]] = {}
+    for t, tid, w in curr_route:
+        by_worker.setdefault(w, []).append((t, tid))
+
+    starts = _start_positions(day, result.pool, result.doors)
+    hours = _start_hours(day, result.pool)
+
+    improved = False
+    for u_id in unplaced:
+        u_idx = tasks.ids.index(u_id)
+        if tasks.items[u_idx] >= 0:
+            continue  # only repair itemless tasks (water, harvest, care, dig)
+        u_cell = tuple(tasks.cells[u_idx])
+        preds = [tasks.ids[j] for j in range(tasks.n) if tasks.pred[u_idx, j]]
+        if any(p not in when_dict for p in preds):
+            continue
+        t_min = max([when_dict[p] + 1 for p in preds] + [int(tasks.earliest[u_idx]), 0])
+        t_max = min([int(tasks.latest[u_idx]), int(day.horizon) - 1])
+
+        best_cand = None
+        best_t = 999
+        for w in range(len(day.units) + result.pool):
+            w_ops = sorted(by_worker.get(w, []))
+            if not w_ops:
+                last_t = int(hours[w]) - 1
+                last_cell = tuple(starts[w])
+            else:
+                last_t, last_id = w_ops[-1]
+                last_idx = tasks.ids.index(last_id)
+                last_cell = tuple(tasks.cells[last_idx])
+            dist = abs(last_cell[0] - u_cell[0]) + abs(last_cell[1] - u_cell[1])
+            arr_t = last_t + 1 + dist
+            t_cand = max(t_min, arr_t)
+            if t_cand <= t_max and t_cand < best_t:
+                best_t = t_cand
+                best_cand = (t_cand, u_id, w)
+
+        if best_cand is not None:
+            cand_route = sorted(curr_route + [best_cand])
+            cand_res = result._replace(route=cand_route, complete=(len(cand_route) == tasks.n))
+            if not check_route(day, tasks, cand_res):
+                try:
+                    compile_route(day, tasks, cand_res)
+                    curr_route = cand_route
+                    when_dict[u_id] = best_cand[0]
+                    by_worker.setdefault(best_cand[2], []).append((best_cand[0], u_id))
+                    improved = True
+                except Exception:
+                    pass
+
+    if improved:
+        return result._replace(route=curr_route, complete=(len(curr_route) == tasks.n))
+    return result
+
+
 def search(day: Day, tasks: TaskArray, *, beam: int | None = None,
            hands: int | None = None, max_hands: int | None = None,
            budget_s: float | None = None, warm: Result | None = None) -> Result:
@@ -319,6 +385,8 @@ def search(day: Day, tasks: TaskArray, *, beam: int | None = None,
     def done(result: Result) -> Result:
         """The answer with its spare capacity on it. `search` is the only place the pool is known,
         and the spare is counted against the hands that pool paid for."""
+        if not result.complete:
+            result = _repair_unplaced(day, tasks, result)
         return result._replace(spare=spare_turns(day, tasks, result))
 
     if tasks.n == 0:
@@ -1099,7 +1167,7 @@ def _expand(day: Day, tasks: TaskArray, done, when, who, free, where, travel, li
     released = _released(when, tasks)[:, index]              # (b, w): the predecessors' finish
     ready = ready_all[:, index]                              # (b, w): every predecessor done
     earliest_here = tasks.earliest[index]
-    latest_here = tasks.latest[index]
+    latest_here = getattr(tasks, "effective_latest", tasks.latest)[index]
     if load is not None and any(load.order):
         # Door work before the goods land (`loads_before`): a worker that has done nothing yet may
         # take it from its own hour, not after its pickups - it is still on the door.

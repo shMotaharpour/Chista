@@ -589,6 +589,40 @@ def test_shortlist_tie_break_favors_in_bag_self_serve() -> None:
     assert shortlist[0] == 1, f"Self-serve priority failed to prefer in-bag item: picked {shortlist[0]}"
 
 
+def test_repair_unplaced_inserts_feasible_leaf_tasks() -> None:
+    """_repair_unplaced slides trailing leaf tasks into available worker turns."""
+    import numpy as np
+    from agent.wsr.tasks import TaskArray
+    import agent.wsr.beam as B
+
+    # Two independent watering tasks: t0 and t1
+    tasks = TaskArray(
+        ids=["t0", "t1"],
+        ops=[("WATER",), ("WATER",)],
+        actions=np.array([9, 9], dtype=np.int8),
+        items=np.array([-1, -1], dtype=np.int8),
+        yields=np.full(2, -1, dtype=np.int8),
+        yield_n=np.zeros(2, dtype=np.int8),
+        banks=np.full(2, -1, dtype=np.int16),
+        ties=np.zeros((2, 0), dtype=np.int16),
+        cells=np.array([[4, 4], [4, 4]], dtype=np.int16),
+        columns=np.zeros(2, dtype=np.int8),
+        pred=np.zeros((2, 2), dtype=bool),
+        earliest=np.zeros(2, dtype=np.int8),
+        latest=np.full(2, 24, dtype=np.int8),
+    )
+
+    day = B.Day(chains=(), available={})
+    # Initial result only placed t0 at turn 0, t1 is unplaced!
+    res = B.Result(pool=0, route=[(0, "t0", 0)], complete=False)
+
+    repaired = B._repair_unplaced(day, tasks, res)
+    assert repaired.complete, f"Repair failed to place t1: {repaired.route}"
+    assert len(repaired.route) == 2
+    assert "t1" in {tid for _, tid, _ in repaired.route}
+
+
+
 
 
 
