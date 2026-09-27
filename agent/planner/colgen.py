@@ -41,6 +41,7 @@ from dataclasses import dataclass, field, replace
 import numpy as np
 
 from agent.config import Config
+from agent.world.rules import LAND_PRICES
 from agent.world.model import RESOURCE_ID, SHED_ITEMS
 
 
@@ -196,6 +197,10 @@ class MasterSolve:
     #: has no marginals). The generator keeps pricing off the LP solve of the
     #: same matrix, which is where the real duals come from.
     integral: bool = False
+    #: (nq, days) the quadrants the DECISION solve bought, one row per entry of
+    #: `rules.LAND_ORDER`, 1 in the day column of the purchase — or None when the
+    #: land rows were off (the LP path).
+    land_bought: np.ndarray = None
 
     def __post_init__(self) -> None:
         for name in ("sigma", "tau", "rho", "appetite", "sells"):
@@ -312,6 +317,7 @@ class MasterLP:
               depth: tuple[np.ndarray, np.ndarray] | None = None,
               entry: bool = False,
               integral: bool = False,
+              land: int | None = None,
               cfg: "Config | None" = None) -> MasterSolve:
         """The restricted master over the pool, with the SHED as a stock.
 
@@ -339,6 +345,14 @@ class MasterLP:
         discards the night flush's overflow, so the LP must be able to as well,
         and it is CHARGED the sale it lost or dumping is the LP's cheapest way
         out of every constraint.
+
+        `land=k` adds the first `k` of the engine's quadrants as BUYABLE
+        (`world.rules.LAND_PRICES`, prefix order): one binary per (quadrant, day)
+        for the day it is bought, `<= 1` per quadrant, the purchase price charged
+        on that day inside the cumulative cash rows (that IS the saving decision:
+        the purse must cover it from that day onward), and one row that ties the
+        total tile count to `25 x (1 + purchases)`. Off by default so the LP path
+        is the matrix that shipped.
 
         `integral=True` hands the SAME matrix to HiGHS as a MIP: the `lambda`
         columns become integer (a column is a tile COUNT, and half a tile is not a
@@ -418,13 +432,20 @@ class MasterLP:
         waste0 = stock0 + items * days
         now0 = waste0 + items * days
         defer0 = now0 + items * days
-        n_cols = (defer0 + items * days) if entry else now0
+        land0 = defer0 + items * days if entry else now0
+        nq = 0 if not land else min(int(land), len(LAND_PRICES))
+        land_width = nq * days
+        n_cols = land0 + land_width
 
         def col_now(ii: int, d: int) -> int:
             return now0 + ii * days + d
 
         def col_defer(ii: int, d: int) -> int:
             return defer0 + ii * days + d
+
+        def col_land(q: int, d: int) -> int:
+            """The day quadrant `q` (0-based into LAND_ORDER) is bought."""
+            return land0 + q * days + d
 
         def col_sell(gi: int, d: int, b: int = 0) -> int:
             return n + b * half + gi * days + d
@@ -609,6 +630,38 @@ class MasterLP:
                     for b in range(tiers):
                         A_c[d:, col_sell(gi, d, b)] = -block_price[gi, d, b]
 
+        L_rows = np.zeros((0, n_cols))
+        if nq:
+            # One binary per (quadrant, day). The payment is a cumulative row's
+            # coefficient: `price` in every row at or after the purchase day.
+            if A_c.shape[1] < n_cols:
+                # No shed: `cash_rows` is the pool alone, and the land columns
+                # are to its right.
+                A_c = np.hstack([A_c, np.zeros((days, n_cols - A_c.shape[1]))])
+            cols = np.arange(land_width)
+            d_of = cols % days
+            price_of = np.asarray(LAND_PRICES[:nq], dtype=np.float64)[cols // days]
+            pay = np.where(np.arange(days)[:, None] >= d_of[None, :],
+                           price_of[None, :], 0.0)
+            A_c[:, land0:land0 + land_width] += pay
+            # Rows: `sum_d y_q <= 1` (one purchase each), the prefix order the
+            # engine enforces (`sum y_q <= sum y_{q-1}`), and the tile tie.
+            n_land_rows = nq + (nq - 1) + 1
+            L_rows = np.zeros((n_land_rows, n_cols))
+            L_rows[np.arange(nq)[:, None],
+                   land0 + np.arange(nq)[:, None] * days
+                   + np.arange(days)[None, :]] = 1.0
+            if nq > 1:
+                qq = np.arange(1, nq)
+                L_rows[qq + nq - 1, land0 + qq[:, None] * days
+                       + np.arange(days)[None, :]] = 1.0
+                L_rows[qq + nq - 1, land0 + (qq[:, None] - 1) * days
+                       + np.arange(days)[None, :]] = -1.0
+            L_rows[n_land_rows - 1, :n] = 1.0
+            L_rows[n_land_rows - 1, land0:] = -25.0
+            lower = np.concatenate([lower, np.zeros(land_width)])
+            upper = np.concatenate([upper, np.ones(land_width)])
+            cost = np.concatenate([cost, np.zeros(land_width)])
         target = counts.astype(np.float64)
         if n_cols > n:
             # The coupling and convexity rows only involve the columns; the shed
@@ -623,9 +676,13 @@ class MasterLP:
         # purpose: every offset below is positional, so a row inserted in the
         # middle silently re-labels τ as ρ and every price downstream is read off
         # the wrong constraint.
-        rows = np.vstack([A_q, A_c, bal, cap, appetite_row, split, A_e])
+        rows = np.vstack([A_q, A_c, bal, cap, appetite_row, split, L_rows,
+                          A_e])
+        # The land rows sit BETWEEN the split rows and the convexity rows, and
+        # `mu` is read as `marg[n_ineq:]`, so the count has to grow with them: a
+        # row appended after the convexity block would be read as a class dual.
         n_ineq = (n_coupling * days + days + items * days + days + n_goods
-                  + (items * days if entry else 0))
+                  + (items * days if entry else 0) + L_rows.shape[0])
         csc = sparse.csc_matrix(rows)
 
         lp = _highspy._core.HighsLp()
@@ -640,6 +697,7 @@ class MasterLP:
             np.full(days, -np.inf),                       # cap: <=
             np.full(n_goods, -np.inf),                    # town appetite: <=
             np.zeros(items * days if entry else 0),        # split: equality
+            np.full(L_rows.shape[0], -np.inf),            # land rows
             target])
         lp.row_upper_ = np.concatenate([
             b_q, b_c,
@@ -647,6 +705,9 @@ class MasterLP:
             np.full(days, float(shed_capacity)),
             appetite_rhs,
             np.zeros(items * days if entry else 0),        # split: equality
+            np.concatenate([np.ones(nq),
+                            np.zeros(max(0, nq - 1)),
+                            [25.0]]) if nq else np.zeros(0),
             target])
         lp.sense_ = _highspy._core.ObjSense.kMinimize
         matrix = _highspy._core.HighsSparseMatrix()
@@ -664,6 +725,8 @@ class MasterLP:
             # quota afterwards. The rest of the layout is continuous.
             kinds = [_highspy._core.HighsVarType.kInteger] * n
             kinds += [_highspy._core.HighsVarType.kContinuous] * (n_cols - n)
+            if nq:
+                kinds[land0:] = [_highspy._core.HighsVarType.kInteger] * land_width
             lp.integrality_ = kinds
 
         self._highs.passModel(lp)
@@ -691,6 +754,7 @@ class MasterLP:
             # and the prices that priced them came from the LP solve of this same
             # matrix; publishing zeros here says "no prices", never "prices of 0".
             values = np.asarray(solution.col_value, dtype=np.float64)
+            bought = (values[land0:].reshape(nq, days) if nq else None)
             sells = np.zeros((n_goods, days), dtype=np.float64)
             for b in range(tiers):
                 start = n + b * half
@@ -708,7 +772,7 @@ class MasterLP:
                 eta=None,
                 defer_cap=(np.asarray(upper[defer0:defer0 + items * days]
                                       ).reshape(items, days).T if entry else None),
-                integral=True)
+                land_bought=bought, integral=True)
 
         marg = np.asarray(solution.row_dual, dtype=np.float64)
         y = np.maximum(-marg[:n_coupling * days], 0.0).reshape(n_coupling, days).T
@@ -1139,7 +1203,9 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
             # the half that says how much the integer answer cost (the gate: a
             # MIP can never beat its own relaxation).
             result.lp_final = final
-            result.solve = solver.solve(*args, integral=True, **kwargs)
+            result.solve = solver.solve(*args, integral=True,
+                                        land=int(getattr(cfg, "land_quadrants", 0))
+                                        or None, **kwargs)
         else:
             result.solve = final
         return result
