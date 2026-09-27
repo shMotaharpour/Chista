@@ -402,8 +402,6 @@ def test_day_29_days_carry_sell_deadlines() -> None:
 #: (`test_the_game_route_of_a_short_day_is_one_the_model_allows`), so each is a
 #: search shortfall, not a model that forbids the game's play.
 KNOWN_SHORT = {
-    ("2026-09-16", 109468286, 11),
-    ("2026-09-16", 109471187, 14),
     ("2026-09-16", 109471187, 15),
     ("2026-09-16", 109471187, 16),
     ("2026-09-16", 109466080, 14),
@@ -542,12 +540,7 @@ def _game_route(entry, grid, tasks) -> list[tuple[int, str, int]]:
 
 
 #: Short days whose recorded route the model still refuses, with the measured reason.
-MODEL_REFUSES = {
-    ("2026-09-16", 109468286, 11): (
-        "worker 8 loads WHEAT at the door at hour 15, mid-day with no DROP before it, while the "
-        "model loads every good before the worker's first task; and the recorded walk leaves the "
-        "door a turn earlier than the compiler writes it, which moves hand 11's spawn door"),
-}
+MODEL_REFUSES: dict = {}
 
 
 def _short_days():

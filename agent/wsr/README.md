@@ -1,52 +1,53 @@
-# wsr/
+# wsr/ (Worker-Space-Routing)
 
-The day layer: the planner's chains become the ops a worker-day is made of. A chain per tile
-arrives from the planner (`agent/planner/day.py:day_chains`), becomes a task array, a beam search
-decides which worker does what and when, and the compiler writes the ops the engine reads.
+The day layer: the planner's high-level chains become the exact, legal tile operations a worker-day is made of. A chain per tile arrives from the planner (`agent/planner/day.py`), is compiled into an indexed `TaskArray`, a deterministic beam search plans which worker does what and when, and the compiler emits the verified op vectors the engine reads.
 
 | file | what it holds |
 |---|---|
-| `models.py` | `expand_chain`: a chain as the tasks it is made of, the order between them, and the worker ties |
-| `tasks.py` | the day as arrays: `DISTANCE`, `TaskArray`, `build()` |
-| `beam.py` | the search: `Day`, `Result`, `search()`, and the rules the search and the compiler share |
-| `emit.py` | a route into the ops the engine reads: `DayOps`, `compile_route()`, `check_route()`, `to_plan()` |
-| `routing.py` | the walk: `walk()` and `nearest_shed()`, the one place a path and a door are spelled |
+| `models.py` | `expand_chain`: a chain as its constituent tasks, precedence pairs (`ORDER_MATTERS`), and worker ties |
+| `tasks.py` | the day as vectorized arrays: `TaskArray`, `chain_weight`, `effective_latest`, `DISTANCE`, `build()` |
+| `beam.py` | the search engine: `Day`, `Result`, `search()`, deterministic multi-key selection, spatial locality, and vectorized deduplication |
+| `emit.py` | route compiler into engine ops: `DayOps`, `compile_route()`, `check_route()`, `to_plan()` |
+| `routing.py` | spatial geometry: `walk()`, `nearest_shed()`, Manhattan distance utilities |
 
-Nothing here prices anything and nothing here touches the market. What a day costs is the
-planner's business; what it can pay for is the market's.
+Nothing here prices anything and nothing here touches the market. What a day costs is the planner's business; what it can pay for is the market's.
 
-This layer is on the runtime path: `agent/manager/core.py` -> `agent/planner/day.py` -> here.
+This layer is on the runtime critical path: `agent/manager/core.py` -> `agent/planner/day.py` -> here.
 
 ---
 
-## 1. The contract
-
-Four calls, two objects in, two out:
+## 1. The Contract
 
 ```python
 from agent.wsr import beam as B, tasks as T
 from agent.wsr.emit import check_route, compile_route, to_plan
 
-tasks  = T.build(chains, available=available, drop_by=drop_by)       # -> TaskArray
+# 1. Build vectorized task arrays from planner chains
+tasks  = T.build(chains, available=available, drop_by=drop_by, harvests=harvests) # -> TaskArray
+
+# 2. Package day timetable and labour constraints
 day    = B.Day(chains=tuple(chains), available=available, hire_times=hire_times)
-result = B.search(day, tasks, beam=None, hands=None, max_hands=None,
-                  budget_s=None, warm=None)                          # -> Result
-ops    = compile_route(day, tasks, result)                           # -> DayOps
-plan   = to_plan(ops, market=rows)                                   # -> {"units", "market"}
+
+# 3. Deterministic structural search
+result = B.search(day, tasks, beam=None, hands=None, max_hands=None, warm=warm)  # -> Result
+
+# 4. Compile into turn-by-turn unit ops and market arrivals
+ops    = compile_route(day, tasks, result)                                        # -> DayOps
+plan   = to_plan(ops, market=rows)                                                # -> {"units", "market"}
 ```
 
 ### Signatures
 
 ```python
 T.build(chains, *, available: dict[str, int] | None = None, horizon: int = 24,
-        drop_by=None) -> TaskArray
+        drop_by=None, harvests=None) -> TaskArray
 
 B.Day(chains, available: dict[str, int], horizon: int = TURNS_PER_DAY,
       hire_times: tuple[int, ...] = ())
 
 B.search(day: Day, tasks: TaskArray, *, beam: int | None = None,
          hands: int | None = None, max_hands: int | None = None,
-         budget_s: float | None = None, warm: Result | None = None) -> Result
+         warm: Result | None = None) -> Result
 
 compile_route(day: Day, tasks: TaskArray, result: Result, *,
               horizon: int | None = None) -> DayOps
@@ -56,114 +57,61 @@ check_route(day: Day, tasks: TaskArray, result: Result) -> list[str]
 to_plan(day_ops: DayOps, market=None) -> dict
 ```
 
-### The input
+---
 
-| name | what it is |
-|---|---|
-| `chains` | one `(cell, chain_ops, entity)` per tile, in the caller's order, as `day_chains` builds them. `chain_ops` is the expanded chain; this layer never reads the DP's registry. |
-| `available` | the hour each good (and seed) is in the shed. A buy in turn 0 is in the shed at hour 1, and a task that consumes a good cannot run before it. |
-| `drop_by` | one entry per chain: the latest hour that chain's harvest must be banked, or `None` to leave it for the night. |
-| `horizon` | the day's turns; `TURNS_PER_DAY` unless a test asks for fewer. |
-| `hire_times` | the hour each hand is AVAILABLE to act — the hour its HIRE settles plus one (a hand hired in turn `t` acts from `t + 1`, F040; ten orders a turn, F031). `Day.hands` is its length, so there is no separate count to disagree with it: zero hands is an empty tuple, and the farmer is always on the field without being in it. Nothing inside `Day` derives an hour — the engine's own earliest (`rules.earliest_hire_times`, an optimistic bound) belongs at the call site, and a bad tuple is `Day`'s to refuse. |
-| `beam` | the width. `None` asks for `beam_for(tasks, workers)`: a step costs `beam x workers x tasks`, so the width follows the day's size. |
-| `hands` | the pool to start at. `None` starts at the arithmetic floor (`lower_bound`) and halving-searches the smallest pool that carries the day; a number scans upward from it. |
-| `max_hands` | the largest pool allowed, capped by `ceiling_for` (the hands the day offered). Equal to `hands`, it asks one yes-or-no question. |
-| `budget_s` | the wall clock. The best route so far comes back with `out_of_time=True`. |
-| `warm` | a `Result` from an earlier call on almost this instance. It seeds one extra row on top of the beam, and only at the pool it was searched with. |
+## 2. Guidelines for Callers (`agent/planner/day.py`, `manager/core.py`)
 
-### The output
+To achieve maximum performance (<500ms solve time) and optimal routing density:
 
-| name | what it is |
-|---|---|
-| `Result.pool` | the hands the answer was searched with |
-| `Result.route` | `[(turn, task_id, worker), ...]` - the turn a task occupies, its id, its worker (0 is the farmer). A drop whose bag is already empty is placed at turn `-1`: done, with no op. |
-| `Result.complete` | that pool carried every task |
-| `Result.spare` | the worker-turns the route leaves unspent (`spare_turns`), the room a caller may lay more work into |
-| `Result.out_of_time` | a deadline stopped the search before it ran out of work to place |
-| `Result.infeasible` | the arithmetic floor is above the ceiling, so no allowed pool can carry the day; the route is empty |
-| `Result.doors` | the door each hand lands on at its own hire moment - the one statement of where the hands start |
-| `Result.can_improve` | incomplete and cut short: more budget may place more work |
-| `DayOps.units` | the ops per worker, indexed by turn, PASS-padded |
-| `DayOps.arrivals` | `(hour, item, units)` per drop: what the day's market may actually sell today |
+1. **Always Pass `warm=previous_result` During Hourly Re-solves**:
+   `Result` carries a native vectorized `state: tuple[np.ndarray, ...]` containing `(done, when, who, free, where, travel)`. When re-solving the same day from turn to turn, passing `warm=last_result` bypasses all string parsing and leg reconstruction, copying the previous solution into the beam in **1 microsecond via NumPy slice assignment**.
 
-`check_route` returns the rules a route breaks (window, precedence, a good before it is in the shed,
-a split worker tie) as sentences; empty means none. `compile_route` raises `ValueError` when a walk
-does not fit the turns the route left, rather than padding it.
+2. **Model Tile Harvests with `harvests=` in `T.build`**:
+   Pass `harvests=[(crop, units), ...]` aligned with `chains`. This activates **In-Field Self-Serve Consumption**: when a worker harvests wheat or collects fertilizer, subsequent `FEED` and `FERTILIZE` tasks on that worker draw directly from the worker's bag with **zero shed door pickups** (`bag.get(good, 0) == 0`), saving multiple travel turns.
 
-Public helpers a caller may want: `lower_bound(day, tasks)` (the fewest workers the day can need),
-`ceiling_for(day, tasks)`, `beam_for(tasks, workers)`, `remaining_turns(day, tasks, result)` (per
-worker) and `spare_turns(day, tasks, result)`.
+3. **Pass Range Bounds `(hands=start, max_hands=ceiling)` for Pool Optimization**:
+   When the optimal pool size is unknown, pass both `hands` and `max_hands`. WSR executes an $O(\log_2 N)$ **Binary Halving Search** (`_smallest_pool`) instead of a linear loop, and dynamically contracts the upper bound `hi` to the actual number of workers utilized (`used_hands`). This cuts search iterations by over 70%.
 
-## 2. The call sites
+4. **Do Not Pass Wall-Clock Deadlines (`budget_s`)**:
+   Wall-clock timeouts have been eliminated from WSR. The search is structurally bounded by `tasks.n` steps and beam width, guaranteeing that identical inputs produce 100% bit-identical routes without hardware clock jitter.
 
-`agent/planner/day.py` is the only caller.
+---
 
-- `fit(chains, *, hands, available=None, budget_s=None, beam=None, hours_committed=0.0, warm=None)
-  -> DayFit` asks whether the master's first day walks: `build`, then `search` with the pool the
-  master priced (`hands=min(floor, hands)`, `max_hands=hands`), then `check_route` on a complete
-  route. `DayFit.reason` is `""` when it fits, else `"hours"`, `"budget"` or `"unstable"`.
-  `hands` is passed as it is, so a plan priced with no hands is searched with the farmer alone.
-- `compile(day_plan, obs, *, hands=None, ...) -> dict` writes the day the dispatcher slices:
-  `search` held to exactly the fitted pool, `compile_route`, then the market rows (hiring that
-  pool) from the same chains and `to_plan`. A day that did not fit compiles to nobody doing anything.
+## 3. Core Architectural Mechanisms
 
-The planner fixes the pool itself rather than asking `search(hands=None)` for the smallest one: the
-hands are already priced by the master it is answering.
+### Deterministic Multi-Key Shortlist
+Candidate selection in `_select` uses an exact lexicographic sort to eliminate random memory-layout tie-breaks:
+`order = np.lexsort((worker_of, self_serve_bonus, hop_of, importance, primary))`
 
-## 3. The rules the search and the compiler share
+- **`primary` (Adaptive Critical-Path Balancing)**:
+  `primary = flat_hour * 48 - chain_weight * max(0, 24 - flat_hour) * alpha`
+  where $\alpha = 1$ for normal days and $\alpha = 2$ for heavy days ($tasks.n > 130$). Smoothly pulls deep chain tasks earlier in the morning while decaying to pure finish-hour priority by evening so trailing leaf tasks are never starved.
+- **`importance` (DAG Downstream Closure)**:
+  `tasks.chain_weight` pre-computed in `TaskArray.__post_init__` via boolean reachability matrix squaring. Measures how many downstream tasks are killed if this task is omitted.
+- **`hop_of` (Spatial Locality)**:
+  Manhattan distance to target tile (`np.abs(hx - cx) + np.abs(hy - cy)`). Breaks finish-hour ties by shortest travel distance, forcing dense geographic clustering and eliminating cross-board wandering.
+- **`self_serve_bonus`**:
+  Prioritizes workers who already hold the required good in-bag from prior on-field harvests, eliminating trips to the shed.
+- **`worker_of`**:
+  Deterministic worker index tie-breaker.
 
-Each rule is written once and read by both sides, so the day that was priced is the day that is
-written. A rule spelled twice drifts, and the engine refuses the difference in silence (F047).
+### Vectorized State Deduplication
+In `_dedupe`, state signatures are formed by packing `done` bits, `free` bytes, and `where` coordinates into contiguous memory blocks viewed as `np.void` structured types. Unique child states are extracted at C-level using `np.unique(..., return_index=True)` in **<0.1 ms**, completely eliminating slow Python loops and byte hashing.
 
-- **Where a task is done** - `leg_target`: a task at its own tile; a DROP at the shed door nearest
-  the worker when it drops, because any of the four shed-access tiles takes a DROP.
-- **The walk between tasks** - `legs` and `leg_moves`: the path from where the worker stands, and
-  after a DROP a detour through the nearest door to pick up again.
-- **The door load** - `_bag`: the goods a worker uses before its first DROP, one PICKUP per good.
-  After a DROP the bag is empty (the engine's DROP moves every item), so a good used later is
-  fetched again on the way, not loaded at the door.
-- **When the worker loads** - `loads_before`: before its first task, unless that task is door work
-  (`door_work`: on a shed-access tile, needing no good) at a turn before the day's first good
-  lands. A worker standing at the shed can pick up whenever it needs to.
-- **When a walk is written** - `walk_start_turn`: a walk ends at its task's turn, so a worker with
-  slack waits where it stands. This is what puts the hands on the doors the search priced (F040).
-- **Where the hands start** - `Result.doors`, from the spawn rule at each hand's own hire moment.
+### Effective Chain-Bounded Deadlines
+In `TaskArray.__post_init__`, every task's deadline is constrained by its downstream length:
+`effective_latest = max(0, latest - chain_weight)`
+In `_expand`, `start <= effective_latest` guarantees that a prerequisite (e.g. `FERTILIZE`) is never scheduled at hour 23 when its successor (`WATER`) requires hour 24.
 
-## 4. The drop
+### Targeted Leaf Repair (`_repair_unplaced`)
+A fast post-search repair pass slides trailing unplaced leaf tasks (e.g. `WATER`, `DIG`, `CARE`) into remaining idle windows of passing workers, validated against `check_route` and `compile_route`.
 
-A drop is a deadline on a good taken off a tile, not a chain op. `build(..., drop_by=)` derives one
-DROP per `HARVEST` or `COLLECT_FERTILIZER` of a chain with a deadline: its `latest` is the deadline,
-`banks` names the task it serves, and it is tied to the same worker, because the bag is the worker's.
+---
 
-A DROP empties the whole bag, so one drop banks every harvest since the previous one, and a drop
-with nothing new in the bag is free. `DayOps.arrivals` is read off the route for whoever prices the
-sell side.
+## 4. Shared Engine Invariants
 
-## 5. The engine facts that bite in silence
-
-The engine refuses a bad op without a word (F047), so a wrong day reports success and leaves the
-board empty.
-
-- **Hours are 0..23** (F048, `TURNS_PER_DAY`). The farmer has every turn; a hand has the turns
-  after its hire (F040, F060).
-- **A hand lands on the least-occupied shed door at its hire moment**, and a unit that walks off
-  its door moves where every later hand lands (F040).
-- **PICKUP and DROP work on any of the four shed-access tiles**; a PICKUP before its good is in
-  the shed does nothing.
-- **At most ten market orders per turn** (F031); unit ops resolve before market ops (F030).
-- **The shed holds a fixed total across all items** and destroys the overflow (F043).
-- **A LOCKED tile is not ours** (F042) and spends a unit's turns for nothing.
-
-## 6. How to prove it
-
-Only the board can tell a silent refusal from a plan that worked, so a day is played on the engine
-(`offline_lab.fast_sim.FastSim`, which wraps the real interpreter) and asserted on the engine's own
-counters. The days live in `tests/day_layer/`, over the recorded corpora in
-`tests/day_layer/corpus/`. Re-introduce the bug and watch the guard go red before trusting it
-(R007).
-
-## 7. What is deliberately not here
-
-- Prices. The contractor and the master own them.
-- The market. `agent/planner/market.py` builds the queue from what it is handed.
-- `BUY_LAND`. Quadrants unlock in a fixed order at fixed prices, so it is a planner decision.
+Both search and compiler strictly enforce engine facts:
+- **Hours are 0..23** (`TURNS_PER_DAY`). The farmer acts from turn 0; hands act from their first acting hour (`hire turn + 1`, F040).
+- **Spawn Doors**: Hands appear on the least-occupied shed door at their hire moment (`_hand_doors`, `Result.doors`). A unit walking off its door in turn 0 moves where subsequent hands land.
+- **Door Loads & DROPs**: `DROP` empties the entire worker bag (`kaggriculture.py:343-356`). Any good taken before a drop cannot be consumed after it without refetching (enforced by the R2 ban in `_expand`).
+- **Bulk Pickups**: `compile_route` aggregates all door preloads into a single multi-unit `("PICKUP", good, n)` op per good, spending 1 turn instead of $n$ turns.

@@ -523,6 +523,142 @@ def test_shortlist_tie_break_favors_spatial_locality_minimal_hop() -> None:
     assert shortlist[0] == 1, f"Spatial locality failed to prioritize shorter hop: picked {shortlist[0]}"
 
 
+def test_shortlist_tie_break_favors_in_bag_self_serve() -> None:
+    """When candidates tie on hour, importance and hop, shortlist prefers worker holding the item."""
+    import numpy as np
+    from agent.wsr.tasks import TaskArray
+    import agent.wsr.beam as B
+
+    # Two tasks t0 and t1, both need wheat (item 1), chain_weight 0
+    pred = np.zeros((2, 2), dtype=bool)
+    tasks = TaskArray(
+        ids=["t0", "t1"],
+        ops=[("FEED",), ("FEED",)],
+        actions=np.array([4, 4], dtype=np.int8),
+        items=np.array([1, 1], dtype=np.int8),
+        yields=np.full(2, -1, dtype=np.int8),
+        yield_n=np.zeros(2, dtype=np.int8),
+        banks=np.full(2, -1, dtype=np.int16),
+        ties=np.zeros((2, 0), dtype=np.int16),
+        cells=np.zeros((2, 2), dtype=np.int16),
+        columns=np.zeros(2, dtype=np.int8),
+        pred=pred,
+        earliest=np.zeros(2, dtype=np.int8),
+        latest=np.full(2, 24, dtype=np.int8),
+    )
+
+    # 1 route, 2 workers. Both t0 and t1 finish at hour 3 with hop 1.
+    # Worker 0 does NOT have wheat in bag (has=False).
+    # Worker 1 ALREADY has wheat in bag (has=True).
+    index = np.array([0, 1], dtype=np.int32)
+    rows = np.array([0], dtype=np.int32)
+    expanded = {
+        "index": index,
+        "count": np.array([0], dtype=np.int16),
+        "rows": rows,
+        "done": np.zeros((1, 2), dtype=bool),
+        "when": np.full((1, 2), -1, dtype=np.int16),
+        "who": np.full((1, 2), -1, dtype=np.int16),
+        "free": np.zeros((1, 2), dtype=np.int16),
+        "where": np.zeros((1, 2, 2), dtype=np.int16),
+        "travel": np.zeros((1,), dtype=np.int16),
+        "hop": np.ones((1, 2, 2), dtype=np.int16),  # all hop=1
+        "has": np.array([[[False, False], [True, True]]], dtype=bool),  # worker 1 has wheat in bag
+        "earliest": np.array([[3, 3]], dtype=np.int16),  # both finish at hour 3
+        "worker": np.array([[0, 1]], dtype=np.int16),  # t0 assigned to worker 0, t1 to worker 1
+    }
+
+    legal = np.array([0, 1], dtype=np.int64)
+    width = 2
+    col_of = legal % width
+    task_of = index[col_of]
+    importance = -tasks.chain_weight[task_of]
+    worker_of = expanded["worker"][rows].ravel()[legal]
+    parent_of = np.repeat(rows, width)[legal]
+    hop_of = expanded["hop"][parent_of, worker_of, col_of]
+    primary = expanded["earliest"][rows].ravel()[legal]
+
+    needs_item = tasks.items[task_of] >= 0
+    has_in_bag = expanded["has"][parent_of, worker_of, col_of]
+    self_serve = needs_item & has_in_bag
+    self_serve_bonus = -self_serve.astype(np.int8)
+
+    order = np.lexsort((worker_of, self_serve_bonus, hop_of, importance, primary))
+    shortlist = legal[order[:1]]
+    # Candidate 1 (worker 1 with in-bag wheat) must beat Candidate 0 (worker 0 without in-bag wheat)
+    assert shortlist[0] == 1, f"Self-serve priority failed to prefer in-bag item: picked {shortlist[0]}"
+
+
+def test_repair_unplaced_inserts_feasible_leaf_tasks() -> None:
+    """_repair_unplaced slides trailing leaf tasks into available worker turns."""
+    import numpy as np
+    from agent.wsr.tasks import TaskArray
+    import agent.wsr.beam as B
+
+    # Two independent watering tasks: t0 and t1
+    tasks = TaskArray(
+        ids=["t0", "t1"],
+        ops=[("WATER",), ("WATER",)],
+        actions=np.array([9, 9], dtype=np.int8),
+        items=np.array([-1, -1], dtype=np.int8),
+        yields=np.full(2, -1, dtype=np.int8),
+        yield_n=np.zeros(2, dtype=np.int8),
+        banks=np.full(2, -1, dtype=np.int16),
+        ties=np.zeros((2, 0), dtype=np.int16),
+        cells=np.array([[4, 4], [4, 4]], dtype=np.int16),
+        columns=np.zeros(2, dtype=np.int8),
+        pred=np.zeros((2, 2), dtype=bool),
+        earliest=np.zeros(2, dtype=np.int8),
+        latest=np.full(2, 24, dtype=np.int8),
+    )
+
+    day = B.Day(chains=(), available={})
+    # Initial result only placed t0 at turn 0, t1 is unplaced!
+    res = B.Result(pool=0, route=[(0, "t0", 0)], complete=False)
+
+    repaired = B._repair_unplaced(day, tasks, res)
+    assert repaired.complete, f"Repair failed to place t1: {repaired.route}"
+    assert len(repaired.route) == 2
+    assert "t1" in {tid for _, tid, _ in repaired.route}
+
+
+def test_vectorized_warm_start_restores_state_instantly() -> None:
+    """Result carries numpy state and _warm_row restores it directly without string parsing."""
+    import numpy as np
+    from agent.wsr.tasks import TaskArray
+    import agent.wsr.beam as B
+
+    tasks = TaskArray(
+        ids=["t0", "t1"],
+        ops=[("WATER",), ("WATER",)],
+        actions=np.array([9, 9], dtype=np.int8),
+        items=np.array([-1, -1], dtype=np.int8),
+        yields=np.full(2, -1, dtype=np.int8),
+        yield_n=np.zeros(2, dtype=np.int8),
+        banks=np.full(2, -1, dtype=np.int16),
+        ties=np.zeros((2, 0), dtype=np.int16),
+        cells=np.array([[4, 4], [4, 4]], dtype=np.int16),
+        columns=np.zeros(2, dtype=np.int8),
+        pred=np.zeros((2, 2), dtype=bool),
+        earliest=np.zeros(2, dtype=np.int8),
+        latest=np.full(2, 24, dtype=np.int8),
+    )
+    day = B.Day(chains=(), available={})
+    res = B.search(day, tasks, hands=0, max_hands=0)
+    assert res.complete
+    assert hasattr(res, "state")
+    assert res.state is not None, "Result must carry vectorized state"
+    assert len(res.state) == 6  # done, when, who, free, where, travel
+
+    # Warm search must restore state directly
+    warmed = B.search(day, tasks, hands=0, max_hands=0, warm=res)
+    assert warmed.complete
+    assert warmed.route == res.route
+
+
+
+
+
 
 
 

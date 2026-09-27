@@ -69,7 +69,7 @@ MIN_BEAM, MAX_BEAM = 8, 64
 #: How many times the pickup charge is re-derived before the conservative day is handed back. The
 #: charge only grows (each pass keeps the larger of the two) and is bounded by the day's own
 #: distinct-good count, so this is a ceiling on an iteration that has usually settled by the first.
-CHARGE_PASSES = 3
+CHARGE_PASSES = 1
 
 #: The rankings the selection keeps its beam under, each with a beam of its own. No single key is
 #: right: the earliest finish keeps the most work placed and is blind to an hour that is nearly gone,
@@ -182,6 +182,7 @@ class Result(NamedTuple):
     #: it. The arithmetic floor is a count of workers and the ceiling is a count of hands, and on a
     #: hundred tiles the first passes the second - which is an answer about the day, not an error.
     infeasible: bool = False
+    state: tuple | None = None
 
 
 def lower_bound(day: Day, tasks: TaskArray) -> int:
@@ -284,6 +285,72 @@ def ceiling_for(day: Day, tasks: TaskArray) -> int:
     offered = len(day.units) + len(day.hire_times)
     return min(work_bound, offered)
 
+def _repair_unplaced(day: Day, tasks: TaskArray, result: Result) -> Result:
+    """Fast targeted repair: try to place any remaining unplaced leaf/slack tasks."""
+    from agent.wsr.emit import check_route, compile_route
+
+    placed_ids = {t for _, t, _ in result.route}
+    unplaced = [tid for tid in tasks.ids if tid not in placed_ids]
+    if not unplaced or len(unplaced) > 12:
+        return result
+
+    curr_route = list(result.route)
+    when_dict = {tid: t for t, tid, w in curr_route if t >= 0}
+    by_worker: dict[int, list[tuple[int, str]]] = {}
+    for t, tid, w in curr_route:
+        by_worker.setdefault(w, []).append((t, tid))
+
+    starts = _start_positions(day, result.pool, result.doors)
+    hours = _start_hours(day, result.pool)
+
+    improved = False
+    for u_id in unplaced:
+        u_idx = tasks.ids.index(u_id)
+        if tasks.items[u_idx] >= 0:
+            continue  # only repair itemless tasks (water, harvest, care, dig)
+        u_cell = tuple(tasks.cells[u_idx])
+        preds = [tasks.ids[j] for j in range(tasks.n) if tasks.pred[u_idx, j]]
+        if any(p not in when_dict for p in preds):
+            continue
+        t_min = max([when_dict[p] + 1 for p in preds] + [int(tasks.earliest[u_idx]), 0])
+        t_max = min([int(tasks.latest[u_idx]), int(day.horizon) - 1])
+
+        best_cand = None
+        best_t = 999
+        for w in range(len(day.units) + result.pool):
+            w_ops = sorted(by_worker.get(w, []))
+            if not w_ops:
+                last_t = int(hours[w]) - 1
+                last_cell = tuple(starts[w])
+            else:
+                last_t, last_id = w_ops[-1]
+                last_idx = tasks.ids.index(last_id)
+                last_cell = tuple(tasks.cells[last_idx])
+            dist = abs(last_cell[0] - u_cell[0]) + abs(last_cell[1] - u_cell[1])
+            arr_t = last_t + 1 + dist
+            t_cand = max(t_min, arr_t)
+            if t_cand <= t_max and t_cand < best_t:
+                best_t = t_cand
+                best_cand = (t_cand, u_id, w)
+
+        if best_cand is not None:
+            cand_route = sorted(curr_route + [best_cand])
+            cand_res = result._replace(route=cand_route, complete=(len(cand_route) == tasks.n))
+            if not check_route(day, tasks, cand_res):
+                try:
+                    compile_route(day, tasks, cand_res)
+                    curr_route = cand_route
+                    when_dict[u_id] = best_cand[0]
+                    by_worker.setdefault(best_cand[2], []).append((best_cand[0], u_id))
+                    improved = True
+                except Exception:
+                    pass
+
+    if improved:
+        return result._replace(route=curr_route, complete=(len(curr_route) == tasks.n))
+    return result
+
+
 def search(day: Day, tasks: TaskArray, *, beam: int | None = None,
            hands: int | None = None, max_hands: int | None = None,
            budget_s: float | None = None, warm: Result | None = None) -> Result:
@@ -319,6 +386,8 @@ def search(day: Day, tasks: TaskArray, *, beam: int | None = None,
     def done(result: Result) -> Result:
         """The answer with its spare capacity on it. `search` is the only place the pool is known,
         and the spare is counted against the hands that pool paid for."""
+        if not result.complete:
+            result = _repair_unplaced(day, tasks, result)
         return result._replace(spare=spare_turns(day, tasks, result))
 
     if tasks.n == 0:
@@ -516,6 +585,23 @@ def _warm_row(tasks: TaskArray, warm: Result, done, when, who, free, where, trav
     it that still applies, not an error.
     """
     row = 0
+    first_hand = 1
+    if warm.state is not None and free.shape[1] >= warm.state[3].size:
+        w_doors = tuple(warm.doors) if hasattr(warm, "doors") else ()
+        cur_doors = tuple((int(c[0]), int(c[1])) for c in where[0, first_hand:])
+        if w_doors and w_doors == cur_doors:
+            w_done, w_when, w_who, w_free, w_where, w_travel = warm.state
+            n_c = min(tasks.n, w_done.size)
+            m_c = min(free.shape[1], w_free.size)
+            done[row, :n_c] = w_done[:n_c]
+            when[row, :n_c] = w_when[:n_c]
+            who[row, :n_c] = w_who[:n_c]
+            free[row, :m_c] = w_free[:m_c]
+            where[row, :m_c] = w_where[:m_c]
+            travel[row] = w_travel
+            np.add.at(count[row], tasks.edge_after, done[row, tasks.edge_before].astype(np.int16))
+            return
+
     column = {task_id: index for index, task_id in enumerate(tasks.ids)}
     # Where each worker stands before its first task: the row's own start, taken before the loop
     # writes over it. The walk is measured from here, not from the worker's last tile.
@@ -590,7 +676,7 @@ def _run(day: Day, tasks: TaskArray, *, hands: int, beam: int,
 
     # The best state is remembered as the search goes, because the beam's last generation can be
     # empty - a route that dies at the end would otherwise erase the work it had already placed.
-    best = _snapshot(done, when, who, free, travel, first_hand, hours)
+    best = _snapshot(done, when, who, free, where, travel, first_hand, hours)
     for _step in range(n):
         expanded = _expand(day, tasks, done, when, who, free, where, travel, live, count, load)
         if expanded is None:
@@ -599,19 +685,20 @@ def _run(day: Day, tasks: TaskArray, *, hands: int, beam: int,
             expanded, tasks, beam, first_hand, hours)
         if not live.any():
             break
-        here = _snapshot(done, when, who, free, travel, first_hand, hours)
+        here = _snapshot(done, when, who, free, where, travel, first_hand, hours)
         if _better(here, best):
             best = here
 
-    placed, when_best, who_best, done_best = best
+    placed, when_best, who_best, done_best, state_best = best
     complete = placed == n
     route = [(int(when_best[i]), tasks.ids[i], int(who_best[i]))
              for i in np.argsort(when_best) if done_best[i]]
     return Result(hands, route, complete,
-                  doors=tuple((int(c[0]), int(c[1])) for c in start_pos[first_hand:]))
+                  doors=tuple((int(c[0]), int(c[1])) for c in start_pos[first_hand:]),
+                  state=state_best)
 
 
-def _snapshot(done, when, who, free, travel, first_hand, start_hours):
+def _snapshot(done, when, who, free, where, travel, first_hand, start_hours):
     """The best route in the beam right now, by the layered objective: work, hands, makespan, walk.
 
     A hand counts as put to work when its clock has moved past the hour it began at - not when its
@@ -621,7 +708,8 @@ def _snapshot(done, when, who, free, travel, first_hand, start_hours):
     hands_used = (free[:, first_hand:] > start_hours[first_hand:]).sum(axis=1)
     makespan = free.max(axis=1)
     row = int(np.lexsort((travel, makespan, hands_used, -placed))[0])
-    return int(placed[row]), when[row].copy(), who[row].copy(), done[row].copy()
+    state = (done[row].copy(), when[row].copy(), who[row].copy(), free[row].copy(), where[row].copy(), int(travel[row]))
+    return int(placed[row]), when[row].copy(), who[row].copy(), done[row].copy(), state
 
 
 def _better(candidate, best) -> bool:
@@ -1040,6 +1128,7 @@ def _expand(day: Day, tasks: TaskArray, done, when, who, free, where, travel, li
     # The door load itself is paid before the worker's first task that is not door work
     # (`start_hours`, `door_load`); a trip here is the refetch after a DROP.
     trip = np.zeros(hop.shape, dtype=bool)
+    has = np.ones(hop.shape, dtype=bool)
     needs = tasks.items[index] >= 0
     if needs.any():
         carried = _carried(done, who, tasks, m, when, last_drop)  # (b, m, goods)
@@ -1098,7 +1187,7 @@ def _expand(day: Day, tasks: TaskArray, done, when, who, free, where, travel, li
     released = _released(when, tasks)[:, index]              # (b, w): the predecessors' finish
     ready = ready_all[:, index]                              # (b, w): every predecessor done
     earliest_here = tasks.earliest[index]
-    latest_here = tasks.latest[index]
+    latest_here = getattr(tasks, "effective_latest", tasks.latest)[index]
     if load is not None and any(load.order):
         # Door work before the goods land (`loads_before`): a worker that has done nothing yet may
         # take it from its own hour, not after its pickups - it is still on the door.
@@ -1179,7 +1268,7 @@ def _expand(day: Day, tasks: TaskArray, done, when, who, free, where, travel, li
     worker = finish.argmin(axis=1)                           # (b, w): and by which worker
     return dict(rows=rows, finish=finish, hop=hop, earliest=earliest, worker=worker,
                 done=done, when=when, who=who, free=free, where=where, travel=travel,
-                idle=idle, index=index, count=count)
+                idle=idle, index=index, count=count, has=has)
 
 
 def _rankings_for(tasks: TaskArray) -> tuple[str, ...]:
@@ -1293,11 +1382,21 @@ def _select(expanded, tasks: TaskArray, beam: int, first_hand: int, start_hours)
         # cross-board wandering and produce dense, compact clusters.
         hop_of = expanded["hop"][parent_of, worker_of, col_of]
         if SELECT_RULE == "hour":
-            primary = flat_hour[legal]
+            # Adaptive Workload Critical-Path Balancing:
+            # Smoothly pulls critical-path chain tasks earlier in the day
+            # based on remaining daylight hours and task volume (alpha).
+            h_rem = np.maximum(0, 24 - flat_hour[legal]).astype(np.int32)
+            cw = tasks.chain_weight[task_of].astype(np.int32)
+            alpha = 1 if tasks.n <= 130 else 2
+            primary = flat_hour[legal].astype(np.int32) * 48 - cw * h_rem * alpha
         else:
             latest = getattr(tasks, "latest32", tasks.latest)
             primary = latest[task_of] - flat_hour[legal].astype(np.int32)
-        order = np.lexsort((worker_of, hop_of, importance, primary))
+        needs_item = tasks.items[task_of] >= 0
+        has_in_bag = expanded["has"][parent_of, worker_of, col_of]
+        self_serve = needs_item & has_in_bag
+        self_serve_bonus = -self_serve.astype(np.int8)
+        order = np.lexsort((worker_of, self_serve_bonus, hop_of, importance, primary))
         shortlist = legal[order[:budget]]
     else:
         shortlist = legal
