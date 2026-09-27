@@ -622,6 +622,41 @@ def test_repair_unplaced_inserts_feasible_leaf_tasks() -> None:
     assert "t1" in {tid for _, tid, _ in repaired.route}
 
 
+def test_vectorized_warm_start_restores_state_instantly() -> None:
+    """Result carries numpy state and _warm_row restores it directly without string parsing."""
+    import numpy as np
+    from agent.wsr.tasks import TaskArray
+    import agent.wsr.beam as B
+
+    tasks = TaskArray(
+        ids=["t0", "t1"],
+        ops=[("WATER",), ("WATER",)],
+        actions=np.array([9, 9], dtype=np.int8),
+        items=np.array([-1, -1], dtype=np.int8),
+        yields=np.full(2, -1, dtype=np.int8),
+        yield_n=np.zeros(2, dtype=np.int8),
+        banks=np.full(2, -1, dtype=np.int16),
+        ties=np.zeros((2, 0), dtype=np.int16),
+        cells=np.array([[4, 4], [4, 4]], dtype=np.int16),
+        columns=np.zeros(2, dtype=np.int8),
+        pred=np.zeros((2, 2), dtype=bool),
+        earliest=np.zeros(2, dtype=np.int8),
+        latest=np.full(2, 24, dtype=np.int8),
+    )
+    day = B.Day(chains=(), available={})
+    res = B.search(day, tasks, hands=0, max_hands=0)
+    assert res.complete
+    assert hasattr(res, "state")
+    assert res.state is not None, "Result must carry vectorized state"
+    assert len(res.state) == 6  # done, when, who, free, where, travel
+
+    # Warm search must restore state directly
+    warmed = B.search(day, tasks, hands=0, max_hands=0, warm=res)
+    assert warmed.complete
+    assert warmed.route == res.route
+
+
+
 
 
 

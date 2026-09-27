@@ -182,6 +182,7 @@ class Result(NamedTuple):
     #: it. The arithmetic floor is a count of workers and the ceiling is a count of hands, and on a
     #: hundred tiles the first passes the second - which is an answer about the day, not an error.
     infeasible: bool = False
+    state: tuple | None = None
 
 
 def lower_bound(day: Day, tasks: TaskArray) -> int:
@@ -584,6 +585,23 @@ def _warm_row(tasks: TaskArray, warm: Result, done, when, who, free, where, trav
     it that still applies, not an error.
     """
     row = 0
+    first_hand = 1
+    if warm.state is not None and free.shape[1] >= warm.state[3].size:
+        w_doors = tuple(warm.doors) if hasattr(warm, "doors") else ()
+        cur_doors = tuple((int(c[0]), int(c[1])) for c in where[0, first_hand:])
+        if w_doors and w_doors == cur_doors:
+            w_done, w_when, w_who, w_free, w_where, w_travel = warm.state
+            n_c = min(tasks.n, w_done.size)
+            m_c = min(free.shape[1], w_free.size)
+            done[row, :n_c] = w_done[:n_c]
+            when[row, :n_c] = w_when[:n_c]
+            who[row, :n_c] = w_who[:n_c]
+            free[row, :m_c] = w_free[:m_c]
+            where[row, :m_c] = w_where[:m_c]
+            travel[row] = w_travel
+            np.add.at(count[row], tasks.edge_after, done[row, tasks.edge_before].astype(np.int16))
+            return
+
     column = {task_id: index for index, task_id in enumerate(tasks.ids)}
     # Where each worker stands before its first task: the row's own start, taken before the loop
     # writes over it. The walk is measured from here, not from the worker's last tile.
@@ -658,7 +676,7 @@ def _run(day: Day, tasks: TaskArray, *, hands: int, beam: int,
 
     # The best state is remembered as the search goes, because the beam's last generation can be
     # empty - a route that dies at the end would otherwise erase the work it had already placed.
-    best = _snapshot(done, when, who, free, travel, first_hand, hours)
+    best = _snapshot(done, when, who, free, where, travel, first_hand, hours)
     for _step in range(n):
         expanded = _expand(day, tasks, done, when, who, free, where, travel, live, count, load)
         if expanded is None:
@@ -667,19 +685,20 @@ def _run(day: Day, tasks: TaskArray, *, hands: int, beam: int,
             expanded, tasks, beam, first_hand, hours)
         if not live.any():
             break
-        here = _snapshot(done, when, who, free, travel, first_hand, hours)
+        here = _snapshot(done, when, who, free, where, travel, first_hand, hours)
         if _better(here, best):
             best = here
 
-    placed, when_best, who_best, done_best = best
+    placed, when_best, who_best, done_best, state_best = best
     complete = placed == n
     route = [(int(when_best[i]), tasks.ids[i], int(who_best[i]))
              for i in np.argsort(when_best) if done_best[i]]
     return Result(hands, route, complete,
-                  doors=tuple((int(c[0]), int(c[1])) for c in start_pos[first_hand:]))
+                  doors=tuple((int(c[0]), int(c[1])) for c in start_pos[first_hand:]),
+                  state=state_best)
 
 
-def _snapshot(done, when, who, free, travel, first_hand, start_hours):
+def _snapshot(done, when, who, free, where, travel, first_hand, start_hours):
     """The best route in the beam right now, by the layered objective: work, hands, makespan, walk.
 
     A hand counts as put to work when its clock has moved past the hour it began at - not when its
@@ -689,7 +708,8 @@ def _snapshot(done, when, who, free, travel, first_hand, start_hours):
     hands_used = (free[:, first_hand:] > start_hours[first_hand:]).sum(axis=1)
     makespan = free.max(axis=1)
     row = int(np.lexsort((travel, makespan, hands_used, -placed))[0])
-    return int(placed[row]), when[row].copy(), who[row].copy(), done[row].copy()
+    state = (done[row].copy(), when[row].copy(), who[row].copy(), free[row].copy(), where[row].copy(), int(travel[row]))
+    return int(placed[row]), when[row].copy(), who[row].copy(), done[row].copy(), state
 
 
 def _better(candidate, best) -> bool:
