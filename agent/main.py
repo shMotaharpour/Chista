@@ -76,7 +76,7 @@ class Agent:
         self.failed_days: set[int] = set()
         self.day_logged = -1
 
-    def __call__(self, obs) -> dict:
+    def __call__(self, obs, config=None) -> dict:
         """One turn in, one legal action dict out.
 
         Hour 0 is the day's plan (`observe`), every later hour is pool work
@@ -90,10 +90,11 @@ class Agent:
             if self.manager is None:
                 self.manager = Manager(self.cfg)
             if hour == 0:
-                self.manager.observe(obs)
+                self.manager.observe(obs, config)
             else:
                 self.manager.step(obs)
-            action = dispatch_plan(self.manager.best(), obs)
+            action = dispatch_plan(self.manager.best(), obs,
+                                   getattr(self.manager, "terms", None))
         except Exception as exc:              # noqa: BLE001 - the harness contract
             error = exc
             if len(self.failures) < 64:
@@ -145,14 +146,23 @@ opponent_model()
 AGENT = Agent()
 
 
-def agent(obs) -> dict:
-    """The harness's entry point: ONE argument, and the LAST callable here.
+def agent(obs, config=None) -> dict:
+    """The harness's entry point: TWO arguments, and the LAST callable here.
 
-    One argument because the harness truncates the call to this function's
-    argcount — and because the run configuration is not this agent's to depend
-    on: the numbers it carried (`farmHandCostMult`, `shedCapacity`, the town's
-    intervals) are read through `agent/world/terms.EngineTerms`, which takes the
-    observation's own `configuration` when the harness put one there and the
-    world's transcription of the engine's default when it did not, in ONE place.
+    Two because that is the only way the run's own configuration reaches an
+    agent. `kaggle_environments.agent.Agent.act` builds `[observation,
+    configuration]` and truncates the call to this function's `co_argcount`
+    (`agent.py:171-172`; the raw-callable path does the same at `:151-153`), so a
+    one-argument entry is handed the observation alone and never sees the run's
+    numbers. Measured on this machine: a 1-arg callable received
+    `day, farms, hour, market, player, private, remainingOverageTime, step, town`
+    and no configuration; a 2-arg callable received all fifteen configuration
+    keys with the run's overrides applied (`farmHandCostMult`, `shedCapacity`,
+    the town's intervals, `boardSize`, `turnsPerDay`, `weedSpawnChance`, ...).
+
+    `config` defaults to None so a direct caller (a test, a probe, FastSim) may
+    still pass the observation alone; `EngineTerms` then answers with the world's
+    transcription of the engine's own defaults — one place, and never a second
+    copy of a number.
     """
-    return AGENT(obs)
+    return AGENT(obs, config)

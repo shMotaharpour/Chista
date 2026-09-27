@@ -38,14 +38,21 @@ def test_without_a_configuration_the_transcription_answers():
     transcription of the engine's defaults is the answer — and it is the SAME
     number, not a copy of it."""
     terms = EngineTerms.from_obs({})
-    assert terms.hand_cost_mult == rules.HAND_COST_MULT
+    assert terms.hand_cost_mult == rules.FARM_HAND_COST_MULT
     assert terms.shed_capacity == rules.SHED_CAPACITY
     assert terms.shop_interval == rules.SHOP_SELL_INTERVAL_TURNS
     assert terms.center_interval == rules.CENTER_SELL_INTERVAL_TURNS
     assert terms.shop_unlock_interval == rules.SHOP_UNLOCK_INTERVAL_DAYS
-    assert terms.hand_cost_mult == rules.HAND_COST_MULT == 0, (
-        "one reference for what a hand costs (the owner's order: no labour-cost "
-        "model yet), not the engine's 1 sitting beside a separate planner 0")
+    assert terms.board_size == rules.BOARD_SIZE
+    assert terms.max_orders_per_turn == rules.MAX_MARKET_ORDERS_PER_TURN
+    assert terms.turns_per_day == rules.TURNS_PER_DAY
+    assert terms.episode_steps == rules.EPISODE_STEPS
+    assert terms.act_timeout == rules.ACT_TIMEOUT_S
+    assert terms.starting_money == rules.STARTING_MONEY
+    assert terms.weed_spawn_chance == rules.WEED_SPAWN_CHANCE
+    assert terms.hand_cost_mult == rules.FARM_HAND_COST_MULT == 1, (
+        "one reference for what a hand costs — the engine's own default, not a "
+        "planner 0 sitting beside it")
 
 
 def test_the_observation_configuration_wins_for_what_it_names():
@@ -77,6 +84,43 @@ def test_get_speaks_the_engines_own_key_names():
     assert terms.get("SHED_CAPACITY") == rules.SHED_CAPACITY
     assert terms.get("notAKey", 12) == 12
     assert terms.get("notAKey") is None
+
+
+def test_every_default_is_the_environments_own_default():
+    """His rule: an env config's default IS the env's default — and we model all.
+
+    Read from the INSTALLED `kaggle_environments` config file, key by key, so a
+    drifted transcription or an env key the agent never modelled fails here
+    instead of silently playing a different run than the one it was given.
+    """
+    import json
+    import pathlib
+
+    import kaggle_environments as KE
+
+    from agent.world.terms import _KEYS
+
+    spec_path = (pathlib.Path(KE.__file__).parent / "envs" / "kaggriculture"
+                 / "kaggriculture.json")
+    spec = json.loads(spec_path.read_text(encoding="utf-8"))["configuration"]
+    assert "shedCapacity" in spec and len(spec) >= 14, spec
+
+    terms = EngineTerms()
+    unmodelled = [k for k in spec if k not in _KEYS]
+    assert not unmodelled, (
+        f"env config key(s) the agent does not model at all: {unmodelled}")
+
+    for key, body in spec.items():
+        if key in ("seed", "marketParams"):
+            continue                    # carried as-is (None = the env's default)
+        # `episodeSteps` and `actTimeout` are bare values in the file; every
+        # other key is a spec object carrying its `default`.
+        want = body["default"] if isinstance(body, dict) else body
+        got = terms.get(key)
+        assert got == want, f"{key}: agent default {got!r} != the env's {want!r}"
+    assert terms.seed is None and terms.market_params is None, (
+        "the env's own defaults for `seed` and `marketParams` are null/{} — "
+        "the agent must not invent one")
 
 
 def test_a_missing_or_odd_configuration_is_not_an_error():
@@ -120,22 +164,22 @@ def test_the_run_multiplier_reaches_the_hire_bill():
 def test_one_reference_for_what_a_hand_costs():
     """ONE number, and setting it moves the bill AND the LP's hour price.
 
-    `rules.HAND_COST_MULT` is the reference (the owner's accounting of the
-    engine's `farmHandCostMult`), `EngineTerms.hand_cost_mult` defaults to it,
-    and both readers go through `rules.hire_cost` — so there is no second knob
-    that can disagree with the first. It is ZERO today by the owner's order (no
-    labour-cost model yet); the guard is about the wiring, not the value.
+    `rules.FARM_HAND_COST_MULT` is the reference (the engine's own default for
+    `farmHandCostMult`), `EngineTerms.hand_cost_mult` defaults to it and carries
+    the run's own value when the harness handed one in, and both readers go
+    through `rules.hire_cost` — so there is no second knob that can disagree
+    with the first, and a run that pays expensive hands is priced expensive.
     """
     from agent.planner import day as D
     from agent.planner.market import hire_orders
     from agent.world.rules import HIRE_SEQUENCE
 
-    assert rules.HAND_COST_MULT == 0, "the owner's order, until labour is priced"
-    assert EngineTerms().hand_cost_mult == rules.HAND_COST_MULT
+    assert rules.FARM_HAND_COST_MULT == 1, "the engine's own default"
+    assert EngineTerms().hand_cost_mult == rules.FARM_HAND_COST_MULT
 
     # Both readers, no argument: the reference answers for both.
     ladder = int(sum(HIRE_SEQUENCE[:3]))
-    assert hire_orders(3, 0)[1] == D.hire_bill(3, 0) == rules.HAND_COST_MULT * ladder
+    assert hire_orders(3, 0)[1] == D.hire_bill(3, 0) == rules.FARM_HAND_COST_MULT * ladder
 
     # ...and a run that says hands cost 3x fib moves both, once.
     assert hire_orders(3, 0, 3)[1] == D.hire_bill(3, 0, 3) == 3 * ladder, (
@@ -179,9 +223,11 @@ def test_the_per_turn_order_cap_has_one_definition():
     assert cap == 10
     assert dispatch.MAX_MARKET_ORDERS_PER_TURN is cap
     assert shed.MAX_MARKET_ORDERS_PER_TURN is cap
-    for fn in (K.merge, K.build):
-        default = fn.__kwdefaults__ or {}
-        assert default.get("cap", cap) == cap, f"{fn.__name__} restates the cap"
+    assert (K.merge.__kwdefaults__ or {}).get("cap") == cap, (
+        "merge restates the cap instead of reading the world's")
+    assert (K.build.__kwdefaults__ or {}).get("cap") is None, (
+        "build must take the cap from the run's own terms (`terms."
+        "max_orders_per_turn`), never restate it")
     assert not hasattr(rules, "MAX_ORDERS_PER_TURN"), (
         "the second spelling of the same cap is back")
 

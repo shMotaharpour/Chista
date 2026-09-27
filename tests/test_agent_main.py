@@ -120,15 +120,18 @@ def _top_level_callables(src: str) -> list[tuple[str, int | None]]:
     return out
 
 
-def test_the_harness_picks_the_last_callable_and_it_takes_one_argument() -> None:
+def test_the_harness_picks_the_last_callable_and_it_takes_two_arguments() -> None:
     """The reason this module's shape is what it is, checked against the harness.
 
     `kaggle_environments.agent.get_last_callable` returns the LAST callable value
-    in the module's globals and `Agent.act` truncates the call to that callable's
-    `co_argcount` — so a one-argument function is handed the observation alone.
-    Anything callable defined after the entry breaks the turn, and so does an
-    instance as the last value: an object has no `__code__`, cannot be truncated,
-    and would be handed `(obs, config)`.
+    in the module's globals and `Agent.act` builds `[observation, configuration]`
+    and truncates the call to that callable's `co_argcount` — so TWO arguments
+    are what brings the run's own configuration to the agent, and a one-argument
+    entry is handed the observation alone (measured: a 1-arg callable received no
+    configuration at all). Anything callable defined after the entry breaks the
+    turn, and so does an instance as the last value: an object has no `__code__`,
+    cannot be truncated, and would be handed `(obs, config)` by luck rather than
+    by contract.
     """
     import inspect
 
@@ -138,11 +141,33 @@ def test_the_harness_picks_the_last_callable_and_it_takes_one_argument() -> None
     picked = get_last_callable(src, path=str(ENTRY))
     assert inspect.isfunction(picked), type(picked)
     assert picked.__name__ == agent.__name__ == "agent", picked.__name__
-    assert picked.__code__.co_argcount == 1, picked.__code__.co_argcount
+    assert picked.__code__.co_argcount == 2, picked.__code__.co_argcount
 
     bound = _top_level_callables(src)
-    assert bound[-1] == ("agent", 1), (
+    assert bound[-1] == ("agent", 2), (
         f"the entry is not the LAST callable this module binds: {bound}")
+
+
+def test_the_entry_hands_the_runs_configuration_to_the_manager() -> None:
+    """The second argument is the run's configuration, and it goes where it must.
+
+    The configuration is the only channel a run's own numbers (`farmHandCostMult`,
+    `shedCapacity`, the town's intervals) arrive through, so it is handed to the
+    day-start `observe` — the call that resolves the terms — and nowhere else:
+    the later hours are pool work on the day already planned.
+    """
+    fake = _FakeManager()
+    entry = _agent(fake)
+    run_config = {"farmHandCostMult": 3, "shedCapacity": 250}
+
+    first = _obs(day=0, hour=0)
+    entry(first, run_config)
+    assert fake.observed == [(first, run_config)], fake.observed
+
+    entry(_obs(day=0, hour=1), run_config)
+    assert fake.observed == [(first, run_config)], (
+        "a mid-day turn re-observed; the day's terms are the day-start ones")
+    assert len(fake.stepped) == 1
 
 
 # --------------------------------------------------------------- the entry point

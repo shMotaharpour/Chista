@@ -289,7 +289,7 @@ def merge(sells: list, hires: list, buys: list, *,
 
 def build(obs, chains, *, hands: int, harvest_expected: int = 0,
           terms: "EngineTerms | None" = None,
-          cap: int = MAX_MARKET_ORDERS_PER_TURN, model=None,
+          cap: int | None = None, model=None,
           activity: int | None = None,
           forecast_obj=None, wsr_check: bool = True,
           arrivals: dict | None = None, rank=None,
@@ -322,6 +322,9 @@ def build(obs, chains, *, hands: int, harvest_expected: int = 0,
     # `rules.hire_cost` — the same function that prices the LP's hours — so the
     # bill and the LP can never disagree about what a hand costs.
     terms = EngineTerms.from_obs(obs) if terms is None else terms
+    # The engine's own per-turn limit for THIS run (F031): the queue is built to
+    # the cap the run actually settles, not to the transcribed default.
+    cap = int(terms.max_orders_per_turn if cap is None else cap)
     hires, hire_bill = hire_orders(hands if wsr_check else 0,
                                    int(farm.get("hires_today", 0)),
                                    int(terms.hand_cost_mult))

@@ -299,6 +299,7 @@ def _better(candidate: "DayPlan", best: "DayPlan") -> bool:
 
 def plan(obs, contractor, supply, *, class_of_tile, iter_cap: int | None = None,
          hands: int = 0,
+         terms: "EngineTerms | None" = None,
          rounds: int | None = None, tolerance: float | None = None,
          pool: list | None = None,
          max_hands: int | None = None, w_warm=None,
@@ -355,6 +356,9 @@ def plan(obs, contractor, supply, *, class_of_tile, iter_cap: int | None = None,
     from agent.planner import master as M
 
     cfg = Config() if cfg is None else cfg
+    # The run's own numbers (the wage multiplier among them): resolved once here
+    # when the caller did not already (`Manager.observe` does).
+    terms = EngineTerms.from_obs(obs) if terms is None else terms
     iter_cap = int(cfg.master_rounds if iter_cap is None else iter_cap)
     rounds = int(cfg.fit_rounds if rounds is None else rounds)
     tolerance = (float(cfg.hours_tolerance) if tolerance is None
@@ -372,7 +376,7 @@ def plan(obs, contractor, supply, *, class_of_tile, iter_cap: int | None = None,
     for offer in range(max(0, ceiling), -1, -1):
         current = _solve_at(obs, contractor, supply, class_of_tile, offer,
                             iter_cap, rounds, tolerance, carried,
-                            w_warm, forecast_obj, smoothing, cfg)
+                            w_warm, forecast_obj, smoothing, cfg, terms)
         carried = list(current.master.pool)
         if chosen is None or current.net > chosen.net:
             chosen = current
@@ -382,12 +386,14 @@ def plan(obs, contractor, supply, *, class_of_tile, iter_cap: int | None = None,
 def _solve_at(obs, contractor, supply, class_of_tile, hands, iter_cap,
               rounds, tolerance, pool, w_warm=None,
               forecast_obj=None, smoothing: float = 0.0,
-              cfg: "Config | None" = None) -> DayPlan:
+              cfg: "Config | None" = None,
+              terms: "EngineTerms | None" = None) -> DayPlan:
     """One pool size: solve, assign, ask wsr, and price the hands."""
     from agent.planner import columns as C
     from agent.planner import master as M
 
     cfg = Config() if cfg is None else cfg
+    terms = EngineTerms.from_obs(obs) if terms is None else terms
     days = int(np.asarray(supply.hours).size)
     hours = hours_for(hands, days, cfg.hours_overhead)
     best: DayPlan | None = None
@@ -458,7 +464,8 @@ def _solve_at(obs, contractor, supply, class_of_tile, hands, iter_cap,
         # The bill follows the pool that actually carries the day (`fitted.pool`
         # is what `compile` hires, day.py:396), not the pool the master priced
         # with before the search had its say.
-        bill = hire_bill(int(fitted.pool)) * contractor.days
+        bill = hire_bill(int(fitted.pool),
+                         multiplier=terms.hand_cost_mult) * contractor.days
         candidate = DayPlan(result, choices, mixes, fitted, spent, applied,
                             solves=spent, hands=hands,
                             net=float(result.objective) - bill)
