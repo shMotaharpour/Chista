@@ -656,6 +656,59 @@ def test_vectorized_warm_start_restores_state_instantly() -> None:
     assert warmed.route == res.route
 
 
+def test_spatial_transitions_matrix_guides_empirical_highways() -> None:
+    """Precomputed spatial transitions matrix guides beam shortlist on empirical pathways."""
+    import numpy as np
+    import agent.wsr.beam as B
+
+    assert hasattr(B, "SPATIAL_TRANSITIONS")
+    matrix = B.SPATIAL_TRANSITIONS
+    assert matrix.shape == (100, 100)
+    assert matrix.dtype == np.float32
+    assert matrix.max() <= 1.0 and matrix.min() >= 0.0
+
+    # Central shed door (44, 44) and adjacent (44, 34) are high-frequency transitions
+    assert matrix[44, 44] > 0.5, f"Expected high self-transition at shed door: {matrix[44, 44]}"
+    assert matrix[44, 34] > 0.3, f"Expected common corridor transition: {matrix[44, 34]}"
+
+
+def test_search_memoization_returns_instant_cached_result() -> None:
+    """Repeated calls with identical day and task inputs return cached Result in microseconds."""
+    import time
+    import numpy as np
+    from agent.wsr.tasks import TaskArray
+    import agent.wsr.beam as B
+
+    B.clear_search_cache()
+    tasks = TaskArray(
+        ids=["t0", "t1"],
+        ops=[("WATER",), ("WATER",)],
+        actions=np.array([9, 9], dtype=np.int8),
+        items=np.array([-1, -1], dtype=np.int8),
+        yields=np.full(2, -1, dtype=np.int8),
+        yield_n=np.zeros(2, dtype=np.int8),
+        banks=np.full(2, -1, dtype=np.int16),
+        ties=np.zeros((2, 0), dtype=np.int16),
+        cells=np.array([[4, 4], [4, 4]], dtype=np.int16),
+        columns=np.zeros(2, dtype=np.int8),
+        pred=np.zeros((2, 2), dtype=bool),
+        earliest=np.zeros(2, dtype=np.int8),
+        latest=np.full(2, 24, dtype=np.int8),
+    )
+    day = B.Day(chains=(), available={})
+    res1 = B.search(day, tasks, hands=0, max_hands=0)
+    assert res1.complete
+
+    t0 = time.perf_counter()
+    res2 = B.search(day, tasks, hands=0, max_hands=0)
+    elapsed = time.perf_counter() - t0
+
+    assert res2 is res1, "Repeated search must return cached object reference"
+    assert elapsed < 0.005, f"Cached search must take under 5 ms: {elapsed*1000:.3f} ms"
+
+
+
+
 
 
 

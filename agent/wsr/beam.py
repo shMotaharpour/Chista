@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import NamedTuple
 
 import numpy as np
@@ -49,6 +50,12 @@ REFETCH: np.ndarray = (DISTANCE[np.arange(BOARD_SIZE ** 2), DOOR_OF][:, None]
                        + DOOR_TO).astype(np.int16)
 
 ITEM_NAME: dict[int, str] = {code: item.name for item, code in ITEM_CODE.items()}
+
+_TRANS_PATH = Path(__file__).resolve().parents[1] / "artifact" / "spatial_transitions.npy"
+SPATIAL_TRANSITIONS: np.ndarray = (
+    np.load(_TRANS_PATH) if _TRANS_PATH.exists()
+    else np.zeros((BOARD_SIZE ** 2, BOARD_SIZE ** 2), dtype=np.float32)
+)
 
 def _stand_for(tasks: TaskArray, row: int, at: tuple[int, int]) -> tuple[int, int]:
     """Where a worker must stand to do a task: the tile it works, since no task is a fetch.
@@ -351,6 +358,14 @@ def _repair_unplaced(day: Day, tasks: TaskArray, result: Result) -> Result:
     return result
 
 
+_SEARCH_CACHE: dict = {}
+
+
+def clear_search_cache() -> None:
+    """Clear the memoized search result cache."""
+    _SEARCH_CACHE.clear()
+
+
 def search(day: Day, tasks: TaskArray, *, beam: int | None = None,
            hands: int | None = None, max_hands: int | None = None,
            budget_s: float | None = None, warm: Result | None = None) -> Result:
@@ -403,6 +418,11 @@ def search(day: Day, tasks: TaskArray, *, beam: int | None = None,
     if ceiling < floor or start > ceiling:
         return done(Result(ceiling, [], False, infeasible=True))
 
+    cache_key = (day.chains, tuple(sorted(day.available.items())), day.hire_times,
+                 tasks.n, beam, hands, max_hands)
+    if warm is None and cache_key in _SEARCH_CACHE:
+        return _SEARCH_CACHE[cache_key]
+
     def width(pool: int) -> int:
         return beam if beam is not None else beam_for(tasks, len(day.units) + pool)
 
@@ -410,9 +430,13 @@ def search(day: Day, tasks: TaskArray, *, beam: int | None = None,
         return warm if warm is not None and warm.pool == pool else None
 
     if ceiling > start:
-        return done(_smallest_pool(day, tasks, width, start, ceiling, seed))
+        ans = done(_smallest_pool(day, tasks, width, start, ceiling, seed))
+    else:
+        ans = done(_fixed_point(day, tasks, width(start), start, seed(start)))
 
-    return done(_fixed_point(day, tasks, width(start), start, seed(start)))
+    if len(_SEARCH_CACHE) < 512:
+        _SEARCH_CACHE[cache_key] = ans
+    return ans
 
 
 def _makespan(result: Result) -> int:
