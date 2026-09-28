@@ -369,6 +369,8 @@ class MasterLP:
         revenue concave in the quantity sold — and what keeps σ, the value of a
         unit in the shed, from being the best price on the path.
         """
+        from agent.planner.hands import MAX_HANDS
+
         names = SHED_ITEMS
         cfg = Config() if cfg is None else cfg
         items = len(names) if shed_stock is not None else 0
@@ -445,7 +447,13 @@ class MasterLP:
         land0 = defer0 + items * days if entry else now0
         nq = 0 if not land else min(int(land), len(LAND_PRICES))
         land_width = nq * days
-        n_cols = land0 + land_width
+        # Every optional block's width is declared HERE, before any row or cost
+        # vector is allocated. A block that APPENDS to them leaves the vectors
+        # longer than `num_col_`; a block that grows `n_cols` after the rows
+        # exist leaves them short of it. Both were live defects.
+        hands_width = MAX_HANDS * days if buy_hands else 0
+        hands0 = land0 + land_width
+        n_cols = hands0 + hands_width
 
         def col_now(ii: int, d: int) -> int:
             return now0 + ii * days + d
@@ -669,12 +677,7 @@ class MasterLP:
                        + np.arange(days)[None, :]] = -1.0
             L_rows[n_land_rows - 1, :n] = 1.0
             L_rows[n_land_rows - 1, land0:] = -25.0
-            lower = np.concatenate([lower, np.zeros(land_width)])
-            upper = np.concatenate([upper, np.ones(land_width)])
-            cost = np.concatenate([cost, np.zeros(land_width)])
-        from agent.planner.hands import MAX_HANDS
-
-        hands0 = n_cols
+            upper[land0:land0 + land_width] = 1.0     # one binary per (quadrant, day)
         if buy_hands:
             # --- the day's hands, as columns the model BUYS -------------------
             # One column per (rung, day): the k-th hand of that day. The rungs
@@ -685,13 +688,13 @@ class MasterLP:
             # it separately or the same coins are paid twice.
             from agent.world.rules import hire_cost
 
-            ladder = np.array([hire_cost(k, hand_mult) for k in range(MAX_HANDS + 1)],
-                              dtype=np.float64)
-            n_cols = hands0 + MAX_HANDS * days
-            inc = np.diff(ladder)                    # the k-th hand's own price
-            cost = np.concatenate([cost, np.tile(inc, days)])
-            lower = np.concatenate([lower, np.zeros(MAX_HANDS * days)])
-            upper = np.concatenate([upper, np.full(MAX_HANDS * days, np.inf)])
+            # `hire_cost(k)` is the price of the NEXT hire when k are already on
+            # the field today, so the ladder indexed at 0 is the FIRST hand's own
+            # price, not a constant to difference away: `diff` made rung 0 free
+            # and the model hired a hand for nothing.
+            inc = np.array([hire_cost(k, hand_mult) for k in range(MAX_HANDS)],
+                           dtype=np.float64)
+            cost[hands0:hands0 + hands_width] = np.tile(inc, days)
             # The purse must COVER the bill, not only be charged it in the
             # objective: the spend is cumulative (`A_c`'s rows are "everything
             # spent up to and including day d"), so the day-d bill appears in
