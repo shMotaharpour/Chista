@@ -54,7 +54,7 @@ def test_the_day_the_master_commits_can_actually_be_walked(board):
     """End to end: a certified LP mix, rounded, and carried by real workers."""
     obs, contractor, supply, class_of_tile = board
     result = D.plan(obs, contractor, supply, class_of_tile=class_of_tile,
-                    iter_cap=200, hands=4)
+                    iter_cap=200, offer=4)
 
     assert result.master.certified, result.master.stopped
     assert result.day.chains, "the master committed nothing at all"
@@ -76,7 +76,7 @@ def test_the_committed_tiles_are_the_ones_beside_the_shed(board):
     """
     obs, contractor, supply, class_of_tile = board
     result = D.plan(obs, contractor, supply, class_of_tile=class_of_tile,
-                    iter_cap=200, hands=0, max_hands=2)
+                    iter_cap=200, offer=0, cap=2)
     steps = C.shed_distance()
     from agent.world.rules import BOARD_SIZE
 
@@ -100,7 +100,7 @@ def test_a_declined_tile_is_not_a_dropped_one(board):
     """
     obs, contractor, supply, class_of_tile = board
     result = D.plan(obs, contractor, supply, class_of_tile=class_of_tile,
-                    iter_cap=200, hands=4)
+                    iter_cap=200, offer=4)
     assigned = sum(1 for c in result.choices if c is not None)
     assert len(result.day.chains) <= assigned
     for _cell, ops, _entity in result.day.chains:
@@ -134,7 +134,7 @@ def test_the_hours_only_ever_come_down(board):
     """
     obs, contractor, supply, class_of_tile = board
     result = D.plan(obs, contractor, supply, class_of_tile=class_of_tile,
-                    iter_cap=200, hands=4)
+                    iter_cap=200, offer=4)
     assert result.day.complete
     assert result.overhead == 1.0, (
         f"the supply was corrected by {result.overhead:.3f}x on a day that "

@@ -110,7 +110,7 @@ BOARD = {tuple(cell): tile for cell, tile in DAY["board"] if tuple(cell) in {c f
 def _day_plan(hands: int):
     fit = D.DayFit(chains=tuple(WATERS), placed=len(WATERS), tasks=len(WATERS), pool=hands,
                    complete=True, hours_used=0.0, hours_committed=0.0)
-    return D.DayPlan(master=None, choices=[], mixes={}, day=fit, hands=hands)
+    return D.DayPlan(master=None, choices=[], mixes={}, day=fit, offer=hands)
 
 
 def _obs():
@@ -127,7 +127,7 @@ def _obs():
 def test_the_planners_compile_writes_the_day_the_search_priced(hands) -> None:
     obs = _obs()
     try:
-        plan = D.compile(_day_plan(hands), obs, hands=hands)
+        plan = D.compile(_day_plan(hands), obs, hired=hands)
     except ValueError as exc:
         pytest.fail(f"hands={hands}: the planner's compile refused its own day - the hands were "
                     f"written from doors the search did not price: {exc}")
@@ -152,7 +152,7 @@ def test_the_compiled_day_hires_exactly_the_hands_it_priced(hands) -> None:
     hired a different count would dispatch hands the day was never costed with,
     which is the mismatch the hours were given one home to prevent.
     """
-    plan = D.compile(_day_plan(hands), _obs(), hands=hands)
+    plan = D.compile(_day_plan(hands), _obs(), hired=hands)
     hires = sum(1 for hour in plan["market"] for o in hour if o and o[0] == "HIRE")
     assert hires == hands, f"priced {hands} hands, hired {hires}"
 

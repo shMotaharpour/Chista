@@ -52,8 +52,8 @@ def test_fit_is_still_allowed_the_hands_it_was_offered() -> None:
 
 def test_compile_with_no_hands_writes_one_unit_and_hires_nobody() -> None:
     fitted = D.DayFit(CHAINS, 0, 28, 0, True, 0.0, 0.0)
-    plan = D.DayPlan(master=None, choices=[], mixes={}, day=fitted, rounds=1, overhead=1.0, hands=0)
-    out = D.compile(plan, OBS, hands=0)
+    plan = D.DayPlan(master=None, choices=[], mixes={}, day=fitted, rounds=1, overhead=1.0, offer=0)
+    out = D.compile(plan, OBS, hired=0)
     assert len(out["units"]) == 1, f"a plan with no hands wrote {len(out['units'])} units"
     hires = [o for row in out["market"] for o in row if o and o[0] == "HIRE"]
     assert not hires, f"a plan with no hands hires {len(hires)}"

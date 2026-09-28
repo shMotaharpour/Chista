@@ -254,29 +254,29 @@ def fit(chains, *, pool_ceiling: int, available: dict | None = None,
                   spare=int(result.spare), floor=int(pool_floor))
 
 
-def hours_for(hands: int, days: int, overhead: float) -> np.ndarray:
-    """The labour a day holds with `hands` hired, per day of the horizon.
+def hours_for(hired: int, days: int, overhead: float) -> np.ndarray:
+    """The labour a day holds with `hired` hands, per day of the horizon.
 
-    `24·(1 + hands) − hands`: the farmer's full day plus one per hand, less the
+    `24·(1 + hired) − hired`: the farmer's full day plus one per hand, less the
     hour each hand loses to being hired (F040 — a hand hired in turn 0 first
     acts at hour 1). The overhead is #12's M3 placeholder for the walking a
     route does beyond what a column charges; the columns now carry the walk to
     the tile, so what is left is the walking BETWEEN them.
     """
-    gross = 24.0 * (1 + int(hands)) - int(hands)
+    gross = 24.0 * (1 + int(hired)) - int(hired)
     return np.full(days, gross * (1.0 - overhead))
 
 
-def hire_bill(hands: int, hires_today: int = 0,
+def hire_bill(hired: int, hires_today: int = 0,
               multiplier: int | None = None) -> int:
-    """What `hands` hires cost today. Fibonacci, and it resets nightly (F039).
+    """What `hired` hires cost today. Fibonacci, and it resets nightly (F039).
 
     One formula with the LP's: `rules.hire_cost(n, multiplier)`, where
     `multiplier` is the run's own `farmHandCostMult` when the caller resolved it.
     """
     from agent.world.rules import hire_cost
     return sum(hire_cost(int(hires_today) + i, multiplier)
-               for i in range(max(0, int(hands))))
+               for i in range(max(0, int(hired))))
 
 
 @dataclass(frozen=True)
@@ -289,7 +289,7 @@ class DayPlan:
     day: DayFit
     rounds: int = 1                # which solve this candidate came from
     overhead: float = 1.0          # the hours correction that was applied
-    hands: int = 0                 # hands this plan pays for
+    offer: int = 0                 # the offer it was priced for; `fitted.pool` is what it pays for
     net: float = 0.0               # objective less what the hands cost
     #: How many times the master was solved in total. `rounds` is the winner's
     #: own number and a later solve can lose to an earlier one, so the two are
@@ -306,11 +306,11 @@ def _better(candidate: "DayPlan", best: "DayPlan") -> bool:
 
 
 def plan(obs, contractor, supply, *, class_of_tile, iter_cap: int | None = None,
-         hands: int = 0,
+         offer: int = 0,
          terms: "EngineTerms | None" = None,
          rounds: int | None = None, tolerance: float | None = None,
          pool: list | None = None,
-         max_hands: int | None = None, w_warm=None,
+         cap: int | None = None, w_warm=None,
          forecast_obj=None, smoothing: float | None = None,
          cfg: "Config | None" = None) -> DayPlan:
     """Enumerate the pool of hands, and keep the day worth the most net of it.
@@ -372,8 +372,8 @@ def plan(obs, contractor, supply, *, class_of_tile, iter_cap: int | None = None,
     tolerance = (float(cfg.hours_tolerance) if tolerance is None
                  else float(tolerance))
     smoothing = float(cfg.smoothing if smoothing is None else smoothing)
-    max_hands = int(cfg.max_hands if max_hands is None else max_hands)
-    ceiling = int(hands if max_hands is None else max_hands)
+    cap = int(cfg.max_hands if cap is None else cap)
+    pool_ceiling = int(offer if cap is None else cap)   # NOTE: dead condition, see the commit
     carried = list(pool or [])
     chosen: DayPlan | None = None
     # Every offer is solved, largest pool FIRST: more hands is where the value
@@ -381,8 +381,8 @@ def plan(obs, contractor, supply, *, class_of_tile, iter_cap: int | None = None,
     # caps the enumeration shorter than this keeps a good day instead of the
     # emptiest one. What this function no longer does is cut the walk short on a
     # clock: the offers are all priced and the best NET wins.
-    for offer in range(max(0, ceiling), -1, -1):
-        current = _solve_at(obs, contractor, supply, class_of_tile, offer,
+    for size in range(max(0, pool_ceiling), -1, -1):
+        current = _solve_at(obs, contractor, supply, class_of_tile, size,
                             iter_cap, rounds, tolerance, carried,
                             w_warm, forecast_obj, smoothing, cfg, terms)
         carried = list(current.master.pool)
@@ -391,7 +391,7 @@ def plan(obs, contractor, supply, *, class_of_tile, iter_cap: int | None = None,
     return chosen
 
 
-def _solve_at(obs, contractor, supply, class_of_tile, hands, iter_cap,
+def _solve_at(obs, contractor, supply, class_of_tile, offer, iter_cap,
               rounds, tolerance, pool, w_warm=None,
               forecast_obj=None, smoothing: float = 0.0,
               cfg: "Config | None" = None,
@@ -403,7 +403,7 @@ def _solve_at(obs, contractor, supply, class_of_tile, hands, iter_cap,
     cfg = Config() if cfg is None else cfg
     terms = EngineTerms.from_obs(obs) if terms is None else terms
     days = int(np.asarray(supply.hours).size)
-    hours = hours_for(hands, days, cfg.hours_overhead)
+    hours = hours_for(offer, days, cfg.hours_overhead)
     best: DayPlan | None = None
     applied = 1.0
     candidate: DayPlan | None = None
@@ -443,7 +443,7 @@ def _solve_at(obs, contractor, supply, class_of_tile, hands, iter_cap,
             float(np.asarray(mixes[c.class_key].plans[c.plan_index]
                              .row("labour"))[0])
             for c in choices if c is not None)
-        fitted = fit(chains, pool_ceiling=hands,
+        fitted = fit(chains, pool_ceiling=offer,
                      available=availability(obs, chains),
                      hours_committed=committed)
         if not fitted.complete and fitted.reason == "hours":
@@ -454,10 +454,10 @@ def _solve_at(obs, contractor, supply, class_of_tile, hands, iter_cap,
             # a time would buy the same answer for a search per step.
             #
             # "budget" is never re-asked: more hands do not buy more time.
-            fitted = replace(fitted, short=max(0, int(fitted.floor) - int(hands)))
+            fitted = replace(fitted, short=max(0, int(fitted.floor) - int(offer)))
             # `Config.ask_rounds` is the cap, and it is the CONFIG's number, not
             # a module constant beside it: zero means no re-ask at all.
-            if int(fitted.floor) > int(hands) and int(cfg.ask_rounds) > 0:
+            if int(fitted.floor) > int(offer) and int(cfg.ask_rounds) > 0:
                 again = fit(chains, pool_ceiling=int(fitted.floor),
                             available=availability(obs, chains),
                             hours_committed=committed)
@@ -475,7 +475,7 @@ def _solve_at(obs, contractor, supply, class_of_tile, hands, iter_cap,
         bill = hire_bill(int(fitted.pool),
                          multiplier=terms.hand_cost_mult) * contractor.days
         candidate = DayPlan(result, choices, mixes, fitted, spent, applied,
-                            solves=spent, hands=hands,
+                            solves=spent, offer=offer,
                             net=float(result.objective) - bill)
         if best is None or _better(candidate, best):
             best = candidate
@@ -496,12 +496,12 @@ def _solve_at(obs, contractor, supply, class_of_tile, hands, iter_cap,
             # price the search's own stopping rule into the farm's day.
             return candidate
         applied *= max(1.0 + tolerance, float(fitted.overhead))
-        hours = hours_for(hands, days, cfg.hours_overhead) / applied
+        hours = hours_for(offer, days, cfg.hours_overhead) / applied
 
     return best if best is not None else candidate
 
 
-def compile(day_plan: "DayPlan", obs, *, hands: int | None = None,
+def compile(day_plan: "DayPlan", obs, *, hired: int | None = None,
             rival_supply: dict | None = None,
             terms: "EngineTerms | None" = None, model=None,
             activity: int | None = None,
@@ -524,7 +524,7 @@ def compile(day_plan: "DayPlan", obs, *, hands: int | None = None,
     from agent.wsr.emit import compile_route, to_plan
 
     fitted = day_plan.day
-    pool = int(fitted.pool if hands is None else hands)
+    pool = int(fitted.pool if hired is None else hired)
 
     master_sells = {}
     solve_sells = getattr(getattr(day_plan, "master", None), "sells", None)
@@ -582,9 +582,9 @@ def compile(day_plan: "DayPlan", obs, *, hands: int | None = None,
 
         return rank
 
-    def queue(harvest_expected: int, hands: int, wsr_check: bool,
+    def queue(harvest_expected: int, hired: int, wsr_check: bool,
               arrivals: dict | None = None):
-        built = K.build(obs, fitted.chains, hands=hands,
+        built = K.build(obs, fitted.chains, hands=hired,
                         harvest_expected=harvest_expected, terms=terms,
                         model=model, activity=activity,
                         forecast_obj=forecast_obj, wsr_check=wsr_check,

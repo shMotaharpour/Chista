@@ -238,7 +238,7 @@ class Manager:
         self.hand_estimate = H.estimate(_prev, _quads)
         self.day = D.plan(obs, self.contractor, supply,
                           class_of_tile=class_of_tile,
-                          hands=self.hand_estimate,
+                          offer=self.hand_estimate,
                           pool=self.pool,
                           forecast_obj=self.forecast_obj,
                           cfg=self.cfg)
@@ -248,7 +248,7 @@ class Manager:
         self.certified = bool(self.day.master.certified)
         self._project_own_sells()
         self._watch(obs)
-        self.plan = D.compile(self.day, obs, hands=self.day.hands,
+        self.plan = D.compile(self.day, obs, hired=self.day.offer,
                               terms=self.terms, model=self.opponent,
                               activity=self._activity(),
                               forecast_obj=self.forecast_obj,
@@ -454,10 +454,10 @@ class Manager:
         if self.obs is None or self.certified:
             return self.certified
         days = int(np.asarray(self.contractor.days))
-        hands = getattr(self.day, "hands", 0) if self.day is not None else 0
+        hired = getattr(self.day, "offer", 0) if self.day is not None else 0
         supply = M.supply_from_obs(self.obs, self.cfg)
-        if hands > 0:
-            hours = D.hours_for(hands, days, self.cfg.hours_overhead)
+        if hired > 0:
+            hours = D.hours_for(hired, days, self.cfg.hours_overhead)
             supply = M.CouplingSupply(
                 hours=hours, seed_stock=supply.seed_stock,
                 animal_stock=supply.animal_stock, fert_stock=supply.fert_stock,
