@@ -312,6 +312,58 @@ def day_envelope(fc: MarketForecast, goods, first_day: int, days: int
     return prices.T.copy(), hours.T.copy()
 
 
+
+def cumulative_coins(fc: MarketForecast, good: str, day: int, cap: int,
+                     *, hour: int | None = None, pad: float = 0.0) -> np.ndarray:
+    """`(cap+1,)`: the ladder's own coins for 0..cap units, vectorised.
+
+    The engine's ladder is the cumulative sum of the quote the price table gives
+    at each successive inventory (`prices.price`), read from the SAME table
+    `ladder.sell_coins` walks -- one vectorised `price_vec` call and one `cumsum`
+    instead of a Python call per unit. `cumulative_coins(..)[u]` is
+    `depth_coins(.., u)` (asserted by the caller's guard).
+    """
+    from agent.world.prices import price_vec
+    n = max(0, int(cap))
+    if n == 0:
+        return np.zeros(1, dtype=np.int64)
+    start = inventory_at(fc, good, day, hour) + int(pad)
+    marg = price_vec(good, start + np.arange(n, dtype=np.float64))
+    return np.concatenate([[0], np.cumsum(np.asarray(marg, dtype=np.int64))])
+
+
+def equal_revenue_edges(fc: MarketForecast, good: str, day: int, cap: int,
+                        blocks: int, *, hour: int | None = None,
+                        pad: float = 0.0) -> tuple[int, ...]:
+    """Block edges that split the curve's COINS evenly, not its units.
+
+    A concave ladder's error under a block model is the curvature inside a block,
+    and units are the wrong currency to bound it in: with a geometric split the
+    last block of MILK on day 0 hid 92 units at one average (54.163), pricing a
+    42-unit lot at 3063 against the ladder's 4914 -- 38% low. Splitting the same
+    cap into equal REVENUE bands puts the boundaries where the curve bends, so no
+    block can hide a steep stretch, and the total still telescopes to
+    `cumulative_coins(cap)` at the last edge, exactly.
+
+    The last edge is always `cap`, so the block count and the arrays' shape do
+    not depend on the split.
+    """
+    n = max(1, int(cap))
+    k = max(1, int(blocks))
+    cum = cumulative_coins(fc, good, day, n, hour=hour, pad=pad)
+    total = int(cum[-1])
+    if total <= 0:
+        return tuple(range(n * b // k for b in range(k)) + [n])
+    targets = [total * b / k for b in range(1, k + 1)]
+    inner = [int(np.searchsorted(cum, t)) for t in targets[:-1]]
+    edges, prev = [], 0
+    for e in inner + [n]:
+        e = max(prev + 1, min(int(e), n))
+        edges.append(e)
+        prev = e
+    return tuple(edges)
+
+
 def sell_blocks(fc: MarketForecast, goods, first_day: int, days: int,
                 cap: int, blocks: int = 5, *, hour: int | None = None,
                 hours: np.ndarray | None = None,
@@ -335,23 +387,42 @@ def sell_blocks(fc: MarketForecast, goods, first_day: int, days: int,
     curve stays `depth_coins`, read from a fuller market. None is the mean ladder.
     """
     cap = max(1, int(cap))
-    edges = geometric_edges(cap, blocks)
     n_goods, days = len(goods), max(1, int(days))
-    ends = np.asarray(edges, dtype=np.int64)
-    prevs = np.concatenate([np.zeros(1, dtype=np.int64), ends[:-1]])
-    units = np.zeros((n_goods, days, len(edges)), dtype=np.int64)
-    units[:, :] = ends - prevs                    # one split, every cell
-    prices = np.zeros((n_goods, days, len(edges)), dtype=np.float64)
+    ends_gd = np.zeros((n_goods, days, n_blocks), dtype=np.int64)
+    prevs_gd = np.zeros((n_goods, days, n_blocks), dtype=np.int64)
+    units = np.zeros((n_goods, days, n_blocks), dtype=np.int64)
+    prices = np.zeros((n_goods, days, n_blocks), dtype=np.float64)
     for gi, good in enumerate(goods):
-        # the day's inventory for this good at the hour the sell can reach it,
-        # walked higher by this good's risk pad: the drain falling z sd short is
-        # the ladder walked z sd units higher, which is what depth_coins' own
-        # `pad` said before the surface became one vectorised read.
         inv = _cell_inventories(fc, good, first_day, days, hour=hour,
                                 hours=hours, gi=gi)
-        if pad is not None:
-            inv = inv + float(np.asarray(pad)[gi])
-        flow = (sell_coins_vec(good, inv[:, None], ends[None, :])
-                - sell_coins_vec(good, inv[:, None], prevs[None, :]))
+        g_pad = 0.0 if pad is None else float(np.asarray(pad)[gi])
+        for d in range(days):
+            day = int(first_day) + d
+            h = hour
+            if hours is not None:
+                h = int(np.asarray(hours)[gi, d])
+            # Equal-REVENUE edges: the cut that hides no steep stretch inside a
+            # block. ONE vectorised read of this good's own curve at this day's
+            # own inventory, then the quantiles of its coins -- the per-block
+            # depth_coins calls this replaces were the loops that made the older
+            # shape cost more than the values.
+            curve = cumulative_coins(fc, good, day, int(cap), hour=h, pad=g_pad)
+            total = float(curve[-1])
+            if total > 0.0:
+                targets = np.arange(1, n_blocks) * (total / n_blocks)
+                edges = np.append(np.searchsorted(curve, targets), int(cap))
+            else:                                     # nothing to split
+                edges = np.asarray(geometric_edges(int(cap), n_blocks))
+            edges = np.maximum.accumulate(edges.astype(np.int64))
+            prev = np.concatenate([np.zeros(1, dtype=np.int64), edges[:-1]])
+            ends_gd[gi, d] = edges
+            prevs_gd[gi, d] = prev
+            units[gi, d] = edges - prev
+        # The risk pad is a fuller market: the same walk, from a higher shelf,
+        # in the cut above and in the coins below -- one meaning, twice read.
+        inv = inv + g_pad
+        flow = (sell_coins_vec(good, inv[:, None], ends_gd[gi])
+                - sell_coins_vec(good, inv[:, None], prevs_gd[gi]))
         prices[gi] = flow / np.maximum(units[gi], 1)
+    return units, prices
     return units, prices
