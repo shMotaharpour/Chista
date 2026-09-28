@@ -475,8 +475,11 @@ def _solve_at(obs, contractor, supply, class_of_tile, hands, iter_cap,
                             net=float(result.objective) - bill)
         if best is None or _better(candidate, best):
             best = candidate
-        best = DayPlan(best.master, best.choices, best.mixes, best.day,
-                       best.rounds, best.overhead, solves=spent)
+        # `solves` is the only field that may move: rebuilding the winner field
+        # by field dropped `hands` and `net` to their dataclass defaults (0 and
+        # 0.0), and this object is what `plan` ranks offers by and what the
+        # market side reads for the bill.
+        best = replace(best, solves=spent)
 
         # Each correction round re-solves from the pool the last one left, so
         # a second solve is cheap even when the first was not.
