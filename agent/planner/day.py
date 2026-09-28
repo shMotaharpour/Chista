@@ -523,14 +523,32 @@ def _solve_at(obs, contractor, supply, class_of_tile, offer, iter_cap,
             #
             # "budget" is never re-asked: more hands do not buy more time.
             fitted = replace(fitted, short=max(0, int(fitted.floor) - int(offer)))
-            # `Config.ask_rounds` is the cap, and it is the CONFIG's number, not
-            # a module constant beside it: zero means no re-ask at all.
-            if int(fitted.floor) > int(offer) and int(cfg.ask_rounds) > 0:
-                again = fit(chains, pool_ceiling=int(fitted.floor),
+            # The re-ask is a capped CONVERGENCE, not a single shot: each round
+            # offers the count wsr's own floor named, and the loop stops when
+            # that number stops moving -- either the day is carried at the new
+            # count, or the count we would offer next is the one we just offered
+            # (a fixed point). `Config.ask_rounds` is the ROUND CAP it always
+            # claimed to be: zero still means `do not re-ask at all`, and it is
+            # the config's own number, not a module constant beside it.
+            #
+            # On this day's work the floor is a property of the TASKS, so the
+            # first round is also the last and the day's numbers are what they
+            # always were -- the cap is real now, and a corrective that can move
+            # the ask (laying less on the day, from `left`) has somewhere to live.
+            rounds_left = int(cfg.ask_rounds)
+            offered = int(offer)
+            while rounds_left > 0 and int(fitted.floor) > offered:
+                rounds_left -= 1
+                wanted = int(fitted.floor)
+                again = fit(chains, pool_ceiling=wanted,
                             available=availability(obs, chains),
                             hours_committed=committed)
-                if again.complete:
-                    fitted = again
+                if not again.complete and int(again.floor) <= wanted:
+                    break       # a bigger pool did not carry it: no round will
+                fitted = again
+                if wanted == offered:
+                    break       # the proposal repeated: this is the fixed point
+                offered = wanted
         # A complete answer needs no second ask for a leaner pool: the search
         # STARTS at the floor and grows (`min(floor, hands)`, day.py:150), so
         # `result.pool` already IS the least it carried the day with - offering 5
