@@ -305,6 +305,20 @@ def _better(candidate: "DayPlan", best: "DayPlan") -> bool:
             < abs(best.day.overhead - 1.0) - 1e-9)
 
 
+def scan_ceiling(offer: int, cap: int) -> int:
+    """The TOP of the pool scan: the day's estimate, never above the cap.
+
+    `min(offer, cap)`. The two numbers answer different questions -- `offer` is
+    what the day's work is estimated to need (the owner's regression, on the
+    chains of the day) and `cap` is the most hands the run is willing to
+    consider -- so taking the min keeps both honest: the estimate cannot blow the
+    scan up, and the cap cannot discard it. The inline pair this replaces read
+    `cap` AFTER overwriting it, so its condition was dead: the top was always
+    `cfg.max_hands` and a caller's estimate never reached the scan at all.
+    """
+    return max(0, min(int(offer), int(cap)))
+
+
 def plan(obs, contractor, supply, *, class_of_tile, iter_cap: int | None = None,
          offer: int = 0,
          terms: "EngineTerms | None" = None,
@@ -373,7 +387,7 @@ def plan(obs, contractor, supply, *, class_of_tile, iter_cap: int | None = None,
                  else float(tolerance))
     smoothing = float(cfg.smoothing if smoothing is None else smoothing)
     cap = int(cfg.max_hands if cap is None else cap)
-    pool_ceiling = int(offer if cap is None else cap)   # NOTE: dead condition, see the commit
+    pool_ceiling = scan_ceiling(offer, cap)
     carried = list(pool or [])
     chosen: DayPlan | None = None
     # Every offer is solved, largest pool FIRST: more hands is where the value

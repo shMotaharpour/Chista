@@ -141,19 +141,18 @@ class Config:
     labour_dead_edge: float = 145.0
 
     # --- the day ------------------------------------------------------------
-    #: The largest hand pool the day layer may offer.
+    #: The most hands the day layer will even SCAN (`day.scan_ceiling`). The
+    #: estimate it competes with is the manager's own (`planner/hands.py`), and
+    #: the scan's top is `min(estimate, this)`.
     #:
-    #: One, measured. Three seasons at each setting, medians:
-    #:
-    #:     idle edges off, 1 hand   32,045      off, 4 hands    5,148
-    #:     idle edges on,  1 hand   35,697      on,  4 hands   22,988
-    #:
-    #: More hands is worth five times the plan to the LP and less than nothing
-    #: on the board, because the day the master commits is re-derived every
-    #: morning and more capacity means more of it is undone. Raising this is
-    #: the FIRST thing to try once a plan survives the night (#79's commitment
-    #: work) — it is capped low because the churn is not fixed, not because
-    #: hiring is bad.
+    #: One, and NOT a measured preference: the table that used to justify it (a
+    #: season at 1 hand against 4: 32,045/35,697 against 5,148/22,988) was
+    #: taken on a manager and belief layer that have since been replaced, so it
+    #: is retired as a basis rather than re-quoted. What that table was about --
+    #: a committed day being re-derived every morning, so more capacity undoes
+    #: more of it -- is still the open question (#79), and the value must be
+    #: chosen again on a fresh measurement, or by the model itself once the
+    #: hands are bought inside the MILP instead of scanned for.
     max_hands: int = 1
     #: Master solves one `plan` may spend correcting the hours it committed.
     fit_rounds: int = 2

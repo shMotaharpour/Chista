@@ -110,6 +110,21 @@ def test_a_declined_tile_is_not_a_dropped_one(board):
             f"chain must be left out, not padded into one")
 
 
+def test_the_scan_top_is_the_estimate_and_never_above_the_cap():
+    """`min(offer, cap)` -- neither end may swallow the other.
+
+    The pair this replaced overwrote `cap` and then tested it for `None`, so the
+    condition was dead and the scan's top was ALWAYS `cfg.max_hands`: an
+    estimate of twelve met a scan that never reached twelve, and the manager's
+    own number was thrown away without a word. R007: change the `min` below to a
+    `max` (or give the cap the last word) and this goes red.
+    """
+    assert D.scan_ceiling(3, 8) == 3, "the estimate must bind below the cap"
+    assert D.scan_ceiling(8, 3) == 3, "the cap must bind below the estimate"
+    assert D.scan_ceiling(0, 1) == 0, "zero is an offer: the farmer walks alone"
+    assert D.scan_ceiling(-2, 4) == 0, "a scan never starts below zero"
+
+
 def test_an_empty_day_fits_and_says_so():
     """No chains is a legal day, and it may not be reported as a failure."""
     fitted = D.fit((), pool_ceiling=3, hours_committed=0.0)
