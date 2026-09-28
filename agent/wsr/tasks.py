@@ -17,6 +17,11 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from agent.world.action_rules import CARRIES, YIELDS
+
+#: The ops that put something in the worker's bag from the TILE (or the animal on it) - the
+#: day's own growing, as against PICKUP, which takes from the shed. A good only these ops
+#: produce cannot come from a shed load when the timetable stocks none.
+YIELDS_GROW: dict[str, str] = {op: what for op, what in YIELDS.items() if op != "PICKUP"}
 from agent.world.model import UnitAction
 from agent.world.rules import BOARD_SIZE, SHED_ACCESS
 
@@ -477,6 +482,51 @@ def build(chains, *, available: dict[str, int] | None = None, horizon: int = 24,
     ids = [t.id for t in tasks]
     row_of = {tid: i for i, tid in enumerate(ids)}
     n = len(tasks)
+
+    # A day with no pre-day stock of a grown good grows what it eats: the engine's FEED takes the
+    # wheat from the FEEDING unit's own inventory (no bag = a silent no-op, F047), and HARVEST
+    # puts the crop in the HARVESTING unit's bag. When the timetable does not stock the good
+    # (nothing available at hour 0), a shed pickup cannot fill any bag, so every consumer of the
+    # grown good is bound to its producer: all chains of that good merge into ONE group - one
+    # worker takes the whole take-and-eat set, because only its own bag covers its own animals
+    # and plants. This is the same object the fetch uses (one worker, one bag), applied across
+    # chains, which is where the fetch-only grouping cannot see the need. A stocked good keeps
+    # the bags free: the load at the door covers its consumers.
+    if available is not None:
+        from agent.world.action import item_of as _item_of
+
+        grow_chains: dict[str, list[int]] = {}
+        eat_chains: dict[str, list[int]] = {}
+        for index, (_cell, ops, entity) in enumerate(chains):
+            for op in ops:
+                if op in YIELDS_GROW:
+                    # COLLECT_FERTILIZER yields fertilizer whatever the chain names; a HARVEST
+                    # yields the tile's own crop or product - when it names one. An entity the
+                    # world does not know (the corpus's 'nan') grows nothing.
+                    if op == "COLLECT_FERTILIZER":
+                        good = _item_of("FERTILIZER")
+                    elif entity is not None and _item_code(entity) >= 0:
+                        good = _item_of(entity)
+                    else:
+                        continue
+                    grow_chains.setdefault(str(getattr(good, "value", good)), []).append(index)
+                carried = CARRIES.get(op) or (entity if op == "PLACE" and entity is not None
+                                              and _item_code(entity) >= 0 else None)
+                if carried is not None:
+                    eat_chains.setdefault(str(getattr(carried, "value", carried)), []).append(index)
+        merged: set[int] = set()
+        for good, growers in grow_chains.items():
+            if good in available or good not in eat_chains:
+                continue                      # stocked (at any hour), or nobody eats what is grown
+            if len(growers) > 1:
+                continue                      # several producers: the game itself splits the takes
+            members = sorted(set(growers) | set(eat_chains[good]))
+            if len(members) > 1 and not (set(members) & merged):
+                merged.update(members)
+                group_ids = [tid for tid in ids if column_of[tid] in members]
+                if len(group_ids) > 1:
+                    groups.append(group_ids)
+
 
     # The groups as row indices, one column per mate slot. A member that is not a row carries no
     # tie - a fetch is the trip a consumer makes rather than a task of its own - so a group that is
