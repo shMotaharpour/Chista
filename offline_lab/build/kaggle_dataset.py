@@ -153,16 +153,28 @@ def _labels_for_day(steps: list, seat: int, day: int, n_steps: int,
         for actor, op in enumerate(unit_ops):
             if not op:
                 continue
+            if isinstance(op, str):        # a malformed bare string: same handling
+                ops.append((hour, actor, -1, v.code(op), v.code(None), 0))
+                continue
             x, y = positions[actor] if actor < len(positions) else (-1, -1)
             item = str(op[1]) if len(op) > 1 else None
-            n = int(op[2]) if len(op) > 2 else 0
+            try:
+                n = int(op[2]) if len(op) > 2 else 0
+            except (TypeError, ValueError):
+                n = 0
             ops.append((hour, actor, _cell_index(x, y) if x >= 0 else -1,
                         v.code(str(op[0])), v.code(item), n))
         for idx, mo in enumerate(act.get("market") or []):
             if not mo:
                 continue
+            if isinstance(mo, str):        # a malformed bare string: record, do not crash
+                orders.append((hour, idx, v.code(mo), v.code(None), 0))
+                continue
             item = str(mo[1]) if len(mo) > 1 else None
-            n = int(mo[2]) if len(mo) > 2 else 0
+            try:
+                n = int(mo[2]) if len(mo) > 2 else 0
+            except (TypeError, ValueError):
+                n = 0                      # a non-numeric qty the engine refused
             orders.append((hour, idx, v.code(str(mo[0])), v.code(item), n))
     return {"ops": ops, "orders": orders}
 
@@ -212,7 +224,7 @@ def convert_replay(path: Path, key_index: dict, v: Vocab) -> dict | None:
             samples.append({
                 "episode_id": episode_id, "seed": seed, "seat": seat,
                 "agent": agents[seat] if seat < len(agents) else "",
-                "reward": int(rewards[seat] if seat < len(rewards) else 0),
+                "reward": int(rewards[seat] or 0) if seat < len(rewards) else 0,
                 **state,
             })
             op_ptr.append(len(ops_rows))
