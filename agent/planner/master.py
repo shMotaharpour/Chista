@@ -534,8 +534,35 @@ def _validate_cost(cost: np.ndarray) -> None:
             "(chain costs are consumption vectors; the matrix is built wrong)")
 
 
+def depth_coins_from(fc, item: str, day: int, quote: float, start_units: int,
+                     units: int) -> float:
+    """The ladder's coins for `units`, walked from an inventory that pays `quote`.
+
+    `belief.depth.depth_coins` walks from the forecast's own (drained) inventory.
+    A sale that OFFSETS the drain has to be walked from the un-drained one, and
+    the only honest way to say that without a second price model is to ask the
+    engine's own quote function for the inventory that pays `quote` today.
+    """
+    from agent.belief.ladder import sell_coins
+    from agent.world.prices import price as _quote
+    # the engine's price is monotone in inventory: search the inventory that
+    # quotes `quote` today, then walk the ladder from there.
+    lo, hi = 0.0, 20000.0
+    for _ in range(40):
+        mid = 0.5 * (lo + hi)
+        if float(_quote(item, mid)) > float(quote):
+            lo = mid
+        else:
+            hi = mid
+    inv0 = int(hi)
+    return float(sell_coins(item, inv0, max(1, int(units)))
+                 - sell_coins(item, inv0, max(0, int(start_units))))
+
+
 def _product_price_path(obs, days: int, p_flat: np.ndarray,
-                        forecast_obj=None) -> tuple[np.ndarray, str]:
+                        forecast_obj=None, supply=None,
+                        rival_supply=None,
+                        cfg=None) -> tuple[np.ndarray, str]:
     """The product rows of `p`: the market forecast (#15), or flat quotes.
 
     F035: prices rise through the season, so the flat stand-in under-prices
@@ -554,8 +581,14 @@ def _product_price_path(obs, days: int, p_flat: np.ndarray,
         # A caller that already has this turn's forecast hands it in: the same
         # curve prices the master's objective and re-times the day's sells, and
         # building it twice was 1.1 + 1.4 ms of the turn.
+        # `belief.market.forecast` already takes the rival's supply as a DATED
+        # curve (`rival_calendar.supply_curve`, #205) -- and this call was not
+        # passing it, so the path the master priced every far day with carried
+        # the town's drain and NOBODY's supply: measured on the seed-33 board,
+        # MILK rose 160 -> 454 by day 29. The rival pours goods in too; with
+        # their curve (and ours) on top, the far days stop being free money.
         fc = (forecast_obj if forecast_obj is not None
-              else _forecast(obs, days=days))
+              else _forecast(obs, days=days, rival_supply=rival_supply))
         # Every row of `p` must be a day the season HAS, and the path is indexed
         # from the observation's own day (`price_paths(from_day=first_day)`), so
         # a forecast that covers the horizon puts day `days - 1` on the season's
@@ -569,6 +602,52 @@ def _product_price_path(obs, days: int, p_flat: np.ndarray,
             return p_flat, (f"flat stand-in (forecast covers "
                             f"{int(getattr(fc, 'days', 0))} of {days} days)")
         paths = price_paths(fc, days=days)
+        # The path above is the forecast's OWN walk: the town drains and nobody
+        # sells. Our plan does sell, and a good we pour in is worth what the
+        # ladder pays for it AFTER our own supply -- `belief.depth.inventory_at`
+        # plus the engine's own price function, never a transcribed one (R002).
+        # `supply` is `{item: (units, ...)}` per day; without it, nothing changes.
+        # The gate alone opens the block: `supply` may be absent, in which case the
+        # declared default lot (`Config.sell_lot_default`) is what every good is
+        # priced as. Requiring a supply dict here made the default lot DEAD CODE.
+        if int(getattr(cfg, "price_supply_rounds", 0)) > 0:
+            supply = supply or {}
+            from agent.belief.depth import depth_coins
+            first = int(obs.get("day", 0)) if isinstance(obs, dict) else 0
+            # The DP plans against a price; the LP sells through the LADDER. A
+            # rising path (F035) makes holding the crop to the peak look best --
+            # and the peak is a price a LOT can never realise. So the price the
+            # contractor plans with is the ladder's OWN average for the lot the
+            # plan would sell that day (`depth_coins(lot)/lot`), which is the same
+            # curve the master prices the sale with. Measured on the seed-33 board,
+            # day 3: MILK quotes 175 but a 40-unit lot averages 126 (-28%); wheat
+            # 30 -> 26; far days move ~1% (a scarce market is nearly flat).
+            priced = {}
+            # No caller has told us the lot yet (the hand-off the day layer still
+            # owes): the SAFE default is the shed's own ceiling, the largest lot a
+            # day can physically put on the market. That is the conservative end of
+            # the ladder, and it is what stops a rising path from paying the PEAK
+            # price for a lot no peak can absorb. The measured own-supply lot
+            # replaces this as soon as the manager hands one in.
+            default_lot = float(getattr(cfg, "sell_lot_default", 0.0))
+            for item, path in paths.items():
+                units = np.asarray(supply.get(item, np.full(days, default_lot)),
+                                   dtype=np.float64)[:days]
+                # The drain is counted TWICE unless the sale line offsets it (#151
+                # point 2): the forecast's path rises because the town eats the
+                # stock -- but the units WE sell land in the same market, so on the
+                # days we sell, the inventory does not fall and the price does not
+                # rise. Our own sale is therefore priced on the UN-DRAINED quote,
+                # and the ladder is walked from there (our lot still pays its own
+                # depth). Measured: MILK's day-29 quote 471 -> the flat quote.
+                base_day = float(depth_coins(fc, item, first, 1))
+                priced[item] = tuple(
+                    float(depth_coins_from(fc, item, first, base_day, 1,
+                                           max(1, int(round(float(units[d]))))))
+                    / max(1.0, float(round(float(units[d])))) if units[d] > 0
+                    else float(path[d])
+                    for d in range(len(path)))
+            paths = priced
     except Exception as exc:                     # noqa: BLE001 - degrade
         return p_flat, f"flat stand-in (forecast failed: {type(exc).__name__})"
     out = p_flat.copy()
@@ -720,7 +799,16 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
     p = p_mkt_full[:days]
     # #15: the product rows of `p` come from the market forecast (F035's
     # rising path); the flat stand-in is the documented fallback.
-    p, p_source = _product_price_path(obs, days, p, forecast_obj=forecast_obj)
+    rival_curve = None
+    if int(getattr(cfg, "price_supply_rounds", 0)) > 0:
+        try:
+            from agent.belief.rival_calendar import supply_curve as _rival_curve
+            rival_curve = np.asarray(_rival_curve(obs, tuple(PRODUCTS), days),
+                                     dtype=np.float64)
+        except Exception:                     # noqa: BLE001 - no rival to read
+            rival_curve = None
+    p, p_source = _product_price_path(obs, days, p, forecast_obj=forecast_obj,
+                                      rival_supply=rival_curve, cfg=cfg)
     p_mkt = p[:, list(MARKET_IDS)]
     # The engine-quote floor (see the publish rule in the docstring):
     # the stand-in wages ARE the engine's own prices for the inputs.

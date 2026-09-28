@@ -109,6 +109,25 @@ class Config:
     #: value prices the curve from a fuller market, which is the conservative
     #: direction. The owner's ruling: risk must be priced as a price.
     sell_risk_z: float = 0.0
+    #: How many rounds of pricing carry OUR OWN planned supply. Measured with 1
+    #: (seed 33, 10 days, vs v3-agent): the day-value/realised-coins correlation
+    #: went -0.428 -> +0.045, and the season 93,315 -> 101,925 over three seeds
+    #: (33: 16,025 -> 27,155; 7: 46,789 -> 31,275; 5: 30,501 -> 43,495). Two of
+    #: three seeds improved and one lost a third, so the default stays 0 and this
+    #: is a swappable choice until a wider seed set settles it.
+    #: path the forecast builds on its own walk (the town's drain only), which
+    #: under-prices nothing and over-prices every far day: measured on the
+    #: seed-33 board, MILK's day-20 quote reads 202 coins while the ladder pays
+    #: far less for the units we plan to pour in that day. A positive value
+    #: re-prices each day against `market inventory + our supply`, which is the
+    #: price the sale would actually face.
+    price_supply_rounds: int = 0
+    #: The lot the day's sale is priced as, when the caller has not handed in
+    #: one yet (units per good per day). 0 keeps every price at its own quote;
+    #: a positive value prices the sale through the ladder for a lot that size,
+    #: which is the counterweight to F035's rising path: a big lot never fetches
+    #: the peak. The shed's capacity is the conservative choice.
+    sell_lot_default: float = 0.0
     #: What a unit sold BEYOND the town's own appetite fetches, as a fraction of
     #: the day's price. That tier is the legacy two-tier model, used when the
     #: caller hands in no depth curve; with a curve the ladder's own blocks carry
