@@ -647,6 +647,19 @@ def _product_price_path(obs, days: int, p_flat: np.ndarray,
                     / max(1.0, float(round(float(units[d])))) if units[d] > 0
                     else float(path[d])
                     for d in range(len(path)))
+            paths = priced
+        # The archive's ceiling (Config.price_cap_from_archive): a drain-only path
+        # has no shop demand in it, so it keeps rising after the shops have spoken
+        # and prices a far day above every world the engine ever ran. The cap reads
+        # the day's BEST demand bucket, never the current one, so the upside of an
+        # open shop survives.
+        if bool(getattr(cfg, "price_cap_from_archive", False)):
+            caps = _archive_day_caps()
+            paths = {item: tuple(
+                min(float(v), float(caps[item][d]))
+                if item in caps and d < len(caps[item]) and np.isfinite(caps[item][d])
+                else float(v) for d, v in enumerate(path))
+                for item, path in paths.items()}
     except Exception as exc:                     # noqa: BLE001 - degrade
         return p_flat, f"flat stand-in (forecast failed: {type(exc).__name__})"
     out = p_flat.copy()
@@ -656,6 +669,32 @@ def _product_price_path(obs, days: int, p_flat: np.ndarray,
             continue
         out[:, rid] = [float(path[day]) for day in range(days)]
     return out, f"market forecast (#15, unlock policy {fc.unlock_policy})"
+
+
+
+#: The archive's per-day ceilings, loaded once: `{good: (days,)}`.
+_ARCHIVE_CAPS: list = [None]
+
+
+def _archive_day_caps() -> dict:
+    """The highest price any real shop set paid for a good on a day.
+
+    The artifact holds the mean price per (good, day, demand bucket) measured over the
+    store's episodes. A cap needs one number per day, and the safe one is the day's
+    BEST bucket: it bounds the hope -- the model may not price a far day above every
+    world the engine ever ran -- without bounding the upside, because a world that
+    really held the shops still paid what it paid. The bucket axis stays in the
+    artifact for the risk term that reads it next. A day the store never reached has
+    no cap and is left as the forecast wrote it.
+    """
+    if _ARCHIVE_CAPS[0] is None:
+        from agent.artifact import artifact_path
+        data = np.load(artifact_path("sell_price_caps", ".npz"), allow_pickle=True)
+        caps = np.asarray(data["caps"], dtype=np.float64)
+        goods = [str(g) for g in data["goods"]]
+        with np.errstate(all="ignore"):
+            _ARCHIVE_CAPS[0] = {g: np.nanmax(caps[i], axis=1) for i, g in enumerate(goods)}
+    return _ARCHIVE_CAPS[0]
 
 
 def _repriced_pool(pool, p_mkt: np.ndarray, days: int) -> list:

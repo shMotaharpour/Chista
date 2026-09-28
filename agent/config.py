@@ -137,6 +137,13 @@ class Config:
     #: cash flow -- the costs it delays included -- and is the same NPV the
     #: capital-budgeting and cash-flow-duration frameworks use.
     discount_rate: float = 0.0
+    #: Cap a sale price by what the engine really paid (agent/artifact/
+    #: sell_price_caps): a drain-only forecast keeps rising past the day the
+    #: season's shops have decided, so the plan is priced against a price nobody
+    #: paid. The cap is the day's BEST demand bucket, so the upside of an open
+    #: shop survives and only the hope above every real world goes. False keeps
+    #: the shipped model exact.
+    price_cap_from_archive: bool = False
     #: What a unit sold BEYOND the town's own appetite fetches, as a fraction of
     #: the day's price. That tier is the legacy two-tier model, used when the
     #: caller hands in no depth curve; with a curve the ladder's own blocks carry
