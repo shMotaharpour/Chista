@@ -362,12 +362,9 @@ _SEARCH_CACHE_RETIRED = True
 
 
 def clear_search_cache() -> None:
-    """Legacy no-op: `_SEARCH_CACHE` is retired — the warm memory
-    (`agent.wsr.warm`) replaced it, and it stores seeds, not answers. Kept as
-    a no-op so existing callers and tests keep working."""
-    from agent.wsr import warm as _warm_mod
-    _warm_mod.memory().hits = 0
-    _warm_mod.memory().misses = 0
+    """Legacy no-op: `_SEARCH_CACHE` is retired — the self-warm memory
+    (`agent.wsr.selfwarm`) replaced it, and it stores seeds, not answers.
+    Kept as a no-op so existing callers and tests keep working."""
 
 
 def search(day: Day, tasks: TaskArray, *, beam: int | None = None,
@@ -428,8 +425,8 @@ def search(day: Day, tasks: TaskArray, *, beam: int | None = None,
     # signature plus the hands-per-hour vector, so a stored route is only
     # offered to a day whose logistic problem it fits. When the caller passed
     # their own warm, that takes priority and the memory is not consulted.
-    if warm is None:
-        from agent.wsr import warm as _warm_mod
+    if warm is None and hands is not None:
+        from agent.wsr import selfwarm as _warm_mod
         _cands = _warm_mod.candidates_for(day, tasks, hands)
         if _cands:
             warm = _cands[0]

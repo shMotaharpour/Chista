@@ -1,19 +1,16 @@
-"""Build the warm-route artifact from the winner corpus (owner-approved design).
+"""Build the self-warm artifact from the winner corpus.
 
-For every (episode, day) in `winner_days.json` the corpus carries the day the
-GAME ran (chains, available, drop_by, hire_times, hands). For each day:
-  1. build the TaskArray and search it once, cold, at the game's own hands;
-  2. compute the logistic signature (category x quadrant + hands-per-hour);
-  3. store (signature, pool, route, per-placement categories) — verified.
-The result lands in `agent/artifact/warm_routes.json`, the file
-`agent.wsr.warm.WarmMemory` loads. A stored day warms any FUTURE day whose
-logistic signature matches (same pool, same hands-per-hour, same category
-density per quadrant) — the re-projection and re-timing happen in warm.py.
+For every corpus day (the game's own days, won by elite players), this builds
+the day's TaskArray, searches it once at the game's own hands to get a
+COMPLETE route, and stores that route + its logistic signature + the
+per-worker first hours + the settled doors into
+`agent/artifact/warm_routes.npz` (compact numpy, no JSON).
 
-Also emits the stability table the owner asked for: the same day signature
-across the corpus, so the hit rate can be predicted before any run.
+The seeds are stored under the pool they were solved with, so a future query
+at the same pool + same hands-per-hour vector + similar logistic signature
+receives them as beam-start seeds (selfwarm.SelfWarm.lookup).
 
-Run:  .venv/bin/python offline_lab/build/warm_routes.py [--limit N]
+Run:  .venv/bin/python offline_lab/build/warm_routes.py
 """
 from __future__ import annotations
 
@@ -21,18 +18,26 @@ import argparse
 import json
 import sys
 import time
-from collections import Counter, defaultdict
 from pathlib import Path
+
+import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from agent.wsr import beam as B, tasks as T, warm as W
+from agent.wsr import beam as B, tasks as T
+from agent.wsr.selfwarm import SOFT_WIDTH, WARM_K, soft_vector, task_categories
 
 CORPUS = Path(__file__).resolve().parents[2] / "tests/day_layer/corpus/winner_days.json"
-OUT = Path(__file__).resolve().parents[2] / "agent/artifact/warm_routes.json"
+OUT = Path(__file__).resolve().parents[2] / "agent/artifact/warm_routes.npz"
+BOARD = 10
 
 
-def build_one(entry) -> dict | None:
+def quad(cell) -> int:
+    x, y = int(cell[0]), int(cell[1])
+    return (y // (BOARD // 2)) * 2 + (x // (BOARD // 2))
+
+
+def build_entry(entry) -> dict | None:
     grid = [(tuple(c), tuple(o), en) for c, o, en in entry["chains"]]
     n_shed = sum(1 for _c, o, _e in grid if "FEED" in o or "FERTILIZE" in o)
     tasks = T.build(grid, available={g: int(h) for g, h in entry["available"].items()},
@@ -40,61 +45,92 @@ def build_one(entry) -> dict | None:
     day = B.Day(chains=tuple(grid),
                 available={g: int(h) for g, h in entry["available"].items()},
                 hire_times=tuple(entry["hire_times"]) or (1,) * entry["hands"])
-    pool = entry["hands"]
     t0 = time.perf_counter()
-    result = B.search(day, tasks, hands=pool - 1, max_hands=pool)
+    result = B.search(day, tasks, hands=entry["hands"] - 1,
+                      max_hands=entry["hands"])
     dt = time.perf_counter() - t0
     if not result.complete:
         return None
-    cats = W._task_categories(tasks)
-    id_idx = {str(tid): i for i, tid in enumerate(tasks.ids)}
     return {
-        "sig": W.signature(day, tasks),
-        "pool": int(result.pool),
-        "route": [(int(t), str(tid), int(w)) for t, tid, w in result.route],
-        "categories": [cats[id_idx[str(tid)]] for t, tid, _w in result.route
-                       if str(tid) in id_idx],
-        "complete": True,
-        "verified": True,
+        "tasks": tasks, "day": day, "result": result,
+        "soft": soft_vector(day, tasks),
         "source": f"{entry['dump']}/{entry['episode']}/d{entry['day']}",
-        "search_s": round(dt, 2),
+        "search_s": dt,
     }
 
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--limit", type=int, default=None,
-                    help="build only the first N days (smoke mode)")
+    ap.add_argument("--limit", type=int, default=None)
     args = ap.parse_args()
     days = json.loads(CORPUS.read_text())
     if args.limit:
         days = days[:args.limit]
-    entries = []
+
+    built = []
     skipped = 0
     t_start = time.perf_counter()
     for e in days:
-        built = build_one(e)
-        if built is None:
+        built_one = build_entry(e)
+        if built_one is None:
             skipped += 1
-            print(f"  skip {e['dump']}/{e['episode']}/d{e['day']}: "
-                  f"the search could not carry it at the game's hands")
+            print(f"  skip {e['dump']}/{e['episode']}/d{e['day']}")
             continue
-        entries.append(built)
+        built.append(built_one)
         print(f"  built {e['dump']}/{e['episode']}/d{e['day']}: "
-              f"{len(built['route'])} placements")
-    # stability: how many entries share a signature with at least one other?
-    seen: dict[str, int] = defaultdict(int)
-    for b in entries:
-        seen[json.dumps(b["sig"], sort_keys=True)] += 1
-    shared = sum(1 for v in seen.values() if v > 1)
-    multi = sum(v for v in seen.values() if v > 1)
-    print(f"\nbuilt {len(entries)} seeds ({skipped} skipped) in "
-          f"{time.perf_counter() - t_start:.0f}s")
-    print(f"distinct signatures: {len(seen)}; signatures with 2+ seeds: "
-          f"{shared} ({multi} seeds have a same-signature sibling)")
-    OUT.parent.mkdir(parents=True, exist_ok=True)
-    OUT.write_text(json.dumps(entries))
-    print(f"artifact: {OUT} ({OUT.stat().st_size / 1024:.1f} KB)")
+              f"{len(built_one['result'].route)} placements "
+              f"({built_one['search_s']:.1f}s)")
+
+    # shared vocabulary: every task id that appears in any stored route
+    vocab: list[str] = []
+    vidx: dict[str, int] = {}
+    for b in built:
+        for _t, tid, _w in b["result"].route:
+            tid = str(tid)
+            if tid not in vidx:
+                vidx[tid] = len(vocab)
+                vocab.append(tid)
+    V = len(vocab)
+    max_len = max((len(b["result"].route) for b in built), default=0)
+    max_hands = max((b["result"].pool for b in built), default=0)
+    max_hire = max((len(b["day"].hire_times) for b in built), default=0)
+
+    n = len(built)
+    pool = np.zeros(n, dtype=np.int8)
+    hire_hours = np.zeros((n, max_hire), dtype=np.int8)
+    soft = np.zeros((n, SOFT_WIDTH), dtype=np.int32)
+    route_hour = np.full((n, max_len), -1, dtype=np.int16)
+    route_task = np.full((n, max_len), -1, dtype=np.int16)
+    route_worker = np.full((n, max_len), -1, dtype=np.int8)
+    route_cat = np.full((n, max_len), -1, dtype=np.int8)
+    route_len = np.zeros(n, dtype=np.int16)
+    doors = np.zeros((n, max_hands, 2), dtype=np.int8)
+
+    for i, b in enumerate(built):
+        r = b["result"]
+        pool[i] = r.pool
+        ht = tuple(int(h) for h in b["day"].hire_times)
+        hire_hours[i, :len(ht)] = ht
+        soft[i] = b["soft"]
+        route_len[i] = len(r.route)
+        for k, (t, tid, w) in enumerate(r.route):
+            route_hour[i, k] = t
+            route_task[i, k] = vidx[str(tid)]
+            route_worker[i, k] = w
+        for k, d in enumerate(r.doors):
+            doors[i, k] = d
+
+    np.savez_compressed(
+        OUT,
+        pool=pool, hire_hours=hire_hours, soft=soft,
+        route_hour=route_hour, route_task=route_task,
+        route_worker=route_worker, route_cat=route_cat,
+        route_len=route_len, doors=doors,
+        vocab=np.array(vocab),
+    )
+    print(f"\nbuilt {n} seeds ({skipped} skipped) in {time.perf_counter() - t_start:.0f}s")
+    print(f"artifact: {OUT} ({OUT.stat().st_size / 1024:.1f} KB), "
+          f"vocab {V} task ids, max route {max_len}, k={WARM_K}")
 
 
 if __name__ == "__main__":
