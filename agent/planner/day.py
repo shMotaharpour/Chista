@@ -57,6 +57,14 @@ class DayFit:
     #: priced pool was enough. The number the manager decides on: hire them, lay
     #: less on the day, or accept a day that does not fit.
     short: int = 0
+    #: Tasks the route could not place at ALL, and where they stand, as
+    #: `(("NW", 3), ("SE", 1))`. `short` says how many hands were missing;
+    #: this says which part of the field lost its work, which is the whole
+    #: difference between "hire one more" and "lay less on the day". A task
+    #: absent from wsr's own route was not placed -- the same set its
+    #: `_repair_unplaced` works from -- so the read costs no wsr change.
+    left: int = 0
+    left_by_quadrant: tuple = ()
 
     @property
     def overhead(self) -> float:
@@ -213,6 +221,7 @@ def fit(chains, *, pool_ceiling: int, available: dict | None = None,
     identical inputs give bit-identical routes (agent/wsr/README.md, caller
     guidelines 3 and 4).
     """
+    from agent.world.board import quadrant_of
     from agent.wsr import beam as B
     from agent.wsr import tasks as T
     from agent.wsr.emit import check_route
@@ -243,6 +252,17 @@ def fit(chains, *, pool_ceiling: int, available: dict | None = None,
                       # wsr's own names: hands is the START, max_hands the CEILING.
                       hands=start, max_hands=pool_ceiling, warm=warm)
 
+    # What the route left behind, and where. `tasks` is the array `search`
+    # just solved (built four lines up), so "not in the route" is exactly
+    # "not placed": the same test wsr's own repair pass makes.
+    placed_ids = {_tid for _turn, _tid, _worker in result.route}
+    left_ids = [tid for tid in tasks.ids if tid not in placed_ids]
+    by_id = {tid: i for i, tid in enumerate(tasks.ids)}
+    tally: dict[str, int] = {}
+    for tid in left_ids:
+        quad = quadrant_of(tuple(int(v) for v in tasks.cells[by_id[tid]]))
+        tally[quad] = tally.get(quad, 0) + 1
+    left_by_quadrant = tuple(sorted(tally.items()))
     hours = float(max((turn for turn, _t, _w in result.route), default=0) + 1) \
         * max(1, result.pool)
     if result.complete and check_route(day, tasks, result):
@@ -251,12 +271,14 @@ def fit(chains, *, pool_ceiling: int, available: dict | None = None,
         # checked here rather than discovered inside `compile_route`).
         return DayFit(tuple(chains), len(result.route), tasks.n, result.pool,
                       False, hours, hours_committed, "unstable",
-                      spare=int(result.spare), floor=int(pool_floor))
+                      spare=int(result.spare), floor=int(pool_floor),
+                      left=len(left_ids), left_by_quadrant=left_by_quadrant)
     reason = "" if result.complete else ("budget" if result.can_improve
                                          else "hours")
     return DayFit(tuple(chains), len(result.route), tasks.n, result.pool,
                   bool(result.complete), hours, hours_committed, reason,
-                  spare=int(result.spare), floor=int(pool_floor))
+                  spare=int(result.spare), floor=int(pool_floor),
+                  left=len(left_ids), left_by_quadrant=left_by_quadrant)
 
 
 def hours_for(hired: int, days: int, overhead: float) -> np.ndarray:
@@ -456,7 +478,14 @@ def _solve_at(obs, contractor, supply, class_of_tile, offer, iter_cap,
             # offer instead of the number the model chose.
             bought = getattr(result, "hands_bought", None)
             if bought is not None and np.asarray(bought).size:
-                offer = max(0, int(round(float(np.asarray(bought)[0]))))
+                # The model's own count (C), but it never UNDERCUTS the
+                # estimate the manager already made (B): the regression's
+                # offer is a floor, so the model prices labour inside the
+                # objective and may still ask for more hands than the
+                # regression alone would name. C's season lost to B's by
+                # under-hiring -- 94,164 against 167,504 over three seeds
+                # -- and this is the one difference that evidence asks for.
+                offer = max(offer, max(0, int(round(float(np.asarray(bought)[0])))))
         mixes = M.to_mixes(result, contractor.days)
         choices = C.assign_by_quota(class_of_tile, mixes)
         choices = protect_at_risk_assignments(choices, mixes, obs)

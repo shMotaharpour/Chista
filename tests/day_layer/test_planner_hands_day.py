@@ -33,6 +33,29 @@ OBS = {"player": 0, "hour": 0, "day": 0,
        "farms": [{"hires_today": 0}], "market": {"prices": {}}}
 
 
+def test_the_day_reports_which_work_it_could_not_place_and_where():
+    """`left`/`left_by_quadrant`: the evidence the manager's three correctives need.
+
+    `short` says how many hands were missing; this says which tasks the route could
+    not place at all, and where they stand -- the difference between "hire one more"
+    and "lay less on the day". On this fixture the farmer alone carries 14 of 28
+    (all of them in NW), one hand leaves exactly one behind, and three hands leave
+    none. R007: derive the left set from anything but the route's own task ids and
+    these counts stop matching what the route placed.
+    """
+    alone = D.fit(CHAINS, pool_ceiling=0, available=AVAILABLE)
+    assert (alone.placed, alone.left) == (14, 14), (
+        f"the farmer alone: placed {alone.placed}, left {alone.left}")
+    assert alone.left_by_quadrant == (("NW", 14),), alone.left_by_quadrant
+
+    one = D.fit(CHAINS, pool_ceiling=1, available=AVAILABLE)
+    assert (one.placed, one.left) == (27, 1), (one.placed, one.left)
+
+    carried = D.fit(CHAINS, pool_ceiling=3, available=AVAILABLE)
+    assert carried.complete and carried.left == 0, (carried.complete, carried.left)
+    assert carried.left_by_quadrant == ()
+
+
 def test_a_fixed_pool_asks_wsr_one_question_with_no_pool_search(monkeypatch):
     """`fixed_pool=True` hands wsr `hands == max_hands`: one question, one search.
 
