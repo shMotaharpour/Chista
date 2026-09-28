@@ -103,6 +103,12 @@ class Config:
     #: blocks price the same curve more finely and cost one column block each
     #: (5 blocks x 9 goods x 30 days = 1,350 columns of the model).
     sell_blocks: int = 5
+    #: How many sd of the town drain to price a sale against, on top of the
+    #: forecast's own inventory (`belief.opponent.quantile_price_floor`, the same
+    #: `z`): 0.0 is the mean ladder the model has always used, and any positive
+    #: value prices the curve from a fuller market, which is the conservative
+    #: direction. The owner's ruling: risk must be priced as a price.
+    sell_risk_z: float = 0.0
     #: What a unit sold BEYOND the town's own appetite fetches, as a fraction of
     #: the day's price. That tier is the legacy two-tier model, used when the
     #: caller hands in no depth curve; with a curve the ladder's own blocks carry

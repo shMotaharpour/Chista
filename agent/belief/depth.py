@@ -73,13 +73,18 @@ def inventory_at(fc: MarketForecast, item: str, day: int,
 
 
 def depth_coins(fc: MarketForecast, item: str, day: int, units: int,
-                *, hour: int | None = None) -> int:
+                *, hour: int | None = None, pad: float = 0.0) -> int:
     """Coins `units` fetch selling into that day's (or hour's) inventory.
 
     The engine's own ladder, floor stall included — `ladder.sell_coins` is the
     only definition of it in the agent.
+
+    `pad` walks the same ladder from a FULLER market: `opponent.quantile_price_floor`
+    names risk as exactly this — the drain falling `z·sd` short is the curve read
+    `z·sd` units higher. Zero is the mean ladder, bit-identical to the model
+    before this parameter existed.
     """
-    return int(sell_coins(item, inventory_at(fc, item, day, hour),
+    return int(sell_coins(item, inventory_at(fc, item, day, hour) + int(pad),
                           max(0, int(units))))
 
 
@@ -309,7 +314,8 @@ def day_envelope(fc: MarketForecast, goods, first_day: int, days: int
 
 def sell_blocks(fc: MarketForecast, goods, first_day: int, days: int,
                 cap: int, blocks: int = 5, *, hour: int | None = None,
-                hours: np.ndarray | None = None
+                hours: np.ndarray | None = None,
+                pad: np.ndarray | None = None
                 ) -> tuple[np.ndarray, np.ndarray]:
     """The depth curve of every good and day as LP blocks.
 
@@ -322,6 +328,11 @@ def sell_blocks(fc: MarketForecast, goods, first_day: int, days: int,
 
     `cap` bounds one good's sale in one day; the shed's own capacity is the
     honest value, since a day cannot sell more than it can hold.
+
+    `pad` is one number per good (the caller's own order) added to the market's
+    inventory before the ladder is walked: the conservative ladder. It is how a
+    risk-averse price reaches the model without a second price anywhere — the
+    curve stays `depth_coins`, read from a fuller market. None is the mean ladder.
     """
     cap = max(1, int(cap))
     edges = geometric_edges(cap, blocks)
@@ -332,9 +343,14 @@ def sell_blocks(fc: MarketForecast, goods, first_day: int, days: int,
     units[:, :] = ends - prevs                    # one split, every cell
     prices = np.zeros((n_goods, days, len(edges)), dtype=np.float64)
     for gi, good in enumerate(goods):
-        # the day's inventory for this good, at the hour the sell can reach it
+        # the day's inventory for this good at the hour the sell can reach it,
+        # walked higher by this good's risk pad: the drain falling z sd short is
+        # the ladder walked z sd units higher, which is what depth_coins' own
+        # `pad` said before the surface became one vectorised read.
         inv = _cell_inventories(fc, good, first_day, days, hour=hour,
                                 hours=hours, gi=gi)
+        if pad is not None:
+            inv = inv + float(np.asarray(pad)[gi])
         flow = (sell_coins_vec(good, inv[:, None], ends[None, :])
                 - sell_coins_vec(good, inv[:, None], prevs[None, :]))
         prices[gi] = flow / np.maximum(units[gi], 1)
