@@ -195,6 +195,7 @@ def availability(obs, chains) -> dict:
 
 
 def fit(chains, *, pool_ceiling: int, available: dict | None = None,
+        fixed_pool: bool = False,
         hire_times: tuple[int, ...] | None = None,
         beam: int | None = None,
         hours_committed: float = 0.0, warm=None) -> DayFit:
@@ -233,10 +234,14 @@ def fit(chains, *, pool_ceiling: int, available: dict | None = None,
                 hire_times=(tuple(hire_times) if hire_times is not None
                             else earliest_hire_times(pool_ceiling)))
     pool_floor = max(0, B.lower_bound(day, tasks) - len(day.units))
+    # `fixed_pool` asks ONE question -- "can this count carry the day" -- with no
+    # pool search at all: the count is the model's now, and `_smallest_pool`'s
+    # halving is the slow mode this caller does not need.
+    start = (pool_ceiling if fixed_pool
+             else min(pool_floor, pool_ceiling))
     result = B.search(day, tasks, beam=beam,
                       # wsr's own names: hands is the START, max_hands the CEILING.
-                      hands=min(pool_floor, pool_ceiling),
-                      max_hands=pool_ceiling, warm=warm)
+                      hands=start, max_hands=pool_ceiling, warm=warm)
 
     hours = float(max((turn for turn, _t, _w in result.route), default=0) + 1) \
         * max(1, result.pool)
@@ -395,6 +400,13 @@ def plan(obs, contractor, supply, *, class_of_tile, iter_cap: int | None = None,
     # caps the enumeration shorter than this keeps a good day instead of the
     # emptiest one. What this function no longer does is cut the walk short on a
     # clock: the offers are all priced and the best NET wins.
+    if bool(getattr(cfg, "buy_hands", False)):
+        # The count is a DECISION inside the model now (colgen's hands block),
+        # so there is nothing to scan for: one solve per day, and the offer it
+        # is handed only seeds the pool and wsr's ceiling.
+        return _solve_at(obs, contractor, supply, class_of_tile, pool_ceiling,
+                         iter_cap, rounds, tolerance, carried,
+                         w_warm, forecast_obj, smoothing, cfg, terms)
     for size in range(max(0, pool_ceiling), -1, -1):
         current = _solve_at(obs, contractor, supply, class_of_tile, size,
                             iter_cap, rounds, tolerance, carried,
@@ -429,10 +441,22 @@ def _solve_at(obs, contractor, supply, class_of_tile, offer, iter_cap,
             wheat_feed_stock=supply.wheat_feed_stock, money=supply.money,
             quotes=supply.quotes, shed_stock=supply.shed_stock,
             shed_capacity=supply.shed_capacity)
+        buys = bool(getattr(cfg, "buy_hands", False))
         result = M.equilibrate(object(), obs, contractor, current,
                                w_warm=w_warm, iter_cap=iter_cap, pool=pool,
                                forecast_obj=forecast_obj,
-                               smoothing=smoothing, cfg=cfg)
+                               smoothing=smoothing, cfg=cfg,
+                               buy_hands=buys,
+                               hand_mult=int(terms.hand_cost_mult))
+        if buys:
+            # The count is the MODEL's, read off the result the day layer
+            # holds. Reading it from `result.solve` was the bug: `equilibrate`
+            # returns a MasterResult, which has no `solve`, so the getattr fell
+            # through to None in silence and wsr was asked about the manager's
+            # offer instead of the number the model chose.
+            bought = getattr(result, "hands_bought", None)
+            if bought is not None and np.asarray(bought).size:
+                offer = max(0, int(round(float(np.asarray(bought)[0]))))
         mixes = M.to_mixes(result, contractor.days)
         choices = C.assign_by_quota(class_of_tile, mixes)
         choices = protect_at_risk_assignments(choices, mixes, obs)
@@ -458,6 +482,7 @@ def _solve_at(obs, contractor, supply, class_of_tile, offer, iter_cap,
                              .row("labour"))[0])
             for c in choices if c is not None)
         fitted = fit(chains, pool_ceiling=offer,
+                     fixed_pool=bool(getattr(cfg, "buy_hands", False)),
                      available=availability(obs, chains),
                      hours_committed=committed)
         if not fitted.complete and fitted.reason == "hours":
@@ -486,8 +511,14 @@ def _solve_at(obs, contractor, supply, class_of_tile, offer, iter_cap,
         # The bill follows the pool that actually carries the day (`fitted.pool`
         # is what `compile` hires, day.py:396), not the pool the master priced
         # with before the search had its say.
-        bill = hire_bill(int(fitted.pool),
-                         multiplier=terms.hand_cost_mult) * contractor.days
+        if bool(getattr(cfg, "buy_hands", False)):
+            # The hands block pays the Fibonacci bill INSIDE the objective, on
+            # every day it hires; charging it here as well bills the same coins
+            # twice, and `net` is the objective itself.
+            bill = 0
+        else:
+            bill = hire_bill(int(fitted.pool),
+                             multiplier=terms.hand_cost_mult) * contractor.days
         candidate = DayPlan(result, choices, mixes, fitted, spent, applied,
                             solves=spent, offer=offer,
                             net=float(result.objective) - bill)

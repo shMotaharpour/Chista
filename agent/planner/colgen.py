@@ -1204,7 +1204,9 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
              depth: tuple[np.ndarray, np.ndarray] | None = None,
              entry: bool = False,
              integral: bool = False,
-             cfg: "Config | None" = None) -> ColgenResult:
+             cfg: "Config | None" = None,
+             buy_hands: bool = False,
+             hand_mult: int = 0) -> ColgenResult:
     """The loop: master over every column so far, price, add, repeat.
 
     The loop's ONLY stop besides the certificate is `rounds` (default:
@@ -1271,7 +1273,8 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
             shed_stock=None if shed is None else shed[0],
             shed_capacity=0.0 if shed is None else float(shed[1]),
             prices=prices, market=market, sell_cap=sell_cap,
-            depth=depth, entry=entry, cfg=cfg)
+            depth=depth, entry=entry, cfg=cfg,
+            buy_hands=buy_hands, hand_mult=hand_mult)
         final = solver.solve(*args, **kwargs)
         if integral:
             # The MIP decides; the LP beside it is what has marginals, and it is

@@ -300,6 +300,11 @@ class MasterResult:
     #: That LP solve, when it happened (`integral` only). The pricing certificate
     #: and the gate "the MIP cannot beat its own relaxation" are both read here.
     lp_final: object = None
+    #: (days,) the hands the model BOUGHT in the decision solve -- the labour
+    #: row's `delta` block -- or None when that block was off. The day layer
+    #: asks wsr about `round()` of the first day and hires exactly that; the
+    #: bill is already inside the objective, so no caller adds it again.
+    hands_bought: object = None
     used_fallback: bool = False
     fallback_reason: str = ""
     p_source: str = ""            # where the product price path came from
@@ -659,7 +664,9 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
                 forecast_obj=None,
                 smoothing: float = 0.0,
                 entry: bool = False,
-                cfg: "Config | None" = None) -> MasterResult:
+                cfg: "Config | None" = None,
+                buy_hands: bool = False,
+                hand_mult: int = 0) -> MasterResult:
     """Column generation over the tile classes; always publishable.
 
     One round is one Dantzig-Wolfe round (lesson 1.9): the LP solves over EVERY
@@ -956,7 +963,8 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
                              depth=depth,
                              entry=entry,
                              warm=_repriced_pool(pool, p_mkt, days),
-                             smoothing=smoothing)
+                             smoothing=smoothing,
+            buy_hands=buy_hands, hand_mult=hand_mult)
     except RuntimeError as exc:
         return _fallback(str(exc)[:200])
     except Exception as exc:                    # noqa: BLE001 - degraded, not dead
@@ -992,6 +1000,7 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
         result.credit = credit_box[0]
         result.defer_cap = getattr(dual_src, "defer_cap", None)
         result.sells = getattr(cg.solve, "sells", None)
+        result.hands_bought = getattr(cg.solve, "hands_bought", None)
     converged = cg.certified
 
     # #87's dead-zone clamp, on the COUPLING dual before the publish map:

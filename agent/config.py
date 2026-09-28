@@ -154,6 +154,13 @@ class Config:
     #: chosen again on a fresh measurement, or by the model itself once the
     #: hands are bought inside the MILP instead of scanned for.
     max_hands: int = 1
+    #: Whether the MODEL buys the day's labour -- the `delta` columns of the
+    #: labour row, priced by `world.rules.hire_cost` -- instead of the day
+    #: layer scanning hand counts and paying the bill outside the matrix.
+    #: OFF until a season on the frozen trees says otherwise: with it off the
+    #: matrix is exactly the one that shipped (the flag reaches `solve` through
+    #: `equilibrate`, and the block only exists when it is on).
+    buy_hands: bool = False
     #: Master solves one `plan` may spend correcting the hours it committed.
     fit_rounds: int = 2
     #: The step the hours correction takes when the day did NOT fit: each round
