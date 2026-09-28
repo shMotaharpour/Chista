@@ -318,7 +318,9 @@ class MasterLP:
               entry: bool = False,
               integral: bool = False,
               land: int | None = None,
-              cfg: "Config | None" = None) -> MasterSolve:
+              cfg: "Config | None" = None,
+              buy_hands: bool = False,
+              hand_mult: int = 0) -> MasterSolve:
         """The restricted master over the pool, with the SHED as a stock.
 
         Variables: `lambda_j >= 0` per column, then per day the sells, the stock
@@ -385,7 +387,15 @@ class MasterLP:
         # quantity rows: (n_coupling·days, n)
         A_q = np.stack([c.cost.T.reshape(-1) for c in pool], axis=1) if n else \
             np.zeros((n_coupling * days, 0))
-        b_q = np.tile(hours[:days], n_coupling)   # LABOUR is the only row today
+        # LABOUR is the only coupling row today (`COUPLING_IDS = (LABOR_ID,)`):
+        # one row per day, `Σ_j λ_j·hours[j,d] ≤ budget[d]`. With `buy_hands` the
+        # budget is not GIVEN any more — the row keeps only the FARMER's own 24
+        # hours, scaled by the same safety margin `hours_for` applies, and the
+        # day's hands become columns that buy 23 hours each (a hand hired in
+        # turn 0 acts from hour 1, F040).
+        margin = 1.0 - float(cfg.hours_overhead)
+        b_q = (np.full(n_coupling * days, 24.0 * margin) if buy_hands
+               else np.tile(hours[:days], n_coupling))
 
         # Cash rows, CUMULATIVE: everything spent up to and including day d, less
         # everything banked before it, against one purse.
@@ -662,6 +672,38 @@ class MasterLP:
             lower = np.concatenate([lower, np.zeros(land_width)])
             upper = np.concatenate([upper, np.ones(land_width)])
             cost = np.concatenate([cost, np.zeros(land_width)])
+        from agent.planner.hands import MAX_HANDS
+
+        hands0 = n_cols
+        if buy_hands:
+            # --- the day's hands, as columns the model BUYS -------------------
+            # One column per (rung, day): the k-th hand of that day. The rungs
+            # are the Fibonacci ladder's own INCREMENTS (`world.rules.hire_cost`,
+            # one definition of it), and they are convex, so the LP's own
+            # relaxation of "how many hands" is integral with no binaries. The
+            # bill enters the objective here, so the day layer must stop charging
+            # it separately or the same coins are paid twice.
+            from agent.world.rules import hire_cost
+
+            ladder = np.array([hire_cost(k, hand_mult) for k in range(MAX_HANDS + 1)],
+                              dtype=np.float64)
+            n_cols = hands0 + MAX_HANDS * days
+            inc = np.diff(ladder)                    # the k-th hand's own price
+            cost = np.concatenate([cost, np.tile(inc, days)])
+            lower = np.concatenate([lower, np.zeros(MAX_HANDS * days)])
+            upper = np.concatenate([upper, np.full(MAX_HANDS * days, np.inf)])
+            # The purse must COVER the bill, not only be charged it in the
+            # objective: the spend is cumulative (`A_c`'s rows are "everything
+            # spent up to and including day d"), so the day-d bill appears in
+            # every row from d on — the same shape the land price uses.
+            if A_c.shape[1] < n_cols:
+                A_c = np.hstack([A_c, np.zeros((days, n_cols - A_c.shape[1]))])
+            day_of = np.arange(days)
+            at_or_after = np.where(day_of[:, None] >= day_of[None, :], 1.0, 0.0)
+            bill = np.transpose(inc[:, None, None] * at_or_after[None, :, :],
+                                (1, 0, 2)).reshape(days, MAX_HANDS * days)
+            A_c[:, hands0:hands0 + MAX_HANDS * days] = bill
+
         target = counts.astype(np.float64)
         if n_cols > n:
             # The coupling and convexity rows only involve the columns; the shed
@@ -670,6 +712,15 @@ class MasterLP:
             pad = n_cols - n
             A_q = np.hstack([A_q, np.zeros((A_q.shape[0], pad))])
             A_e = np.hstack([A_e, np.zeros((n_classes, pad))])
+        if buy_hands:
+            # Row d of the labour block carries that day's rungs: each hand buys
+            # 23 hours at the same margin the farmer's own 24 are scaled by, so
+            # `Σ_j λ_j·hours[j,d] − 23·margin·Σ_k δ_{k,d} ≤ 24·margin` is exactly
+            # the old row with the budget written as the farmer plus what the
+            # model chose to buy.
+            cols = hands0 + (np.arange(MAX_HANDS)[:, None] * days
+                             + np.arange(days)[None, :])
+            A_q[np.arange(days)[None, :], cols] = -23.0 * margin
         # Row order, and the duals are read in exactly this order:
         # [labour | cash | balance (EQUALITIES) | cap (≤) | appetite (≤) |
         #  convexity (EQUALITIES)]. The appetite rows sit AFTER the cap rows on

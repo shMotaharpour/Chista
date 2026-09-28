@@ -112,7 +112,7 @@ def test_a_declined_tile_is_not_a_dropped_one(board):
 
 def test_an_empty_day_fits_and_says_so():
     """No chains is a legal day, and it may not be reported as a failure."""
-    fitted = D.fit((), hands=3, hours_committed=0.0)
+    fitted = D.fit((), pool_ceiling=3, hours_committed=0.0)
     assert fitted.complete and fitted.tasks == 0 and fitted.reason == ""
     assert fitted.overhead == 1.0, (
         "no work is not an overhead of infinity, nor a division by zero")

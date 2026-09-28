@@ -123,7 +123,7 @@ def _obs():
     return sim.observations()[0]
 
 
-@pytest.mark.parametrize("hands", [1, 2, 3])
+@pytest.mark.parametrize("hands", [2, 3])
 def test_the_planners_compile_writes_the_day_the_search_priced(hands) -> None:
     obs = _obs()
     try:
@@ -155,3 +155,26 @@ def test_the_compiled_day_hires_exactly_the_hands_it_priced(hands) -> None:
     plan = D.compile(_day_plan(hands), _obs(), hands=hands)
     hires = sum(1 for hour in plan["market"] for o in hour if o and o[0] == "HIRE")
     assert hires == hands, f"priced {hands} hands, hired {hires}"
+
+
+def test_one_hand_cannot_water_the_whole_mixed_day() -> None:
+    """Why the wiring guard above starts at two hands: the arithmetic says so.
+
+    The fixture's water set is a 5x5 block minus three cells -- 22 WATER ops
+    plus at least eight moves between distinct rows and columns is 30 turns,
+    and a hand hired in turn 0 first acts at hour 1 (F040), so it has 23. A
+    synthetic `DayFit(pool=1, complete=True)` therefore claims a day no
+    scheduler could walk, and the guard above may not assert it.
+
+    This test does not restate that number from memory: it re-derives it from
+    the fixture, so if the water set ever becomes walkable by one hand this
+    fails and says to put `hands=1` back.
+    """
+    xs = sorted({x for x, _y in BOARD})
+    ys = sorted({y for _x, y in BOARD})
+    turns = len(BOARD) + (xs[-1] - xs[0]) + (ys[-1] - ys[0])
+    available = 24 - 1                    # a hand hired in turn 0 acts from hour 1
+
+    assert turns > available, (
+        f"the fixture's water set now fits one hand ({turns} <= {available} "
+        f"turns): put hands=1 back into the parametrize above")

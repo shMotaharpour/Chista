@@ -194,18 +194,20 @@ def availability(obs, chains) -> dict:
                          dict(private.get("shed", {}) or {}))
 
 
-def fit(chains, *, hands: int, available: dict | None = None,
+def fit(chains, *, pool_ceiling: int, available: dict | None = None,
         hire_times: tuple[int, ...] | None = None,
         beam: int | None = None,
         hours_committed: float = 0.0, warm=None) -> DayFit:
     """Hand the day to wsr and report what it made of it.
 
-    `hands` is the pool offered, all of them from hour 1 — a hand hired in turn
-    0 first acts at hour 1 (F040). The search is given the RANGE `floor..hands`
-    and finds the smallest pool itself: wsr's `_smallest_pool` halves the
-    interval (O(log2 N)) and contracts its ceiling to the hands it actually
-    used, which is both the cheap way to ask and the only way to learn the
-    answer is smaller than `hands`. There is no wall-clock deadline to pass —
+    `pool_ceiling` is the most hands this day may use — the day layer's own
+    OFFER — and every one of them is on the field from hour 1 (a hand hired in
+    turn 0 first acts at hour 1, F040). wsr's names are the two ENDS of that
+    range: it is handed `hands=pool_floor` and `max_hands=pool_ceiling`, and
+    its own `_smallest_pool` halves the interval (O(log2 N), contracting the
+    ceiling to the hands the route actually used), which is both the cheap way
+    to ask and the only way to learn the answer is smaller than the offer.
+    There is no wall-clock deadline to pass —
     wsr is bounded structurally by the task count and the beam width, so
     identical inputs give bit-identical routes (agent/wsr/README.md, caller
     guidelines 3 and 4).
@@ -229,10 +231,12 @@ def fit(chains, *, hands: int, available: dict | None = None,
     # whole turn's order budget goes to hires, which the real queue does not.
     day = B.Day(chains=tuple(chains), available=available,
                 hire_times=(tuple(hire_times) if hire_times is not None
-                            else earliest_hire_times(hands)))
-    floor = max(0, B.lower_bound(day, tasks) - len(day.units))
+                            else earliest_hire_times(pool_ceiling)))
+    pool_floor = max(0, B.lower_bound(day, tasks) - len(day.units))
     result = B.search(day, tasks, beam=beam,
-                      hands=min(floor, hands), max_hands=hands, warm=warm)
+                      # wsr's own names: hands is the START, max_hands the CEILING.
+                      hands=min(pool_floor, pool_ceiling),
+                      max_hands=pool_ceiling, warm=warm)
 
     hours = float(max((turn for turn, _t, _w in result.route), default=0) + 1) \
         * max(1, result.pool)
@@ -242,12 +246,12 @@ def fit(chains, *, hands: int, available: dict | None = None,
         # checked here rather than discovered inside `compile_route`).
         return DayFit(tuple(chains), len(result.route), tasks.n, result.pool,
                       False, hours, hours_committed, "unstable",
-                      spare=int(result.spare), floor=int(floor))
+                      spare=int(result.spare), floor=int(pool_floor))
     reason = "" if result.complete else ("budget" if result.can_improve
                                          else "hours")
     return DayFit(tuple(chains), len(result.route), tasks.n, result.pool,
                   bool(result.complete), hours, hours_committed, reason,
-                  spare=int(result.spare), floor=int(floor))
+                  spare=int(result.spare), floor=int(pool_floor))
 
 
 def hours_for(hands: int, days: int, overhead: float) -> np.ndarray:
@@ -439,7 +443,7 @@ def _solve_at(obs, contractor, supply, class_of_tile, hands, iter_cap,
             float(np.asarray(mixes[c.class_key].plans[c.plan_index]
                              .row("labour"))[0])
             for c in choices if c is not None)
-        fitted = fit(chains, hands=hands,
+        fitted = fit(chains, pool_ceiling=hands,
                      available=availability(obs, chains),
                      hours_committed=committed)
         if not fitted.complete and fitted.reason == "hours":
@@ -454,7 +458,7 @@ def _solve_at(obs, contractor, supply, class_of_tile, hands, iter_cap,
             # `Config.ask_rounds` is the cap, and it is the CONFIG's number, not
             # a module constant beside it: zero means no re-ask at all.
             if int(fitted.floor) > int(hands) and int(cfg.ask_rounds) > 0:
-                again = fit(chains, hands=int(fitted.floor),
+                again = fit(chains, pool_ceiling=int(fitted.floor),
                             available=availability(obs, chains),
                             hours_committed=committed)
                 if again.complete:

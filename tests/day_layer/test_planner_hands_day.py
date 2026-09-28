@@ -9,9 +9,9 @@ The day: fourteen wheat tiles, PLANT+WATER, more than the farmer can walk alone.
 
 What is asserted:
 
-    fit(hands=0) searches the farmer alone: pool 0, and the route names worker 0 only
+    fit(pool_ceiling=0) searches the farmer alone: pool 0, and the route names worker 0 only
     compile(hands=0) writes one unit and hires nobody
-    fit(hands=2) is still allowed its two hands
+    fit(pool_ceiling=2) is still allowed its two hands
     Day(hands=k) starts its hands at the engine's own hours, ten a turn
 """
 from __future__ import annotations
@@ -34,19 +34,19 @@ OBS = {"player": 0, "hour": 0, "day": 0,
 
 
 def test_the_premise_the_farmer_alone_cannot_carry_this_day() -> None:
-    fitted = D.fit(CHAINS, hands=0, available=AVAILABLE)
+    fitted = D.fit(CHAINS, pool_ceiling=0, available=AVAILABLE)
     assert not fitted.complete, "the day fits the farmer alone, so it cannot show a hand appearing"
 
 
 def test_fit_with_no_hands_searches_the_farmer_alone() -> None:
-    fitted = D.fit(CHAINS, hands=0, available=AVAILABLE)
+    fitted = D.fit(CHAINS, pool_ceiling=0, available=AVAILABLE)
     assert fitted.pool == 0, (
         f"the master priced no hands and the day layer searched with {fitted.pool}: a hand the "
         f"market never hires")
 
 
 def test_fit_is_still_allowed_the_hands_it_was_offered() -> None:
-    fitted = D.fit(CHAINS, hands=2, available=AVAILABLE)
+    fitted = D.fit(CHAINS, pool_ceiling=2, available=AVAILABLE)
     assert 1 <= fitted.pool <= 2, f"two hands were offered and the search used {fitted.pool}"
 
 
@@ -90,7 +90,7 @@ def test_a_complete_day_reports_the_hands_it_needs_not_the_offer() -> None:
     """
     from agent.planner import day as D
 
-    fitted = D.fit(CHAINS, hands=5, available=AVAILABLE)
+    fitted = D.fit(CHAINS, pool_ceiling=5, available=AVAILABLE)
     assert fitted.complete, fitted.reason
     assert fitted.pool < 5, "the answer echoed the offer instead of the need"
     assert 0 <= fitted.floor <= fitted.pool, (fitted.floor, fitted.pool)
@@ -105,8 +105,8 @@ def test_the_day_takes_the_secretarys_hours_when_it_has_them() -> None:
     """
     from agent.planner import day as D
 
-    given = D.fit(CHAINS, hands=2, available=AVAILABLE, hire_times=(5, 5))
-    bound = D.fit(CHAINS, hands=2, available=AVAILABLE)
+    given = D.fit(CHAINS, pool_ceiling=2, available=AVAILABLE, hire_times=(5, 5))
+    bound = D.fit(CHAINS, pool_ceiling=2, available=AVAILABLE)
     # The claim is that the input REACHES the search, so the observable is that
     # the day is not the same day: hands that start at hour 5 walk a different
     # day from hands that start at hour 1. Equal numbers here would mean the
