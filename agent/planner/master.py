@@ -410,7 +410,7 @@ def published_duals(w_coupling: np.ndarray, days: int,
     return np.maximum(out, 0.0)
 
 
-def _sell_cap(obs, days: int) -> np.ndarray:
+def _sell_cap(obs, days: int, risk_z: float = 0.0) -> tuple[np.ndarray, dict]:
     """`(1, len(PRODUCTS))`: how much the town will buy over the horizon.
 
     ONE number per good, because the town eats that much over the whole horizon
@@ -429,19 +429,25 @@ def _sell_cap(obs, days: int) -> np.ndarray:
     reporting a pricing failure it did not have. Without a rival the town's own
     drain IS the appetite: the rival's supply is a subtraction, not the model.
     """
-    from agent.belief.opponent import drain_forecast
+    from agent.belief.opponent import GOODS, drain_forecast
 
     horizon = max(1, int(days)) * TURNS_PER_DAY
-    drain, _sd = drain_forecast(obs, horizon)
+    drain, sd = drain_forecast(obs, horizon)
     total = np.asarray(drain, dtype=np.float64)[None, :len(PRODUCTS)]
+    # The SAME call's second moment, kept instead of discarded: `risk_z` sd of
+    # the drain falling short is the sale ladder walked `risk_z·sd` units up
+    # (belief's own `opponent.quantile_price_floor`). Zero is the mean model.
+    risk_pad = ({str(g): float(risk_z) * max(0.0, float(v))
+                 for g, v in zip(GOODS, np.asarray(sd, dtype=np.float64))}
+                if float(risk_z) > 0.0 else {})
     try:
         from agent.belief.rival_calendar import supply_curve
         rival = np.asarray(supply_curve(obs, PRODUCTS, days), dtype=np.float64)
     except Exception:                              # noqa: BLE001 - no rival
-        return np.maximum(total, 0.0)
+        return np.maximum(total, 0.0), risk_pad
     if rival.ndim == 2 and rival.shape[1] == total.shape[1]:
         total = total - rival.sum(axis=0)[None, :]
-    return np.maximum(total, 0.0)
+    return np.maximum(total, 0.0), risk_pad
 
 
 def _shed_capacity(obs) -> int:
@@ -926,6 +932,10 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
             values.append(max(0.0, float(board.tile_values[i])))
         return np.asarray(values, dtype=np.float64), columns
 
+    # The town's appetite AND the drain's spread, from one call: the risk shave
+    # the ladder below is read with, and the cap the sell rows use further down.
+    sell_cap, risk_pad = _sell_cap(obs, days, float(getattr(cfg, "sell_risk_z", 0.0)))
+
     # The market's DEPTH, from belief's own ladder (`belief.depth.sell_blocks`):
     # what a lot fetches, per good per day, as blocks an LP can price. Built from
     # the SAME forecast the price path came from, so the curve and the path are
@@ -943,9 +953,15 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
             # better than this number, never worse.
             _env_price, env_hour = day_envelope(forecast_obj, goods,
                                                 int(obs.get("day", 0)), days)
+            # The ladder is read from a market padded by the drain's own spread,
+            # in the caller's good order (the pad is keyed by NAME, so no order
+            # can silently misalign). An empty pad is the mean ladder.
+            pad = (np.array([float(risk_pad.get(g, 0.0)) for g in goods],
+                            dtype=np.float64) if risk_pad else None)
             depth = sell_blocks(forecast_obj, goods, int(obs.get("day", 0)),
                                 days, int(supply.shed_capacity),
-                                blocks=int(cfg.sell_blocks), hours=env_hour)
+                                blocks=int(cfg.sell_blocks), hours=env_hour,
+                                pad=pad)
         except Exception:                       # noqa: BLE001 - the flat tier stands
             depth = None
 
@@ -959,7 +975,7 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
                              shed=(supply.shed_stock, supply.shed_capacity),
                              prices=p_mkt,
                              market=SELLABLE,
-                             sell_cap=_sell_cap(obs, days),
+                             sell_cap=sell_cap,
                              depth=depth,
                              entry=entry,
                              warm=_repriced_pool(pool, p_mkt, days),
