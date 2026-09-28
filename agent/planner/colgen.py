@@ -1275,7 +1275,8 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
             prices=prices, market=market, sell_cap=sell_cap,
             depth=depth, entry=entry, cfg=cfg,
             buy_hands=buy_hands, hand_mult=hand_mult)
-        final = solver.solve(*args, **kwargs)
+        final = solver.solve(*args, **kwargs,
+            buy_hands=buy_hands, hand_mult=hand_mult)
         if integral:
             # The MIP decides; the LP beside it is what has marginals, and it is
             # the half that says how much the integer answer cost (the gate: a
@@ -1283,7 +1284,8 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
             result.lp_final = final
             result.solve = solver.solve(*args, integral=True,
                                         land=int(getattr(cfg, "land_quadrants", 0))
-                                        or None, **kwargs)
+                                        or None, **kwargs,
+            buy_hands=buy_hands, hand_mult=hand_mult)
         else:
             result.solve = final
         return result
@@ -1347,7 +1349,8 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
             shed_stock=None if shed is None else shed[0],
             shed_capacity=0.0 if shed is None else float(shed[1]),
             prices=prices, market=market, sell_cap=sell_cap,
-            depth=depth, entry=entry, cfg=cfg)
+            depth=depth, entry=entry, cfg=cfg,
+            buy_hands=buy_hands, hand_mult=hand_mult)
         n_at_last_solve[0] = len(result.pool)
         result.rounds += 1  # solves taken; the pricing passes it fed are free
 
