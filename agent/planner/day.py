@@ -414,7 +414,18 @@ def plan(obs, contractor, supply, *, class_of_tile, iter_cap: int | None = None,
                  else float(tolerance))
     smoothing = float(cfg.smoothing if smoothing is None else smoothing)
     cap = int(cfg.max_hands if cap is None else cap)
-    pool_ceiling = scan_ceiling(offer, cap)
+    buys = bool(getattr(cfg, "buy_hands", False))
+    # When the MODEL buys the hands, the ladder's WIDTH (`cap`, 16 -- the
+    # Fibonacci ladder's own value) is the only bound on the day, and the
+    # manager's estimate is a HINT: the pool's seed and wsr's start. Letting
+    # the estimate CAP the day was the trap -- on an empty farm it says one
+    # hand, one hand cannot plant 19 tiles in 15.6 hours, and the ground stays
+    # empty because it was empty. The wage is inside the objective, so the
+    # count is bounded by VALUE: a hand is bought only when the work it
+    # enables pays the ladder. Without the model buying, the estimate still
+    # bounds the scan as before -- there is nothing to price the extra hands
+    # with in that path.
+    pool_ceiling = int(cap if buys else scan_ceiling(offer, cap))
     carried = list(pool or [])
     chosen: DayPlan | None = None
     # Every offer is solved, largest pool FIRST: more hands is where the value
@@ -422,7 +433,7 @@ def plan(obs, contractor, supply, *, class_of_tile, iter_cap: int | None = None,
     # caps the enumeration shorter than this keeps a good day instead of the
     # emptiest one. What this function no longer does is cut the walk short on a
     # clock: the offers are all priced and the best NET wins.
-    if bool(getattr(cfg, "buy_hands", False)):
+    if buys:
         # The count is a DECISION inside the model now (colgen's hands block),
         # so there is nothing to scan for: one solve per day, and the offer it
         # is handed only seeds the pool and wsr's ceiling.
