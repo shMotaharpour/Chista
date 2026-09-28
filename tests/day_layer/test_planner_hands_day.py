@@ -33,6 +33,33 @@ OBS = {"player": 0, "hour": 0, "day": 0,
        "farms": [{"hires_today": 0}], "market": {"prices": {}}}
 
 
+def test_a_fixed_pool_asks_wsr_one_question_with_no_pool_search(monkeypatch):
+    """`fixed_pool=True` hands wsr `hands == max_hands`: one question, one search.
+
+    The range form (`hands=min(floor, offer)`, `max_hands=offer`) is what makes
+    wsr run its `_smallest_pool` halving -- several full searches per call. Once
+    the count is the MODEL's, the caller must not pay for that search: it asks
+    "can this count carry the day" and nothing else. R007: pass `hands=start`
+    with the range again and the assertion below goes red.
+    """
+    seen = {}
+
+    def spy(day, tasks, **kw):
+        seen.update(kw)
+        return _search(day, tasks, **kw)
+
+    from agent.wsr import beam as B                                       # noqa: PLC0415
+    from agent.planner import day as D                                    # noqa: PLC0415
+
+    _search = B.search
+    monkeypatch.setattr(B, "search", spy)
+    D.fit(CHAINS, pool_ceiling=3, available=AVAILABLE, fixed_pool=True)
+
+    assert seen["hands"] == 3 and seen["max_hands"] == 3, (
+        f"a fixed pool asks one question: hands {seen.get('hands')}, "
+        f"max_hands {seen.get('max_hands')}")
+
+
 def test_the_premise_the_farmer_alone_cannot_carry_this_day() -> None:
     fitted = D.fit(CHAINS, pool_ceiling=0, available=AVAILABLE)
     assert not fitted.complete, "the day fits the farmer alone, so it cannot show a hand appearing"
