@@ -230,14 +230,18 @@ class SelfWarm:
             self.misses += 1
             return []
         soft = soft_vector(day, tasks)
+        day_hire = tuple(int(h) for h in day.hire_times)
         scored = []
         for s in self.seeds:
             if s.pool != hands:                 # hard gate: pool
                 continue
-            # hard gate: hands per hour. The seed's own vector is authoritative
-            # for the day it was solved on; the query's comes from the day now
-            # being solved. Two days match only if the vectors are identical.
-            if s.hire_hours != tuple(int(h) for h in day.hire_times):
+            # hard gate: hands per hour. The npz row is zero-padded to the
+            # widest seed; the padding is "no worker", so compare only the
+            # first len(day.hire_times) entries and require the seed's own
+            # vector to be exactly the day's (no grown workers beyond it).
+            if s.hire_hours[:len(day_hire)] != day_hire:
+                continue
+            if any(h != 0 for h in s.hire_hours[len(day_hire):]):
                 continue
             d = sum(abs(a - b) for a, b in zip(s.soft, soft.tolist()))
             scored.append((d, s))
