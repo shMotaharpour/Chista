@@ -113,7 +113,8 @@ class Manager:
         self.cfg = config or Config.load()
         self.graph = graph if graph is not None else _load_graph()
         self.keys = frozenset(self.graph.key_index)
-        self.contractor = _contractor(self.graph, HORIZON_DAYS)
+        self.contractor = _contractor(self.graph, HORIZON_DAYS,
+                                      float(getattr(self.cfg, "discount_rate", 0.0)))
         self.steps = C.shed_distance()
         self.pool: list = []            # columns carried between days
         #: The last solve's mix, in `pool` order — what the day roll prunes on.
@@ -171,7 +172,8 @@ class Manager:
         day = int(obs.get("day", 0)) if isinstance(obs, dict) else 0
         days = M.season_horizon(obs)
         if int(self.contractor.days) != days:
-            self.contractor = _contractor(self.graph, days)
+            self.contractor = _contractor(self.graph, days,
+                                          float(getattr(self.cfg, "discount_rate", 0.0)))
         if self.pool_day is None:                 # nothing carried yet
             self.pool_day = day
             return
@@ -508,7 +510,7 @@ def _load_graph():
     return TileGraph.load(GRAPH_PATH)
 
 
-def _contractor(graph, days: int):
+def _contractor(graph, days: int, discount: float = 0.0):
     """The tile DP's pricing oracle, cast over the graph already in hand.
 
     `days` is the horizon the sweep runs over, so it changes with the day
@@ -518,4 +520,4 @@ def _contractor(graph, days: int):
     that never changes.
     """
     from agent.tile_dp.contractor import TileContractor
-    return TileContractor(graph, days=days)
+    return TileContractor(graph, days=days, discount=discount)

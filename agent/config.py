@@ -128,6 +128,15 @@ class Config:
     #: which is the counterweight to F035's rising path: a big lot never fetches
     #: the peak. The shed's capacity is the conservative choice.
     sell_lot_default: float = 0.0
+    #: The daily discount rate on the tile DP's own cash flows (net present value).
+    #: 0.0 keeps today's behaviour. The literature's tool for mixing fast- and
+    #: slow-payback work is a RATE, not a truncation: the taper that zeroed prices
+    #: in ten days measured worse than not tapering at all, and worse the sharper it
+    #: got (over three seeds against the strong rival: 101,925 at off, 95,117 at
+    #: five days, 73,692 at ten, 40,553 at fifteen), while a rate discounts every
+    #: cash flow -- the costs it delays included -- and is the same NPV the
+    #: capital-budgeting and cash-flow-duration frameworks use.
+    discount_rate: float = 0.0
     #: What a unit sold BEYOND the town's own appetite fetches, as a fraction of
     #: the day's price. That tier is the legacy two-tier model, used when the
     #: caller hands in no depth curve; with a curve the ladder's own blocks carry

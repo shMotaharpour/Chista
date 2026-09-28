@@ -99,9 +99,15 @@ class TileContractor:
     slice check happen once per process instead of once per turn.
     """
 
-    def __init__(self, graph: TileGraph, days: int = HORIZON_DAYS) -> None:
+    def __init__(self, graph: TileGraph, days: int = HORIZON_DAYS,
+                 discount: float = 0.0) -> None:
         self.graph = graph
         self.days = int(days)
+        #: `(days,)`: the NPV factor of each day, ONCE (vectorised, no loop in
+        #: the sweep). 0.0 is a factor of 1 everywhere and is bit-identical.
+        self.discount = float(discount)
+        self._disc = np.asarray((1.0 / (1.0 + self.discount)) ** np.arange(self.days),
+                                dtype=DTYPE) if self.discount > 0.0 else None
         self.n_states = int(graph.n_states)
         self.edge_offsets = np.ascontiguousarray(graph.edge_offsets, dtype=np.intp)
         self.edge_next = np.ascontiguousarray(graph.edge_next, dtype=np.intp)
@@ -201,6 +207,8 @@ class TileContractor:
             # Produce and cost are priced by their own vector, in two passes. Folding them
             # into one wider matvec measures slower: the wider gemv loses to BLAS dispatch.
             rewards[d] = self.EP @ p[d] - ec @ w[d]
+            if self._disc is not None:
+                rewards[d] = rewards[d] * self._disc[d]
         return self._backward(rewards), rewards
 
     def _base_rewards(self, p: np.ndarray, w: np.ndarray) -> np.ndarray:
@@ -214,6 +222,8 @@ class TileContractor:
         rewards = np.empty((self.days, int(self.edge_next.size)), dtype=DTYPE)
         for d in range(self.days):
             rewards[d] = self.EP @ p[d] - self.EC @ w[d]
+            if self._disc is not None:
+                rewards[d] = rewards[d] * self._disc[d]
         return rewards
 
     def _sweep_from(self, base: np.ndarray, w: np.ndarray, travel_hours: int

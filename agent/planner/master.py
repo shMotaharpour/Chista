@@ -647,7 +647,6 @@ def _product_price_path(obs, days: int, p_flat: np.ndarray,
                     / max(1.0, float(round(float(units[d])))) if units[d] > 0
                     else float(path[d])
                     for d in range(len(path)))
-            paths = priced
     except Exception as exc:                     # noqa: BLE001 - degrade
         return p_flat, f"flat stand-in (forecast failed: {type(exc).__name__})"
     out = p_flat.copy()
