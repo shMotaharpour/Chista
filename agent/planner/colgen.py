@@ -201,6 +201,12 @@ class MasterSolve:
     #: `rules.LAND_ORDER`, 1 in the day column of the purchase — or None when the
     #: land rows were off (the LP path).
     land_bought: np.ndarray = None
+    #: (days,) the hands the HANDS block bought, one number per day: fractional
+    #: on the LP path, whole on the MIP one. None when the block was off, which
+    #: is a different statement from zero. The bill is already inside the
+    #: objective, so no caller may add it again; the day layer asks wsr about
+    #: the count and hires exactly that.
+    hands_bought: np.ndarray = None
 
     def __post_init__(self) -> None:
         for name in ("sigma", "tau", "rho", "appetite", "sells"):
@@ -780,7 +786,9 @@ class MasterLP:
             kinds = [_highspy._core.HighsVarType.kInteger] * n
             kinds += [_highspy._core.HighsVarType.kContinuous] * (n_cols - n)
             if nq:
-                kinds[land0:] = [_highspy._core.HighsVarType.kInteger] * land_width
+                kinds[land0:hands0] = [_highspy._core.HighsVarType.kInteger] * land_width
+            if buy_hands:
+                kinds[hands0:] = [_highspy._core.HighsVarType.kInteger] * hands_width
             lp.integrality_ = kinds
 
         self._highs.passModel(lp)
@@ -826,7 +834,10 @@ class MasterLP:
                 eta=None,
                 defer_cap=(np.asarray(upper[defer0:defer0 + items * days]
                                       ).reshape(items, days).T if entry else None),
-                land_bought=bought, integral=True)
+                land_bought=bought, integral=True,
+                hands_bought=(values[hands0:hands0 + hands_width]
+                              .reshape(MAX_HANDS, days).sum(axis=0)
+                              if buy_hands else None))
 
         marg = np.asarray(solution.row_dual, dtype=np.float64)
         y = np.maximum(-marg[:n_coupling * days], 0.0).reshape(n_coupling, days).T
@@ -876,7 +887,10 @@ class MasterLP:
                            now=now, defer=defer, eta=eta,
                            defer_cap=(np.asarray(
                                upper[defer0:defer0 + items * days]
-                           ).reshape(items, days).T if entry else None))
+                           ).reshape(items, days).T if entry else None),
+                           hands_bought=(values[hands0:hands0 + hands_width]
+                                         .reshape(MAX_HANDS, days).sum(axis=0)
+                                         if buy_hands else None))
 
 
 def solve_master(pool: list[Column], counts: np.ndarray, hours: np.ndarray,
