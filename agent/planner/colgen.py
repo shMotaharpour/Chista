@@ -680,7 +680,11 @@ class MasterLP:
             A_c[:, land0:land0 + land_width] += pay
             # Rows: `sum_d y_q <= 1` (one purchase each), the prefix order the
             # engine enforces (`sum y_q <= sum y_{q-1}`), and the tile tie.
-            n_land_rows = nq + (nq - 1) + 1
+            # ONE cap row per DAY: a quadrant bought on day k brings its 25 tiles
+            # from day k, never from day 0. A single season-wide row let a purchase
+            # on the last day pay for tiles worked on the first, which is why the
+            # model could not see what buying EARLY is worth.
+            n_land_rows = nq + (nq - 1) + days
             L_rows = np.zeros((n_land_rows, n_cols))
             L_rows[np.arange(nq)[:, None],
                    land0 + np.arange(nq)[:, None] * days
@@ -695,8 +699,15 @@ class MasterLP:
                 L_rows[qq[:, None] + nq - 1,
                        land0 + (qq[:, None] - 1) * days
                        + np.arange(days)[None, :]] = -1.0
-            L_rows[n_land_rows - 1, :n] = 1.0
-            L_rows[n_land_rows - 1, land0:] = -25.0
+            tile_rows = np.arange(nq + (nq - 1), n_land_rows)
+            L_rows[tile_rows, :n] = 1.0
+            if nq:
+                cols = (land0 + np.arange(nq)[None, :, None] * days
+                        + np.arange(days)[None, None, :])
+                cum = (np.arange(days)[:, None, None]
+                       >= np.arange(days)[None, None, :])
+                L_rows[tile_rows[:, None, None],
+                       np.broadcast_to(cols, (days, nq, days))] = np.where(cum, -25.0, 0.0)
             upper[land0:land0 + land_width] = 1.0     # one binary per (quadrant, day)
         if buy_hands:
             # --- the day's hands, as columns the model BUYS -------------------
@@ -781,7 +792,7 @@ class MasterLP:
             np.zeros(items * days if entry else 0),        # split: equality
             np.concatenate([np.ones(nq),
                             np.zeros(max(0, nq - 1)),
-                            [25.0]]) if nq else np.zeros(0),
+                            np.full(days, 25.0)]) if nq else np.zeros(0),
             target])
         lp.sense_ = _highspy._core.ObjSense.kMinimize
         matrix = _highspy._core.HighsSparseMatrix()
@@ -896,8 +907,7 @@ class MasterLP:
             # One dual per ROW: the first nq rows are the one-purchase rows, and a
             # row is a number, not a day vector.
             land_dual = (_lnd[:nq] if nq else None)
-            rent = (_lnd[land_rows - 1:land_rows] * 0.0
-                    if not nq else np.repeat(_lnd[land_rows - 1], days))
+            rent = (_lnd[land_rows - days:] if (nq and days) else None)
         mu = np.asarray(marg[n_ineq:], dtype=np.float64)
         values = np.asarray(solution.col_value, dtype=np.float64)
         # What the master decided to SELL is the SUM of the tiers: they are two
@@ -1385,6 +1395,10 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
             shed_capacity=0.0 if shed is None else float(shed[1]),
             prices=prices, market=market, sell_cap=sell_cap,
             depth=depth, entry=entry, cfg=cfg,
+            # The land rows belong to BOTH solves: the decision buys quadrants
+            # and the LP beside it prices a slot. A matrix without them can only
+            # price a farm that cannot expand, and then the rent is never read.
+            land=int(getattr(cfg, "land_quadrants", 0)) or None,
             buy_hands=buy_hands, hand_mult=hand_mult)
         n_at_last_solve[0] = len(result.pool)
         result.rounds += 1  # solves taken; the pricing passes it fed are free
