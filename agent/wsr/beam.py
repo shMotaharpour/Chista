@@ -414,17 +414,17 @@ def _repair_unplaced(day: Day, tasks: TaskArray, result: Result) -> Result:
 
     Appending a task to a worker's day cannot change that day's shape, and on a day the horizon has
     closed on, the shape is what decides: the worker ends up somewhere the last task cannot be
-    reached from, or walks past a tile it could have worked. So for each unplaced task and each
-    worker, the worker's own tasks PLUS that one are re-ordered exactly (`_path_order`) and re-timed
-    with the writer's own walk rules; the worker's own order with the task appended is tried too, so
-    the pass can do everything it used to. A candidate is kept only when the layer's own checker and
-    compiler accept it and no deadline is missed, it never drops a task, and a day it cannot improve
-    comes back untouched.
+    reached from, or walks past a tile it could have worked. So the unplaced task is offered every
+    place it could take in each worker's own day - the worker's tasks re-ordered exactly where the
+    day is small enough to solve (`_path_order`) and inserted at every position of the day as it
+    stands otherwise - every candidate re-timed with the writer's own walk rules and ranked by the
+    turns it ADDS. The cheapest are handed to the layer's own compiler and checker, and the first
+    that both accept is kept. A day it cannot improve comes back untouched.
     """
     from agent.wsr.emit import check_route, compile_route
 
     ids = tasks.ids                                   # the string end of a row, read once
-    row_of = {task: row for row, task in enumerate(ids)}
+    row_of = tasks.row_of
     placed_rows = {row_of[task] for _turn, task, _worker in result.route}
     unplaced = [row for row in range(tasks.n) if row not in placed_rows]
     if not unplaced:
@@ -443,42 +443,50 @@ def _repair_unplaced(day: Day, tasks: TaskArray, result: Result) -> Result:
 
     improved = False
     for row in unplaced:
-        if int(tasks.items[row]) >= 0:
-            continue                     # only the tasks with no good to fetch (water, harvest, care)
         follows = np.flatnonzero(tasks.pred[row])
         if any(int(j) not in placed_rows for j in follows):
             continue                     # a task cannot land before the work it follows
         earliest = int(tasks.earliest[row])
+        # Every place this task could take, and what each one costs: the turns the day grows by.
+        # Sorted, so the cheapest candidate is the one the compiler is asked about first.
+        candidates: list[tuple[int, int, int, list[tuple[int, int]]]] = []
         for worker in range(workers):
             entries = sorted(by_worker.get(worker, []))
             if any(turn < 0 for turn, _row in entries):
                 continue                 # an idle drop carries no turn to re-time around
             rows = [entry_row for _turn, entry_row in entries]
-            if len(rows) + 1 > PATH_LIMIT:
-                continue                 # the exact table stops being cheaper than the step it repairs
             start = (int(starts[worker][0]), int(starts[worker][1]))
             hour = int(hours[worker])
-            for order in (_path_order(tasks, rows + [row], start), rows + [row]):
+            before = max((turn for turn, _row in entries), default=hour - 1) + 1 - hour
+            orders = [rows[:at] + [row] + rows[at:] for at in range(len(rows) + 1)]
+            if len(rows) + 1 <= PATH_LIMIT:
+                orders.append(_path_order(tasks, rows + [row], start))
+            for at, order in enumerate(orders):
                 landed = _retime_day(tasks, order, start, hour, horizon)
                 if landed is None:
                     continue
                 if any(turn < earliest or int(tasks.latest[landed_row]) < turn
                        for turn, landed_row in landed):
                     continue             # an hour this work cannot keep
-                merged = [(turn, ids[landed_row], worker) for turn, landed_row in landed]
-                merged += [(turn, ids[other_row], other) for other, group in by_worker.items()
-                           if other != worker for turn, other_row in group]
-                candidate = result._replace(route=sorted(merged), complete=len(merged) == tasks.n)
-                try:
-                    compile_route(day, tasks, candidate)    # the writer first: its refusal is cheap
-                except Exception:  # noqa: BLE001 - any refusal is this candidate's own answer
-                    continue
-                if check_route(day, tasks, candidate):
-                    continue
-                by_worker[worker] = list(landed)
-                placed_rows.add(row)
-                improved = True
-                break
+                candidates.append((landed[-1][0] + 1 - hour - before, worker, at, landed))
+        if not candidates:
+            continue
+        candidates.sort()
+        for _added, worker, _at, landed in candidates:
+            merged = [(turn, ids[landed_row], worker) for turn, landed_row in landed]
+            merged += [(turn, ids[other_row], other) for other, group in by_worker.items()
+                       if other != worker for turn, other_row in group]
+            candidate = result._replace(route=sorted(merged), complete=len(merged) == tasks.n)
+            try:
+                compile_route(day, tasks, candidate)    # the writer first: its refusal is cheap
+            except Exception:  # noqa: BLE001 - any refusal is this candidate's own answer
+                continue
+            if check_route(day, tasks, candidate):
+                continue
+            by_worker[worker] = list(landed)
+            placed_rows.add(row)
+            improved = True
+            break
 
     if not improved:
         return result
@@ -1058,7 +1066,7 @@ def _bag(tasks: TaskArray, entries: list[tuple[int, str]]) -> dict[int, int]:
     bag: dict[int, int] = {}
     own: dict[int, int] = {}
     for turn, task_id in sorted(entries):
-        row = tasks.ids.index(task_id)
+        row = tasks.row_of[task_id]
         if int(turn) >= 0 and bool(tasks.is_drop[row]):
             break
         good = int(tasks.items[row])
@@ -1922,7 +1930,7 @@ def legs(tasks: TaskArray, entries: list[tuple[int, str]]) -> list[tuple[int, in
     A drop with an empty bag (turn -1) is not a leg: it has no turn, no op and no walk, so the
     worker never goes to its door. Reading it as one put the worker on that door from turn 0.
     """
-    rows = [(int(turn), tasks.ids.index(task_id)) for turn, task_id in sorted(entries)
+    rows = [(int(turn), tasks.row_of[task_id]) for turn, task_id in sorted(entries)
             if int(turn) >= 0]
     out: list[tuple[int, int, tuple | None]] = []
     dropped = False

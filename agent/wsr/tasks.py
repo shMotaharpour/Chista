@@ -212,6 +212,10 @@ class TaskArray:
         # The transposed product, cast once. `ready` runs once per step and rebuilding this on
         # every call would cost more than the product it feeds.
         self._pred_f32 = self.pred.T.astype(np.float32)
+        # Each task id's own row. A candidate is looked up by id once per worker and per task - the
+        # compiler bank each worker's harvests, the search prices every worker's door load - and a
+        # list search for a string is what that costs. Built once with the arrays.
+        self.row_of = {task: row for row, task in enumerate(self.ids)}
         # The edges, read once. They are a function of the graph, and the walk that needs them runs
         # once per step: `np.nonzero` over the whole matrix on every call was a third of the time
         # that walk took, for the same answer every time.
