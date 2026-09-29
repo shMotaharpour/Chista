@@ -529,7 +529,7 @@ def test_a_bought_input_never_reaches_the_tiles_cheaper_than_its_quote() -> None
     seen: list[np.ndarray] = []
     real = c.price_many
 
-    def spy(p_eff, exact, groups):
+    def spy(p_eff, exact, groups, **kwargs):
         seen.append(np.array(exact, dtype=float, copy=True))
         return real(p_eff, exact, groups)
 

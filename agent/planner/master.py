@@ -1057,7 +1057,12 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
         # One base sweep for every distance in the round, not one sweep each:
         # the distance only changes the walk on the labour column, so the gemv
         # over the graph is shared (`TileContractor.price_many`).
-        priced = contractor.price_many(p_eff, exact, groups)
+        # The slot's price, from the LP solve of the SAME matrix: an occupied tile
+        # pays the day's rent, a bare one pays nothing. None on a MIP solve (no
+        # marginals), which is why the LP is the one whose duals are read.
+        priced = contractor.price_many(p_eff, exact, groups,
+                                       rent=getattr(duals, "rent", None),
+                                       occupied=occupied_mask())
         for dist, group in sorted(groups.items()):
             board_d = priced[int(dist)]
             cost_d = board_d.per_day_cost[:, :days, COUPLING_IDS].astype(np.float64)
@@ -1203,6 +1208,31 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
     result.converged = converged
     result.w = published_duals(w_cur, days, result.cash_duals, supply.quotes)
     return result
+
+
+#: The occupancy mask, derived ONCE with the tile DP's own codec (`TileState`
+#: /`TileZeroCode`, never the general one) and cached for the process: the
+#: hot path is a boolean gather, not a decode. A state is BARE when it carries
+#: no crop, no animal and no structure -- kind NONE and kind WEED are the two,
+#: and a weed tile can still be planted, so it does not occupy a slot.
+_OCCUPIED: list = [None]
+
+
+def occupied_mask() -> np.ndarray:
+    """(n_states,) bool, cached: is this state holding something a slot pays for?"""
+    mask = _OCCUPIED[0]
+    if mask is None:
+        from agent.tile_dp.tile_state import TileState, TileZeroCode
+        keys = np.asarray(_shipped_graph().state_keys)
+        bare = np.empty(keys.size, dtype=bool)
+        for i, key in enumerate(keys):
+            st = TileState.unpack(TileZeroCode(int(key)))
+            bare[i] = (getattr(st, "crop", None) is None
+                       and getattr(st, "animal", None) is None
+                       and getattr(st, "structure", None) is None)
+        mask = ~bare
+        _OCCUPIED[0] = mask
+    return mask
 
 
 def to_mixes(result: "MasterResult", days: int) -> dict[int, "object"]:

@@ -326,8 +326,8 @@ class TileContractor:
         hours = int(travel_hours)
         return self.price_many(p, w, {hours: owned_states})[hours]
 
-    def price_many(self, p, w, owned_by_distance: dict[int, Sequence[int]]
-                   ) -> dict[int, PricedBoard]:
+    def price_many(self, p, w, owned_by_distance: dict[int, Sequence[int]],
+                   rent=None, occupied=None) -> dict[int, PricedBoard]:
         """Price every distance off ONE base sweep.
 
         A round prices one group per distinct distance, and each group's sweep
@@ -344,7 +344,9 @@ class TileContractor:
         """
         prices = self._as_dual(p, "prices")
         wages = self._as_dual(w, "wages")
-        base = self._base_rewards(prices, wages)
+        # Distance-independent: charged ONCE in the shared base sweep, never per
+        # distance, and never inside `w` (the input-price matrix #142 pins).
+        base = self._base_rewards(prices, wages, rent=rent, occupied=occupied)
         out: dict[int, PricedBoard] = {}
         for raw_hours, states in owned_by_distance.items():
             hours = int(raw_hours)
