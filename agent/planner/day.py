@@ -479,6 +479,8 @@ def _solve_at(obs, contractor, supply, class_of_tile, offer, iter_cap,
                                w_warm=w_warm, iter_cap=iter_cap, pool=pool,
                                forecast_obj=forecast_obj,
                                smoothing=smoothing, cfg=cfg,
+                               integral=bool(getattr(cfg, "day_integral", False)),
+                               land=(int(getattr(cfg, "land_quadrants", 0)) or None),
                                buy_hands=buys,
                                hand_mult=int(terms.hand_cost_mult))
         if buys:

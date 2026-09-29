@@ -1061,6 +1061,11 @@ class ColgenResult:
     certified: bool = False
     stopped: str = ""             # why the loop ended, when it was not certified
     rc_history: list = field(default_factory=list)
+    #: How many columns each round ADDED, one entry per round, beside rc_history.
+    #: The pool size is cumulative and the rc says what was left on the table; this
+    #: says whether a round was still finding anything, which is what a stalled loop
+    #: and a converged one look identical without.
+    added_history: list = field(default_factory=list)
     #: The best (smallest) Lagrangian bound seen. `inf` before the first
     #: pricing round. The master's objective is a lower bound and this an
     #: upper one, so the two together are the only honest statement of how
@@ -1487,6 +1492,7 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
                 break
             alpha *= 0.5               # the smoothed dual bought nothing
         result.rc_history.append(float(np.max(rc)) if rc.size else 0.0)
+        result.added_history.append(int(added))
 
         if not rc.size or float(np.max(rc)) <= tol:
             # No class offers a plan worth having, at the TRUE duals — the

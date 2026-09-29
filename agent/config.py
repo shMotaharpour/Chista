@@ -84,6 +84,15 @@ class Config:
 #: too low throws the objective away, because every round prices the pool again
 #: against the duals the last round produced.
     master_rounds: int = 2
+    #: Solve the day as the integer program it is: `colgen.solve(integral=True)`.
+    #: The LP relaxation lets a class's weight be fractional, so a plan can be
+    #: half-committed and the tile counts a fraction of what they claim. False is
+    #: the LP path this project has always run.
+    day_integral: bool = False
+    #: How many of the engine's quadrants the day may BUY (`world.rules.LAND_PRICES`,
+    #: prefix order), one binary per (quadrant, day). 0 keeps every land row off, so
+    #: no land is purchasable and the model sees only the quadrants it already owns.
+    land_quadrants: int = 0
     #: The LP loop's own cap when a caller asks for no specific number (the
     #: library default; the manager always asks for `master_rounds`). 8 is the
     #: measured oscillation budget: the full loop's cost is the contractor's
