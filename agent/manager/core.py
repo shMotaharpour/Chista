@@ -113,6 +113,10 @@ class Manager:
         self.cfg = config or Config.load()
         self.graph = graph if graph is not None else _load_graph()
         self.keys = frozenset(self.graph.key_index)
+        #: The model's own price of a coin per day (`MasterResult.cash_lp`), fed to the
+        #: next day's contractor when `price_cash_duals` is on. None is day 0, before a
+        #: solve has priced a coin. Set BEFORE the contractor: its build reads this.
+        self.cash_duals = None
         self.contractor = _contractor(self.graph, HORIZON_DAYS,
                                       float(getattr(self.cfg, "discount_rate", 0.0)),
                                       day_mult=self._dp_day_mult())
@@ -143,10 +147,6 @@ class Manager:
         #: into the NEXT day's forecast (`forecast(our_sells=)`). #110's
         #: own-supply half: the plan moves the price path it was priced on.
         self.own_sells: dict = {}
-        #: The model's own price of a coin per day (`MasterSolve.cash`), fed to the NEXT
-        #: day's contractor when `price_cash_duals` is on: the day-over-day fixed point
-        #: the own-sells wire already uses. None is day 0, before any solve exists.
-        self.cash_duals = None
         #: The rival's own history, fed every observation (#95). Cheap: 0.1 ms
         #: measured per call. Its `activity_bucket` is what selects the regime
         #: row of the trained table, so the model needs the tracker and the
@@ -385,14 +385,22 @@ class Manager:
         return 1.0 + np.asarray(duals, dtype=np.float64)
 
     def _read_cash_duals(self) -> None:
-        """Keep the model's own price of a coin (`MasterSolve.cash`) for tomorrow."""
+        """Keep the model's own price of a coin for tomorrow, or say why not.
+
+        The duals reach the manager as `MasterResult.cash_lp` (`master.py`, copied
+        off the solve that priced the day), not off a `.solve` attribute. Reading a
+        name that is not there is how this wire was silently dead once: with the
+        gate on, a missing dual is an error, never a quiet zero.
+        """
         if not bool(getattr(self.cfg, "price_cash_duals", False)):
             return
-        solve = getattr(getattr(self.day, "master", None), "solve", None)
-        cash = getattr(solve, "cash", None)
+        master = getattr(self.day, "master", None)
+        cash = getattr(master, "cash_lp", None)
         if cash is None:
-            self.cash_duals = None
-            return
+            raise RuntimeError(
+                "price_cash_duals is on but the day's master published no cash_lp: "
+                "the money price cannot reach the DP, so the day would be planned "
+                "as if money were free")
         cash = np.asarray(cash, dtype=np.float64).ravel()
         self.cash_duals = cash if cash.size else None
 
