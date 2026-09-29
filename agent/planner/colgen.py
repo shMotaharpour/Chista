@@ -1306,10 +1306,6 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
             shed_capacity=0.0 if shed is None else float(shed[1]),
             prices=prices, market=market, sell_cap=sell_cap,
             depth=depth, entry=entry, cfg=cfg,
-            # The land rows belong to BOTH solves: the decision buys quadrants
-            # and the LP beside it publishes what a slot is worth. A matrix
-            # without them prices a farm that cannot expand.
-            land=int(getattr(cfg, "land_quadrants", 0)) or None,
             buy_hands=buy_hands, hand_mult=hand_mult)
         final = solver.solve(*args, **kwargs)
         if integral:
@@ -1317,7 +1313,9 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
             # the half that says how much the integer answer cost (the gate: a
             # MIP can never beat its own relaxation).
             result.lp_final = final
-            result.solve = solver.solve(*args, integral=True, **kwargs)
+            result.solve = solver.solve(*args, integral=True,
+                                        land=int(getattr(cfg, "land_quadrants", 0))
+                                        or None, **kwargs)
         else:
             result.solve = final
         return result
