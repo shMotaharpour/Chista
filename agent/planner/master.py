@@ -342,7 +342,7 @@ class MasterResult:
     credit: np.ndarray = None
     defer_cap: np.ndarray = None
     #: The columns `lam` weights, and the classes they belong to. A mix is
-    #: useless without them: `columns.assign_tiles` has to know WHICH plan each
+    #: useless without them: `columns.assign_by_quota` has to know WHICH plan each
     #: weight is for, and re-pricing at the published duals gives a different
     #: board and a different answer.
     pool: list = field(default_factory=list)
