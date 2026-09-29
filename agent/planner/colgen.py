@@ -1280,8 +1280,7 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
             prices=prices, market=market, sell_cap=sell_cap,
             depth=depth, entry=entry, cfg=cfg,
             buy_hands=buy_hands, hand_mult=hand_mult)
-        final = solver.solve(*args, **kwargs,
-            buy_hands=buy_hands, hand_mult=hand_mult)
+        final = solver.solve(*args, **kwargs)
         if integral:
             # The MIP decides; the LP beside it is what has marginals, and it is
             # the half that says how much the integer answer cost (the gate: a
@@ -1289,8 +1288,7 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
             result.lp_final = final
             result.solve = solver.solve(*args, integral=True,
                                         land=int(getattr(cfg, "land_quadrants", 0))
-                                        or None, **kwargs,
-            buy_hands=buy_hands, hand_mult=hand_mult)
+                                        or None, **kwargs)
         else:
             result.solve = final
         return result
