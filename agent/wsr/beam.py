@@ -437,6 +437,8 @@ def search(day: Day, tasks: TaskArray, *, beam: int | None = None,
     def seed(pool: int) -> Result | None:
         return warm if warm is not None and warm.pool == pool else None
 
+    BRANCH_IDLE[0] = (len(day.units) + start) >= 2 * lower_bound(day, tasks)
+
     if ceiling > start:
         ans = done(_smallest_pool(day, tasks, width, start, ceiling, seed))
     else:
@@ -1352,6 +1354,8 @@ def _rank_keys(tasks: TaskArray, child_done, child_free, travel, makespan, hands
 SELECT_RULE = "hour"
 SEED = [0]
 
+BRANCH_IDLE: list = [False]
+
 
 def _select(expanded, tasks: TaskArray, beam: int, first_hand: int, start_hours):
     """Keep the best `beam` children, ranked BEFORE they are built.
@@ -1437,6 +1441,25 @@ def _select(expanded, tasks: TaskArray, beam: int, first_hand: int, start_hours)
     task = index[column]
     hour = flat_hour[shortlist]
     worker = expanded["worker"][rows].ravel()[shortlist]
+
+    if BRANCH_IDLE[0]:
+        busy = done_by_worker(done, who, free.shape[1])
+        used_now = busy[:, first_hand:].sum(axis=1)
+        surplus = free.shape[1] - first_hand - used_now
+        finish_all = expanded["finish"]
+        busy_finish = np.where(busy[:, :, None], finish_all, BIG)
+        worker2 = busy_finish[parent, :, column].argmin(axis=1)
+        gated = ((surplus[parent] >= 2)
+                 & (busy_finish[parent, worker2, column] < BIG)
+                 & (worker2 != worker))
+        parent2 = parent[gated]
+        column2 = column[gated]
+        worker2 = worker2[gated]
+        parent = np.concatenate([parent, parent2])
+        column = np.concatenate([column, column2])
+        worker = np.concatenate([worker, worker2])
+        task = np.concatenate([task, index[column2]])
+        hour = np.concatenate([hour, busy_finish[parent2, worker2, column2]])
 
     # `hour` is when the action FINISHES. The turn it occupies is the one before that, and that
     # turn is what the route reports - the engine numbers a day's turns 0 to 23, and the farmer

@@ -11,6 +11,7 @@ Tools that never run inside a turn: evaluation, simulation, the pool.
 | a paired evaluation of two agents | `evaluate.py` |
 | one episode, one process, per seat | `runner.py` |
 | what a day's search costs, day by day | `search_cost.py` |
+| the rival calendar's harvest-day rule vs replay truth (#16) | `rival_calendar_accuracy.py` (needs the episodes-analyses venv) |
 | the opponent pool | `pool/` |
 
 `offline_lab/` may import `agent/world/` (the definitions). `agent/world/` never imports
