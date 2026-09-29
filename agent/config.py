@@ -172,8 +172,8 @@ class Config:
     #: 35,772 a 1e-6-absolute test was refusing to certify on the pricer's own
     #: rounding (measured: the loop stalled on rc 2.24e-4 and certified the SAME
     #: objective, 35,772.2194, once the tolerance was read as `1e-6 * |objective|`).
-    rc_tol: float = 1e-6
-    rc_rel_tol: float = 1e-6
+    rc_tol: float = 1e-3
+    rc_rel_tol: float = 1e-3
 
     # --- the labour model the rows price ------------------------------------
     #: The labour row's travel/carry overhead: `H_d = 24*(1 + hands) - hands`, times

@@ -305,6 +305,9 @@ class MasterResult:
     #: asks wsr about `round()` of the first day and hires exactly that; the
     #: bill is already inside the objective, so no caller adds it again.
     hands_bought: object = None
+    #: `colgen.MasterSolve.rc_history[-1]` -- the worst reduced cost when the loop
+    #: stopped, i.e. the number `certified` was decided on. None when no round ran.
+    rc: object = None
     used_fallback: bool = False
     fallback_reason: str = ""
     p_source: str = ""            # where the product price path came from
@@ -1171,6 +1174,8 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
         result.defer_cap = getattr(dual_src, "defer_cap", None)
         result.sells = getattr(cg.solve, "sells", None)
         result.hands_bought = getattr(cg.solve, "hands_bought", None)
+        _hist = getattr(cg.solve, "rc_history", None)
+        result.rc = float(_hist[-1]) if _hist else None
     converged = cg.certified
 
     # #87's dead-zone clamp, on the COUPLING dual before the publish map:
