@@ -47,10 +47,21 @@ def _index(item: str) -> int:
 
 
 def _walk_row_of(fc: MarketForecast, day: int, hour: int) -> int:
-    """The walk row a sale at (absolute day, hour) is quoted at."""
+    """The walk row a sale at (absolute day, hour) is quoted at.
+
+    `_hourly_rows`'s own expression resolved for ONE cell instead of built as a
+    table: row `rel * 24 + hour` of it is
+    `max(0, (first_day + rel) * 24 - step + hour)`, clamped to the walk's last
+    row (rel = the day's offset from the forecast's first day; for rel 0 the
+    expression reduces to `max(0, hour - hour_now)`, the snapshot rule the
+    docstring of `_hourly_rows` states). The depth surface asks this per cell,
+    so rebuilding the table per cell was the table's own cost paid 200k times;
+    `tests/test_market_hourly.py` pins the two against each other.
+    """
     rel = max(0, int(day) - int(fc.first_day))
-    rows = _hourly_rows(fc, rel + 1)
-    return rows[rel * TURNS_PER_DAY + (int(hour) % TURNS_PER_DAY)]
+    row = ((int(fc.first_day) + rel) * TURNS_PER_DAY - int(fc.walk_step)
+           + (int(hour) % TURNS_PER_DAY))
+    return max(0, min(row, len(fc.walk_inventory) - 1))
 
 
 def inventory_at(fc: MarketForecast, item: str, day: int,

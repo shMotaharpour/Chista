@@ -147,6 +147,38 @@ def test_mid_day_hour_row_is_the_snapshot_at_hour_now() -> None:
             "hours early and this assertion fires)")
 
 
+def test_the_single_cell_row_equals_the_sampled_table() -> None:
+    """`depth._walk_row_of` must resolve the same row `_hourly_rows` writes.
+
+    The depth surface asks for one (day, hour) cell at a time and resolves the
+    table's own expression arithmetically; the table itself is sampled by the
+    hourly price/inventory readers. Two spellings of one row, so they are
+    compared cell by cell — including the mid-day fixture, where the past hours
+    of the current day must resolve to the snapshot row (row 0) rather than to a
+    negative offset: that is the half of the expression a dropped `max(0, ...)`
+    gets wrong.
+    """
+    from agent.belief.depth import _walk_row_of
+    from agent.belief.market import _hourly_rows
+
+    for label, seed, target in (("day start", 5, 24), ("mid-day", 1, 4 * 24 + 5)):
+        sim, PASS = _sim(seed)
+        while int(sim.observations()[0]["step"]) < target:
+            sim.step([PASS, PASS])
+        obs = sim.observations()[0]
+        first_day = int(obs["day"])
+        horizon = 4
+        fc = forecast(obs, days=horizon)
+        table = _hourly_rows(fc, horizon)
+        for d in range(4):
+            for h in range(24):
+                cell = _walk_row_of(fc, first_day + d, h)
+                expected = int(table[d * 24 + h])
+                assert cell == expected, (
+                    f"{label}: day +{d} hour {h}: _walk_row_of says {cell}, "
+                    f"the table says {expected} (row {d * 24 + h})")
+
+
 def main() -> int:
     tests = [(k, v) for k, v in sorted(globals().items())
              if k.startswith("test_") and callable(v)]
