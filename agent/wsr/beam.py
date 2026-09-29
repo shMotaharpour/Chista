@@ -299,6 +299,43 @@ def ceiling_for(day: Day, tasks: TaskArray) -> int:
 PATH_LIMIT = 12
 
 
+#: The masks of each subset size, and for every (mask, member) pair the member itself and the mask it
+#: came from - the tables the exact re-order walks. They depend on the SIZE alone, so they are built
+#: once per size and read many times: the pass asks this question per unplaced task and per worker.
+_ORDER_TABLES: dict = {}
+
+
+def _order_tables(n: int) -> list:
+    """The per-size tables `_path_order` walks, built once."""
+    cached = _ORDER_TABLES.get(n)
+    if cached is not None:
+        return cached
+    size = 1 << n
+    every = np.arange(size, dtype=np.int32)
+    count = np.zeros(size, dtype=np.int8)
+    for bit in range(n):
+        count += ((every >> bit) & 1).astype(np.int8)
+    bit_of = np.full(size, -1, dtype=np.int16)
+    bit_of[1 << np.arange(n, dtype=np.int32)] = np.arange(n, dtype=np.int16)
+    tables = []
+    for k in range(2, n + 1):
+        layer = every[count == k]
+        if layer.size == 0:
+            continue
+        members = np.empty((layer.size, k), dtype=np.int32)
+        left = layer.copy()
+        for slot in range(k):
+            low = left & -left
+            members[:, slot] = bit_of[low]
+            left ^= low
+        earlier = layer[:, None] ^ (1 << members)       # every mask's own way into each member
+        for array in (layer, members, earlier):
+            array.setflags(write=False)
+        tables.append((layer, members, earlier))
+    _ORDER_TABLES[n] = tables
+    return tables
+
+
 def _path_order(tasks: TaskArray, rows: list[int], start: tuple[int, int]) -> list[int]:
     """The order `rows` are walked in with the fewest moves, from `start` - exact, ties by row.
 
@@ -315,29 +352,28 @@ def _path_order(tasks: TaskArray, rows: list[int], start: tuple[int, int]) -> li
     n = len(rows)
     if n <= 1:
         return list(rows)
-    cells = [(int(tasks.cells[r][0]), int(tasks.cells[r][1])) for r in rows]
-    step = np.zeros((n, n), dtype=np.int32)
-    for i in range(n):
-        for j in range(n):
-            step[i, j] = abs(cells[i][0] - cells[j][0]) + abs(cells[i][1] - cells[j][1])
+    cell = np.array([[int(tasks.cells[r][0]), int(tasks.cells[r][1])] for r in rows], dtype=np.int16)
+    # Manhattan separates, so the whole step table is one broadcast and no loop. The costs are moves
+    # on a board a day long, so int16 is the width the arithmetic runs in.
+    step = (np.abs(cell[:, 0][:, None] - cell[:, 0][None, :])
+            + np.abs(cell[:, 1][:, None] - cell[:, 1][None, :])).astype(np.int16)
     size = 1 << n
-    best = np.full((size, n), np.int32(1 << 20), dtype=np.int32)
+    INF = np.int16(30000)
+    best = np.full((size, n), INF, dtype=np.int16)
     came = np.full((size, n), -1, dtype=np.int16)
-    for i in range(n):
-        best[1 << i, i] = abs(start[0] - cells[i][0]) + abs(start[1] - cells[i][1])
-    for mask in range(1, size):
-        ends = np.flatnonzero(best[mask] < np.int32(1 << 20))
-        for i in ends:
-            rest = np.flatnonzero(~(mask >> np.arange(n, dtype=np.int32) & 1))
-            if rest.size == 0:
-                continue
-            cand = best[mask, i] + step[i, rest]
-            target = mask | (1 << rest)
-            better = cand < best[target, rest]
-            # Strictly better only: masks and ends are walked in order, so an equal cost leaves the
-            # smaller end in place and the whole order is a function of the instance.
-            best[target[better], rest[better]] = cand[better]
-            came[target[better], rest[better]] = i
+    best[1 << np.arange(n, dtype=np.int32), np.arange(n)] = (
+        np.abs(int(start[0]) - cell[:, 0]) + np.abs(int(start[1]) - cell[:, 1]))
+    # The table is filled by SUBSET SIZE, and each member of each mask of that size is one array
+    # operation: ending at `j` costs the best end `i` of the mask without `j`, plus `step[j, i]`.
+    # The masks were walked one at a time in Python, which is the same arithmetic with a numpy call
+    # per mask - and that call overhead was nearly all of the pass's time.
+    for layer, members, earlier in _order_tables(n):
+        for slot in range(members.shape[1]):
+            j = members[:, slot]                           # the member every pair ends at
+            cost = best[earlier[:, slot]] + step[j]        # (pairs, ends): end `i`, then the step
+            best[layer, j] = cost.min(axis=1)
+            # An equal cost takes the smaller end, so the order is a function of the instance.
+            came[layer, j] = cost.argmin(axis=1)
     full = size - 1
     order: list[int] = []
     mask, i = full, int(np.argmin(best[full]))
@@ -387,8 +423,10 @@ def _repair_unplaced(day: Day, tasks: TaskArray, result: Result) -> Result:
     """
     from agent.wsr.emit import check_route, compile_route
 
-    placed = {task for _turn, task, _worker in result.route}
-    unplaced = [tid for tid in tasks.ids if tid not in placed]
+    ids = tasks.ids                                   # the string end of a row, read once
+    row_of = {task: row for row, task in enumerate(ids)}
+    placed_rows = {row_of[task] for _turn, task, _worker in result.route}
+    unplaced = [row for row in range(tasks.n) if row not in placed_rows]
     if not unplaced:
         return result
 
@@ -397,52 +435,56 @@ def _repair_unplaced(day: Day, tasks: TaskArray, result: Result) -> Result:
     workers = len(day.units) + result.pool
     horizon = int(day.horizon)
 
-    route = list(result.route)
-    by_worker: dict[int, list[tuple[int, str]]] = {}
-    for turn, task_id, worker in route:
-        by_worker.setdefault(int(worker), []).append((int(turn), task_id))
+    # The whole pass works in ROWS: a task id is a string, and looking one up per worker and per
+    # task turns the pass into a string search. The names are put back once, at the end.
+    by_worker: dict[int, list[tuple[int, int]]] = {}
+    for turn, task, worker in result.route:
+        by_worker.setdefault(int(worker), []).append((int(turn), row_of[task]))
 
     improved = False
-    for u_id in unplaced:
-        u_idx = int(tasks.ids.index(u_id))
-        if int(tasks.items[u_idx]) >= 0:
+    for row in unplaced:
+        if int(tasks.items[row]) >= 0:
             continue                     # only the tasks with no good to fetch (water, harvest, care)
-        preds = [tasks.ids[j] for j in range(tasks.n) if tasks.pred[u_idx, j]]
-        if any(p not in {task for _turn, task, _worker in route} for p in preds):
+        follows = np.flatnonzero(tasks.pred[row])
+        if any(int(j) not in placed_rows for j in follows):
             continue                     # a task cannot land before the work it follows
+        earliest = int(tasks.earliest[row])
         for worker in range(workers):
             entries = sorted(by_worker.get(worker, []))
-            if any(int(turn) < 0 for turn, _task in entries):
+            if any(turn < 0 for turn, _row in entries):
                 continue                 # an idle drop carries no turn to re-time around
-            rows = [int(tasks.ids.index(task)) for _turn, task in entries]
+            rows = [entry_row for _turn, entry_row in entries]
             if len(rows) + 1 > PATH_LIMIT:
                 continue                 # the exact table stops being cheaper than the step it repairs
             start = (int(starts[worker][0]), int(starts[worker][1]))
             hour = int(hours[worker])
-            for order in (_path_order(tasks, rows + [u_idx], start), rows + [u_idx]):
+            for order in (_path_order(tasks, rows + [row], start), rows + [row]):
                 landed = _retime_day(tasks, order, start, hour, horizon)
                 if landed is None:
                     continue
-                if any(int(tasks.latest[row]) < turn for turn, row in landed):
-                    continue             # a deadline the re-shaped day would miss
-                merged = [(turn, tasks.ids[row], worker) for turn, row in landed]
-                merged += [(turn, task, other) for other, group in by_worker.items()
-                           if other != worker for turn, task in group]
+                if any(turn < earliest or int(tasks.latest[landed_row]) < turn
+                       for turn, landed_row in landed):
+                    continue             # an hour this work cannot keep
+                merged = [(turn, ids[landed_row], worker) for turn, landed_row in landed]
+                merged += [(turn, ids[other_row], other) for other, group in by_worker.items()
+                           if other != worker for turn, other_row in group]
                 candidate = result._replace(route=sorted(merged), complete=len(merged) == tasks.n)
-                if check_route(day, tasks, candidate):
-                    continue
                 try:
-                    compile_route(day, tasks, candidate)
+                    compile_route(day, tasks, candidate)    # the writer first: its refusal is cheap
                 except Exception:  # noqa: BLE001 - any refusal is this candidate's own answer
                     continue
-                route = list(candidate.route)
-                by_worker[worker] = [(turn, tasks.ids[row]) for turn, row in landed]
+                if check_route(day, tasks, candidate):
+                    continue
+                by_worker[worker] = list(landed)
+                placed_rows.add(row)
                 improved = True
                 break
 
     if not improved:
         return result
-    return result._replace(route=sorted(route), complete=len(route) == tasks.n)
+    route = sorted((turn, ids[task_row], worker) for worker, group in by_worker.items()
+                   for turn, task_row in group)
+    return result._replace(route=route, complete=len(route) == tasks.n)
 
 
 def search(day: Day, tasks: TaskArray, *, beam: int | None = None,
