@@ -83,7 +83,7 @@ class Config:
 #: linear in them, so the cap trades a measured objective for time -- a cap that is
 #: too low throws the objective away, because every round prices the pool again
 #: against the duals the last round produced.
-    master_rounds: int = 32
+    master_rounds: int = 2
     #: The LP loop's own cap when a caller asks for no specific number (the
     #: library default; the manager always asks for `master_rounds`). 8 is the
     #: measured oscillation budget: the full loop's cost is the contractor's
