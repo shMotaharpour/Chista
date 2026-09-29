@@ -677,9 +677,13 @@ class MasterLP:
                    + np.arange(days)[None, :]] = 1.0
             if nq > 1:
                 qq = np.arange(1, nq)
-                L_rows[qq + nq - 1, land0 + qq[:, None] * days
+                # The row index carries [:, None] like the `sum y_q <= 1`
+                # block above it: the column index below is (nq-1, days), and
+                # a row index of (nq-1,) cannot broadcast against it.
+                L_rows[qq[:, None] + nq - 1, land0 + qq[:, None] * days
                        + np.arange(days)[None, :]] = 1.0
-                L_rows[qq + nq - 1, land0 + (qq[:, None] - 1) * days
+                L_rows[qq[:, None] + nq - 1,
+                       land0 + (qq[:, None] - 1) * days
                        + np.arange(days)[None, :]] = -1.0
             L_rows[n_land_rows - 1, :n] = 1.0
             L_rows[n_land_rows - 1, land0:] = -25.0
