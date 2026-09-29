@@ -125,14 +125,23 @@ class TaskArray:
 
     @property
     def is_drop(self) -> np.ndarray:
-        """The rows that hand the bag over."""
-        return self.actions == ACTION_CODE[UnitAction.DROP]
+        """The rows that hand the bag over.
+
+        Read as an array by every step - and it was being rebuilt on every access, once per task
+        per step, because a property has no memory. It is a function of `actions` alone.
+        """
+        return self._is_drop
 
     @property
     def cell_index(self) -> np.ndarray:
-        """The distance-matrix row of each task's tile."""
-        return (self.cells[:, 0].astype(np.int32) * BOARD_SIZE
-                + self.cells[:, 1].astype(np.int32))
+        """The distance-matrix row of each task's tile. Built once, like `is_drop`."""
+        return self._cell_index
+
+    @property
+    def bound_rows(self) -> np.ndarray:
+        """The rows with an hour of their own - a deadline. A property of the timetable, not of a
+        candidate, so it is found once rather than at every ranking."""
+        return self._bound_rows
 
     @property
     def needs(self) -> np.ndarray:
@@ -212,6 +221,20 @@ class TaskArray:
         # The transposed product, cast once. `ready` runs once per step and rebuilding this on
         # every call would cost more than the product it feeds.
         self._pred_f32 = self.pred.T.astype(np.float32)
+        # Each task id's own row. A candidate is looked up by id once per worker and per task - the
+        # compiler bank each worker's harvests, the search prices every worker's door load - and a
+        # list search for a string is what that costs. Built once with the arrays.
+        self.row_of = {task: row for row, task in enumerate(self.ids)}
+        # The columns every step reads as arrays. As properties they were rebuilt on every ACCESS -
+        # once per task per step - and both are functions of the fields alone.
+        self._is_drop = self.actions == ACTION_CODE[UnitAction.DROP]
+        self._cell_index = (self.cells[:, 0].astype(np.int32) * BOARD_SIZE
+                            + self.cells[:, 1].astype(np.int32))
+        # The rows with an hour of their own. `latest` is the horizon for everything else, and the
+        # horizon is not a deadline: the ranking asks for this at every step, and it is a property
+        # of the timetable rather than of a candidate.
+        self._bound_rows = (np.flatnonzero(self.latest < int(self.latest.max()))
+                            if self.n else np.zeros(0, dtype=np.int64))
         # The edges, read once. They are a function of the graph, and the walk that needs them runs
         # once per step: `np.nonzero` over the whole matrix on every call was a third of the time
         # that walk took, for the same answer every time.

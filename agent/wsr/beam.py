@@ -292,70 +292,221 @@ def ceiling_for(day: Day, tasks: TaskArray) -> int:
     offered = len(day.units) + len(day.hire_times)
     return min(work_bound, offered)
 
+
+#: The largest single-worker day the exact re-order is solved for. The table is `2**n` masks by `n`
+#: ends, so this is where the pass stops being cheaper than the step it repairs; a day past it is
+#: left as the beam built it.
+PATH_LIMIT = 12
+
+
+#: The masks of each subset size, and for every (mask, member) pair the member itself and the mask it
+#: came from - the tables the exact re-order walks. They depend on the SIZE alone, so they are built
+#: once per size and read many times: the pass asks this question per unplaced task and per worker.
+_ORDER_TABLES: dict = {}
+
+
+def _order_tables(n: int) -> list:
+    """The per-size tables `_path_order` walks, built once."""
+    cached = _ORDER_TABLES.get(n)
+    if cached is not None:
+        return cached
+    size = 1 << n
+    every = np.arange(size, dtype=np.int32)
+    count = np.zeros(size, dtype=np.int8)
+    for bit in range(n):
+        count += ((every >> bit) & 1).astype(np.int8)
+    bit_of = np.full(size, -1, dtype=np.int16)
+    bit_of[1 << np.arange(n, dtype=np.int32)] = np.arange(n, dtype=np.int16)
+    tables = []
+    for k in range(2, n + 1):
+        layer = every[count == k]
+        if layer.size == 0:
+            continue
+        members = np.empty((layer.size, k), dtype=np.int32)
+        left = layer.copy()
+        for slot in range(k):
+            low = left & -left
+            members[:, slot] = bit_of[low]
+            left ^= low
+        earlier = layer[:, None] ^ (1 << members)       # every mask's own way into each member
+        for array in (layer, members, earlier):
+            array.setflags(write=False)
+        tables.append((layer, members, earlier))
+    _ORDER_TABLES[n] = tables
+    return tables
+
+
+def _path_order(tasks: TaskArray, rows: list[int], start: tuple[int, int]) -> list[int]:
+    """The order `rows` are walked in with the fewest moves, from `start` - exact, ties by row.
+
+    The search adds each task to the END of a worker's day, so the shape of that day is an accident
+    of the order its tasks were chosen in. On a day bound by its horizon, whether the last task still
+    fits is a property of that shape and not of the tasks: one order ends next to the work that is
+    left, another ends across the block from it. This is the exact optimum for one worker's own day,
+    cheap because a worker holds a handful of tasks.
+
+    Every row is priced at its own tile. A DROP is walked to at the door nearest the worker
+    (`leg_target`), so its leg depends on where it stands rather than on the row alone - the
+    re-timing that follows prices the real legs, and the compiler has the last word on the day.
+    """
+    n = len(rows)
+    if n <= 1:
+        return list(rows)
+    cell = np.array([[int(tasks.cells[r][0]), int(tasks.cells[r][1])] for r in rows], dtype=np.int16)
+    # Manhattan separates, so the whole step table is one broadcast and no loop. The costs are moves
+    # on a board a day long, so int16 is the width the arithmetic runs in.
+    step = (np.abs(cell[:, 0][:, None] - cell[:, 0][None, :])
+            + np.abs(cell[:, 1][:, None] - cell[:, 1][None, :])).astype(np.int16)
+    size = 1 << n
+    INF = np.int16(30000)
+    best = np.full((size, n), INF, dtype=np.int16)
+    came = np.full((size, n), -1, dtype=np.int16)
+    best[1 << np.arange(n, dtype=np.int32), np.arange(n)] = (
+        np.abs(int(start[0]) - cell[:, 0]) + np.abs(int(start[1]) - cell[:, 1]))
+    # The table is filled by SUBSET SIZE, and each member of each mask of that size is one array
+    # operation: ending at `j` costs the best end `i` of the mask without `j`, plus `step[j, i]`.
+    # The masks were walked one at a time in Python, which is the same arithmetic with a numpy call
+    # per mask - and that call overhead was nearly all of the pass's time.
+    for layer, members, earlier in _order_tables(n):
+        for slot in range(members.shape[1]):
+            j = members[:, slot]                           # the member every pair ends at
+            cost = best[earlier[:, slot]] + step[j]        # (pairs, ends): end `i`, then the step
+            best[layer, j] = cost.min(axis=1)
+            # An equal cost takes the smaller end, so the order is a function of the instance.
+            came[layer, j] = cost.argmin(axis=1)
+    full = size - 1
+    order: list[int] = []
+    mask, i = full, int(np.argmin(best[full]))
+    while i >= 0:
+        order.append(rows[i])
+        previous = int(came[mask, i])
+        mask ^= 1 << i
+        i = previous
+    order.reverse()
+    return order
+
+
+def _leg_len(here, target, fetched) -> int:
+    """The turns one leg costs: the walk, plus the PICKUP turn when the good is fetched on the way.
+
+    `leg_moves` builds the ops and their count is exactly this - the distance walked plus the pickup -
+    which is what the search prices a leg at (`_expand`, `remaining_turns`). A day being re-timed
+    asks for the turns, not for the ops the compiler is about to write.
+    """
+    if fetched is None:
+        return abs(here[0] - target[0]) + abs(here[1] - target[1])
+    door = nearest_shed(here)
+    return (abs(here[0] - door[0]) + abs(here[1] - door[1]) + 1
+            + abs(door[0] - target[0]) + abs(door[1] - target[1]))
+
+
+def _retime_day(tasks: TaskArray, order: list[int], start, hour: int,
+                horizon: int) -> list[tuple[int, int]] | None:
+    """The turns one worker's ordered day lands on, walked exactly as the compiler walks it.
+
+    One turn per good loaded at the door before the first walk (`_bag`), then, task by task, the walk
+    the writer writes - through the nearest door for a good fetched back after a DROP (`legs`,
+    `leg_target`) - and the task's own turn. `None` when a turn falls outside the day.
+    """
+    slots = [(slot, tasks.ids[row]) for slot, row in enumerate(order)]
+    free = hour + len(_bag(tasks, slots))
+    here = (int(start[0]), int(start[1]))
+    out: list[tuple[int, int]] = []
+    for _slot, row, fetched in legs(tasks, slots):
+        target = leg_target(tasks, row, here)
+        turn = free + _leg_len(here, target, fetched)
+        if turn >= horizon:
+            return None
+        out.append((turn, row))
+        free = turn + 1
+        here = target
+    return out
+
+
 def _repair_unplaced(day: Day, tasks: TaskArray, result: Result) -> Result:
-    """Fast targeted repair: try to place any remaining unplaced leaf/slack tasks."""
+    """Place what the search left behind by RE-SHAPING one worker's day, not by appending to it.
+
+    Appending a task to a worker's day cannot change that day's shape, and on a day the horizon has
+    closed on, the shape is what decides: the worker ends up somewhere the last task cannot be
+    reached from, or walks past a tile it could have worked. So the unplaced task is offered every
+    place it could take in each worker's own day - the worker's tasks re-ordered exactly where the
+    day is small enough to solve (`_path_order`) and inserted at every position of the day as it
+    stands otherwise - every candidate re-timed with the writer's own walk rules and ranked by the
+    turns it ADDS. The cheapest are handed to the layer's own compiler and checker, and the first
+    that both accept is kept. A day it cannot improve comes back untouched.
+    """
     from agent.wsr.emit import check_route, compile_route
 
-    placed_ids = {t for _, t, _ in result.route}
-    unplaced = [tid for tid in tasks.ids if tid not in placed_ids]
-    if not unplaced or len(unplaced) > 12:
+    ids = tasks.ids                                   # the string end of a row, read once
+    row_of = tasks.row_of
+    placed_rows = {row_of[task] for _turn, task, _worker in result.route}
+    unplaced = [row for row in range(tasks.n) if row not in placed_rows]
+    if not unplaced:
         return result
-
-    curr_route = list(result.route)
-    when_dict = {tid: t for t, tid, w in curr_route if t >= 0}
-    by_worker: dict[int, list[tuple[int, str]]] = {}
-    for t, tid, w in curr_route:
-        by_worker.setdefault(w, []).append((t, tid))
 
     starts = _start_positions(day, result.pool, result.doors)
     hours = _start_hours(day, result.pool)
+    workers = len(day.units) + result.pool
+    horizon = int(day.horizon)
+
+    # The whole pass works in ROWS: a task id is a string, and looking one up per worker and per
+    # task turns the pass into a string search. The names are put back once, at the end.
+    by_worker: dict[int, list[tuple[int, int]]] = {}
+    for turn, task, worker in result.route:
+        by_worker.setdefault(int(worker), []).append((int(turn), row_of[task]))
 
     improved = False
-    for u_id in unplaced:
-        u_idx = tasks.ids.index(u_id)
-        if tasks.items[u_idx] >= 0:
-            continue  # only repair itemless tasks (water, harvest, care, dig)
-        u_cell = tuple(tasks.cells[u_idx])
-        preds = [tasks.ids[j] for j in range(tasks.n) if tasks.pred[u_idx, j]]
-        if any(p not in when_dict for p in preds):
+    for row in unplaced:
+        follows = np.flatnonzero(tasks.pred[row])
+        if any(int(j) not in placed_rows for j in follows):
+            continue                     # a task cannot land before the work it follows
+        earliest = int(tasks.earliest[row])
+        # Every place this task could take, and what each one costs: the turns the day grows by.
+        # Sorted, so the cheapest candidate is the one the compiler is asked about first.
+        candidates: list[tuple[int, int, int, list[tuple[int, int]]]] = []
+        for worker in range(workers):
+            entries = sorted(by_worker.get(worker, []))
+            if any(turn < 0 for turn, _row in entries):
+                continue                 # an idle drop carries no turn to re-time around
+            rows = [entry_row for _turn, entry_row in entries]
+            start = (int(starts[worker][0]), int(starts[worker][1]))
+            hour = int(hours[worker])
+            before = max((turn for turn, _row in entries), default=hour - 1) + 1 - hour
+            orders = [rows[:at] + [row] + rows[at:] for at in range(len(rows) + 1)]
+            if len(rows) + 1 <= PATH_LIMIT:
+                orders.append(_path_order(tasks, rows + [row], start))
+            for at, order in enumerate(orders):
+                landed = _retime_day(tasks, order, start, hour, horizon)
+                if landed is None:
+                    continue
+                if any(turn < earliest or int(tasks.latest[landed_row]) < turn
+                       for turn, landed_row in landed):
+                    continue             # an hour this work cannot keep
+                candidates.append((landed[-1][0] + 1 - hour - before, worker, at, landed))
+        if not candidates:
             continue
-        t_min = max([when_dict[p] + 1 for p in preds] + [int(tasks.earliest[u_idx]), 0])
-        t_max = min([int(tasks.latest[u_idx]), int(day.horizon) - 1])
+        candidates.sort()
+        for _added, worker, _at, landed in candidates:
+            merged = [(turn, ids[landed_row], worker) for turn, landed_row in landed]
+            merged += [(turn, ids[other_row], other) for other, group in by_worker.items()
+                       if other != worker for turn, other_row in group]
+            candidate = result._replace(route=sorted(merged), complete=len(merged) == tasks.n)
+            try:
+                compile_route(day, tasks, candidate)    # the writer first: its refusal is cheap
+            except Exception:  # noqa: BLE001 - any refusal is this candidate's own answer
+                continue
+            if check_route(day, tasks, candidate):
+                continue
+            by_worker[worker] = list(landed)
+            placed_rows.add(row)
+            improved = True
+            break
 
-        best_cand = None
-        best_t = 999
-        for w in range(len(day.units) + result.pool):
-            w_ops = sorted(by_worker.get(w, []))
-            if not w_ops:
-                last_t = int(hours[w]) - 1
-                last_cell = tuple(starts[w])
-            else:
-                last_t, last_id = w_ops[-1]
-                last_idx = tasks.ids.index(last_id)
-                last_cell = tuple(tasks.cells[last_idx])
-            dist = abs(last_cell[0] - u_cell[0]) + abs(last_cell[1] - u_cell[1])
-            arr_t = last_t + 1 + dist
-            t_cand = max(t_min, arr_t)
-            if t_cand <= t_max and t_cand < best_t:
-                best_t = t_cand
-                best_cand = (t_cand, u_id, w)
-
-        if best_cand is not None:
-            cand_route = sorted(curr_route + [best_cand])
-            cand_res = result._replace(route=cand_route, complete=(len(cand_route) == tasks.n))
-            if not check_route(day, tasks, cand_res):
-                try:
-                    compile_route(day, tasks, cand_res)
-                    curr_route = cand_route
-                    when_dict[u_id] = best_cand[0]
-                    by_worker.setdefault(best_cand[2], []).append((best_cand[0], u_id))
-                    improved = True
-                except Exception:
-                    pass
-
-    if improved:
-        return result._replace(route=curr_route, complete=(len(curr_route) == tasks.n))
-    return result
+    if not improved:
+        return result
+    route = sorted((turn, ids[task_row], worker) for worker, group in by_worker.items()
+                   for turn, task_row in group)
+    return result._replace(route=route, complete=len(route) == tasks.n)
 
 
 def search(day: Day, tasks: TaskArray, *, beam: int | None = None,
@@ -929,7 +1080,7 @@ def _bag(tasks: TaskArray, entries: list[tuple[int, str]]) -> dict[int, int]:
     bag: dict[int, int] = {}
     own: dict[int, int] = {}
     for turn, task_id in sorted(entries):
-        row = tasks.ids.index(task_id)
+        row = tasks.row_of[task_id]
         if int(turn) >= 0 and bool(tasks.is_drop[row]):
             break
         good = int(tasks.items[row])
@@ -1297,12 +1448,15 @@ def _expand(day: Day, tasks: TaskArray, done, when, who, free, where, travel, li
     ready = ready_all[:, index]                              # (b, w): every predecessor done
     earliest_here = tasks.earliest[index]
     latest_here = getattr(tasks, "effective_latest", tasks.latest)[index]
+    # Which workers have done anything at all. Both branches below need it - one as a `fresh` mask,
+    # one inside the door-work price - and it was being computed once for each.
+    worked = done_by_worker(done, who, m)
     if load is not None and any(load.order):
         # Door work before the goods land (`loads_before`): a worker that has done nothing yet may
         # take it from its own hour, not after its pickups - it is still on the door.
         own = np.maximum(load.hour[None, :], 0)[:, :, None] + hop
         bare = np.maximum(np.maximum(own, released[:, None, :]), earliest_here[None, None, :])
-        early = (~done_by_worker(done, who, m)[:, :, None]
+        early = (~worked[:, :, None]
                  & load.before[index][None, None, :]
                  & (bare < load.first[None, :, None]))
         arrive = np.where(early, own, arrive)
@@ -1330,7 +1484,7 @@ def _expand(day: Day, tasks: TaskArray, done, when, who, free, where, travel, li
 
     in_time = finish <= day.horizon
     before_latest = start <= latest_here[None, None, :]
-    fresh = ~done_by_worker(done, who, m)
+    fresh = ~worked
     legal = (ready & ~done[:, index] & in_time.any(axis=1) & before_latest.any(axis=1))
     legal = legal[:, None, :] & in_time & before_latest
     # A worker's walk may not begin before the worker exists: a fresh worker's first task at
@@ -1401,7 +1555,8 @@ def _shares(width: int, parts: int) -> list[int]:
     return [width] * parts
 
 
-def _rank_keys(tasks: TaskArray, child_done, child_free, travel, makespan, hands_used, dead):
+def _rank_keys(tasks: TaskArray, child_done, child_free, travel, makespan, hands_used, dead,
+               active: tuple[str, ...]):
     """Each ranking's sort keys, in `np.lexsort` order - the LAST key is the primary one.
 
     No single key is right, which is why there is more than one. The earliest finish keeps the most
@@ -1409,22 +1564,27 @@ def _rank_keys(tasks: TaskArray, child_done, child_free, travel, makespan, hands
     gives away work to do it; the deadline count chases the tasks that have to land by an hour at the
     cost of everything else. Measured on the animals' day with the farmer alone: the finish key places
     11 of 12, the slack key 10 of 12, and the day is carryable with 12.
+
+    Only the rankings the day is actually searched under are built (`_rankings_for`): a day with no
+    deadline-bound task is searched under the finish key alone, and the deadline keys would be two
+    passes over every candidate for nothing.
     """
-    #: The tasks with an hour of their own - a deadline. `latest` is the horizon for everything else,
-    #: and the horizon is not a deadline: nothing has to be done by the last turn of the day.
-    bound_rows = np.flatnonzero(tasks.latest < int(tasks.latest.max()))
-    # The slack: how many turns are left before the nearest hour passes, over the tasks not yet done.
-    # A done task cannot be late, so it is masked out of the minimum.
-    latest = getattr(tasks, "latest32", tasks.latest)
-    slack = latest[None, :] - child_free.min(axis=1)[:, None]
-    slack = np.where(child_done, np.int32(1 << 14), slack).min(axis=1)
-    placed_bound = (child_done[:, bound_rows].sum(axis=1) if bound_rows.size
-                    else np.zeros(child_done.shape[0], dtype=np.int16))
-    return {
-        "finish": (travel, makespan, hands_used, dead),
-        "slack": (travel, makespan, hands_used, dead, slack),
-        "bound": (travel, makespan, hands_used, dead, -placed_bound),
-    }
+    finish = (travel, makespan, hands_used, dead)
+    keys: dict[str, tuple] = {"finish": finish}
+    if "slack" in active:
+        # The slack: how many turns are left before the nearest hour passes, over the tasks not yet
+        # done. A done task cannot be late, so it is masked out of the minimum.
+        slack = tasks.latest32[None, :] - child_free.min(axis=1)[:, None]
+        keys["slack"] = finish + (np.where(child_done, np.int32(1 << 14), slack).min(axis=1),)
+    if "bound" in active:
+        #: The tasks with an hour of their own - a deadline. `latest` is the horizon for everything
+        #: else, and the horizon is not a deadline: nothing has to be done by the last turn of the
+        #: day. Which rows those are is a property of the timetable and rides on the array.
+        bound_rows = tasks.bound_rows
+        placed_bound = (child_done[:, bound_rows].sum(axis=1) if bound_rows.size
+                        else np.zeros(child_done.shape[0], dtype=np.int16))
+        keys["bound"] = finish + (-placed_bound,)
+    return keys
 
 
 #: Which deterministic selection rule `_select` runs (owner 2026-09-25: no lottery):
@@ -1489,8 +1649,7 @@ def _select(expanded, tasks: TaskArray, beam: int, first_hand: int, start_hours,
             alpha = 1 if tasks.n <= 130 else 2
             primary = flat_hour[legal].astype(np.int32) * 48 - cw * h_rem * alpha
         else:
-            latest = getattr(tasks, "latest32", tasks.latest)
-            primary = latest[task_of] - flat_hour[legal].astype(np.int32)
+            primary = tasks.latest32[task_of] - flat_hour[legal].astype(np.int32)
         needs_item = tasks.items[task_of] >= 0
         has_in_bag = expanded["has"][parent_of, worker_of, col_of]
         self_serve_bonus = -(needs_item & has_in_bag).astype(np.int8)
@@ -1521,8 +1680,7 @@ def _select(expanded, tasks: TaskArray, beam: int, first_hand: int, start_hours,
             alpha = 1 if tasks.n <= 130 else 2
             primary = flat_hour[legal].astype(np.int32) * 48 - cw * h_rem * alpha
         else:
-            latest = getattr(tasks, "latest32", tasks.latest)
-            primary = latest[task_of] - flat_hour[legal].astype(np.int32)
+            primary = tasks.latest32[task_of] - flat_hour[legal].astype(np.int32)
         needs_item = tasks.items[task_of] >= 0
         has_in_bag = expanded["has"][parent_of, worker_of, col_of]
         self_serve_bonus = -(needs_item & has_in_bag).astype(np.int8)
@@ -1543,17 +1701,18 @@ def _select(expanded, tasks: TaskArray, beam: int, first_hand: int, start_hours,
     # `hour` is when the action FINISHES. The turn it occupies is the one before that, and that
     # turn is what the route reports - the engine numbers a day's turns 0 to 23, and the farmer
     # acts in the first of them. The worker is free from the turn after.
+    child_row = np.arange(parent.size)               # one index, not one per child array
     child_done = done[parent].copy()
-    child_done[np.arange(parent.size), task] = True
+    child_done[child_row, task] = True
     # A drop with an empty bag has no turn of its own: it is written at -1, and the worker neither
     # moves nor loses the hour.
     idle_here = expanded["idle"][parent, worker, column]
     child_who = who[parent].copy()
-    child_who[np.arange(parent.size), task] = worker
+    child_who[child_row, task] = worker
     child_when = when[parent].copy()
-    child_when[np.arange(parent.size), task] = np.where(idle_here, -1, hour - 1)
+    child_when[child_row, task] = np.where(idle_here, -1, hour - 1)
     child_free = free[parent].copy()
-    child_free[np.arange(parent.size), worker] = np.where(idle_here, free[parent, worker], hour)
+    child_free[child_row, worker] = np.where(idle_here, free[parent, worker], hour)
     child_where = where[parent].copy()
     # Where the worker ends up: the task's tile, or for a DROP the door nearest where it stood.
     target = tasks.cells[task]
@@ -1562,7 +1721,7 @@ def _select(expanded, tasks: TaskArray, beam: int, first_hand: int, start_hours,
         stood = where[parent, worker]
         at_door = DOOR_CELL[stood[:, 0].astype(np.int32) * BOARD_SIZE + stood[:, 1].astype(np.int32)]
         target = np.where(dropping[:, None], at_door, target)
-    child_where[np.arange(parent.size), worker] = np.where(
+    child_where[child_row, worker] = np.where(
         idle_here[:, None], where[parent, worker], target)
     child_travel = travel[parent] + hop[parent, worker, column]
     # Placing a task advances the tasks it precedes, so the counter for those children moves by one
@@ -1601,7 +1760,8 @@ def _select(expanded, tasks: TaskArray, beam: int, first_hand: int, start_hours,
     # The portfolio: `_expand` ran once and every candidate is shared, so another ranking costs a sort
     # and a copy rather than an expansion. Each keeps a beam of its own, so a state one key prunes is
     # still examined under another.
-    keys = _rank_keys(tasks, child_done, child_free, child_travel, makespan, hands_used, dead)
+    keys = _rank_keys(tasks, child_done, child_free, child_travel, makespan, hands_used, dead,
+                      active)
     if pool_of is None:
         shares = _shares(beam, len(active))
         order = np.concatenate([np.lexsort(keys[rank])[:take]
@@ -1793,7 +1953,7 @@ def legs(tasks: TaskArray, entries: list[tuple[int, str]]) -> list[tuple[int, in
     A drop with an empty bag (turn -1) is not a leg: it has no turn, no op and no walk, so the
     worker never goes to its door. Reading it as one put the worker on that door from turn 0.
     """
-    rows = [(int(turn), tasks.ids.index(task_id)) for turn, task_id in sorted(entries)
+    rows = [(int(turn), tasks.row_of[task_id]) for turn, task_id in sorted(entries)
             if int(turn) >= 0]
     out: list[tuple[int, int, tuple | None]] = []
     dropped = False

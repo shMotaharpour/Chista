@@ -114,7 +114,7 @@ def compile_route(day: Day, tasks: TaskArray, result: Result, *,
     for worker, entries in by_worker.items():
         bagged: dict[int, int] = {}
         for turn, task_id in sorted(entries):
-            row = tasks.ids.index(task_id)
+            row = tasks.row_of[task_id]
             good = int(tasks.yields[row])
             if good >= 0:
                 bagged[good] = bagged.get(good, 0) + int(tasks.yield_n[row])
