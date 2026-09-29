@@ -553,6 +553,7 @@ def _repair_unplaced(day: Day, tasks: TaskArray, result: Result) -> Result:
             continue                     # a task cannot land before the work it follows
 
         # 1. A worker takes the task. Every place it could take, cheapest day first.
+        took_it = False
         placed_here: list[tuple[int, int, list[tuple[int, int]]]] = []
         for worker in range(workers):
             if any(turn < 0 for turn, _row in group.get(worker, [])):
@@ -570,9 +571,9 @@ def _repair_unplaced(day: Day, tasks: TaskArray, result: Result) -> Result:
             days[worker] = [row_here for _turn, row_here in landed]
             free_at[worker] = landed[-1][0] + 1
             placed_rows.add(row)
-            improved = True
+            improved = took_it = True
             break
-        if improved:
+        if took_it:
             continue
 
         # 2. No day can take it as it stands: the worker that could have is full, so one of its own
