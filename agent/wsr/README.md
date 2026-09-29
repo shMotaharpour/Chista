@@ -47,7 +47,7 @@ B.Day(chains, available: dict[str, int], horizon: int = TURNS_PER_DAY,
 
 B.search(day: Day, tasks: TaskArray, *, beam: int | None = None,
          hands: int | None = None, max_hands: int | None = None,
-         warm: Result | None = None) -> Result
+         budget_s: float | None = None, warm: Result | None = None) -> Result
 
 compile_route(day: Day, tasks: TaskArray, result: Result, *,
               horizon: int | None = None) -> DayOps
@@ -61,19 +61,32 @@ to_plan(day_ops: DayOps, market=None) -> dict
 
 ## 2. Guidelines for Callers (`agent/planner/day.py`, `manager/core.py`)
 
-To achieve maximum performance (<500ms solve time) and optimal routing density:
+1. **`warm=` is a SEED, not a speed-up, and it measured negative in the shape it was tried**:
+   `Result` does carry a vectorized `state` and `search(..., warm=route)` starts a beam row from a route
+   it did not build. Seeding EVERY day from an earlier route measured net negative on the 57-day corpus
+   (placed 5454 against 5563, wins 3 / losses 20): the warm row occupies a beam row and its partial
+   packing is a basin the search climbs out of. Do not pass `warm` unless the route is one this same
+   day's search produced.
 
-1. **Always Pass `warm=previous_result` During Hourly Re-solves**:
-   `Result` carries a native vectorized `state: tuple[np.ndarray, ...]` containing `(done, when, who, free, where, travel)`. When re-solving the same day from turn to turn, passing `warm=last_result` bypasses all string parsing and leg reconstruction, copying the previous solution into the beam in **1 microsecond via NumPy slice assignment**.
+2. **Pass `harvests=` in `T.build` when the caller knows what each tile takes**: a HARVEST's yield comes
+   from the board, not from the chain, and `harvests=[(good, units), ...]` aligned with `chains` is how
+   the layer learns it. It is also what decides whether a chain's consumers can eat out of the harvester's
+   own bag: the one-worker form is built only when the timetable does NOT stock the good at hour 0
+   (`tasks.py`, the merge rule). Forcing that form on a stocked day SPENDS turns on the days it was
+   measured on (the eight short winner days place four tasks fewer in total), so it is a property of the
+   input and not a switch worth flipping.
 
-2. **Model Tile Harvests with `harvests=` in `T.build`**:
-   Pass `harvests=[(crop, units), ...]` aligned with `chains`. This activates **In-Field Self-Serve Consumption**: when a worker harvests wheat or collects fertilizer, subsequent `FEED` and `FERTILIZE` tasks on that worker draw directly from the worker's bag with **zero shed door pickups** (`bag.get(good, 0) == 0`), saving multiple travel turns.
+3. **Give the pool range as `(hands=start, max_hands=ceiling)`, and let the pass find the minimum**:
+   the range is searched SILENTLY in one vectorized multipool pass, and larger pools switch off the
+   moment a smaller one carries the day, so the smallest carrying pool is exact rather than probed.
+   (The O(log2 N) halving this section used to describe, `_smallest_pool`, is not in the tree.)
 
-3. **Pass Range Bounds `(hands=start, max_hands=ceiling)` for Pool Optimization**:
-   When the optimal pool size is unknown, pass both `hands` and `max_hands`. WSR executes an $O(\log_2 N)$ **Binary Halving Search** (`_smallest_pool`) instead of a linear loop, and dynamically contracts the upper bound `hi` to the actual number of workers utilized (`used_hands`). This cuts search iterations by over 70%.
-
-4. **Do Not Pass Wall-Clock Deadlines (`budget_s`)**:
-   Wall-clock timeouts have been eliminated from WSR. The search is structurally bounded by `tasks.n` steps and beam width, guaranteeing that identical inputs produce 100% bit-identical routes without hardware clock jitter.
+4. **`budget_s` is real and worth passing on a big day**: the search is bounded by the day's steps and
+   the beam's width, but a day with a hundred and eighty tasks costs seconds, so a wall-clock ceiling is
+   the only promise that survives one - the search keeps the best route it has found and reports
+   `out_of_time=True` rather than running long. `None` means no deadline. Identical inputs still give
+   identical routes for a fixed budget: the ceiling decides how much of the search runs, not how ties
+   break.
 
 ---
 
@@ -103,8 +116,31 @@ In `TaskArray.__post_init__`, every task's deadline is constrained by its downst
 `effective_latest = max(0, latest - chain_weight)`
 In `_expand`, `start <= effective_latest` guarantees that a prerequisite (e.g. `FERTILIZE`) is never scheduled at hour 23 when its successor (`WATER`) requires hour 24.
 
-### Targeted Leaf Repair (`_repair_unplaced`)
-A fast post-search repair pass slides trailing unplaced leaf tasks (e.g. `WATER`, `DIG`, `CARE`) into remaining idle windows of passing workers, validated against `check_route` and `compile_route`.
+### The Repair Pass (`_repair_unplaced`)
+
+The search appends each task to the END of a worker's day, so on a day the horizon has closed on, the
+SHAPE of that day decides whether the last tasks fit. The pass is what re-shapes it, in four families,
+each candidate re-timed with the writer's own rules and accepted only when `compile_route` and
+`check_route` agree with it:
+
+1. **re-shape** - the unplaced task is offered every place it could take in each worker's day, and the
+   day is re-ordered exactly where it is small enough to solve exactly (`_path_order`, Held-Karp over
+   the subsets, `PATH_LIMIT`).
+2. **hand one task away** - when no day can take it, the nearest day gives one of its own tasks to a
+   worker that can still reach that task.
+3. **hand several away** - when one is not enough, the same worker hands its work away one task at a
+   time, each hand-over shortening ITS day by at least a turn, which bounds the chain by the turns
+   actually missing. A chain that does not end with the task placed is rolled back.
+4. **the doors belong to the route** - the engine gives each hand the least-occupied shed-access tile at
+   its OWN hire turn, so a route the pass changes has NEW doors. They are re-derived here and the day is
+   accepted only if it still compiles and checks under them: carried over, the hands walked from tiles
+   the engine never gave them and their ops were refused in silence (F047), measured at 28 of 127 ops on
+   one winner day against 1 for the game's own route.
+
+Measured on the 36-day bench, the pass is worth about ten tasks and costs ~0.3 s on the heaviest day
+(with and without it on the same day, never across days). It closes the twenty-two-tile day of #209
+that the search alone leaves one tile short, and its arithmetic has its own guards in
+`tests/day_layer/test_path_cover_day.py`.
 
 ---
 
@@ -115,3 +151,28 @@ Both search and compiler strictly enforce engine facts:
 - **Spawn Doors**: Hands appear on the least-occupied shed door at their hire moment (`_hand_doors`, `Result.doors`). A unit walking off its door in turn 0 moves where subsequent hands land.
 - **Door Loads & DROPs**: `DROP` empties the entire worker bag (`kaggriculture.py:343-356`). Any good taken before a drop cannot be consumed after it without refetching (enforced by the R2 ban in `_expand`).
 - **Bulk Pickups**: `compile_route` aggregates all door preloads into a single multi-unit `("PICKUP", good, n)` op per good, spending 1 turn instead of $n$ turns.
+
+---
+
+## 5. How a Change is Judged
+
+Four measurements, all of them comparatives - a number without the arm it beat means nothing:
+
+| gauge | what it is | where |
+|---|---|---|
+| the gauge pair | the twenty-two-tile #209 day (`hands=1` and the mixed day), the planner's own compile of the day the search priced | `tests/day_layer/test_pickup_hour_and_planner_compile_day.py`, `tests/day_layer/test_mixed_*.py` |
+| the corpus | 21 winner days from games the player won, with the game's own operations as the reference | `tests/day_layer/test_winner_days.py` |
+| the bench | 36 real days, wall-clock budget per day, the broad score | `offline_lab/bench/sweep.py --budget 20` |
+| the world | the compiled plan stepped through `FastSim` from the entry's own snapshot, every op scored against the engine's own effect | the winner corpus's engine witness (see the notes beside the corpus) |
+
+The pass's own cost is measured by running the same day twice with the pass replaced by the identity -
+never by comparing wall clocks across different days, and never by trusting one day for a constant that
+the whole corpus can answer (the shortlist factor was one day's number until the benchmark was asked).
+
+What the layer currently reaches: the bench 3298 of 3332 placed, the winner corpus 47 passed / 8
+xfailed - the eight are days the ENGINE provably carried and this layer does not, so they are a search
+shortfall and not a model that forbids the game's play. What they do NOT respond to, each measured:
+a single task moved between workers, a bounded chain of moves, the one-worker bag form, a global
+assignment solved with `scipy`, and the charge fixed point's cost. Their capacity is not the constraint
+(our answers have more labour on every one of the eight), which leaves the assignment inside the search
+- a design change, not a repair.
