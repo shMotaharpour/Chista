@@ -100,22 +100,14 @@ class TileContractor:
     """
 
     def __init__(self, graph: TileGraph, days: int = HORIZON_DAYS,
-                 discount: float = 0.0,
-                 day_mult: "np.ndarray | None" = None) -> None:
+                 discount: float = 0.0) -> None:
         self.graph = graph
         self.days = int(days)
         #: `(days,)`: the NPV factor of each day, ONCE (vectorised, no loop in
         #: the sweep). 0.0 is a factor of 1 everywhere and is bit-identical.
         self.discount = float(discount)
-        #: `day_mult` and `discount` share ONE application point (`_disc`): the DP's
-        #: per-day edge rewards are scaled by it, so a day money is scarce (or a day
-        #: the plan is asked to discount) weighs less. Two sources, one term.
-        if day_mult is not None:
-            mult = np.asarray(day_mult, dtype=DTYPE).ravel()[: self.days]
-            self._disc = mult if mult.size == self.days else None
-        else:
-            self._disc = np.asarray((1.0 / (1.0 + self.discount)) ** np.arange(self.days),
-                                    dtype=DTYPE) if self.discount > 0.0 else None
+        self._disc = np.asarray((1.0 / (1.0 + self.discount)) ** np.arange(self.days),
+                                dtype=DTYPE) if self.discount > 0.0 else None
         self.n_states = int(graph.n_states)
         self.edge_offsets = np.ascontiguousarray(graph.edge_offsets, dtype=np.intp)
         self.edge_next = np.ascontiguousarray(graph.edge_next, dtype=np.intp)

@@ -113,13 +113,8 @@ class Manager:
         self.cfg = config or Config.load()
         self.graph = graph if graph is not None else _load_graph()
         self.keys = frozenset(self.graph.key_index)
-        #: The model's own price of a coin per day (`MasterResult.cash_lp`), fed to the
-        #: next day's contractor when `price_cash_duals` is on. None is day 0, before a
-        #: solve has priced a coin. Set BEFORE the contractor: its build reads this.
-        self.cash_duals = None
         self.contractor = _contractor(self.graph, HORIZON_DAYS,
-                                      float(getattr(self.cfg, "discount_rate", 0.0)),
-                                      day_mult=self._dp_day_mult())
+                                      float(getattr(self.cfg, "discount_rate", 0.0)))
         self.steps = C.shed_distance()
         self.pool: list = []            # columns carried between days
         #: The last solve's mix, in `pool` order — what the day roll prunes on.
@@ -178,8 +173,7 @@ class Manager:
         days = M.season_horizon(obs)
         if int(self.contractor.days) != days:
             self.contractor = _contractor(self.graph, days,
-                                          float(getattr(self.cfg, "discount_rate", 0.0)),
-                                          day_mult=self._dp_day_mult())
+                                          float(getattr(self.cfg, "discount_rate", 0.0)))
         if self.pool_day is None:                 # nothing carried yet
             self.pool_day = day
             return
@@ -255,7 +249,6 @@ class Manager:
         self.duals = self.day.master.w
         self.certified = bool(self.day.master.certified)
         self._project_own_sells()
-        self._read_cash_duals()
         self._watch(obs)
         self.plan = D.compile(self.day, obs, hired=self.day.offer,
                               terms=self.terms, model=self.opponent,
@@ -370,39 +363,6 @@ class Manager:
             return supply_curve(obs, tuple(PRODUCTS), horizon)
         except Exception:                      # noqa: BLE001 - the flat path stands
             return None
-
-    def _dp_day_mult(self):
-        """The DP's per-day weight, or None: `1 + cash[d]` when the gate is on.
-
-        None is day 0 -- no solve has priced a coin yet -- and it is also what an
-        unavailable dual degrades to, because the shipped DP is the no-price case.
-        """
-        if not bool(getattr(self.cfg, "price_cash_duals", False)):
-            return None
-        duals = self.cash_duals
-        if duals is None or not np.asarray(duals).size:
-            return None
-        return 1.0 + np.asarray(duals, dtype=np.float64)
-
-    def _read_cash_duals(self) -> None:
-        """Keep the model's own price of a coin for tomorrow, or say why not.
-
-        The duals reach the manager as `MasterResult.cash_lp` (`master.py`, copied
-        off the solve that priced the day), not off a `.solve` attribute. Reading a
-        name that is not there is how this wire was silently dead once: with the
-        gate on, a missing dual is an error, never a quiet zero.
-        """
-        if not bool(getattr(self.cfg, "price_cash_duals", False)):
-            return
-        master = getattr(self.day, "master", None)
-        cash = getattr(master, "cash_lp", None)
-        if cash is None:
-            raise RuntimeError(
-                "price_cash_duals is on but the day's master published no cash_lp: "
-                "the money price cannot reach the DP, so the day would be planned "
-                "as if money were free")
-        cash = np.asarray(cash, dtype=np.float64).ravel()
-        self.cash_duals = cash if cash.size else None
 
     def _project_own_sells(self) -> None:
         """Record the committed plan's projected sells, for tomorrow's path.
@@ -550,7 +510,7 @@ def _load_graph():
     return TileGraph.load(GRAPH_PATH)
 
 
-def _contractor(graph, days: int, discount: float = 0.0, day_mult=None):
+def _contractor(graph, days: int, discount: float = 0.0):
     """The tile DP's pricing oracle, cast over the graph already in hand.
 
     `days` is the horizon the sweep runs over, so it changes with the day
@@ -560,4 +520,4 @@ def _contractor(graph, days: int, discount: float = 0.0, day_mult=None):
     that never changes.
     """
     from agent.tile_dp.contractor import TileContractor
-    return TileContractor(graph, days=days, discount=discount, day_mult=day_mult)
+    return TileContractor(graph, days=days, discount=discount)
