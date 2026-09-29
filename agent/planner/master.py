@@ -305,6 +305,11 @@ class MasterResult:
     #: asks wsr about `round()` of the first day and hires exactly that; the
     #: bill is already inside the objective, so no caller adds it again.
     hands_bought: object = None
+    #: `colgen.MasterSolve.land_dual` -- per quadrant, what one more purchase of it
+    #: is worth, and `rent` -- what one more tile of room on each day is worth.
+    #: Both are LP row duals (a MIP publishes zeros), None when no land row ran.
+    land_dual: object = None
+    rent: object = None
     #: `colgen.MasterSolve.rc_history[-1]` -- the worst reduced cost when the loop
     #: stopped, i.e. the number `certified` was decided on. None when no round ran.
     rc: object = None
@@ -1176,6 +1181,8 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
         result.sells = getattr(cg.solve, "sells", None)
         result.hands_bought = getattr(cg.solve, "hands_bought", None)
         result.land_bought = getattr(cg.solve, "land_bought", None)
+        result.land_dual = getattr(dual_src, "land_dual", None)
+        result.rent = getattr(dual_src, "rent", None)
         _hist = getattr(cg.solve, "rc_history", None)
         result.rc = float(_hist[-1]) if _hist else None
     converged = cg.certified

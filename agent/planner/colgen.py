@@ -197,7 +197,9 @@ class MasterSolve:
     #: has no marginals). The generator keeps pricing off the LP solve of the
     #: same matrix, which is where the real duals come from.
     integral: bool = False
-    #: (nq, days) the LAND rows' duals, from the LP solve: what each (quadrant, day)
+    #: (nq,) the LAND rows' duals, from the LP solve: one number per quadrant, the
+    #: value of being allowed one more purchase of it. A ROW dual, not per day --
+    #: the row it comes from spans the whole horizon.
     #: binary is worth, read off its own slice. Zero placeholders on the MIP side,
     #: like every other dual there -- a MIP has no marginals.
     land_dual: np.ndarray = None
@@ -891,7 +893,9 @@ class MasterLP:
         if land_rows:
             _lnd = np.maximum(-np.asarray(
                 marg[eta_end:eta_end + land_rows], dtype=np.float64), 0.0)
-            land_dual = (_lnd[:nq].reshape(nq, days) if nq else None)
+            # One dual per ROW: the first nq rows are the one-purchase rows, and a
+            # row is a number, not a day vector.
+            land_dual = (_lnd[:nq] if nq else None)
             rent = (_lnd[land_rows - 1:land_rows] * 0.0
                     if not nq else np.repeat(_lnd[land_rows - 1], days))
         mu = np.asarray(marg[n_ineq:], dtype=np.float64)
@@ -1306,6 +1310,9 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
             shed_capacity=0.0 if shed is None else float(shed[1]),
             prices=prices, market=market, sell_cap=sell_cap,
             depth=depth, entry=entry, cfg=cfg,
+            # The land rows belong to BOTH solves: the decision buys
+            # quadrants and the LP beside it publishes what a slot is worth.
+            land=int(getattr(cfg, "land_quadrants", 0)) or None,
             buy_hands=buy_hands, hand_mult=hand_mult)
         final = solver.solve(*args, **kwargs)
         if integral:
@@ -1313,9 +1320,7 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
             # the half that says how much the integer answer cost (the gate: a
             # MIP can never beat its own relaxation).
             result.lp_final = final
-            result.solve = solver.solve(*args, integral=True,
-                                        land=int(getattr(cfg, "land_quadrants", 0))
-                                        or None, **kwargs)
+            result.solve = solver.solve(*args, integral=True, **kwargs)
         else:
             result.solve = final
         return result
