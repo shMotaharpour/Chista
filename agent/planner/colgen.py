@@ -197,6 +197,14 @@ class MasterSolve:
     #: has no marginals). The generator keeps pricing off the LP solve of the
     #: same matrix, which is where the real duals come from.
     integral: bool = False
+    #: (nq, days) the LAND rows' duals, from the LP solve: what each (quadrant, day)
+    #: binary is worth, read off its own slice. Zero placeholders on the MIP side,
+    #: like every other dual there -- a MIP has no marginals.
+    land_dual: np.ndarray = None
+    #: (days,) the TILE row's dual: what one more tile of room on that day is worth,
+    #: i.e. the rent a plan pays for occupying a tile. This is the price the tiles
+    #: never saw, which is why land looked free to them.
+    rent: np.ndarray = None
     #: (nq, days) the quadrants the DECISION solve bought, one row per entry of
     #: `rules.LAND_ORDER`, 1 in the day column of the purchase — or None when the
     #: land rows were off (the LP path).
@@ -872,6 +880,20 @@ class MasterLP:
         # The convexity duals are EQUALITY marginals and are free in sign: a class
         # whose tiles are worth having carries a negative one. Clamping them would
         # break the reduced-cost test, which is the only reason they are read.
+        # The LAND rows sit between the split rows and the convexity block (the
+        # ordering note above `n_ineq` is what keeps `mu` off them). Their duals
+        # are read from their OWN slice: the first `nq` rows are the one-purchase
+        # rows, the next `nq-1` the prefix order, and the LAST row ties the tile
+        # count to 25 per quadrant, so it alone carries the rent.
+        eta_end = rho_end + (items * days if entry else 0)
+        land_rows = int(L_rows.shape[0])
+        land_dual = rent = None
+        if land_rows:
+            _lnd = np.maximum(-np.asarray(
+                marg[eta_end:eta_end + land_rows], dtype=np.float64), 0.0)
+            land_dual = (_lnd[:nq].reshape(nq, days) if nq else None)
+            rent = (_lnd[land_rows - 1:land_rows] * 0.0
+                    if not nq else np.repeat(_lnd[land_rows - 1], days))
         mu = np.asarray(marg[n_ineq:], dtype=np.float64)
         values = np.asarray(solution.col_value, dtype=np.float64)
         # What the master decided to SELL is the SUM of the tiers: they are two
@@ -885,6 +907,7 @@ class MasterLP:
         defer = (values[defer0:defer0 + items * days].reshape(items, days).T
                  if entry else None)
         return MasterSolve(lam=values[:n], y=y, cash=cash, mu=mu, integral=False,
+                           land_dual=land_dual, rent=rent,
                            objective=-float(self._highs.getObjectiveValue()),
                            sigma=sigma, tau=tau, rho=rho,
                            appetite=appetite_rhs, sells=sells,
