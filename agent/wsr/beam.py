@@ -358,15 +358,6 @@ def _repair_unplaced(day: Day, tasks: TaskArray, result: Result) -> Result:
     return result
 
 
-_SEARCH_CACHE_RETIRED = True
-
-
-def clear_search_cache() -> None:
-    """Legacy no-op: `_SEARCH_CACHE` is retired — the self-warm memory
-    (`agent.wsr.selfwarm`) replaced it, and it stores seeds, not answers.
-    Kept as a no-op so existing callers and tests keep working."""
-
-
 def search(day: Day, tasks: TaskArray, *, beam: int | None = None,
            hands: int | None = None, max_hands: int | None = None,
            budget_s: float | None = None, warm: Result | None = None) -> Result:
@@ -418,18 +409,6 @@ def search(day: Day, tasks: TaskArray, *, beam: int | None = None,
     ceiling = bound if max_hands is None else min(int(max_hands), bound)
     if ceiling < floor or start > ceiling:
         return done(Result(ceiling, [], False, infeasible=True))
-
-    # The warm memory stands where `_SEARCH_CACHE` stood (#206) and fixes what
-    # made that cache unsound: entries are SEEDS, never answers — the search
-    # always runs — and the key is the (category x quadrant) logistic
-    # signature plus the hands-per-hour vector, so a stored route is only
-    # offered to a day whose logistic problem it fits. When the caller passed
-    # their own warm, that takes priority and the memory is not consulted.
-    if warm is None and hands is not None:
-        from agent.wsr import selfwarm as _warm_mod
-        _cands = _warm_mod.candidates_for(day, tasks, hands)
-        if _cands:
-            warm = _cands[0]
 
     def width(pool: int) -> int:
         return beam if beam is not None else beam_for(tasks, len(day.units) + pool)
