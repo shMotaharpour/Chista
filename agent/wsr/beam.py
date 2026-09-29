@@ -1891,7 +1891,13 @@ def _select(expanded, tasks: TaskArray, beam: int, first_hand: int, start_hours,
     # whose finish hour ties, which of them it keeps was arbitrary. Too narrow, and the states that
     # would carry the day are cut before the ranking ever sees them: at `beam * 4` a width of 50
     # placed 86 of a real day's 93 tasks, and at `beam * 16` it placed 93.
-    budget = min(legal.size, beam * len(active) * 16)
+    #
+    # The 16 was one day's number. Measured over the 36-day bench with everything else held
+    # (`/tmp/budget_sweep2.txt`): 16 -> 3276 placed in 82.6 s, 8 -> 3298 in 69.1 s, 4 -> 3278 in
+    # 73.1 s. Eight is better than sixteen on BOTH axes, so the corpus pays for it rather than the
+    # single day - and it is not a smooth knob: at 12 the winner corpus loses a day the game carried
+    # (`quadrant-4-...-d14` fails), which is why the number is measured and not reasoned about.
+    budget = min(legal.size, beam * len(active) * 8)
     if pool_of is not None:
         # Multi-pool: the shortlist budget is PER BAND. A global cut starves the
         # small pools' slower candidates while the widest pool fills the budget
