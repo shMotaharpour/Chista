@@ -292,70 +292,157 @@ def ceiling_for(day: Day, tasks: TaskArray) -> int:
     offered = len(day.units) + len(day.hire_times)
     return min(work_bound, offered)
 
+
+#: The largest single-worker day the exact re-order is solved for. The table is `2**n` masks by `n`
+#: ends, so this is where the pass stops being cheaper than the step it repairs; a day past it is
+#: left as the beam built it.
+PATH_LIMIT = 12
+
+
+def _path_order(tasks: TaskArray, rows: list[int], start: tuple[int, int]) -> list[int]:
+    """The order `rows` are walked in with the fewest moves, from `start` - exact, ties by row.
+
+    The search adds each task to the END of a worker's day, so the shape of that day is an accident
+    of the order its tasks were chosen in. On a day bound by its horizon, whether the last task still
+    fits is a property of that shape and not of the tasks: one order ends next to the work that is
+    left, another ends across the block from it. This is the exact optimum for one worker's own day,
+    cheap because a worker holds a handful of tasks.
+
+    Every row is priced at its own tile. A DROP is walked to at the door nearest the worker
+    (`leg_target`), so its leg depends on where it stands rather than on the row alone - the
+    re-timing that follows prices the real legs, and the compiler has the last word on the day.
+    """
+    n = len(rows)
+    if n <= 1:
+        return list(rows)
+    cells = [(int(tasks.cells[r][0]), int(tasks.cells[r][1])) for r in rows]
+    step = np.zeros((n, n), dtype=np.int32)
+    for i in range(n):
+        for j in range(n):
+            step[i, j] = abs(cells[i][0] - cells[j][0]) + abs(cells[i][1] - cells[j][1])
+    size = 1 << n
+    best = np.full((size, n), np.int32(1 << 20), dtype=np.int32)
+    came = np.full((size, n), -1, dtype=np.int16)
+    for i in range(n):
+        best[1 << i, i] = abs(start[0] - cells[i][0]) + abs(start[1] - cells[i][1])
+    for mask in range(1, size):
+        ends = np.flatnonzero(best[mask] < np.int32(1 << 20))
+        for i in ends:
+            rest = np.flatnonzero(~(mask >> np.arange(n, dtype=np.int32) & 1))
+            if rest.size == 0:
+                continue
+            cand = best[mask, i] + step[i, rest]
+            target = mask | (1 << rest)
+            better = cand < best[target, rest]
+            # Strictly better only: masks and ends are walked in order, so an equal cost leaves the
+            # smaller end in place and the whole order is a function of the instance.
+            best[target[better], rest[better]] = cand[better]
+            came[target[better], rest[better]] = i
+    full = size - 1
+    order: list[int] = []
+    mask, i = full, int(np.argmin(best[full]))
+    while i >= 0:
+        order.append(rows[i])
+        previous = int(came[mask, i])
+        mask ^= 1 << i
+        i = previous
+    order.reverse()
+    return order
+
+
+def _retime_day(tasks: TaskArray, order: list[int], start, hour: int,
+                horizon: int) -> list[tuple[int, int]] | None:
+    """The turns one worker's ordered day lands on, walked exactly as the compiler walks it.
+
+    One turn per good loaded at the door before the first walk (`_bag`), then, task by task, the walk
+    the writer writes - through the nearest door for a good fetched back after a DROP (`legs`,
+    `leg_moves`) - and the task's own turn. `None` when a turn falls outside the day.
+    """
+    slots = [(slot, tasks.ids[row]) for slot, row in enumerate(order)]
+    free = hour + len(_bag(tasks, slots))
+    here = (int(start[0]), int(start[1]))
+    out: list[tuple[int, int]] = []
+    for _slot, row, fetched in legs(tasks, slots):
+        target = leg_target(tasks, row, here)
+        turn = free + len(leg_moves(here, target, fetched))
+        if turn >= horizon:
+            return None
+        out.append((turn, row))
+        free = turn + 1
+        here = target
+    return out
+
+
 def _repair_unplaced(day: Day, tasks: TaskArray, result: Result) -> Result:
-    """Fast targeted repair: try to place any remaining unplaced leaf/slack tasks."""
+    """Place what the search left behind by RE-SHAPING one worker's day, not by appending to it.
+
+    Appending a task to a worker's day cannot change that day's shape, and on a day the horizon has
+    closed on, the shape is what decides: the worker ends up somewhere the last task cannot be
+    reached from, or walks past a tile it could have worked. So for each unplaced task and each
+    worker, the worker's own tasks PLUS that one are re-ordered exactly (`_path_order`) and re-timed
+    with the writer's own walk rules; the worker's own order with the task appended is tried too, so
+    the pass can do everything it used to. A candidate is kept only when the layer's own checker and
+    compiler accept it and no deadline is missed, it never drops a task, and a day it cannot improve
+    comes back untouched.
+    """
     from agent.wsr.emit import check_route, compile_route
 
-    placed_ids = {t for _, t, _ in result.route}
-    unplaced = [tid for tid in tasks.ids if tid not in placed_ids]
-    if not unplaced or len(unplaced) > 12:
+    placed = {task for _turn, task, _worker in result.route}
+    unplaced = [tid for tid in tasks.ids if tid not in placed]
+    if not unplaced:
         return result
-
-    curr_route = list(result.route)
-    when_dict = {tid: t for t, tid, w in curr_route if t >= 0}
-    by_worker: dict[int, list[tuple[int, str]]] = {}
-    for t, tid, w in curr_route:
-        by_worker.setdefault(w, []).append((t, tid))
 
     starts = _start_positions(day, result.pool, result.doors)
     hours = _start_hours(day, result.pool)
+    workers = len(day.units) + result.pool
+    horizon = int(day.horizon)
+
+    route = list(result.route)
+    by_worker: dict[int, list[tuple[int, str]]] = {}
+    for turn, task_id, worker in route:
+        by_worker.setdefault(int(worker), []).append((int(turn), task_id))
 
     improved = False
     for u_id in unplaced:
-        u_idx = tasks.ids.index(u_id)
-        if tasks.items[u_idx] >= 0:
-            continue  # only repair itemless tasks (water, harvest, care, dig)
-        u_cell = tuple(tasks.cells[u_idx])
+        u_idx = int(tasks.ids.index(u_id))
+        if int(tasks.items[u_idx]) >= 0:
+            continue                     # only the tasks with no good to fetch (water, harvest, care)
         preds = [tasks.ids[j] for j in range(tasks.n) if tasks.pred[u_idx, j]]
-        if any(p not in when_dict for p in preds):
-            continue
-        t_min = max([when_dict[p] + 1 for p in preds] + [int(tasks.earliest[u_idx]), 0])
-        t_max = min([int(tasks.latest[u_idx]), int(day.horizon) - 1])
-
-        best_cand = None
-        best_t = 999
-        for w in range(len(day.units) + result.pool):
-            w_ops = sorted(by_worker.get(w, []))
-            if not w_ops:
-                last_t = int(hours[w]) - 1
-                last_cell = tuple(starts[w])
-            else:
-                last_t, last_id = w_ops[-1]
-                last_idx = tasks.ids.index(last_id)
-                last_cell = tuple(tasks.cells[last_idx])
-            dist = abs(last_cell[0] - u_cell[0]) + abs(last_cell[1] - u_cell[1])
-            arr_t = last_t + 1 + dist
-            t_cand = max(t_min, arr_t)
-            if t_cand <= t_max and t_cand < best_t:
-                best_t = t_cand
-                best_cand = (t_cand, u_id, w)
-
-        if best_cand is not None:
-            cand_route = sorted(curr_route + [best_cand])
-            cand_res = result._replace(route=cand_route, complete=(len(cand_route) == tasks.n))
-            if not check_route(day, tasks, cand_res):
+        if any(p not in {task for _turn, task, _worker in route} for p in preds):
+            continue                     # a task cannot land before the work it follows
+        for worker in range(workers):
+            entries = sorted(by_worker.get(worker, []))
+            if any(int(turn) < 0 for turn, _task in entries):
+                continue                 # an idle drop carries no turn to re-time around
+            rows = [int(tasks.ids.index(task)) for _turn, task in entries]
+            if len(rows) + 1 > PATH_LIMIT:
+                continue                 # the exact table stops being cheaper than the step it repairs
+            start = (int(starts[worker][0]), int(starts[worker][1]))
+            hour = int(hours[worker])
+            for order in (_path_order(tasks, rows + [u_idx], start), rows + [u_idx]):
+                landed = _retime_day(tasks, order, start, hour, horizon)
+                if landed is None:
+                    continue
+                if any(int(tasks.latest[row]) < turn for turn, row in landed):
+                    continue             # a deadline the re-shaped day would miss
+                merged = [(turn, tasks.ids[row], worker) for turn, row in landed]
+                merged += [(turn, task, other) for other, group in by_worker.items()
+                           if other != worker for turn, task in group]
+                candidate = result._replace(route=sorted(merged), complete=len(merged) == tasks.n)
+                if check_route(day, tasks, candidate):
+                    continue
                 try:
-                    compile_route(day, tasks, cand_res)
-                    curr_route = cand_route
-                    when_dict[u_id] = best_cand[0]
-                    by_worker.setdefault(best_cand[2], []).append((best_cand[0], u_id))
-                    improved = True
-                except Exception:
-                    pass
+                    compile_route(day, tasks, candidate)
+                except Exception:  # noqa: BLE001 - any refusal is this candidate's own answer
+                    continue
+                route = list(candidate.route)
+                by_worker[worker] = [(turn, tasks.ids[row]) for turn, row in landed]
+                improved = True
+                break
 
-    if improved:
-        return result._replace(route=curr_route, complete=(len(curr_route) == tasks.n))
-    return result
+    if not improved:
+        return result
+    return result._replace(route=sorted(route), complete=len(route) == tasks.n)
 
 
 def search(day: Day, tasks: TaskArray, *, beam: int | None = None,
