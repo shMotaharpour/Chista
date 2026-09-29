@@ -103,3 +103,32 @@ def test_the_cap_reads_no_artifact_when_the_gate_is_off(board, monkeypatch):
     plain = _path(board, price_cap_from_archive=False)
     assert np.isfinite(plain).all() and float(np.max(plain)) > 0.0, (
         "a ceiling was applied with the gate off: the archive was read anyway")
+
+
+def test_the_risk_floor_lowers_the_far_days_and_never_raises_one(board):
+    """The floor prices the bad day; it may not become a ceiling by accident.
+
+    The drain's spread is as large as the drain itself, so on the early days the floor
+    can sit ABOVE the mean path -- which is why the two are combined with a min. A
+    floor applied without it would raise the price of the near days and invert the
+    whole point. R007: replace the min with the floor alone and this goes red.
+    """
+    plain = _path(board, price_risk_z=0.0)
+    floored = _path(board, price_risk_z=1.0)
+    assert np.all(floored <= plain + EPS), "the risk floor raised a price"
+    assert np.any(np.abs(floored - plain) > EPS), "the risk floor changed nothing"
+
+
+def test_the_risk_floor_reads_no_drain_when_its_gate_is_off(board, monkeypatch):
+    """Off means untouched: with the gate at 0 the drain is not consulted at all.
+
+    R007: read the drain outside the gate and this goes red.
+    """
+    import agent.belief.opponent as opponent
+
+    def _explode(*a, **k):
+        raise AssertionError("the drain was read with the risk gate off")
+
+    monkeypatch.setattr(opponent, "drain_forecast", _explode)
+    plain = _path(board, price_risk_z=0.0)
+    assert np.isfinite(plain).all() and float(np.max(plain)) > 0.0
