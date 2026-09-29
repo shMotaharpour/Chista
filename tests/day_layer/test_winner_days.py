@@ -488,9 +488,6 @@ DOUBLED_POOL_DAYS = [e for e in WINNER_DAYS
                                                                 ("2026-09-16", 109468286, 3)}]
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "defect 4: `_expand` hands each task to the worker that finishes it first, and a fresh hand on "
-    "its door always does - so the beam never holds the route that leaves it idle"))
 @pytest.mark.parametrize("entry", DOUBLED_POOL_DAYS,
                          ids=[f"ep{e['episode']}-d{e['day']}" for e in DOUBLED_POOL_DAYS])
 def test_a_doubled_pool_does_not_spread_the_day_over_more_workers(entry) -> None:

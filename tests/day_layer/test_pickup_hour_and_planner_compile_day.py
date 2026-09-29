@@ -35,9 +35,12 @@ PASS = {"farmer": ["PASS"], "hands": [], "market": []}
 
 
 def _run_day(plan, orders, board=None, shed=None, until=23):
-    """The plan on the engine from day 0 hour 0 to `until`; the last observation.
+    """The plan on the engine from day 0 hour 0 THROUGH `until`; the last observation.
 
-    `orders` is the market's orders by the hour they are placed in.
+    `orders` is the market's orders by the hour they are placed in. `until=23`
+    plays the day's LAST turn (0..23) and returns the observation before the day
+    rolls over - the old stop-on-hour==23 form dropped turn 23 itself, so any
+    day whose last op sat at the horizon read a dry tile the plan had watered.
     """
     from offline_lab.fast_sim import FastSim
 
@@ -49,11 +52,14 @@ def _run_day(plan, orders, board=None, shed=None, until=23):
         live["private"]["shed"][good] = int(n)
     while True:
         obs = sim.observations()[0]
-        if int(obs["day"]) != 0 or int(obs["hour"]) == until:
+        if int(obs["day"]) != 0:
             return obs
+        hour = int(obs["hour"])
         action = dict(dispatch_plan(plan, obs))
-        action["market"] = list(orders.get(int(obs["hour"]), []))
+        action["market"] = list(orders.get(hour, []))
         sim.step([action, PASS])
+        if hour >= until:
+            return sim.observations()[0]
 
 
 # -- 1. each good at its own hour ----------------------------------------------------------------
@@ -83,7 +89,11 @@ def test_a_cow_bought_today_is_picked_up_when_it_is_in_the_shed() -> None:
     x, y = COW_TILE
     tile = obs["farms"][0]["tiles"][y][x]
     assert tile.get("animal") == "COW", f"the pasture holds no cow: {tile}"
-    assert tile.get("fed_today"), f"the cow was placed and never fed: {tile}"
+    # The day rolled: fed_today was cleared by _daily_refresh_animals; the durable
+    # record of a fed day is consecutive_unfed == 0 (an unfed day reads 1).
+    assert tile.get("consecutive_unfed") == 0, (
+        f"the cow was placed and never fed: consecutive_unfed="
+        f"{tile.get('consecutive_unfed')}")
 
 
 # -- 2. the planner's own compile ----------------------------------------------------------------
@@ -126,7 +136,10 @@ def test_the_planners_compile_writes_the_day_the_search_priced(hands) -> None:
 
     played = _run_day(plan, {0: [["HIRE"]] * hands}, board=BOARD)
     tiles = played["farms"][0]["tiles"]
-    dry = [(x, y) for (x, y) in BOARD if not tiles[y][x]["watered_today"]]
+    # The day rolled: watered_today was cleared by _daily_refresh_plants; the durable
+    # record of a watered day is consecutive_unwatered == 0 (one missed day reads 1).
+    dry = [(x, y) for (x, y) in BOARD
+           if tiles[y][x].get("consecutive_unwatered", 0) != 0]
     assert not dry, f"hands={hands}: {len(dry)} of {len(BOARD)} tiles not watered: {dry[:5]}"
 
 
