@@ -453,6 +453,30 @@ def test_a_winner_day_is_carried_as_the_game_carried_it(entry) -> None:
 
 @pytest.mark.parametrize(
     "entry",
+    [e for e in WINNER_DAYS if e["bucket"] != "day-29-drops"],
+    ids=[f"{e['bucket']}-{e['dump']}-{e['episode']}-d{e['day']}"
+         for e in WINNER_DAYS if e["bucket"] != "day-29-drops"])
+def test_the_doors_belong_to_the_route_the_pass_hands_back(entry) -> None:
+    """The engine's placement follows the route the day ENDS UP with, the repair pass included.
+
+    `_hand_doors` is the engine's own rule - the least-occupied shed-access tile at each hand's own
+    hire turn - and it is a property of the route, not of the day: move one task between hands and the
+    hands do not stand where they stood. The search's fixed point runs the rule to agreement, and the
+    repair pass then changes the route, so the tuple has to be re-derived for what the pass hands back.
+    Carried over, it sends the hands into walks the engine never priced; the engine refuses their ops
+    in silence (F047), which no test of this layer can see because the layer's own checker agrees with
+    the stale tuple.
+    """
+    grid, tasks, result = _search(entry)
+    day = _day(entry, grid)
+    fresh = tuple(tuple(int(v) for v in d) for d in B._hand_doors(day, tasks, result, result.pool))
+    priced = tuple(tuple(int(v) for v in d) for d in result.doors)
+    assert priced == fresh, (
+        f"the doors on the answer were priced for an earlier route: {priced} against {fresh}")
+
+
+@pytest.mark.parametrize(
+    "entry",
     [e for e in WINNER_DAYS if e["bucket"] == "day-29-drops"],
     ids=[f"{e['dump']}-{e['episode']}" for e in WINNER_DAYS
          if e["bucket"] == "day-29-drops"])

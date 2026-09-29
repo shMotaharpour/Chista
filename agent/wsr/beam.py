@@ -656,7 +656,19 @@ def _repair_unplaced(day: Day, tasks: TaskArray, result: Result) -> Result:
         return result
     route = sorted((turn, ids[task_row], worker) for worker, rows in group.items()
                    for turn, task_row in rows)
-    return result._replace(route=route, complete=len(route) == tasks.n)
+    out = result._replace(route=route, complete=len(route) == tasks.n)
+    # THE DOORS BELONG TO THE ROUTE. The engine gives each hand the least-occupied shed-access tile at
+    # that hand's OWN hire turn, so where the hands stand is a property of the route the day ends up
+    # with - and the pass has just changed it. Keeping the doors the search priced would keep the
+    # tuple that was true of the day BEFORE the pass: the hands then walk from tiles the engine never
+    # gave them and the engine refuses their ops in silence (F047). Measured on a short winner day,
+    # the stale tuple is wrong from the fifth hand on and the engine refuses 28 of the 127 ops.
+    doors = tuple(_hand_doors(day, tasks, out, out.pool))
+    if doors != tuple(out.doors):
+        out = out._replace(doors=doors)
+        if not accept(out):
+            return result                # the engine's own doors do not admit the repaired day
+    return out
 
 
 def search(day: Day, tasks: TaskArray, *, beam: int | None = None,
