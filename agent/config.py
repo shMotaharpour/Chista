@@ -144,6 +144,13 @@ class Config:
     #: the mean-CVaR objective of #111 in the form the ladder already speaks.
     #: 0.0 keeps the shipped model exact.
     price_risk_z: float = 0.0
+    #: Price the DP's day at the model's OWN shadow price of money. The LP already
+    #: reports `MasterSolve.cash` -- the price of a coin on each day -- while the DP
+    #: pays engine stickers for a seed, an animal and a hire with no notion of whether
+    #: the purse can carry them. Scaling each day's edge rewards by `1 + cash[d]` is
+    #: that price: a purchase on a day money is scarce costs more, which is what makes
+    #: a plan unaffordable rather than merely expensive. False keeps the shipped DP.
+    price_cash_duals: bool = False
     #: What a unit sold BEYOND the town's own appetite fetches, as a fraction of
     #: the day's price. That tier is the legacy two-tier model, used when the
     #: caller hands in no depth curve; with a curve the ladder's own blocks carry
