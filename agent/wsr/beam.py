@@ -552,6 +552,21 @@ def _repair_unplaced(day: Day, tasks: TaskArray, result: Result) -> Result:
         if any(int(j) not in placed_rows for j in follows):
             continue                     # a task cannot land before the work it follows
 
+        # How far short the NEAREST worker is of taking this task - the depth bound for the chain in
+        # family 3 below. Every link of that chain shortens that worker's own day by at least a turn,
+        # so no chain longer than this can change what fits: the depth is the shortfall, measured,
+        # never a number chosen here.
+        cell_u = cells[row]
+        shortfall_cap = 0
+        for worker in range(workers):
+            if not days.get(worker):
+                continue
+            here = tail(worker)
+            need = (free_at[worker] + abs(here[0] - cell_u[0]) + abs(here[1] - cell_u[1]) + 1
+                    - horizon)
+            if need > 0 and (shortfall_cap == 0 or need < shortfall_cap):
+                shortfall_cap = need
+
         # 1. A worker takes the task. Every place it could take, cheapest day first.
         took_it = False
         placed_here: list[tuple[int, int, list[tuple[int, int]]]] = []
@@ -651,6 +666,92 @@ def _repair_unplaced(day: Day, tasks: TaskArray, result: Result) -> Result:
             placed_rows.add(row)
             improved = True
             break
+
+        # 3. ONE MOVE WAS NOT ENOUGH. The worker the task is nearest to is short of more turns than
+        #    any single task of its own costs the day, so it hands its OWN work away one task at a
+        #    time - and each hand-over must shorten that worker's day by at least a turn, which is
+        #    what bounds the chain by the turns the worker is short of (`shortfall`) instead of by a
+        #    number chosen here. Every hop is put through the compiler and the checker exactly like
+        #    any other candidate, and the chain only earns its keep if it ends with the task placed:
+        #    a hop that leaves the day legal but no better is rolled back, so the pass is never worse
+        #    than the single move it already tried.
+        if not improved and shortfall_cap > 0:
+            saved = (dict(group), dict(days), dict(free_at), set(placed_rows))
+            for _hop in range(shortfall_cap):
+                cell_u = cells[row]
+                target = None
+                for worker in range(workers):
+                    if not days.get(worker) or any(turn < 0 for turn, _r in group.get(worker, [])):
+                        continue
+                    here = tail(worker)
+                    need = (free_at[worker] + abs(here[0] - cell_u[0])
+                            + abs(here[1] - cell_u[1]) + 1 - horizon)
+                    if need <= 0:
+                        target = None
+                        break                # a day can take it as it stands: family 1 would have
+                    if target is None or (need, worker) < target:
+                        target = (need, worker)
+                if target is None:
+                    break
+                worker = target[1]
+                start_w = (int(starts[worker][0]), int(starts[worker][1]))
+                hour_w = int(hours[worker])
+                rows_w = days.get(worker, [])
+                was_end = max(turn for turn, _r in group[worker])
+                best_hop = None
+                for at, carried in enumerate(rows_w):
+                    left = rows_w[:at] + rows_w[at + 1:]
+                    shortened = _retime_day(tasks, left, start_w, hour_w, horizon)
+                    if shortened is None or shortened[-1][0] >= was_end:
+                        continue             # handing this one away does not shorten the day
+                    for receiver in range(workers):
+                        if receiver == worker or not reaches(receiver, cells[carried]):
+                            continue         # that worker cannot reach what it would be given
+                        took = _day_proposals(tasks, days.get(receiver, []), carried,
+                                              (int(starts[receiver][0]),
+                                               int(starts[receiver][1])),
+                                              int(hours[receiver]), horizon, everywhere=False)
+                        if not took:
+                            continue
+                        for added_there, landed_there in took:
+                            key = (shortened[-1][0], added_there, at, receiver)
+                            if best_hop is None or key < best_hop[0]:
+                                best_hop = (key, worker, receiver, shortened, landed_there)
+                if best_hop is None:
+                    break                    # nothing left to hand away on that worker
+                _key, worker, receiver, landed_here, landed_there = best_hop
+                merged = [(turn, ids[r], worker) for turn, r in landed_here]
+                merged += [(turn, ids[r], receiver) for turn, r in landed_there]
+                merged += [(turn, ids[o], other) for other, rows_o in group.items()
+                           if other not in (worker, receiver) for turn, o in rows_o]
+                candidate = result._replace(route=sorted(merged), complete=len(merged) == tasks.n)
+                if not accept(candidate):
+                    continue                 # the hop is not a day the compiler will run
+                group[worker] = list(landed_here)
+                group[receiver] = list(landed_there)
+                days[worker] = [r for _t, r in landed_here]
+                days[receiver] = [r for _t, r in landed_there]
+                free_at[worker] = landed_here[-1][0] + 1
+                free_at[receiver] = landed_there[-1][0] + 1
+                fitted = _day_proposals(tasks, days[worker], row, start_w, hour_w, horizon)
+                for _added, landed in sorted(fitted):
+                    merged = [(turn, ids[r], worker) for turn, r in landed]
+                    merged += [(turn, ids[o], other) for other, rows_o in group.items()
+                               if other != worker for turn, o in rows_o]
+                    candidate = result._replace(route=sorted(merged),
+                                                complete=len(merged) == tasks.n)
+                    if not accept(candidate):
+                        continue
+                    group[worker] = [(turn, r) for turn, r in landed]
+                    days[worker] = [r for _t, r in landed]
+                    free_at[worker] = landed[-1][0] + 1
+                    placed_rows.add(row)
+                    improved = True
+                    break
+                if improved:
+                    break                # the chain ended with the task placed
+            if not improved:
+                group, days, free_at, placed_rows = saved
 
     if not improved:
         return result
