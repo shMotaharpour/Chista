@@ -423,17 +423,74 @@ def _retime_day(tasks: TaskArray, order: list[int], start, hour: int,
     return out
 
 
+def cells_of(tasks: TaskArray, row: int) -> tuple[int, int]:
+    """A row's tile as plain ints: the pass reads cells one at a time, and numpy scalars leak."""
+    return (int(tasks.cells[row][0]), int(tasks.cells[row][1]))
+
+
+def _day_proposals(tasks: TaskArray, rows: list[int], add: int, start, hour: int, horizon: int,
+                   everywhere: bool = True) -> list[tuple[int, list[tuple[int, int]]]]:
+    """The ways a worker's day takes one more task, as `(added turns, the day)`.
+
+    The day is re-timed with the writer's own walk rules for every position the new task could take,
+    and - where the day is small enough to solve - for its exact best order too (`_path_order`: the
+    search appends, so the order it built is an accident of when its tasks were chosen). A proposal
+    whose turns fall outside the day, or before an hour one of its tasks must keep, is not a
+    proposal: it is left out. `added` is what the day grows by, which is the pass's ranking.
+
+    `everywhere=False` asks the narrower question the exchange needs - can this day hold the task at
+    all - and offers only the exact order and the place the task's own tile sits in, not every
+    position: the worker that takes the MISSING task is the one whose shape is worth searching.
+    """
+    if everywhere:
+        orders = [rows[:at] + [add] + rows[at:] for at in range(len(rows) + 1)]
+    else:
+        here = (int(start[0]), int(start[1]))
+        earliest_step = []
+        for at in range(len(rows) + 1):
+            previous = cells_of(tasks, rows[at - 1]) if at else here
+            following = cells_of(tasks, rows[at]) if at < len(rows) else None
+            reached = cells_of(tasks, add)
+            walk = abs(previous[0] - reached[0]) + abs(previous[1] - reached[1])
+            if following is not None:
+                walk += (abs(reached[0] - following[0]) + abs(reached[1] - following[1])
+                         - abs(previous[0] - following[0]) - abs(previous[1] - following[1]))
+            earliest_step.append((walk, at))
+        at = min(earliest_step)[1]
+        orders = [rows[:at] + [add] + rows[at:], rows + [add]]
+    if len(rows) + 1 <= PATH_LIMIT:
+        orders.append(_path_order(tasks, rows + [add], start))
+    before = max((int(turn) for turn, _row in _day_turns(tasks, rows, start, hour)), default=hour)
+    out: list[tuple[int, list[tuple[int, int]]]] = []
+    for order in orders:
+        landed = _retime_day(tasks, order, start, hour, horizon)
+        if landed is None:
+            continue
+        if any(turn < int(tasks.earliest[row]) or int(tasks.latest[row]) < turn
+               for turn, row in landed):
+            continue                     # an hour one of the day's tasks cannot keep
+        out.append((landed[-1][0] + 1 - max(before, hour), landed))
+    return out
+
+
+def _day_turns(tasks: TaskArray, rows: list[int], start, hour: int) -> list[tuple[int, int]]:
+    """The turns a worker's day already lands on - no new task, the writer's own arithmetic."""
+    return _retime_day(tasks, list(rows), start, hour, int(tasks.latest.max()) + 1) or []
+
+
 def _repair_unplaced(day: Day, tasks: TaskArray, result: Result) -> Result:
-    """Place what the search left behind by RE-SHAPING one worker's day, not by appending to it.
+    """Place what the search left behind by RE-SHAPING a worker's day - and, when that is not enough,
+    by moving one of its tasks to a worker that has room.
 
     Appending a task to a worker's day cannot change that day's shape, and on a day the horizon has
-    closed on, the shape is what decides: the worker ends up somewhere the last task cannot be
-    reached from, or walks past a tile it could have worked. So the unplaced task is offered every
-    place it could take in each worker's own day - the worker's tasks re-ordered exactly where the
-    day is small enough to solve (`_path_order`) and inserted at every position of the day as it
-    stands otherwise - every candidate re-timed with the writer's own walk rules and ranked by the
-    turns it ADDS. The cheapest are handed to the layer's own compiler and checker, and the first
-    that both accept is kept. A day it cannot improve comes back untouched.
+    closed on, the shape is what decides whether the last task fits. So the unplaced task is offered
+    every place it could take in each worker's own day - the worker's tasks re-ordered exactly where
+    the day is small enough to solve (`_path_order`), inserted at every position of the day as it
+    stands otherwise. When no day can take it, the day it is nearest to gives one of its OWN tasks to
+    a worker that can still reach that task (a necessary condition, not a guess: a worker the task
+    cannot reach cannot take it), and the pass tries again. Every candidate is re-timed with the
+    writer's own walk rules, ranked by the turns it adds, and accepted only when the layer's own
+    compiler and checker agree. A day the pass cannot improve comes back untouched.
     """
     from agent.wsr.emit import check_route, compile_route
 
@@ -448,64 +505,156 @@ def _repair_unplaced(day: Day, tasks: TaskArray, result: Result) -> Result:
     hours = _start_hours(day, result.pool)
     workers = len(day.units) + result.pool
     horizon = int(day.horizon)
+    cells = [(int(tasks.cells[row][0]), int(tasks.cells[row][1])) for row in range(tasks.n)]
 
     # The whole pass works in ROWS: a task id is a string, and looking one up per worker and per
     # task turns the pass into a string search. The names are put back once, at the end.
     by_worker: dict[int, list[tuple[int, int]]] = {}
     for turn, task, worker in result.route:
         by_worker.setdefault(int(worker), []).append((int(turn), row_of[task]))
+    group = {worker: sorted(entries) for worker, entries in by_worker.items()}
+    days = {worker: [row for _turn, row in entries] for worker, entries in group.items()}
+    free_at = {worker: max((turn for turn, _row in entries), default=int(hours[worker]) - 1) + 1
+               for worker, entries in group.items()}
+
+    def tail(worker: int) -> tuple[int, int]:
+        """Where a worker stands: its own last task's tile, or the door it started on."""
+        rows = days.get(worker, [])
+        return cells[rows[-1]] if rows else (int(starts[worker][0]), int(starts[worker][1]))
+
+    def reaches(worker: int, cell: tuple[int, int]) -> bool:
+        """Whether the worker could still walk to that tile and work it inside the day.
+
+        The same condition `_expand` prices a candidate with, so nothing is discarded that the
+        search itself would have allowed.
+        """
+        here = tail(worker)
+        hop = abs(here[0] - cell[0]) + abs(here[1] - cell[1])
+        return free_at.get(worker, int(hours[worker])) + hop + 1 <= horizon
+
+    def build(worker: int, landed: list[tuple[int, int]]) -> tuple:
+        merged = [(turn, ids[landed_row], worker) for turn, landed_row in landed]
+        merged += [(turn, ids[other_row], other) for other, rows in group.items()
+                   if other != worker for turn, other_row in rows]
+        return result._replace(route=sorted(merged), complete=len(merged) == tasks.n)
+
+    def accept(candidate) -> bool:
+        """The layer's own verdict: the writer first, then the checker."""
+        try:
+            compile_route(day, tasks, candidate)
+        except Exception:  # noqa: BLE001 - any refusal is this candidate's own answer
+            return False
+        return not check_route(day, tasks, candidate)
 
     improved = False
     for row in unplaced:
         follows = np.flatnonzero(tasks.pred[row])
         if any(int(j) not in placed_rows for j in follows):
             continue                     # a task cannot land before the work it follows
-        earliest = int(tasks.earliest[row])
-        # Every place this task could take, and what each one costs: the turns the day grows by.
-        # Sorted, so the cheapest candidate is the one the compiler is asked about first.
-        candidates: list[tuple[int, int, int, list[tuple[int, int]]]] = []
+
+        # 1. A worker takes the task. Every place it could take, cheapest day first.
+        placed_here: list[tuple[int, int, list[tuple[int, int]]]] = []
         for worker in range(workers):
-            entries = sorted(by_worker.get(worker, []))
-            if any(turn < 0 for turn, _row in entries):
+            if any(turn < 0 for turn, _row in group.get(worker, [])):
                 continue                 # an idle drop carries no turn to re-time around
-            rows = [entry_row for _turn, entry_row in entries]
             start = (int(starts[worker][0]), int(starts[worker][1]))
-            hour = int(hours[worker])
-            before = max((turn for turn, _row in entries), default=hour - 1) + 1 - hour
-            orders = [rows[:at] + [row] + rows[at:] for at in range(len(rows) + 1)]
-            if len(rows) + 1 <= PATH_LIMIT:
-                orders.append(_path_order(tasks, rows + [row], start))
-            for at, order in enumerate(orders):
-                landed = _retime_day(tasks, order, start, hour, horizon)
-                if landed is None:
-                    continue
-                if any(turn < earliest or int(tasks.latest[landed_row]) < turn
-                       for turn, landed_row in landed):
-                    continue             # an hour this work cannot keep
-                candidates.append((landed[-1][0] + 1 - hour - before, worker, at, landed))
-        if not candidates:
+            for added, landed in _day_proposals(tasks, days.get(worker, []), row, start,
+                                                int(hours[worker]), horizon):
+                placed_here.append((added, worker, landed))
+        placed_here.sort(key=lambda item: (item[0], item[1]))
+        for _added, worker, landed in placed_here:
+            candidate = build(worker, landed)
+            if not accept(candidate):
+                continue
+            group[worker] = [(turn, row_here) for turn, row_here in landed]
+            days[worker] = [row_here for _turn, row_here in landed]
+            free_at[worker] = landed[-1][0] + 1
+            placed_rows.add(row)
+            improved = True
+            break
+        if improved:
             continue
-        candidates.sort()
-        for _added, worker, _at, landed in candidates:
-            merged = [(turn, ids[landed_row], worker) for turn, landed_row in landed]
-            merged += [(turn, ids[other_row], other) for other, group in by_worker.items()
-                       if other != worker for turn, other_row in group]
+
+        # 2. No day can take it as it stands: the worker that could have is full, so one of its own
+        #    tasks moves to a worker that can still reach that task, and the unplaced one takes its
+        #    place. Both days are re-timed and the whole route goes through the compiler together.
+        moving: list[tuple[int, int, int, list[tuple[int, int]], list[tuple[int, int]]]] = []
+        cell_u = cells[row]
+        for worker in range(workers):
+            rows_w = days.get(worker, [])
+            if not rows_w or any(turn < 0 for turn, _row in group.get(worker, [])):
+                continue                 # nothing to move off an empty day
+            start_w = (int(starts[worker][0]), int(starts[worker][1]))
+            hour_w = int(hours[worker])
+            # How many turns short this worker is of taking the task, at best: the errand from where
+            # it stands, ignoring the work already on its day. A LOWER bound, so it skips nothing a
+            # move could have made work.
+            here = tail(worker)
+            shortfall = (free_at[worker] + abs(here[0] - cell_u[0]) + abs(here[1] - cell_u[1]) + 1
+                         - horizon)
+            if shortfall <= 0:
+                continue                 # the plain placement above would have found it
+            # What each of the worker's own tasks costs the day: its own turn, and the walk it adds
+            # where it sits (`previous -> carried -> following` against `previous -> following`).
+            # Removing one frees no more than that, so a day short of MORE than the largest of them
+            # cannot be helped by a single move - which is what keeps this family from trying every
+            # triple of (worker, task, receiver).
+            freed = []
+            for at, carried in enumerate(rows_w):
+                previous = cells[rows_w[at - 1]] if at else start_w
+                reached = cells[carried]
+                walk = abs(previous[0] - reached[0]) + abs(previous[1] - reached[1])
+                if at + 1 < len(rows_w):
+                    following = cells[rows_w[at + 1]]
+                    walk += (abs(reached[0] - following[0]) + abs(reached[1] - following[1])
+                             - abs(previous[0] - following[0]) - abs(previous[1] - following[1]))
+                freed.append(1 + max(0, walk))
+            if shortfall > max(freed):
+                continue                 # no single task off this day frees that many turns
+            for at, carried in enumerate(rows_w):
+                if freed[at] < shortfall:
+                    continue             # this one does not free enough to be worth the move
+                left = rows_w[:at] + rows_w[at + 1:]
+                moved_proposals = _day_proposals(tasks, left, row, start_w, hour_w, horizon)
+                if not moved_proposals:
+                    continue
+                for receiver in range(workers):
+                    if receiver == worker or not reaches(receiver, cells[carried]):
+                        continue         # that worker cannot reach the task it would take
+                    took = _day_proposals(tasks, days.get(receiver, []), carried,
+                                          (int(starts[receiver][0]), int(starts[receiver][1])),
+                                          int(hours[receiver]), horizon, everywhere=False)
+                    if not took:
+                        continue
+                    best_here = min(p[0] for p in moved_proposals)
+                    best_there = min(p[0] for p in took)
+                    for _a, landed_here in moved_proposals:
+                        for _b, landed_there in took:
+                            moving.append((best_here + best_there, worker, receiver,
+                                           landed_here, landed_there))
+        moving.sort(key=lambda item: (item[0], item[1], item[2]))
+        for _added, worker, receiver, landed_here, landed_there in moving:
+            merged = [(turn, ids[landed_row], worker) for turn, landed_row in landed_here]
+            merged += [(turn, ids[landed_row], receiver) for turn, landed_row in landed_there]
+            merged += [(turn, ids[other_row], other) for other, rows in group.items()
+                       if other not in (worker, receiver) for turn, other_row in rows]
             candidate = result._replace(route=sorted(merged), complete=len(merged) == tasks.n)
-            try:
-                compile_route(day, tasks, candidate)    # the writer first: its refusal is cheap
-            except Exception:  # noqa: BLE001 - any refusal is this candidate's own answer
+            if not accept(candidate):
                 continue
-            if check_route(day, tasks, candidate):
-                continue
-            by_worker[worker] = list(landed)
+            group[worker] = list(landed_here)
+            group[receiver] = list(landed_there)
+            days[worker] = [row_here for _turn, row_here in landed_here]
+            days[receiver] = [row_here for _turn, row_here in landed_there]
+            free_at[worker] = landed_here[-1][0] + 1
+            free_at[receiver] = landed_there[-1][0] + 1
             placed_rows.add(row)
             improved = True
             break
 
     if not improved:
         return result
-    route = sorted((turn, ids[task_row], worker) for worker, group in by_worker.items()
-                   for turn, task_row in group)
+    route = sorted((turn, ids[task_row], worker) for worker, rows in group.items()
+                   for turn, task_row in rows)
     return result._replace(route=route, complete=len(route) == tasks.n)
 
 
