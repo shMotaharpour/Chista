@@ -194,24 +194,28 @@ class TileContractor:
         return np.ascontiguousarray(arr, dtype=DTYPE)
 
     # ---- the kernel ---------------------------------------------------
-    def sweep(self, p, w, travel_hours: int = 0) -> tuple[np.ndarray, np.ndarray]:
+    def sweep(self, p, w, travel_hours: int = 0,
+              rent=None, occupied=None) -> tuple[np.ndarray, np.ndarray]:
         """Backward sweep: `(days+1, n_states)` values and per-day rewards."""
         _ec_int, ec = self._travel_edge_costs(travel_hours)
         return self._sweep(self._as_dual(p, "prices"), self._as_dual(w, "wages"), ec)
 
-    def _sweep(self, p: np.ndarray, w: np.ndarray, ec: np.ndarray | None = None
-               ) -> tuple[np.ndarray, np.ndarray]:
+    def _sweep(self, p: np.ndarray, w: np.ndarray, ec: np.ndarray | None = None,
+               rent=None, occupied=None) -> tuple[np.ndarray, np.ndarray]:
         ec = self.EC if ec is None else ec
         rewards = np.empty((self.days, int(self.edge_next.size)), dtype=DTYPE)
         for d in range(self.days - 1, -1, -1):
             # Produce and cost are priced by their own vector, in two passes. Folding them
             # into one wider matvec measures slower: the wider gemv loses to BLAS dispatch.
             rewards[d] = self.EP @ p[d] - ec @ w[d]
+            if rent is not None and occupied is not None:
+                rewards[d] = rewards[d] - rent[d] * occupied[self.edge_next]
             if self._disc is not None:
                 rewards[d] = rewards[d] * self._disc[d]
         return self._backward(rewards), rewards
 
-    def _base_rewards(self, p: np.ndarray, w: np.ndarray) -> np.ndarray:
+    def _base_rewards(self, p: np.ndarray, w: np.ndarray, rent=None,
+                      occupied=None) -> np.ndarray:
         """`EP @ p[d] - EC @ w[d]` for every day: the sweep's distance-free half.
 
         The walk only ever lands on the LABOUR column of the worked edges
@@ -222,6 +226,11 @@ class TileContractor:
         rewards = np.empty((self.days, int(self.edge_next.size)), dtype=DTYPE)
         for d in range(self.days):
             rewards[d] = self.EP @ p[d] - self.EC @ w[d]
+            if rent is not None and occupied is not None:
+                # A slot that is OCCUPIED on the day this edge ends pays the
+                # day's rent: one gather, no per-state loop. A bare tile pays
+                # nothing -- charging it would punish leaving land fallow.
+                rewards[d] = rewards[d] - rent[d] * occupied[self.edge_next]
             if self._disc is not None:
                 rewards[d] = rewards[d] * self._disc[d]
         return rewards
