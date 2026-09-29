@@ -841,7 +841,11 @@ class MasterLP:
             # and the prices that priced them came from the LP solve of this same
             # matrix; publishing zeros here says "no prices", never "prices of 0".
             values = np.asarray(solution.col_value, dtype=np.float64)
-            bought = (values[land0:].reshape(nq, days) if nq else None)
+            # The land block has a DECLARED width; the hands block follows it, so
+            # the open-ended tail is 90 columns of land plus 480 of hands and the
+            # reshape fails the moment both are on.
+            bought = (values[land0:land0 + land_width].reshape(nq, days)
+                      if nq else None)
             sells = np.zeros((n_goods, days), dtype=np.float64)
             for b in range(tiers):
                 start = n + b * half
