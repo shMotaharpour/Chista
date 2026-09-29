@@ -416,8 +416,6 @@ def search(day: Day, tasks: TaskArray, *, beam: int | None = None,
     def seed(pool: int) -> Result | None:
         return warm if warm is not None and warm.pool == pool else None
 
-    BRANCH_IDLE[0] = (len(day.units) + start) >= 2 * lower_bound(day, tasks)
-
     if ceiling > start:
         # THE MULTIPOOL PASS (the owner's design): every pool in the offer's range
         # searched SIMULTANEOUSLY in one vectorised pass - the smallest pool that
@@ -426,8 +424,7 @@ def search(day: Day, tasks: TaskArray, *, beam: int | None = None,
         # exact rather than probed. The pass finds the pool; the ANSWER is refined by
         # the standard fixed point AT that pool, warm from the pass's route - the
         # charge and the doors are settled by the machinery that owns them.
-        per_pool = _range_multipool(day, tasks, width, start, ceiling,
-                                    branch_floor=lower_bound(day, tasks))
+        per_pool = _range_multipool(day, tasks, width, start, ceiling)
         carried = sorted(pool for pool, r in per_pool.items() if r.complete)
         if carried:
             # The pass only FINDS the smallest carrying pool; the ANSWER is the
@@ -435,14 +432,11 @@ def search(day: Day, tasks: TaskArray, *, beam: int | None = None,
             # owns the route, and a warm seed from the charge-free pass measured
             # worse (the warm row's basin fits a different world).
             pool = carried[0]
-            BRANCH_IDLE[0] = (len(day.units) + pool) >= 2 * lower_bound(day, tasks)
             ans = done(_fixed_point(day, tasks, width(pool), pool))
         else:
             pool, _partial = max(per_pool.items(), key=lambda item: len(item[1].route))
-            BRANCH_IDLE[0] = (len(day.units) + pool) >= 2 * lower_bound(day, tasks)
             ans = done(_fixed_point(day, tasks, width(pool), pool))
     else:
-        BRANCH_IDLE[0] = (len(day.units) + start) >= 2 * lower_bound(day, tasks)
         ans = done(_fixed_point(day, tasks, width(start), start, seed(start)))
     return ans
 
@@ -578,8 +572,7 @@ def _settle(day: Day, tasks: TaskArray, beam: int, pool: int,
 
 
 
-def _range_multipool(day: Day, tasks: TaskArray, width, lo: int, hi: int,
-                     branch_floor: int) -> dict[int, Result]:
+def _range_multipool(day: Day, tasks: TaskArray, width, lo: int, hi: int) -> dict[int, Result]:
     """Every pool in [lo, hi] searched SIMULTANEOUSLY in one vectorised pass.
 
     The beam's rows are grouped by pool; a group's worker columns beyond its own
@@ -638,7 +631,7 @@ def _range_multipool(day: Day, tasks: TaskArray, width, lo: int, hi: int,
             break
         done, when, who, free, where, travel, live, count = _select(
             expanded, tasks, beam, len(day.units), hours_of, pool_of,
-            hours_of, branch_floor, band_of)
+            hours_of, band_of)
         placed = done.sum(axis=1)
         makespan = free.max(axis=1)
         for gi in range(n_groups):
@@ -745,7 +738,6 @@ def _run(day: Day, tasks: TaskArray, *, hands: int, beam: int,
          warm: Result | None = None, charge=None,
          pool_of: np.ndarray | None = None,
          hours_of: np.ndarray | None = None,
-         branch_floor: int = 0,
          band_of: np.ndarray | None = None) -> Result:
     """One pool size: search the day, and report how much of it the pool could carry.
 
@@ -799,7 +791,7 @@ def _run(day: Day, tasks: TaskArray, *, hands: int, beam: int,
             break
         done, when, who, free, where, travel, live, count = _select(
             expanded, tasks, beam, first_hand, hours, pool_of, hours_of,
-            branch_floor, band_of)
+            band_of)
         if not live.any():
             break
         here = _snapshot(done, when, who, free, where, travel, first_hand, hours)
@@ -1440,11 +1432,8 @@ def _rank_keys(tasks: TaskArray, child_done, child_free, travel, makespan, hands
 SELECT_RULE = "hour"
 SEED = [0]
 
-BRANCH_IDLE: list = [False]
-
-
 def _select(expanded, tasks: TaskArray, beam: int, first_hand: int, start_hours,
-            pool_of=None, hours_of=None, branch_floor: int = 0,
+            pool_of=None, hours_of=None,
             band_of: np.ndarray | None = None):
     """Keep the best `beam` children, ranked BEFORE they are built.
 
@@ -1550,37 +1539,6 @@ def _select(expanded, tasks: TaskArray, beam: int, first_hand: int, start_hours,
     task = index[column]
     hour = flat_hour[shortlist]
     worker = expanded["worker"][rows].ravel()[shortlist]
-
-    busy = done_by_worker(done, who, free.shape[1])
-    used_now = busy[:, first_hand:].sum(axis=1)
-    if pool_of is not None:
-        # Multi-pool: the branch fires only in DOUBLED groups (the group's pool >=
-        # 2x the hired floor); masked columns are nonexistent workers, not idle ones.
-        surplus = pool_of[:, None] - used_now
-        has_surplus = ((surplus >= 1).any(axis=1)
-                       & (pool_of >= 2 * branch_floor))[parent]
-    elif BRANCH_IDLE[0]:
-        surplus = free.shape[1] - first_hand - used_now
-        has_surplus = (surplus >= 2)[parent]
-    else:
-        has_surplus = None
-    if has_surplus is not None and has_surplus.any():
-        finish_all = expanded["finish"]
-        busy_finish = np.where(busy[:, :, None], finish_all, BIG)
-        worker2 = busy_finish[parent, :, column].argmin(axis=1)
-        add = (has_surplus
-               & (busy_finish[parent, worker2, column] < BIG)
-               & (worker2 != worker))
-        parent2 = parent[add]
-        column2 = column[add]
-        worker2 = worker2[add]
-        parent = np.concatenate([parent, parent2])
-        column = np.concatenate([column, column2])
-        worker = np.concatenate([worker, worker2])
-        task = np.concatenate([task, index[column2]])
-        hour = np.concatenate([hour, busy_finish[parent2, worker2, column2]])
-        if child_group is not None:
-            child_group = np.concatenate([child_group, band_of[parent2]])
 
     # `hour` is when the action FINISHES. The turn it occupies is the one before that, and that
     # turn is what the route reports - the engine numbers a day's turns 0 to 23, and the farmer

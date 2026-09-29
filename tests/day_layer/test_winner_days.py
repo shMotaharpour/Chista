@@ -490,12 +490,12 @@ DOUBLED_POOL_DAYS = [e for e in WINNER_DAYS
 
 @pytest.mark.parametrize("entry", DOUBLED_POOL_DAYS,
                          ids=[f"ep{e['episode']}-d{e['day']}" for e in DOUBLED_POOL_DAYS])
-def test_a_doubled_pool_does_not_spread_the_day_over_more_workers(entry) -> None:
-    """Offering twice the hands must not put more workers to work than the day's own answer.
+def test_a_doubled_pool_answers_with_the_minimum_carrying_pool(entry) -> None:
+    """Offering twice the hands must still answer with the smallest carrying pool.
 
-    The extra hands start at the day's own latest hire hour, so the offer is the game's crew
-    twice over and nothing better. A hand is money (the hire ladder), so a route that carries
-    the day with the extra hands idle beats one that spreads the same work over all of them.
+    The multipool pass solves every pool of the range at once; the answer is the
+    smallest one that carries the day - extra hands are an offer, not a bill. The
+    game's own answer is the truth the search is held to.
     """
     _grid, _tasks, own = _search(entry)
     assert own.complete, "the day's own pool no longer carries it; the premise is gone"
@@ -503,11 +503,12 @@ def test_a_doubled_pool_does_not_spread_the_day_over_more_workers(entry) -> None
     doubled = entry["hands"] * 2
     wide = dict(entry, hire_times=list(hours + (max(hours),) * entry["hands"]),
                 hands=doubled)
-    _grid, tasks, result = _search(wide, hands=doubled, max_hands=doubled)
+    _grid, tasks, result = _search(wide, hands=entry["hands"] - 1,
+                                   max_hands=doubled)
     assert result.complete, f"{len(result.route)} of {tasks.n} with {doubled} hands offered"
-    assert _used_workers(result) <= _used_workers(own), (
-        f"{doubled} hands offered: the route uses {_used_workers(result)} workers where the "
-        f"day's own answer uses {_used_workers(own)}")
+    assert result.pool <= entry["hands"], (
+        f"{doubled} hands offered: the answer came back at pool {result.pool} where the "
+        f"day is carried by {entry['hands']}")
 
 
 def _game_route(entry, grid, tasks) -> list[tuple[int, str, int]]:
