@@ -590,6 +590,11 @@ def build(chains, *, available: dict[str, int] | None = None, horizon: int = 24,
     # serves, and numbering by cell would put it on a tile of its own.
     shed_door = SHED_ACCESS[0]
     cells = np.asarray([t.cell if t.cell else shed_door for t in tasks], dtype=np.int16)
+    # A day with no work at all is the manager's idle plan, which the layer is handed first: numpy
+    # builds that empty list as shape (0,), and every `cells[:, 0]` in the search then raises
+    # "too many indices". The shape of an empty cell list is still two columns wide.
+    if cells.ndim != 2:
+        cells = cells.reshape(0, 2)
     columns = np.asarray([column_of[t.id] for t in tasks], dtype=np.int8)
 
     item_codes = np.asarray([_item_code(t.item) for t in tasks], dtype=np.int16)

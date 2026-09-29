@@ -1286,6 +1286,13 @@ def _hand_doors(day: Day, tasks: TaskArray, result: Result, hands: int) -> tuple
     # fallback: rewriting the caller's hour silently is how a day gets priced on hours it does
     # not have. A bad tuple is `Day`'s to refuse, not this function's to mop up.
     hire = [int(h) for h in day.hire_times]
+    # A pool larger than the offer is a pool the search may still be asked for (`ceiling_for` allows
+    # it while the work is there, and the bounds tests ask exactly that). `_start_hours` gives such a
+    # hand the engine's OWN hire hour, so the doors are read from the same timetable instead of
+    # indexing the offer past its end - which is what refused-to-crash became a crash.
+    if hands > len(hire):
+        from agent.world.rules import hire_hour
+        hire = hire + [int(hire_hour(index)) for index in range(len(hire), hands)]
     routes: dict[int, list] = {}
     for turn, task_id, worker in result.route:
         routes.setdefault(int(worker), []).append((int(turn), task_id))
