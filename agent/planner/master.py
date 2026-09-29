@@ -1175,6 +1175,7 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
         result.defer_cap = getattr(dual_src, "defer_cap", None)
         result.sells = getattr(cg.solve, "sells", None)
         result.hands_bought = getattr(cg.solve, "hands_bought", None)
+        result.land_bought = getattr(cg.solve, "land_bought", None)
         _hist = getattr(cg.solve, "rc_history", None)
         result.rc = float(_hist[-1]) if _hist else None
     converged = cg.certified
