@@ -90,7 +90,7 @@ def test_the_remainder_goes_to_the_largest_fraction():
 
 
 def test_ties_fall_to_the_lowest_plan_index():
-    """`assign_tiles` promises determinism; the quota rule keeps the promise."""
+    """The argmax rule promises determinism; the quota rule keeps the promise."""
     mixes = _mix([0.5, 0.5, 0.5, 0.5], count=2)
     taken = sorted(c.plan_index for c in assign_by_quota([KEY] * 2, mixes) if c)
     assert taken == [0, 1]
