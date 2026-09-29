@@ -126,6 +126,44 @@ def buy_coins(good: str, inventory: int, units: int) -> int:
     return int(S[i, hi] - S[i, hi - units])
 
 
+def sell_coins_vec(good: str, inventories: np.ndarray, units: np.ndarray
+                   ) -> np.ndarray:
+    """`sell_coins` over arrays — the same ladder, the same floor stall.
+
+    Elementwise in `inventories` and `units` (broadcastable), so a whole
+    (goods x days x blocks) depth surface is one pass instead of a Python call
+    per cell. The branch structure is the scalar's, term for term: the ladder
+    window `S[inv + u] - S[inv]` while the sale stays above the floor point,
+    then `$1` a unit past it with the head of the stall counted once.
+    `tests/test_market_ladder.py` pins the two against each other.
+    """
+    i = _IX[good]
+    lo = np.asarray(inventories, dtype=np.int64) - G_LO
+    u = np.asarray(units, dtype=np.int64)
+    floor_ix = int(_FLOOR_IX[i])
+    stall = np.maximum(0, floor_ix - lo)            # units before the floor
+    stalling = (floor_ix - lo) > 0
+    ladder = S[i, lo + np.minimum(u, stall)] - S[i, lo]
+    head = np.where(stalling, S[i, floor_ix] - S[i, lo], 0)
+    return np.where(u <= stall, ladder, head + (u - stall))
+
+
+def marginal_coins_vec(good: str, inventories: np.ndarray,
+                       sold: np.ndarray) -> np.ndarray:
+    """The quote of the NEXT unit after `sold` — the ladder's own marginal.
+
+    `sell_coins(inv, sold + 1) - sell_coins(inv, sold)`, which is the quote
+    table `P` at inventory `inv + sold` while the unit sits above the floor
+    point, and `PRICE_FLOOR` a unit past it (the scalar is `depth.marginal_price`,
+    which reads the same two ladder windows; the guard compares them).
+    """
+    i = _IX[good]
+    lo = np.asarray(inventories, dtype=np.int64) - G_LO
+    m = np.asarray(sold, dtype=np.int64)
+    stall = np.maximum(0, int(_FLOOR_IX[i]) - lo)
+    return np.where(m < stall, P[i, lo + m], PRICE_FLOOR)
+
+
 def split_days(good: str, inventory: int, lot: int, drains: np.ndarray
                ) -> tuple[np.ndarray, int]:
     """The exact best day split of a `lot`, drains between the days.

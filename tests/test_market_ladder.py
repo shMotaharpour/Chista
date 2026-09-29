@@ -11,7 +11,8 @@ import numpy as np
 from kaggle_environments.envs.kaggriculture import kaggriculture as K
 from agent.world.model import PRODUCTS
 from agent.belief.ladder import (FLOOR, G_HI, G_LO, P, S, buy_coins,
-                                 good_index, sell_coins, split_days,
+                                 good_index, marginal_coins_vec, sell_coins,
+                                 sell_coins_vec, split_days,
                                  supply_after_sell)
 
 
@@ -96,6 +97,39 @@ def _brute(good: str, inventory: int, lot: int, drains: list[int]) -> int:
                 coins + sell_coins(g, st, k))
     rec(0, 0, 0)
     return best[0]
+
+
+def test_the_vectorized_ladder_agrees_with_the_scalar_cell_by_cell() -> None:
+    """`sell_coins_vec`/`marginal_coins_vec` are the scalar's numbers, arrayed.
+
+    The depth surface calls them for whole (good x day x block) cells at once,
+    so the two spellings must agree everywhere it can be asked — including at
+    and past the floor point, where the `$1`-a-unit branch and its head term are
+    the parts a dropped branch gets wrong.
+    """
+    rng = np.random.default_rng(29)
+    for _ in range(40):
+        g = PRODUCTS[int(rng.integers(len(PRODUCTS)))]
+        floor = FLOOR[good_index(g)]
+        # half the draws sit near the good's own floor when it has one
+        base = int(rng.integers(G_LO + 1, 12000)) if floor is None \
+            else int(floor + rng.integers(-40, 60))
+        invs = np.array([base + k for k in range(12)], dtype=np.int64)
+        units = np.array([0, 1, 2, 7, 25, 120], dtype=np.int64)
+        grid_inv = np.repeat(invs, len(units))
+        grid_units = np.tile(units, len(invs))
+        theirs = np.array([sell_coins(g, int(i), int(u))
+                           for i, u in zip(grid_inv, grid_units)])
+        assert np.array_equal(sell_coins_vec(g, grid_inv, grid_units), theirs), \
+            f"{g}: sell_coins_vec differs from sell_coins"
+        # the marginal: sell_coins(inv, m + 1) - sell_coins(inv, m)
+        sold = np.repeat(np.array([0, 1, 5], dtype=np.int64), len(invs))
+        rep_inv = np.tile(invs, 3)
+        theirs_m = np.array([
+            sell_coins(g, int(i), int(m) + 1) - sell_coins(g, int(i), int(m))
+            for i, m in zip(rep_inv, sold)])
+        assert np.array_equal(marginal_coins_vec(g, rep_inv, sold), theirs_m), \
+            f"{g}: marginal_coins_vec differs from the ladder's own difference"
 
 
 def test_the_day_split_is_the_exact_optimum() -> None:

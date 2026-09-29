@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from agent.belief.ladder import sell_coins, split_days
+from agent.belief.ladder import sell_coins, sell_coins_vec, split_days
 from agent.belief.market import (MarketForecast, PRODUCTS, TURNS_PER_DAY,
                                  _hourly_rows, _walk_rows)
 
@@ -109,24 +109,32 @@ def hourly_value(fc: MarketForecast, items: Iterable[str], first_day: int,
     rival's dated supply already speak. `sold` is OUR OWN units already planned at
     each `(good, absolute_step)`: the ladder prices the lot we put in, so the value
     of the next unit at a turn starts from what we are already selling there.
+
+    One pass per good: the cells are the walk's own rows, sampled once
+    (`_hourly_rows`), and the marginal is `ladder.marginal_coins_vec` over that
+    surface — a cell at a time was 5 ms per day of horizon, this is the same
+    numbers without the per-cell call.
     """
+    from agent.belief.ladder import marginal_coins_vec
     from agent.belief.market import TURNS_PER_DAY
 
     goods = tuple(items)
     planned = dict(sold or {})
+    days = max(1, int(days))
+    rows = _hourly_rows(fc, days)
+    walk = _walk_rows(fc)
+    steps = (int(first_day) * TURNS_PER_DAY
+             + np.arange(days * TURNS_PER_DAY, dtype=np.int64))
     out: dict = {}
-    for d in range(max(1, int(days))):
-        day = int(first_day) + d
-        for h in range(TURNS_PER_DAY):
-            step = day * TURNS_PER_DAY + h
-            for good in goods:
-                # `units` is OUR OWN volume at that turn, not the market's
-                # inventory: the ladder prices the lot we put in. With nothing
-                # planned yet the next unit is the hour's own quote, which is the
-                # curve's documented first unit (`hourly_prices`).
-                mine = int(planned.get((good, step), 0))
-                out[(good, step)] = marginal_price(fc, good, day, mine + 1,
-                                                   hour=h)
+    for good in goods:
+        inv = walk[np.asarray(rows), _index(good)]
+        if planned:
+            mine = np.array([int(planned.get((good, int(s)), 0)) for s in steps],
+                            dtype=np.int64)
+        else:
+            mine = np.zeros(len(steps), dtype=np.int64)
+        vals = marginal_coins_vec(good, inv, mine)
+        out.update({(good, int(s)): float(v) for s, v in zip(steps, vals)})
     return out
 
 
@@ -153,6 +161,30 @@ def rival_risk(supply: dict, items: Iterable[str], first_day: int,
                 if good in goods:
                     out[(good, step)] = int(units)
     return out
+
+
+def _cell_inventories(fc: MarketForecast, item: str, first_day: int, days: int,
+                      *, hour: int | None = None, hours=None, gi: int = 0
+                      ) -> np.ndarray:
+    """The day's inventory for one good over `days` days, `(days,)`.
+
+    The same read `inventory_at(fc, item, day, hour)` makes, for every day at
+    once: the day-start table when no hour is asked for, else the walk row of
+    `_walk_row_of` at that day's hour (`hours[gi, d]` when an envelope is handed
+    in). Values are truncated to whole units exactly as `inventory_at` does.
+    """
+    day_ix = [int(day) for day in range(int(first_day), int(first_day) + days)]
+    if hours is None and hour is None:
+        return np.array([int(fc.inventory_of(item, day)) for day in day_ix],
+                        dtype=np.float64)
+    if hours is not None:
+        per_day = [int(np.asarray(hours)[gi, d]) for d in range(days)]
+    else:
+        per_day = [int(hour)] * days
+    walk = _walk_rows(fc)
+    i = _index(item)
+    return np.array([int(walk[_walk_row_of(fc, day, h)][i])
+                     for day, h in zip(day_ix, per_day)], dtype=np.float64)
 
 
 def depth_blocks(fc: MarketForecast, item: str, day: int, units: int,
@@ -290,22 +322,16 @@ def sell_blocks(fc: MarketForecast, goods, first_day: int, days: int,
     cap = max(1, int(cap))
     edges = geometric_edges(cap, blocks)
     n_goods, days = len(goods), max(1, int(days))
+    ends = np.asarray(edges, dtype=np.int64)
+    prevs = np.concatenate([np.zeros(1, dtype=np.int64), ends[:-1]])
     units = np.zeros((n_goods, days, len(edges)), dtype=np.int64)
+    units[:, :] = ends - prevs                    # one split, every cell
     prices = np.zeros((n_goods, days, len(edges)), dtype=np.float64)
     for gi, good in enumerate(goods):
-        for d in range(days):
-            day = int(first_day) + d
-            # The hour this good's sale can reach that day: the envelope's own
-            # best hour when one is handed in, the caller's fixed hour otherwise.
-            h = hour
-            if hours is not None:
-                h = int(np.asarray(hours)[gi, d])
-            prev = 0
-            for b, end in enumerate(edges):
-                coins = (depth_coins(fc, good, day, end, hour=h)
-                         - depth_coins(fc, good, day, prev, hour=h))
-                k = int(end) - prev
-                units[gi, d, b] = k
-                prices[gi, d, b] = (coins / k) if k > 0 else 0.0
-                prev = int(end)
+        # the day's inventory for this good, at the hour the sell can reach it
+        inv = _cell_inventories(fc, good, first_day, days, hour=hour,
+                                hours=hours, gi=gi)
+        flow = (sell_coins_vec(good, inv[:, None], ends[None, :])
+                - sell_coins_vec(good, inv[:, None], prevs[None, :]))
+        prices[gi] = flow / np.maximum(units[gi], 1)
     return units, prices
