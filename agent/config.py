@@ -76,7 +76,8 @@ class Config:
     never_raise: bool = False
 
     # --- the master (the column-generation solve) -------------------------
-    #: Column-generation rounds per solve, and the round count is a DECISION, not a race
+        #: Column-generation rounds per solve, and the round count is a DECISION, not a
+    #: race with the clock
 #: with the clock: consulting the clock between rounds made two runs of one seed
 #: disagree. The day's objective is monotone in the rounds and the wall cost is
 #: linear in them, so the cap trades a measured objective for time -- a cap that is
