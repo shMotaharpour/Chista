@@ -144,6 +144,12 @@ class Config:
     #: shop survives and only the hope above every real world goes. False keeps
     #: the shipped model exact.
     price_cap_from_archive: bool = False
+    #: Price the PLAN on the bad day, not the average one: the sale path is floored
+    #: at `z` standard deviations of the town's own drain (`drain_forecast`
+    #: owns those two moments, exactly, without sampling). Risk as a price --
+    #: the mean-CVaR objective of #111 in the form the ladder already speaks.
+    #: 0.0 keeps the shipped model exact.
+    price_risk_z: float = 0.0
     #: What a unit sold BEYOND the town's own appetite fetches, as a fraction of
     #: the day's price. That tier is the legacy two-tier model, used when the
     #: caller hands in no depth curve; with a curve the ladder's own blocks carry
