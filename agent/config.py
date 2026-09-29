@@ -76,20 +76,13 @@ class Config:
     never_raise: bool = False
 
     # --- the master (the column-generation solve) -------------------------
-    #: Column-generation rounds per solve, and the round count is a DECISION, not
-    #: a race with the clock: consulting the clock between rounds made two runs of
-    #: the same seed disagree (18,312 against 28,890 with every RNG in our code
-    #: seeded and the threads pinned to one). One is what this tree has been run
-    #: and measured at; with the clock out of the loop the cap is the only stop
-    #: besides the reduced-cost certificate, so raising it is a policy decision to
-    #: take on a measurement.
-    #: How many master solves the day's column loop takes. One solve leaves the
-    #: columns its own pricing pass found unpriced, so the plan is the optimum of
-    #: the pool as it stood BEFORE that pass - one round's columns idle. The
-    #: second solve prices them; measured on the day-0 board the same pool is
-    #: worth 96,069.7333 against 68,341.9333 (master_rounds=1) and a season
-    #: carries it to 71,688 against 17,076 on seed 33 (16 free hands).
-    master_rounds: int = 2
+    #: Column-generation rounds per solve, and the round count is a DECISION, not a race
+#: with the clock: consulting the clock between rounds made two runs of one seed
+#: disagree. The day's objective is monotone in the rounds and the wall cost is
+#: linear in them, so the cap trades a measured objective for time -- a cap that is
+#: too low throws the objective away, because every round prices the pool again
+#: against the duals the last round produced.
+    master_rounds: int = 32
     #: The LP loop's own cap when a caller asks for no specific number (the
     #: library default; the manager always asks for `master_rounds`). 8 is the
     #: measured oscillation budget: the full loop's cost is the contractor's
