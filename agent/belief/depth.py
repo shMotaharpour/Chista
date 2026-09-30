@@ -179,7 +179,8 @@ def rival_risk(supply: dict, items: Iterable[str], first_day: int,
 
 
 def _cell_inventories(fc: MarketForecast, item: str, first_day: int, days: int,
-                      *, hour: int | None = None, hours=None, gi: int = 0
+                      *, hour: int | None = None, hours=None, gi: int = 0,
+                      high: bool = False
                       ) -> np.ndarray:
     """The day's inventory for one good over `days` days, `(days,)`.
 
@@ -188,15 +189,20 @@ def _cell_inventories(fc: MarketForecast, item: str, first_day: int, days: int,
     `_walk_row_of` at that day's hour (`hours[gi, d]` when an envelope is handed
     in). Values are truncated to whole units exactly as `inventory_at` does.
     """
+    band = high and fc.walk_inventory_high is not fc.walk_inventory
     day_ix = [int(day) for day in range(int(first_day), int(first_day) + days)]
-    if hours is None and hour is None:
+    if hours is None and hour is None and not band:
         return np.array([int(fc.inventory_of(item, day)) for day in day_ix],
                         dtype=np.float64)
     if hours is not None:
         per_day = [int(np.asarray(hours)[gi, d]) for d in range(days)]
-    else:
+    elif hour is not None:
         per_day = [int(hour)] * days
-    walk = _walk_rows(fc)
+    else:
+        # The band with no hour asked for: the day-start read, from the band's
+        # own walk instead of the day-start table (which has no band).
+        per_day = [0] * days
+    walk = fc.walk_inventory_high if band else _walk_rows(fc)
     i = _index(item)
     return np.array([int(walk[_walk_row_of(fc, day, h)][i])
                      for day, h in zip(day_ix, per_day)], dtype=np.float64)
