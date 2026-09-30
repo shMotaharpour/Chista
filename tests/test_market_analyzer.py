@@ -27,7 +27,7 @@ from kaggle_environments.envs.kaggriculture import kaggriculture as K
 from agent.belief.schemas import (DUAL, G_IX, SHED_CAP, SHOP_BASKET,
                                   SHOP_TYPES)
 from agent.world.model import PRODUCTS as GOODS
-from agent.world.prices import price, price_vec
+from agent.world.prices import MARKET_I0, price, price_vec
 
 from bench.bench_market_analyzer import (center_drain_probe, run_episode,
                                          slot_inference_experiment)
@@ -41,17 +41,62 @@ from agent.belief.tracker import MarketTracker
 
 GRID = np.concatenate([np.arange(0, 60, 1.0), np.arange(100, 12000, 17.0)])
 
+#: The fractional grid: the walk's rows carry fractional inventories (the
+#: residual is spread per turn, the mean unlock policy adds fractional shops), so
+#: `price_vec` is asked for non-integers in production. Its steps are irrational
+#: on purpose (0.37, 1/3) so the samples cannot land only on the integers, and it
+#: straddles I0 in 0.01 steps — the branch boundary the two-sided formula meets.
+GRID_FRACTIONAL = np.concatenate([
+    np.arange(0.0, 12000.0, 0.37),
+    np.arange(9990.0, 10010.0, 0.01),
+    np.arange(0.0, 400.0, 1.0 / 3.0),
+])
 
-# --------------------------------------------------------------------------- #
-# the engine boundary
-# --------------------------------------------------------------------------- #
 
 def test_price_parity() -> None:
-    """The vectorised curve IS the engine's curve, at every inventory."""
+    """The vectorised curve IS the engine's curve, at every inventory.
+
+    Integer and fractional: the rows the hourly surface prices are not integers,
+    so a guard that only walks whole units would not see the side of the formula
+    the engine's `round` acts on.
+    """
     for g in GOODS:
-        mine = price_vec(g, GRID)
-        theirs = np.array([K.market_price(g, float(i)) for i in GRID])
-        assert np.array_equal(mine, theirs), f"{g}: vectorised price differs from the engine"
+        for grid in (GRID, GRID_FRACTIONAL):
+            mine = price_vec(g, grid)
+            theirs = np.array([K.market_price(g, float(i)) for i in grid])
+            assert np.array_equal(mine, theirs), (
+                f"{g}: vectorised price differs from the engine "
+                f"({int((mine != theirs).sum())} of {len(grid)} cells, "
+                f"first at inventory {grid[int((mine != theirs).argmax())]!r})")
+
+
+def test_price_grid_equals_the_engine_for_every_good_at_once() -> None:
+    """`price_grid`'s (rows x 9) surface is `price_table`'s row, repeated.
+
+    The hourly and walk surfaces price all nine goods in one call, so the
+    all-goods form and the one-row form must be the same numbers, and both must
+    be the engine's at every cell (fractional inventories included).
+    """
+    from agent.world.prices import price_grid, price_table
+
+    # a (rows, 9) surface: fractional inventories, one column per good
+    vals = GRID_FRACTIONAL[:200]
+    surface = np.column_stack([vals + i for i in range(len(GOODS))])
+    grid = price_grid(surface)
+    assert grid.shape == surface.shape
+    for i in (0, 1, 57, 199):
+        row = surface[i]
+        assert np.array_equal(grid[i], price_table(row)), i
+        theirs = np.array([K.market_price(g, float(x)) for g, x in zip(GOODS, row)])
+        assert np.array_equal(grid[i], theirs), (
+            f"row {i}: price_grid differs from the engine at "
+            f"{[(g, float(x)) for g, x in zip(GOODS, row)]}")
+    # and the one-row surface the tracker and the schema reader ask for
+    row = np.array([9999.5, 10000.5, 10001.25, 0.0, 7.5,
+                    120.5, 350.75, 9000.25, 11999.9])
+    theirs = np.array([K.market_price(g, float(x)) for g, x in zip(GOODS, row)])
+    assert np.array_equal(price_grid(row[None, :])[0], theirs)
+    assert np.array_equal(price_table(row), theirs)
 
 
 def test_the_goods_split_is_seven_one_way_two_dual() -> None:

@@ -89,15 +89,78 @@ def price_of(item: str, inventory: float) -> int:
 
 def price_table(inventory: np.ndarray) -> np.ndarray:
     """The (9,) quote vector at one (9,) inventory, in PRODUCTS order."""
-    return np.array([price(item, float(x))
-                     for item, x in zip(PRODUCTS, inventory, strict=True)],
-                    dtype=np.int64)
+    return price_grid(np.asarray(inventory, dtype=np.float64)[None, :])[0]
+
+
+def _shape_vec(func: str, x: np.ndarray, t: float | None = None) -> np.ndarray:
+    """`shape` over an array: the same branches, elementwise.
+
+    Every branch is the scalar's own expression (`log` is `ln(1 + x)`, `hinge`
+    is `u + HINGE_GAIN * max(0, u - 1)^2` with `u = x / t`), applied to the whole
+    array at once.
+    """
+    x = np.maximum(0.0, np.asarray(x, dtype=np.float64))
+    if func == "linear":
+        return x
+    if func == "sq":
+        return x * x
+    if func == "sqrt":
+        return np.sqrt(x)
+    if func == "log":
+        return np.log1p(x)
+    if func == "log10":
+        return np.log10(1.0 + x)
+    if func == "hinge":
+        if not t or t <= 0:
+            return x
+        u = x / t
+        return u + HINGE_GAIN * np.maximum(0.0, u - 1.0) ** 2
+    return x
 
 
 def price_vec(item: str, inventories: np.ndarray) -> np.ndarray:
-    """`price(item, x)` over a vector of inventories, one product at a time."""
-    return np.array([price(item, float(x)) for x in np.asarray(inventories).ravel()],
-                    dtype=np.int64)
+    """`price(item, x)` over a vector of inventories — one pass, no Python loop.
+
+    The engine's formula (kaggriculture.py:192-206) grouped by the side of I0
+    each inventory lands on: below I0 the shape term is ADDED at `I0 - x`, above
+    it SUBTRACTED at `x - I0`, each side scaled by its own `amp`, then rounded
+    (`int(round(v))`, half to even) and floored at `PRICE_FLOOR`. The two sides
+    are a mask over one formula, not two formulas: `test_price_parity` holds
+    every good on both sides to the engine's own numbers, fractional inventories
+    included — a fractional inventory is a real input here (the walk's rows carry
+    the residual's fractional units), and the grid that guard uses covers it.
+    """
+    p = MARKET_PARAMS[item]
+    base = p["base"]
+    t = p["T"]
+    v = np.asarray(inventories, dtype=np.float64)
+    below = v < MARKET_I0
+    values = np.empty(v.shape, dtype=np.float64)
+    for sel, func, target, sign in ((below, p["below_func"], p["below_target"], 1.0),
+                                    (~below, p["above_func"], p["above_target"], -1.0)):
+        if not sel.any():
+            continue
+        amp = target * base / shape(func, t, t)          # the scalar's own amp
+        x = MARKET_I0 - v[sel] if sign > 0 else v[sel] - MARKET_I0
+        values[sel] = base + sign * amp * _shape_vec(func, x, t)
+    return np.maximum(PRICE_FLOOR, np.rint(values)).astype(np.int64)
+
+
+def price_grid(inventories: np.ndarray) -> np.ndarray:
+    """The (..., 9) quote array at an (..., 9) inventory array, one call.
+
+    The shape the hourly rows, the walk and any (rows x goods) surface ask for:
+    every good priced at every row, in PRODUCTS order. `np.rint` is the engine's
+    `round` (half to even) on the whole array at once.
+    """
+    inv = np.asarray(inventories, dtype=np.float64)
+    if inv.shape[-1] != len(PRODUCTS):
+        raise ValueError(f"price_grid: last axis must be {len(PRODUCTS)} goods, "
+                         f"got {inv.shape}")
+    out = np.empty(inv.shape, dtype=np.int64)
+    for i, item in enumerate(PRODUCTS):
+        out[..., i] = price_vec(item, inv[..., i])
+    return out
 
 
 #: How an order is quoted, kaggriculture.py:596-605. Both players are quoted from the
