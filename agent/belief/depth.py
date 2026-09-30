@@ -289,17 +289,18 @@ def day_envelope(fc: MarketForecast, goods, first_day: int, days: int
     """
     from agent.belief.market import TURNS_PER_DAY, hourly_prices
     n_goods = len(goods)
-    prices = np.zeros((n_goods, max(1, int(days))), dtype=np.int64)
-    hours = np.zeros((n_goods, max(1, int(days))), dtype=np.int64)
-    for gi, good in enumerate(goods):
-        table = hourly_prices(fc, days=max(1, int(days)), items=(good,))
-        for d in range(max(1, int(days))):
-            row = table[d * TURNS_PER_DAY:(d + 1) * TURNS_PER_DAY, 0]
-            if not len(row):
-                continue
-            h = int(np.argmax(row))
-            hours[gi, d] = h
-            prices[gi, d] = int(row[h])
+    days = max(1, int(days))
+    # ONE table for every good: the surface is priced once (items=all goods) and
+    # each good's day is an argmax over its own 24 rows. Asking per good priced
+    # the whole 9-good surface nine times and kept a column of it.
+    table = hourly_prices(fc, days=days, items=tuple(goods))
+    prices = np.zeros((n_goods, days), dtype=np.int64)
+    hours = np.zeros((n_goods, days), dtype=np.int64)
+    for gi in range(n_goods):
+        col = np.asarray(table[:, gi]).reshape(days, TURNS_PER_DAY)
+        best = np.argmax(col, axis=1)
+        hours[gi] = best
+        prices[gi] = col[np.arange(days), best]
     return prices, hours
 
 

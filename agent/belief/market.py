@@ -30,9 +30,10 @@ the inventory error is 1.14 % of I0 (none: 1.32 %) and the price error 30
 coins (none: 52); at day 20, 2.87 % (none: 3.72 %) and 78 coins (none:
 115).
 
-The price itself is never modelled here: `market_price` is imported from
-the engine (R002) and called on the forecast inventory exactly as
-`_refresh_prices` does after each turn's consumption.
+The price itself is never modelled here: `agent.world.prices` owns the engine's
+formula (one transcription, held to `market_price` cell by cell by
+`test_price_parity`), and this module reads it through `price_grid` — the same
+numbers, priced for a whole (rows x goods) surface in one pass.
 
 **Turn-order contract, probed and not assumed** (`bench/bench_market_forecast.py
 --probe`): the observation at step `s` shows the inventory *after* turn
@@ -82,6 +83,7 @@ import numpy as np
 from kaggle_environments.envs.kaggriculture import kaggriculture as K
 
 from agent.belief.schemas import SHOP_BASKET
+from agent.world.prices import price_grid
 from agent.world.rules import (CENTER_SELL_INTERVAL_TURNS,
                                SHOP_SELL_INTERVAL_TURNS,
                                SHOP_UNLOCK_INTERVAL_DAYS, TURNS_PER_DAY)
@@ -410,18 +412,20 @@ def forecast(obs: Any, *, days: int = 30,
         day_rows.append(stub)
     day_rows.extend(range(stub + TURNS_PER_DAY, len(turns), TURNS_PER_DAY))
     day_rows = day_rows[:horizon]           # rows are the horizon's day STARTS
-    rows_inv = []
-    rows_price = []
-    for d in range(horizon):
-        row = walk[day_rows[d]]
-        rows_inv.append(tuple(float(x) for x in row))
-        # the quote table IS the engine function (`world/prices`, parity-tested);
-        # the per-row call below keeps the engine in the loop so a patched
-        # `K.market_price` moves the prices with it (the parity guard watches).
-        rows_price.append(tuple(
-            int(K.market_price(PRODUCTS[i], float(row[i]),
-                               params if market_params is not None else None))
-            for i in range(len(PRODUCTS))))
+    rows_inv = [tuple(float(x) for x in walk[day_rows[d]]) for d in range(horizon)]
+    if market_params is None:
+        # the quote table IS the engine function (`world/prices`, held to it by
+        # `test_price_parity`), read for the whole surface at once — the rows the
+        # hourly layer samples come from the same call.
+        quotes = price_grid(walk[np.asarray(day_rows[:horizon], dtype=np.int64)])
+        rows_price = [tuple(int(x) for x in quotes[d]) for d in range(horizon)]
+    else:
+        # a caller's own params: the engine prices those, one row at a time
+        rows_price = [
+            tuple(int(K.market_price(PRODUCTS[i], float(walk[day_rows[d]][i]),
+                                     market_params))
+                  for i in range(len(PRODUCTS)))
+            for d in range(horizon)]
 
     assumptions = [
         "town cadence: shops every %d turns, centre every %d turns "
@@ -515,17 +519,19 @@ def hourly_prices(fc: MarketForecast, days: int | None = None,
     (engine turn order: units, market, town). Row 0 is the observation's
     own snapshot; a mid-day forecast starts with its stub and the remaining
     hours of that day follow, so the table's length stays days*24.
+
+    One pass: the rows are the walk's own indices (`_hourly_rows`), priced for
+    every good at once by `price_grid` — the engine's formula, held to
+    `market_price` cell by cell by `tests/test_market_analyzer.py::test_price_parity`
+    on whole AND fractional inventories.
     """
     horizon = fc.horizon_days if days is None else max(1, int(days))
     wanted = (PRODUCTS if items is None else tuple(items))
     ix = [_PROD_INDEX[g] for g in wanted]
     walk = _walk_rows(fc)
     rows = _hourly_rows(fc, horizon)
-    out = np.zeros((horizon * TURNS_PER_DAY, len(wanted)), dtype=np.int64)
-    for i, r in enumerate(rows):
-        inv = walk[r]
-        out[i] = [K.market_price(PRODUCTS[i2], float(inv[i2])) for i2 in ix]
-    return out
+    quotes = price_grid(walk[np.asarray(rows)])
+    return np.asarray(quotes[:, ix], dtype=np.int64)
 
 
 def price_paths(fc: MarketForecast, days: int | None = None,

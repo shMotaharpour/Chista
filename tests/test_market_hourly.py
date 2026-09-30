@@ -43,27 +43,46 @@ def test_hourly_rows_carry_every_turn_of_the_horizon() -> None:
     assert H.shape == (3 * 24, len(M_PRODUCTS)), H.shape
 
 
-def test_hourly_quotes_are_the_engine_at_the_walked_inventory() -> None:
-    """Every hourly quote equals K.market_price at the walk's inventory row.
+def test_every_hourly_quote_is_the_engine_at_its_own_row() -> None:
+    """Row (d, h) of the hourly table is `market_price` at that row's inventory.
 
-    The walk itself is internal; the identity checked here is the one the
-    consumer needs: the hourly quote at (day d, hour h) must sit between the
-    day-start quotes that bracket it, moving with the cadence the engine
-    runs — and patching the engine's price function must move it.
+    The provenance claim, checked at the VALUE rather than at the call: the table
+    is priced by `world/prices.price_grid` (the engine's formula, held to
+    `market_price` cell by cell — fractional inventories included — by
+    `tests/test_market_analyzer.py::test_price_parity`), so every cell must sit
+    exactly where the engine puts it at the inventory the walk holds there. This
+    replaces a guard that patched `K.market_price` and required the rows to move:
+    that proved the engine was CALLED, which is a weaker claim than the numbers
+    being equal, and it stopped being checkable once the hourly surface was priced
+    as one whole-array pass.
+
+    The second arm prices a walk with a FRACTIONAL residual, because that is the
+    input production feeds it — a guard whose fixture is all whole units would
+    never reach the rounding the engine applies.
     """
-    sim, PASS = _sim(5)
-    obs = sim.observations()[0]
-    fc = forecast(obs, days=2)
-    H = hourly_prices(fc)
+    from agent.belief.market import _hourly_rows
 
-    real = K.market_price
-    try:
-        K.market_price = lambda item, inventory, params=None: 777
-        fc2 = forecast(obs, days=2)
-        H2 = hourly_prices(fc2)
-    finally:
-        K.market_price = real
-    assert (H2 == 777).all(), "a patched engine price must move the hourly rows"
+    arms = (("whole", {}, 2), ("fractional residual", {"WHEAT": 12.0, "MILK": 7.5}, 2))
+    for label, residual, days in arms:
+        sim, PASS = _sim(5)
+        obs = sim.observations()[0]
+        fc = forecast(obs, days=days, residual=residual)
+        H = hourly_prices(fc)
+        walk = np.asarray(fc.walk_inventory, dtype=np.float64)
+        rows = np.asarray(_hourly_rows(fc, days))
+        for i, r in enumerate(rows):
+            for gi, item in enumerate(M_PRODUCTS):
+                theirs = K.market_price(item, float(walk[r][gi]))
+                assert int(H[i, gi]) == theirs, (
+                    f"{label}: row {i} hour {i % 24} ({item}): {int(H[i, gi])} "
+                    f"!= the engine's {theirs} at inventory {float(walk[r][gi])}")
+    # the fractional arm must actually carry fractions, or it proves nothing
+    sim, PASS = _sim(5)
+    fc = forecast(sim.observations()[0], days=2, residual={"WHEAT": 12.0})
+    walk = np.asarray(fc.walk_inventory, dtype=np.float64)
+    assert np.any(walk != np.round(walk)), (
+        "the fractional arm's walk is integral: the rounding path this guard "
+        "claims to cover was never reached")
 
 
 def test_hourly_prices_move_with_the_shop_cadence() -> None:
