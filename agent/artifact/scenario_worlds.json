@@ -1,0 +1,20 @@
+{
+  "artifact": "scenario_worlds.npz",
+  "built_by": "offline_lab/build/scenario_worlds.py",
+  "source": "kaggriculture-episodes-analyses: per-game-day tables; the rival axis comes from offline_lab/build/realised_supply.py, which solves the city inventory identity (inv_g(t) - inv_g(t-1) = our_sells + their_sells - drain_g) in DuckDB",
+  "source_partitions": [
+    "2026-09-19",
+    "2026-09-25"
+  ],
+  "arrays": {
+    "rival_supply": "float32 (W, 31, 9) units their harvesting puts on the market, by day",
+    "demand": "float32 (W, 31, 9) the town's appetite, by day",
+    "weights": "float32 (W,) share of the archive each world stands for, sums to 1.0",
+    "crop": "<U10 (9,) the good order every array uses",
+    "phase0/phase1": "int8 (W,) the day window the world was cut from (0-9 / 10-14 / 15+)",
+    "support": "int32 (W,) game-days behind the world: its evidence"
+  },
+  "prices": "deliberately NOT stored: a world becomes prices only through the agent's own _priced_paths, so there is one definition of a price path, not two",
+  "measured": "realised/logged supply runs 25% (WHEAT, the shed caps hardest) to 83% (STRAWBERRY) over 829 games; orders are not sales",
+  "sha256_16": "7e422c81819ec565"
+}
