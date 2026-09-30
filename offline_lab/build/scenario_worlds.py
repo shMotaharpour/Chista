@@ -7,7 +7,7 @@ Sources (produced by offline_lab/scenario_axes/extract.py, written outside the r
   harvest_v2.parquet   every cut of a positive counter, with its delay past the gate
 
 Writes agent/artifact/scenario_worlds.npz (AGENTS.md: the agent loads what lives inside agent/):
-  rival_supply (W, days, 9) float32  their harvesting, put on the market by day
+  rival_supply (W, 30, 9) float32  their harvesting, put on the market by day
   demand       (W, days, 9) float32  the town's appetite, by day
   weights      (W,)         float32  how much of the archive each world stands for
   crop         (9,)         <U10    the good order every array uses
@@ -27,8 +27,8 @@ import numpy as np
 import pandas as pd
 
 GOODS = ("WHEAT", "CARROT", "TOMATO", "STRAWBERRY", "MELON", "EGG", "MILK", "WOOL", "FERTILIZER")
-PHASES = ((0, 9), (10, 14), (15, 30))     # the three regimes the archive shows
-DAYS = 31
+DAYS = 30   # measured: every game is 720 steps; 720 // 24 = 30 days, days 0..29
+PHASES = ((0, 9), (10, 14), (15, DAYS - 1))   # the three regimes the archive shows
 SRC = sys.argv[1] if len(sys.argv) > 1 else "/tmp/scenario_axes"
 OUT = sys.argv[2] if len(sys.argv) > 2 else "agent/artifact/scenario_worlds.npz"
 W = int(sys.argv[3]) if len(sys.argv) > 3 else 96
@@ -36,11 +36,17 @@ SEED = 20260930
 
 
 def tensor(frame: pd.DataFrame, value_cols) -> tuple[np.ndarray, list]:
-    """(games, DAYS, 9) — one vector per game-day; the archive's silence stays zero."""
+    """(games, source days, 9) -- one vector per game-day; the archive's silence stays zero.
+
+    The day axis is ONE shared span (module level), computed across every source: sizing each
+    array from its own frame is how supply ended up 31 rows wide and demand 30, and a reader that
+    trusts the shapes then refuses the pair. A row nobody reads is harmless; disagreeing rows are
+    not.
+    """
     games = pd.unique(frame["episode_id"]).tolist()
     gi = {g: i for i, g in enumerate(games)}
     cols = {g: j for j, g in enumerate(GOODS)}
-    T = np.zeros((len(games), DAYS, 9), np.float32)
+    T = np.zeros((len(games), DAY_SPAN, 9), np.float32)
     for g in value_cols:
         if g not in frame.columns:
             continue
@@ -61,7 +67,9 @@ def read(pattern: str) -> pd.DataFrame:
     return df
 
 
-r = read(f"{SRC}/rival_realised.parquet")   # REALISED flow (inventory identity), not the logged orders
+r = read(f"{SRC}/rival_realised.parquet")
+_D0 = read(f"{SRC}/demand_2026-09-19.parquet")   # REALISED flow (inventory identity), not the logged orders
+DAY_SPAN = int(max(r["day"].max(), _D0["day"].max())) + 1   # one axis for every array
 R, games = tensor(r, GOODS)
 d = read(f"{SRC}/demand_*.parquet")
 D, dgames = tensor(d, GOODS)
@@ -89,6 +97,11 @@ weights = np.array([phase_share[PHASES.index((a, b))] / max(1, sum(1 for _, x, y
 assert abs(weights.sum() - 1.0) < 1e-5, f"weights must sum to 1, got {weights.sum()}"
 assert (support > 0).all(), "every world must name the evidence behind it"
 
+for name, arr in (("rival_supply", rival_supply), ("demand", demand)):
+    # the source may carry a row past the season; nothing reads it, so its size is not a problem.
+    # What must hold is that the season the model uses is inside the array.
+    assert arr.shape[1] >= DAYS, f"{name} spans {arr.shape[1]} rows, the season is {DAYS}"
+    assert arr.shape[2] == len(GOODS), f"{name} has {arr.shape[2]} goods, the market has {len(GOODS)}"
 np.savez_compressed(OUT, rival_supply=rival_supply, demand=demand, weights=weights,
                     crop=np.array(GOODS), phase0=np.array([a for _, a, _ in idx], np.int8),
                     phase1=np.array([b for _, _, b in idx], np.int8), support=support)
