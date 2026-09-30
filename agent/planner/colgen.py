@@ -332,6 +332,7 @@ class MasterLP:
               market: tuple[int, ...] = (),
               sell_cap: np.ndarray | None = None,
               depth: tuple[np.ndarray, np.ndarray] | None = None,
+              depth_high: tuple[np.ndarray, np.ndarray] | None = None,
               entry: bool = False,
               integral: bool = False,
               land: int | None = None,
@@ -495,6 +496,15 @@ class MasterLP:
         # `Config.sell_deep_factor` of it, which is the model that shipped.
         block_price = np.zeros((n_goods, days, tiers), dtype=np.float64)
         block_units = np.full((n_goods, days, tiers), np.inf, dtype=np.float64)
+        # The numbers one scenario up: the same blocks priced on the band. A second
+        # READING of the same curve, never a second curve -- `tiers` must match, and
+        # it does: both depths came from one `sell_blocks` call with one block count.
+        block_price_high = None
+        if items and n_goods and depth_high is not None:
+            block_price_high = np.zeros((n_goods, days, tiers), dtype=np.float64)
+            for b in range(tiers):
+                block_price_high[:, :, b] = np.asarray(
+                    depth_high[1], dtype=np.float64)[:, :days, b]
         if items and n_goods:
             px = np.asarray(prices, dtype=np.float64)
             for b in range(tiers):
@@ -1254,6 +1264,7 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
              market: tuple[int, ...] = (),
              sell_cap: np.ndarray | None = None,
              depth: tuple[np.ndarray, np.ndarray] | None = None,
+             depth_high: tuple[np.ndarray, np.ndarray] | None = None,
              entry: bool = False,
              integral: bool = False,
              cfg: "Config | None" = None,
@@ -1325,7 +1336,7 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
             shed_stock=None if shed is None else shed[0],
             shed_capacity=0.0 if shed is None else float(shed[1]),
             prices=prices, prices_high=prices_high, market=market, sell_cap=sell_cap,
-            depth=depth, entry=entry, cfg=cfg,
+            depth=depth, depth_high=depth_high, entry=entry, cfg=cfg,
             # The land rows belong to BOTH solves: the decision buys
             # quadrants and the LP beside it publishes what a slot is worth.
             land=int(getattr(cfg, "land_quadrants", 0)) or None,
@@ -1400,7 +1411,7 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
             shed_stock=None if shed is None else shed[0],
             shed_capacity=0.0 if shed is None else float(shed[1]),
             prices=prices, market=market, sell_cap=sell_cap,
-            depth=depth, entry=entry, cfg=cfg,
+            depth=depth, depth_high=depth_high, entry=entry, cfg=cfg,
             # The land rows belong to BOTH solves: the decision buys quadrants
             # and the LP beside it prices a slot. A matrix without them can only
             # price a farm that cannot expand, and then the rent is never read.
