@@ -112,6 +112,21 @@ class Config:
     #: value prices the curve from a fuller market, which is the conservative
     #: direction. The owner's ruling: risk must be priced as a price.
     sell_risk_z: float = 0.0
+
+    #: The cash tail's weight in the master's objective (#111). The objective
+    #: becomes `(1 - kappa) * mean + kappa * low`, which is a convex combination
+    #: of the mean profit and its CVaR: at three equal-weight scenarios the mean
+    #: of the worst third IS the low band, so kappa = 0 is today's behaviour and
+    #: kappa = 1 is the worst case. Priced in the objective, never as a row --
+    #: the owner's ruling, and the reason the term is a weight rather than a
+    #: constraint.
+    risk_kappa: float = 0.0
+
+    #: The tail CVaR averages over: `alpha` of the scenarios, so 0.10 means the
+    #: worst tenth of the profit distribution. Rockafellar-Uryasev, so the LP
+    #: needs `t` and one `u_s` per scenario and NO binary variable -- which is
+    #: the whole reason CVaR and not VaR is the one that fits here.
+    risk_alpha: float = 0.10
     #: How many rounds of pricing carry OUR OWN planned supply. Measured with 1
     #: (seed 33, 10 days, vs v3-agent): the day-value/realised-coins correlation
     #: went -0.428 -> +0.045, and the season 93,315 -> 101,925 over three seeds
