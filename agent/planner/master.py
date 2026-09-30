@@ -616,7 +616,16 @@ def _product_price_path(obs, days: int, p_flat: np.ndarray,
         # the master is the consumer, and until it lands this is per-turn work
         # for no decision. It is here so the wire can be inspected in one
         # place, and it cannot move a number while nothing reads it.
-        paths_high = price_paths(fc, days=days, high=True)
+        # The band is OPT-IN and must degrade. A forecast that cannot answer the
+        # pessimistic question leaves NO band rather than taking the whole price
+        # path down with it: without this guard a short forecast raised a
+        # TypeError inside the walk and the manager fell back to the flat
+        # stand-in -- one optional band, a whole day at the flat quote. (Measured:
+        # the guard does not move the day-0 result, 2083/6 tiles either way.)
+        try:
+            paths_high = price_paths(fc, days=days, high=True)
+        except Exception:                       # noqa: BLE001 - no band is a band
+            paths_high = None
         # The path above is the forecast's OWN walk: the town drains and nobody
         # sells. Our plan does sell, and a good we pour in is worth what the
         # ladder pays for it AFTER our own supply -- `belief.depth.inventory_at`
@@ -723,7 +732,8 @@ def _product_price_path(obs, days: int, p_flat: np.ndarray,
             return paths
 
         paths = _priced_paths(paths)
-        paths_high = _priced_paths(paths_high)
+        if paths_high is not None:
+            paths_high = _priced_paths(paths_high)
     except Exception as exc:                     # noqa: BLE001 - degrade
         return p_flat, f"flat stand-in (forecast failed: {type(exc).__name__})"
     def _to_resource(paths: dict, base: np.ndarray) -> np.ndarray:
