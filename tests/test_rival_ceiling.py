@@ -46,6 +46,11 @@ def test_the_band_is_opt_in_and_otherwise_the_same_number():
     # ask the same builder the plan asks
     fc = AGENT.manager._forecast(obs, getattr(AGENT.manager, "terms", None))
     assert fc is not None and hasattr(fc, "price_of"), "no forecast to read"
+    # The mutation that makes this fail, and why the obvious one does not: with
+    # no ceiling `forecast` binds BOTH walks to the same array, so forcing the
+    # band branch on (`if not high:` alone) is an EQUIVALENT mutant -- it runs
+    # and returns the same number. Poison the band's own read instead
+    # (`float(row[gi]) + 1000.0` in price_of) and this goes red.
     plain = price_paths(fc, days=3)
     band = price_paths(fc, days=3, high=True)
     assert plain == band, "the high band moved a price with no ceiling given"
