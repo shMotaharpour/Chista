@@ -286,6 +286,7 @@ class Manager:
             return forecast(obs, days=horizon, config=terms,
                             our_sells=self.own_sells or None,
                             rival_supply=self._rival_supply(obs, horizon),
+                            rival_ceiling=self._rival_ceiling(obs, horizon),
                             rival_sells=self._rival_hours(obs, horizon) or None)
         except Exception:                      # noqa: BLE001 - belief is optional
             return None
@@ -362,6 +363,35 @@ class Manager:
             from agent.belief.rival_calendar import supply_curve
             return supply_curve(obs, tuple(PRODUCTS), horizon)
         except Exception:                      # noqa: BLE001 - the flat path stands
+            return None
+
+    def _rival_ceiling(self, obs, horizon):
+        """The other end of the same calendar: what they COULD put on the market.
+
+        `_rival_supply` reads their board as a guarantee (an event on the first
+        day the good certainly exists, at the minimum it certainly carries), and
+        a plan that takes that floor for the whole truth prices its own sales
+        against a rival who never carries more. The ceiling is the same walk
+        with `expected=True` (the fertilised hints their own board implies) plus
+        what the tracker already holds for TODAY -- their shed-level stock and
+        the harvest they have not dropped, both computed every turn and, until
+        now, read by nobody (`MarketTracker.rival_ceiling`).
+
+        The current stock lands on row 0 only: it is a quantity they hold now,
+        not a schedule of future ones, and spreading it forward would invent
+        production their board does not show. None on any failure, which is the
+        floor-only path the plan has always taken.
+        """
+        try:
+            from agent.belief.market import PRODUCTS
+            from agent.belief.rival_calendar import supply_curve
+            high = supply_curve(obs, tuple(PRODUCTS), horizon, expected=True)
+            tracker = getattr(self, "tracker", None)
+            if tracker is not None and high.size:
+                high[0] = high[0] + np.asarray(tracker.rival_ceiling(),
+                                               dtype=np.float64)
+            return high
+        except Exception:                      # noqa: BLE001 - the floor stands
             return None
 
     def _project_own_sells(self) -> None:
