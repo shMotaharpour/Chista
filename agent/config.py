@@ -231,7 +231,7 @@ class Config:
     #: more of it -- is still the open question (#79), and the value must be
     #: chosen again on a fresh measurement, or by the model itself once the
     #: hands are bought inside the MILP instead of scanned for.
-    max_hands: int = 1
+    max_hands: int = 16
     #: Whether the MODEL buys the day's labour -- the `delta` columns of the
     #: labour row, priced by `world.rules.hire_cost` -- instead of the day
     #: layer scanning hand counts and paying the bill outside the matrix.
