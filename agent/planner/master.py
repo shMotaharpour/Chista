@@ -618,7 +618,13 @@ def _product_price_path(obs, days: int, p_flat: np.ndarray,
         # The gate alone opens the block: `supply` may be absent, in which case the
         # declared default lot (`Config.sell_lot_default`) is what every good is
         # priced as. Requiring a supply dict here made the default lot DEAD CODE.
-        if int(getattr(cfg, "price_supply_rounds", 0)) > 0:
+        def _ladder_priced(paths):
+            """`paths` re-priced through the ladder: ONE definition.
+
+            Both bands must see the same transform. The master prices a sale
+            on the ladder, so a band priced on the raw quote would be a
+            different model rather than the same one read from the other end.
+            """
             supply = supply or {}
             from agent.belief.depth import depth_coins
             first = int(obs.get("day", 0)) if isinstance(obs, dict) else 0
@@ -655,7 +661,10 @@ def _product_price_path(obs, days: int, p_flat: np.ndarray,
                     / max(1.0, float(round(float(units[d])))) if units[d] > 0
                     else float(path[d])
                     for d in range(len(path)))
-            paths = priced
+            return paths
+
+        if int(getattr(cfg, "price_supply_rounds", 0)) > 0:
+            paths = _ladder_priced(paths)
         # The risk floor (Config.price_risk_z): the far days are priced on the walk
         # the town's demand is EXPECTED to make, and that expectation carries the
         # shop unlocks' own spread -- which is as large as the demand itself, so a
