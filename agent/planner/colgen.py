@@ -40,6 +40,7 @@ from dataclasses import dataclass, field, replace
 
 import numpy as np
 
+from agent.planner.risk import scenario_cost
 from agent.config import Config
 from agent.world.rules import LAND_PRICES
 from agent.world.model import RESOURCE_ID, SHED_ITEMS
@@ -471,7 +472,14 @@ class MasterLP:
         # exist leaves them short of it. Both were live defects.
         hands_width = MAX_HANDS * days if buy_hands else 0
         hands0 = land0 + land_width
-        n_cols = hands0 + hands_width
+        # The R-U block (Rockafellar-Uryasev): `t` and one `u_s` per scenario.
+        # Zero kappa means zero columns -- off is absent, not idle -- and then
+        # every line below is a no-op, which is what keeps kappa=0 bit-identical.
+        risk_kappa = float(getattr(cfg, "risk_kappa", 0.0))
+        risk_alpha = max(1e-6, float(getattr(cfg, "risk_alpha", 0.10)))
+        n_scen = 2
+        risk_cols = (1 + n_scen) if (risk_kappa > 0.0 and items) else 0
+        n_cols = hands0 + hands_width + risk_cols
 
         def col_now(ii: int, d: int) -> int:
             return now0 + ii * days + d
@@ -548,6 +556,10 @@ class MasterLP:
                                            dtype=np.float64)[:days].sum())
         lower = np.zeros(n_cols)
         upper = np.full(n_cols, np.inf)
+        if risk_cols:
+            t_ix = n_cols - risk_cols
+            lower[t_ix] = -np.inf           # t is free: it is the VaR quantile
+            upper[t_ix] = np.inf
         if entry:
             # No day after the season: what waits on the last day is destroyed by
             # the night flush, so the LP may not leave anything there.
@@ -772,8 +784,31 @@ class MasterLP:
         # purpose: every offset below is positional, so a row inserted in the
         # middle silently re-labels τ as ρ and every price downstream is read off
         # the wrong constraint.
+        # The scenarios differ in ONE place: what each sell block earns. The two
+        # objective vectors are the same model read from two ends, which is why
+        # `scenario_cost` needs the caller's own col_sell and nothing else.
+        risk_rows = np.zeros((0, n_cols))
+        if risk_cols:
+            sell_ix = np.array([[[col_sell(gi, d, b) for b in range(tiers)]
+                                 for d in range(days)] for gi in range(n_goods)],
+                               dtype=np.int64)
+            scen_cost = (scenario_cost(cost, sell_ix, block_price, block_price_high)
+                         if block_price_high is not None else np.vstack([cost, cost]))
+            t_ix = n_cols - risk_cols
+            cost[t_ix] = -risk_kappa
+            cost[t_ix + 1:] = -risk_kappa / (risk_alpha * n_scen)
+            # `u_s + t + profit_s >= 0` with `profit_s = -scen_cost_s . x`: t is
+            # FREE and each u_s is non-negative, and the row sits AFTER A_e so
+            # `mu` (read as marg[n_ineq:mu_end]) never swallows it.
+            risk_rows = np.zeros((n_scen, n_cols))
+            risk_rows[:, :t_ix] = -scen_cost[:, :t_ix]
+            risk_rows[:, t_ix] = 1.0
+            for s_i in range(n_scen):
+                risk_rows[s_i, t_ix + 1 + s_i] = 1.0
+
         rows = np.vstack([A_q, A_c, bal, cap, appetite_row, split, L_rows,
-                          A_e])
+                          A_e, risk_rows]) if risk_cols else np.vstack(
+            [A_q, A_c, bal, cap, appetite_row, split, L_rows, A_e])
         # The land rows sit BETWEEN the split rows and the convexity rows, and
         # `mu` is read as `marg[n_ineq:]`, so the count has to grow with them: a
         # row appended after the convexity block would be read as a class dual.
@@ -787,6 +822,10 @@ class MasterLP:
         lp.col_cost_ = cost
         lp.col_lower_ = lower
         lp.col_upper_ = upper
+        if risk_cols:
+            assert rows.shape[0] == n_ineq + A_e.shape[0] + n_scen, (
+                "the row blocks and the row BOUNDS are two hand-kept lists: a "
+                "row appended to one and not the other takes the wrong bound")
         lp.row_lower_ = np.concatenate([
             np.full(n_coupling * days + days, -np.inf),   # labour, cash
             np.full(items * days, 0.0),                   # balance: equality
@@ -794,7 +833,8 @@ class MasterLP:
             np.full(n_goods, -np.inf),                    # town appetite: <=
             np.zeros(items * days if entry else 0),        # split: equality
             np.full(L_rows.shape[0], -np.inf),            # land rows
-            target])
+            target,                                       # A_e, the class rows
+            np.zeros(n_scen) if risk_cols else np.zeros(0)])
         lp.row_upper_ = np.concatenate([
             b_q, b_c,
             np.zeros(items * days),
@@ -804,7 +844,8 @@ class MasterLP:
             np.concatenate([np.ones(nq),
                             np.zeros(max(0, nq - 1)),
                             np.full(days, 25.0)]) if nq else np.zeros(0),
-            target])
+            target,                                       # A_e, the class rows
+            np.full(n_scen, np.inf) if risk_cols else np.zeros(0)])
         lp.sense_ = _highspy._core.ObjSense.kMinimize
         matrix = _highspy._core.HighsSparseMatrix()
         matrix.format_ = _highspy._core.MatrixFormat.kColwise
@@ -923,7 +964,11 @@ class MasterLP:
             # row is a number, not a day vector.
             land_dual = (_lnd[:nq] if nq else None)
             rent = (_lnd[land_rows - days:] if (nq and days) else None)
-        mu = np.asarray(marg[n_ineq:], dtype=np.float64)
+        # The R-U rows sit after A_e, so the class duals end where A_e ends:
+        # without the explicit end, `mu` would read a scenario dual as a class
+        # price -- the positional-offset failure the layout's own comment warns of.
+        mu_end = n_ineq + A_e.shape[0] + (n_scen if risk_cols else 0)
+        mu = np.asarray(marg[n_ineq:mu_end], dtype=np.float64)
         values = np.asarray(solution.col_value, dtype=np.float64)
         # What the master decided to SELL is the SUM of the tiers: they are two
         # prices for one sale, not two sales, and a caller that read only the
