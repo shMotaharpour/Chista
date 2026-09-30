@@ -626,6 +626,28 @@ def _product_price_path(obs, days: int, p_flat: np.ndarray,
             paths_high = price_paths(fc, days=days, high=True)
         except Exception:                       # noqa: BLE001 - no band is a band
             paths_high = None
+        from agent.belief import worlds as _belief_worlds
+        # The planning worlds: several futures, each priced through the SAME walk above.
+        # Read here and nowhere else (`belief/worlds` is the one reader of that artifact), and
+        # built with the same tolerance the band gets: a world that cannot be priced is DROPPED,
+        # it does not take the day down with it. Nothing consumes the list yet, so no number can
+        # move -- the risk block is the consumer, and it is off until kappa is positive.
+        paths_world: list[tuple[float, dict]] | None = None
+        try:
+            _worlds = _belief_worlds.load()
+        except Exception:                       # noqa: BLE001 - no artifact is no worlds
+            _worlds = ()
+        if _worlds and float(getattr(cfg, "risk_kappa", 0.0)) > 0.0:
+            built: list[tuple[float, dict]] = []
+            for _w in _worlds:
+                try:
+                    _fc = _forecast(obs, days=days, rival_supply=_w.rival_supply[:days])
+                    if int(getattr(_fc, "days", days)) < days:
+                        continue            # a world that does not cover the horizon is not a world
+                    built.append((_w.weight, _priced_paths(price_paths(_fc, days=days))))
+                except Exception:               # noqa: BLE001 - one world, not the day
+                    continue
+            paths_world = built or None
         # The path above is the forecast's OWN walk: the town drains and nobody
         # sells. Our plan does sell, and a good we pour in is worth what the
         # ladder pays for it AFTER our own supply -- `belief.depth.inventory_at`
