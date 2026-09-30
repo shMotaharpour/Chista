@@ -795,8 +795,14 @@ class MasterLP:
             scen_cost = (scenario_cost(cost, sell_ix, block_price, block_price_high)
                          if block_price_high is not None else np.vstack([cost, cost]))
             t_ix = n_cols - risk_cols
-            cost[t_ix] = -risk_kappa
-            cost[t_ix + 1:] = -risk_kappa / (risk_alpha * n_scen)
+            # POSITIVE, because this LP MINIMISES: the R-U value `t + Σu/(αS)`
+            # equals MINUS the CVaR of the profit, so adding it as a cost is
+            # adding `+κ·(−CVaR(profit))` -- a penalty on the worst scenario. With
+            # a negative sign `t` is free to fall and the LP is UNBOUNDED, which
+            # is exactly what the first measurement printed: "master LP failed:
+            # Unbounded".
+            cost[t_ix] = risk_kappa
+            cost[t_ix + 1:] = risk_kappa / (risk_alpha * n_scen)
             # `u_s + t + profit_s >= 0` with `profit_s = -scen_cost_s . x`: t is
             # FREE and each u_s is non-negative, and the row sits AFTER A_e so
             # `mu` (read as marg[n_ineq:mu_end]) never swallows it.
@@ -967,7 +973,11 @@ class MasterLP:
         # The R-U rows sit after A_e, so the class duals end where A_e ends:
         # without the explicit end, `mu` would read a scenario dual as a class
         # price -- the positional-offset failure the layout's own comment warns of.
-        mu_end = n_ineq + A_e.shape[0] + (n_scen if risk_cols else 0)
+        # `mu` is the CLASS duals, which end where A_e ends. The risk rows sit
+        # AFTER A_e, so they are outside this slice by construction -- including
+        # them here made mu 11 long instead of 9, and the first consumer of it
+        # died with "operands could not be broadcast together (9,) (11,)".
+        mu_end = n_ineq + A_e.shape[0]
         mu = np.asarray(marg[n_ineq:mu_end], dtype=np.float64)
         values = np.asarray(solution.col_value, dtype=np.float64)
         # What the master decided to SELL is the SUM of the tiers: they are two
