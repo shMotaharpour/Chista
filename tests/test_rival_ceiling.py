@@ -31,7 +31,7 @@ def test_the_band_is_opt_in_and_otherwise_the_same_number():
     reads. The guard can fail: point the high walk at anything else and the two
     numbers part.
     """
-    from agent.belief.market import price_paths
+    from agent.belief.market import forecast, price_paths
     from agent.main import AGENT
     from agent.config import Config as _C
     from dataclasses import replace as _replace
@@ -42,9 +42,9 @@ def test_the_band_is_opt_in_and_otherwise_the_same_number():
     sim = FastSim({"episodeSteps": 24 + 6, "seed": 33, "farmHandCostMult": 1})
     obs = sim.observations(copy_state=False)[0]
     AGENT(obs, sim.configuration)
-    # the manager builds the forecast through `_forecast` and keeps no copy, so
-    # ask the same builder the plan asks
-    fc = AGENT.manager._forecast(obs, getattr(AGENT.manager, "terms", None))
+    # A forecast with NO ceiling asked for, built directly: the manager now hands
+    # `rival_ceiling` in, so its own forecast is the wrong object for this claim.
+    fc = forecast(obs, days=3)
     assert fc is not None and hasattr(fc, "price_of"), "no forecast to read"
     # The mutation that makes this fail, and why the obvious one does not: with
     # no ceiling `forecast` binds BOTH walks to the same array, so forcing the
@@ -54,3 +54,13 @@ def test_the_band_is_opt_in_and_otherwise_the_same_number():
     plain = price_paths(fc, days=3)
     band = price_paths(fc, days=3, high=True)
     assert plain == band, "the high band moved a price with no ceiling given"
+
+    # And on the forecast the PLAN actually reads -- which now carries the rival's
+    # ceiling -- the band may only ever price LOWER, never higher.
+    fc_plan = AGENT.manager._forecast(obs, getattr(AGENT.manager, "terms", None))
+    if fc_plan is not None and hasattr(fc_plan, "price_of"):
+        p_plain = price_paths(fc_plan, days=3)
+        p_band = price_paths(fc_plan, days=3, high=True)
+        for item in p_plain:
+            assert all(b <= a for a, b in zip(p_plain[item], p_band[item])), (
+                f"the band priced {item} above the mean with a ceiling given")
