@@ -351,7 +351,8 @@ def cumulative_coins(fc: MarketForecast, good: str, day: int, cap: int,
 
 def equal_revenue_edges(fc: MarketForecast, good: str, day: int, cap: int,
                         blocks: int, *, hour: int | None = None,
-                        pad: float = 0.0) -> tuple[int, ...]:
+                        pad: float = 0.0,
+                     high: bool = False) -> tuple[int, ...]:
     """Block edges that split the curve's COINS evenly, not its units.
 
     A concave ladder's error under a block model is the curvature inside a block,
@@ -367,7 +368,8 @@ def equal_revenue_edges(fc: MarketForecast, good: str, day: int, cap: int,
     """
     n = max(1, int(cap))
     k = max(1, int(blocks))
-    cum = cumulative_coins(fc, good, day, n, hour=hour, pad=pad)
+    cum = cumulative_coins(fc, good, day, n, hour=hour, pad=pad,
+                         high=high)
     total = int(cum[-1])
     if total <= 0:
         return tuple(range(n * b // k for b in range(k)) + [n])
@@ -384,8 +386,8 @@ def equal_revenue_edges(fc: MarketForecast, good: str, day: int, cap: int,
 def sell_blocks(fc: MarketForecast, goods, first_day: int, days: int,
                 cap: int, blocks: int = 5, *, hour: int | None = None,
                 hours: np.ndarray | None = None,
-                pad: np.ndarray | None = None
-                ) -> tuple[np.ndarray, np.ndarray]:
+                pad: np.ndarray | None = None,
+                high: bool = False) -> tuple[np.ndarray, np.ndarray]:
     """The depth curve of every good and day as LP blocks.
 
     Returns `(units, prices)`, both `(len(goods), days, blocks)`: `units[g,d,b]`
@@ -411,6 +413,7 @@ def sell_blocks(fc: MarketForecast, goods, first_day: int, days: int,
     prices = np.zeros((n_goods, days, n_blocks), dtype=np.float64)
     for gi, good in enumerate(goods):
         inv = _cell_inventories(fc, good, first_day, days, hour=hour,
+                                high=high,
                                 hours=hours, gi=gi)
         g_pad = 0.0 if pad is None else float(np.asarray(pad)[gi])
         for d in range(days):
@@ -423,7 +426,8 @@ def sell_blocks(fc: MarketForecast, goods, first_day: int, days: int,
             # own inventory, then the quantiles of its coins -- the per-block
             # depth_coins calls this replaces were the loops that made the older
             # shape cost more than the values.
-            curve = cumulative_coins(fc, good, day, int(cap), hour=h, pad=g_pad)
+            curve = cumulative_coins(fc, good, day, int(cap), hour=h,
+                                     pad=g_pad, high=high)
             total = float(curve[-1])
             if total > 0.0:
                 targets = np.arange(1, n_blocks) * (total / n_blocks)
