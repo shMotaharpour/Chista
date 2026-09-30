@@ -1324,7 +1324,7 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
         kwargs = dict(
             shed_stock=None if shed is None else shed[0],
             shed_capacity=0.0 if shed is None else float(shed[1]),
-            prices=prices, market=market, sell_cap=sell_cap,
+            prices=prices, prices_high=prices_high, market=market, sell_cap=sell_cap,
             depth=depth, entry=entry, cfg=cfg,
             # The land rows belong to BOTH solves: the decision buys
             # quadrants and the LP beside it publishes what a slot is worth.
