@@ -28,6 +28,7 @@ import time
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from agent.artifact import artifact_path
 from agent.tile_dp.chains import chain_ops
@@ -492,6 +493,7 @@ def test_batched_recovery_matches_each_distance_tile_for_tile() -> None:
         assert board.days == reference.days, f"h={h}: days"
 
 
+@pytest.mark.epic
 def test_budget_sweep_and_recovery() -> None:
     """Issue #11 §7: sweep ≤ 15 ms, 100 tile recoveries ≤ 5 ms.
 
