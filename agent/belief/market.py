@@ -445,7 +445,7 @@ def _walk_rows(fc: MarketForecast) -> np.ndarray:
     return np.asarray(fc.walk_inventory, dtype=np.float64)
 
 
-def _hourly_rows(fc: MarketForecast, horizon: int) -> list[int]:
+def _hourly_rows(fc: MarketForecast, horizon: int) -> np.ndarray:
     """The walk row each (day, hour) of the hourly tables reads.
 
     ONE definition, because `hourly_prices` and `hourly_inventory` must sample
@@ -460,18 +460,23 @@ def _hourly_rows(fc: MarketForecast, horizon: int) -> list[int]:
                     the turns up to it = row (h - hour) — hour `hour`'s own
                     quote is the snapshot (its market has not run yet).
     Later days start at walk row (24d) + h.
+
+    The table is built as ONE arithmetic expression rather than a per-row walk
+    (the depth surface calls this per (good, day, hour) cell and the loops cost
+    far more than the values): day 0 is `max(0, h - hour_now)`, a later day is
+    `(first_day + d) * 24 - step + h`, both clamped to the walk's last row.
+    Both are the same number the per-row form writes; `_walk_row_of` (depth)
+    resolves the identical expression for a single cell.
     """
-    walk = _walk_rows(fc)
-    step = int(fc.walk_step)
-    hour_now = step % TURNS_PER_DAY
-    rows = [0] * TURNS_PER_DAY                       # day 0, past hours
-    for h in range(hour_now, TURNS_PER_DAY):
-        rows[h] = h - hour_now                       # 0 = the snapshot itself
-    for d in range(1, horizon):
-        base = (fc.first_day + d) * TURNS_PER_DAY - step
-        rows.extend([base + h for h in range(TURNS_PER_DAY)])
-    rows = rows[:horizon * TURNS_PER_DAY]
-    return [min(r, walk.shape[0] - 1) for r in rows]
+    hours = np.arange(TURNS_PER_DAY)
+    hour_now = int(fc.walk_step) % TURNS_PER_DAY
+    parts = [np.maximum(hours - hour_now, 0)]
+    if horizon > 1:
+        base = ((int(fc.first_day) + np.arange(1, horizon)) * TURNS_PER_DAY
+                - int(fc.walk_step))
+        parts.append((base[:, None] + hours[None, :]).ravel())
+    rows = np.concatenate(parts)[:horizon * TURNS_PER_DAY]
+    return np.minimum(rows, len(fc.walk_inventory) - 1)
 
 
 def hourly_inventory(fc: MarketForecast, days: int | None = None,
@@ -488,8 +493,10 @@ def hourly_inventory(fc: MarketForecast, days: int | None = None,
     ix = [_PROD_INDEX[g] for g in wanted]
     walk = _walk_rows(fc)
     rows = _hourly_rows(fc, horizon)
-    return np.asarray([[int(walk[r][i2]) for i2 in ix] for r in rows],
-                      dtype=np.int64)
+    # one fancy index over the walk: the (T, 9) rows the table reads, the
+    # requested columns taken from them. `int()` on a float truncates toward
+    # zero, which is what the cast below does too.
+    return np.asarray(walk[np.asarray(rows)][:, ix], dtype=np.int64)
 
 
 def hourly_prices(fc: MarketForecast, days: int | None = None,
