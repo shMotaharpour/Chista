@@ -203,8 +203,22 @@ class MarketForecast:
     def inventory_of(self, item: str, day: int) -> int:
         return self._row(day)[_PROD_INDEX[item]]
 
-    def price_of(self, item: str, day: int) -> int:
-        return self.prices[self._index(day)][_PROD_INDEX[item]]
+    def price_of(self, item: str, day: int, high: bool = False) -> int:
+        """The day's price for `item`; `high` reads the pessimistic band.
+
+        One table, two bands: with no ceiling the high walk IS the plain one
+        (`forecast` binds them to the same array), so `high` returns the same
+        number and costs one identity check. With a ceiling the band's own
+        inventory row is priced through the engine's own `price_of`, which is
+        what keeps the two bands the same model rather than two models.
+        """
+        i = self._index(day)
+        if not high or self.walk_inventory_high is self.walk_inventory:
+            return self.prices[i][_PROD_INDEX[item]]
+        from agent.world.prices import price_of as _engine_price
+        gi = _PROD_INDEX[item]
+        row = self.walk_inventory_high[i * TURNS_PER_DAY]
+        return int(_engine_price(item, float(row[gi])))
 
     #: The tests' name for the same read (PR #61's test_market_layer calls
     #: `.price(item, day)`); one forecast, two spellings, no second table.
@@ -562,6 +576,7 @@ def hourly_prices(fc: MarketForecast, days: int | None = None,
 def price_paths(fc: MarketForecast, days: int | None = None,
                 items: Iterable[str] | None = None,
                 from_day: int | None = None,
+                high: bool = False,
                 ) -> dict[str, tuple[int, ...]]:
     """`{item: (price, ...)}` for the horizon — what feeds the master's `p_d`.
 
@@ -574,5 +589,6 @@ def price_paths(fc: MarketForecast, days: int | None = None,
     horizon = fc.days if days is None else max(1, int(days))
     wanted = PRODUCTS if items is None else tuple(items)
     start = int(fc.first_day) if from_day is None else int(from_day)
-    return {item: tuple(fc.price_of(item, start + d) for d in range(horizon))
+    return {item: tuple(fc.price_of(item, start + d, high=high)
+                        for d in range(horizon))
             for item in wanted}
