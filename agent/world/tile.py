@@ -40,7 +40,8 @@ from typing import Any
 
 from agent.world.action import WorkerAction
 from agent.world.model import Animal, Crop, Product, Structure, TileKind, UnitAction
-from agent.world.rules import ANIMAL_RULES, CROP_RULES
+from agent.world.rules import (ANIMAL_RULES, CROP_RULES,
+                               water_window_start)
 
 #: The kinds that hold nothing a unit can work on.
 HOLDS_NOTHING: frozenset[TileKind] = frozenset(
@@ -411,3 +412,37 @@ def _kind_change_actions(later: TileInDay, earlier: TileInDay) -> tuple[WorkerAc
     if later.is_none and earlier.is_empty_structure:
         return (WorkerAction(UnitAction.DIG),)
     return ()
+
+
+def harvestable_yield(crop: Crop | str, age: int, fertilised: bool = False,
+                      watered_days: int | None = None) -> int:
+    """The yield a tile of `crop` can be CUT for at the engine's OWN age.
+
+    `age` is the engine's normalised axis whose zero is `crop_age_origin`, so a
+    caller needs neither the plant day nor a conversion. Zero for `age < 0`: an
+    one-shot plant is BORN with `yield_units = 1` (kaggriculture.py:223) but HARVEST
+    is gated on `day - planted_day >= first_yield_day` (:449), so nothing is
+    reachable yet. That gate is the difference between a positive counter and a
+    sellable unit; pricing a rival's window on the counter would credit them a sale
+    they cannot make.
+
+    `watered_days=None` is the CEILING (every in-window day watered); a count models
+    a tile that missed some waterings, and `fertilised` doubles each watered day.
+    DERIVED from the engine (:223 birth, :443 watering, :800 ongoing, all capped at
+    `max_yield`), and guarded by measurement against a real board.
+    """
+    spec = CROP_RULES[crop]
+    if age < 0:
+        return 0
+    cap, step = int(spec["max_yield"]), (2 if fertilised else 1)
+    if not spec["ongoing"]:
+        w0, last = water_window_start(crop), int(spec["max_yield_day"])
+        reach = min(int(age) + 1, last - w0 + 1)      # age+1: at age 0 one window day
+        used = reach if watered_days is None else min(int(watered_days), reach)
+        return min(cap, 1 + step * max(0, used))       # 1: the birth unit (:223)
+    first = int(spec["first_yield_day"])
+    elapsed = crop_age_origin(crop) + int(age)         # ongoing origin == max_yield_day
+    if elapsed < first:
+        return 0
+    interval = max(1, int(spec["interval"]))
+    return min(cap, step * (1 + (elapsed - first) // interval))
