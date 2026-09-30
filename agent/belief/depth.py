@@ -407,6 +407,11 @@ def sell_blocks(fc: MarketForecast, goods, first_day: int, days: int,
     """
     cap = max(1, int(cap))
     n_goods, days = len(goods), max(1, int(days))
+    # Restored: this assignment was lost in the `high` pass-through edit and the
+    # whole function kept using the name. It went unnoticed because the suites run
+    # after that edit did not include the two files that call sell_blocks on
+    # synthetic boards -- the NameError only fires for a caller that reaches it.
+    n_blocks = max(1, int(blocks))
     ends_gd = np.zeros((n_goods, days, n_blocks), dtype=np.int64)
     prevs_gd = np.zeros((n_goods, days, n_blocks), dtype=np.int64)
     units = np.zeros((n_goods, days, n_blocks), dtype=np.int64)

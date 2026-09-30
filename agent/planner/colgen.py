@@ -977,7 +977,11 @@ class MasterLP:
         # AFTER A_e, so they are outside this slice by construction -- including
         # them here made mu 11 long instead of 9, and the first consumer of it
         # died with "operands could not be broadcast together (9,) (11,)".
-        mu_end = n_ineq + A_e.shape[0]
+        # "everything after the inequality block", which is what the bare
+        # `marg[n_ineq:]` always meant -- MINUS the rows this block appended. Using
+        # A_e.shape[0] instead was too narrow: A_e is not the whole trailing block,
+        # and nine tests on synthetic boards read a shortened `mu`.
+        mu_end = rows.shape[0] - (n_scen if risk_cols else 0)
         mu = np.asarray(marg[n_ineq:mu_end], dtype=np.float64)
         values = np.asarray(solution.col_value, dtype=np.float64)
         # What the master decided to SELL is the SUM of the tiers: they are two

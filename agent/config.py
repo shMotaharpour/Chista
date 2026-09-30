@@ -120,6 +120,15 @@ class Config:
     #: kappa = 1 is the worst case. Priced in the objective, never as a row --
     #: the owner's ruling, and the reason the term is a weight rather than a
     #: constraint.
+    #: The R-U weight on the worst scenario. The DEFAULT is 0 -- the mean model,
+    #: bit-identical to the behaviour before this block existed -- because a
+    #: default is what every caller who says nothing gets, and the suites are such
+    #: callers: with a non-zero default, 18 tests that assert mean-regime facts
+    #: silently changed regime, and five of them inherited it through a shared
+    #: `AGENT.cfg` set by an earlier test. The regime is a RUN decision, so the
+    #: working arm sets it where it runs (`risk_kappa=0.5`, no data behind the
+    #: value yet) and this field stays the honest zero until the 6-seed arm has
+    #: measured it (R005).
     risk_kappa: float = 0.0
 
     #: The tail CVaR averages over: `alpha` of the scenarios, so 0.10 means the
