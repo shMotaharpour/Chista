@@ -663,48 +663,59 @@ def _product_price_path(obs, days: int, p_flat: np.ndarray,
                     for d in range(len(path)))
             return paths
 
-        if int(getattr(cfg, "price_supply_rounds", 0)) > 0:
-            paths = _ladder_priced(paths)
-        # The risk floor (Config.price_risk_z): the far days are priced on the walk
-        # the town's demand is EXPECTED to make, and that expectation carries the
-        # shop unlocks' own spread -- which is as large as the demand itself, so a
-        # plan chosen on the mean is a plan that needs the good world to pay. The
-        # floor prices each day on the drain falling `z` sd short: risk as a price.
-        risk_z = float(getattr(cfg, "price_risk_z", 0.0))
-        if risk_z > 0.0 and isinstance(obs, dict):
-            from agent.belief.opponent import G_IX, drain_forecast, price_of
-            inventory = dict(obs.get("market", {}).get("inventory", {}) or {})
-            floors = {}
-            for d in range(days):
-                mean_d, sd_d = drain_forecast(obs, (d + 1) * TURNS_PER_DAY)
-                floors[d] = (mean_d, sd_d)
-            priced = {}
-            for item, path in paths.items():
-                ix = G_IX.get(item)
-                inv = float(inventory.get(item, 0.0))
-                vals = []
-                for d in range(len(path)):
-                    if ix is None or d not in floors:
-                        vals.append(float(path[d])); continue
-                    mean_d, sd_d = floors[d]
-                    floor = float(price_of(item, inv - float(mean_d[ix])
-                                           + risk_z * float(sd_d[ix])))
-                    vals.append(min(float(path[d]), floor))
-                priced[item] = tuple(vals)
-            paths = priced
-            del priced
-        # The archive's ceiling (Config.price_cap_from_archive): a drain-only path
-        # has no shop demand in it, so it keeps rising after the shops have spoken
-        # and prices a far day above every world the engine ever ran. The cap reads
-        # the day's BEST demand bucket, never the current one, so the upside of an
-        # open shop survives.
-        if bool(getattr(cfg, "price_cap_from_archive", False)):
-            caps = _archive_day_caps()
-            paths = {item: tuple(
-                min(float(v), float(caps[item][d]))
-                if item in caps and d < len(caps[item]) and np.isfinite(caps[item][d])
-                else float(v) for d, v in enumerate(path))
-                for item, path in paths.items()}
+        def _priced_paths(paths):
+            """The whole price pipeline, ONE definition, both bands.
+
+            The ladder re-price, the demand floor and the archive cap are
+            three transforms of the SAME dict. The pessimistic band has to
+            run through all three: a band that skipped one would be a
+            different model, not the same one read from the other end.
+            """
+            if int(getattr(cfg, "price_supply_rounds", 0)) > 0:
+                paths = _ladder_priced(paths)
+            # The risk floor (Config.price_risk_z): the far days are priced on the walk
+            # the town's demand is EXPECTED to make, and that expectation carries the
+            # shop unlocks' own spread -- which is as large as the demand itself, so a
+            # plan chosen on the mean is a plan that needs the good world to pay. The
+            # floor prices each day on the drain falling `z` sd short: risk as a price.
+            risk_z = float(getattr(cfg, "price_risk_z", 0.0))
+            if risk_z > 0.0 and isinstance(obs, dict):
+                from agent.belief.opponent import G_IX, drain_forecast, price_of
+                inventory = dict(obs.get("market", {}).get("inventory", {}) or {})
+                floors = {}
+                for d in range(days):
+                    mean_d, sd_d = drain_forecast(obs, (d + 1) * TURNS_PER_DAY)
+                    floors[d] = (mean_d, sd_d)
+                priced = {}
+                for item, path in paths.items():
+                    ix = G_IX.get(item)
+                    inv = float(inventory.get(item, 0.0))
+                    vals = []
+                    for d in range(len(path)):
+                        if ix is None or d not in floors:
+                            vals.append(float(path[d])); continue
+                        mean_d, sd_d = floors[d]
+                        floor = float(price_of(item, inv - float(mean_d[ix])
+                                               + risk_z * float(sd_d[ix])))
+                        vals.append(min(float(path[d]), floor))
+                    priced[item] = tuple(vals)
+                paths = priced
+                del priced
+            # The archive's ceiling (Config.price_cap_from_archive): a drain-only path
+            # has no shop demand in it, so it keeps rising after the shops have spoken
+            # and prices a far day above every world the engine ever ran. The cap reads
+            # the day's BEST demand bucket, never the current one, so the upside of an
+            # open shop survives.
+            if bool(getattr(cfg, "price_cap_from_archive", False)):
+                caps = _archive_day_caps()
+                paths = {item: tuple(
+                    min(float(v), float(caps[item][d]))
+                    if item in caps and d < len(caps[item]) and np.isfinite(caps[item][d])
+                    else float(v) for d, v in enumerate(path))
+                    for item, path in paths.items()}
+            return paths
+
+        paths = _priced_paths(paths)
     except Exception as exc:                     # noqa: BLE001 - degrade
         return p_flat, f"flat stand-in (forecast failed: {type(exc).__name__})"
     out = p_flat.copy()
