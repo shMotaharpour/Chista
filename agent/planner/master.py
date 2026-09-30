@@ -920,9 +920,15 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
                                      dtype=np.float64)
         except Exception:                     # noqa: BLE001 - no rival to read
             rival_curve = None
+    _band: list = []
     p, p_source = _product_price_path(obs, days, p, forecast_obj=forecast_obj,
-                                      rival_supply=rival_curve, cfg=cfg)
+                                      rival_supply=rival_curve, cfg=cfg,
+                                      high_out=_band)
     p_mkt = p[:, list(MARKET_IDS)]
+    # The pessimistic band, in the same rows and the same good order. `None`
+    # when the path degraded to flat quotes -- there is no second band to price
+    # against, and every consumer must then behave exactly as it did before.
+    p_mkt_high = _band[0][:, list(MARKET_IDS)] if _band else None
     # The engine-quote floor (see the publish rule in the docstring):
     # the stand-in wages ARE the engine's own prices for the inputs.
     w_floor = published_duals(w_stand_full[:days], days)[:, COUPLING_IDS]
@@ -1180,6 +1186,7 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
                              cfg=cfg, integral=integral,
                              shed=(supply.shed_stock, supply.shed_capacity),
                              prices=p_mkt,
+                             prices_high=p_mkt_high,
                              market=SELLABLE,
                              sell_cap=sell_cap,
                              depth=depth,
