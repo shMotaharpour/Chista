@@ -610,6 +610,12 @@ def _product_price_path(obs, days: int, p_flat: np.ndarray,
             return p_flat, (f"flat stand-in (forecast covers "
                             f"{int(getattr(fc, 'days', 0))} of {days} days)")
         paths = price_paths(fc, days=days)
+        # The other end of the same walk: the rival at their ceiling, priced by
+        # the same pipeline below. Nothing consumes it yet -- the risk block in
+        # the master is the consumer, and until it lands this is per-turn work
+        # for no decision. It is here so the wire can be inspected in one
+        # place, and it cannot move a number while nothing reads it.
+        paths_high = price_paths(fc, days=days, high=True)
         # The path above is the forecast's OWN walk: the town drains and nobody
         # sells. Our plan does sell, and a good we pour in is worth what the
         # ladder pays for it AFTER our own supply -- `belief.depth.inventory_at`
@@ -716,6 +722,7 @@ def _product_price_path(obs, days: int, p_flat: np.ndarray,
             return paths
 
         paths = _priced_paths(paths)
+        paths_high = _priced_paths(paths_high)
     except Exception as exc:                     # noqa: BLE001 - degrade
         return p_flat, f"flat stand-in (forecast failed: {type(exc).__name__})"
     out = p_flat.copy()
