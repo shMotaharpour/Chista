@@ -571,6 +571,8 @@ def _product_price_path(obs, days: int, p_flat: np.ndarray,
                         forecast_obj=None, supply=None,
                         rival_supply=None,
                         cfg=None,
+                        worlds_out: list | None = None,
+                        rival_history: np.ndarray | None = None,
                         high_out: list | None = None) -> tuple[np.ndarray, str]:
     """The product rows of `p`: the market forecast (#15), or flat quotes.
 
@@ -635,6 +637,12 @@ def _product_price_path(obs, days: int, p_flat: np.ndarray,
         paths_world: list[tuple[float, dict]] | None = None
         try:
             _worlds = _belief_worlds.load()
+            if _worlds and rival_history is not None and len(np.asarray(rival_history)):
+                # The worlds that no longer look like the season we are in lose weight here,
+                # before a single price is built from them. `rival_history` is the observed
+                # supply, (day, 9) units, day 0 first -- the manager's own tracker record.
+                _seen = _history_matrix(rival_history, days)
+                _worlds = _belief_worlds.reweight(_seen, _seen.shape[0] - 1, worlds=_worlds)
         except Exception:                       # noqa: BLE001 - no artifact is no worlds
             _worlds = ()
         if _worlds and float(getattr(cfg, "risk_kappa", 0.0)) > 0.0:
@@ -648,6 +656,8 @@ def _product_price_path(obs, days: int, p_flat: np.ndarray,
                 except Exception:               # noqa: BLE001 - one world, not the day
                     continue
             paths_world = built or None
+            if worlds_out is not None and paths_world:
+                worlds_out.extend(paths_world)
         # The path above is the forecast's OWN walk: the town drains and nobody
         # sells. Our plan does sell, and a good we pour in is worth what the
         # ladder pays for it AFTER our own supply -- `belief.depth.inventory_at`
@@ -884,7 +894,34 @@ def priced_contractor(contractor, obs):
     return TileContractor(contractor.graph, days=days)
 
 
-def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
+def _history_matrix(history, days: int) -> np.ndarray:
+    """The tracker's record as `(days, 9)` units per day -- the form the worlds are weighed in.
+
+    `belief` records the rival's sales as `{absolute_step: {item: units}}`, which is the honest
+    shape for a residual and is NOT the shape of a world. One conversion, here, where the two
+    meet: a day is `step // 24`, the goods are the market's own order, and a day with no record
+    stays zero rather than being dropped.
+    """
+    import numpy as _np
+    from agent.belief.market import PRODUCTS as _P
+    out = _np.zeros((int(days), len(_P)), dtype=_np.float64)
+    if history is None:
+        return out
+    if isinstance(history, _np.ndarray):
+        arr = _np.asarray(history, dtype=_np.float64)
+        return arr[:int(days)] if arr.ndim == 2 else out
+    ix = {g: i for i, g in enumerate(_P)}
+    for step, per_good in (history or {}).items():
+        day = int(step) // 24
+        if day >= int(days):
+            continue
+        for good, units in (per_good or {}).items():
+            if good in ix:
+                out[day, ix[good]] += float(units)
+    return out
+
+
+def equilibrate(runtime, obs, contractor, supply: CouplingSupply, rival_history: np.ndarray | None = None,
                 w_warm: np.ndarray | None = None,
                 iter_cap: int | None = None,
                 integral: bool = False,
@@ -953,9 +990,11 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
         except Exception:                     # noqa: BLE001 - no rival to read
             rival_curve = None
     _band: list = []
+    _worlds_sink: list = []
     p, p_source = _product_price_path(obs, days, p, forecast_obj=forecast_obj,
                                       rival_supply=rival_curve, cfg=cfg,
-                                      high_out=_band)
+                                      high_out=_band, worlds_out=_worlds_sink,
+                                      rival_history=rival_history)
     p_mkt = p[:, list(MARKET_IDS)]
     # The pessimistic band, in the same rows and the same good order. `None`
     # when the path degraded to flat quotes -- there is no second band to price
@@ -1229,6 +1268,7 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
                              shed=(supply.shed_stock, supply.shed_capacity),
                              prices=p_mkt,
                              prices_high=p_mkt_high,
+                             world_scenarios=_worlds_sink or None,
                              depth_high=depth_high,
                              market=SELLABLE,
                              sell_cap=sell_cap,

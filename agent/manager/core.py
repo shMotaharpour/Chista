@@ -502,7 +502,8 @@ class Manager:
                                pool=self.pool,
                                forecast_obj=self.forecast_obj,
                                smoothing=self.cfg.smoothing,
-                               cfg=self.cfg)
+                               cfg=self.cfg,
+                               rival_history=self._rival_hours(self.obs, 1) or None)
         if not result.used_fallback:
             self.pool = list(result.pool)
             self.lam = result.lam           # the mix of THIS pool, in its order

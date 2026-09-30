@@ -77,6 +77,42 @@ def load(path: Path | str | None = None) -> tuple[World, ...]:
                      for i, w in enumerate(weights))
 
 
+def reweight(observed: np.ndarray, upto_day: int, *,
+             worlds: "tuple[World, ...] | None" = None, sigma: float = 1.0) -> "tuple[World, ...]":
+    """The worlds, re-weighed by what the season has actually shown so far.
+
+    A world is a guess about the days AHEAD, but the days BEHIND it are checkable: the rival's
+    realised supply up to `upto_day` is in the observation's own history. A world whose supply
+    over those days looks like what happened keeps its weight; one that looks nothing like it
+    loses most of it. The weights are renormalised, so a world that has become impossible stops
+    taking part in the plan.
+
+    `observed` is `(upto_day + 1, 9)` units per day, the same units and the same good order as
+    `rival_supply`. `sigma` is the scale of a plausible disagreement: the likelihood is
+    `exp(-||observed - world||_1 / (sigma * n))`, so it degrades smoothly instead of vetoing.
+
+    Nothing here mutates the artifact: the result is a new tuple, and the caller decides how far
+    to trust it. With no worlds, or no days observed yet, the input is returned unchanged.
+    """
+    worlds = load() if worlds is None else worlds
+    if not worlds or upto_day <= 0:
+        return worlds
+    days = min(int(upto_day) + 1, *(w.rival_supply.shape[0] for w in worlds), int(observed.shape[0]))
+    if days <= 0:
+        return worlds
+    seen = np.asarray(observed, dtype=np.float64)[:days]
+    spread = max(1e-9, float(sigma) * days * max(1, seen.size // days))
+    scored = []
+    for w in worlds:
+        gap = float(np.abs(w.rival_supply[:days] - seen).sum())
+        scored.append(w.weight * float(np.exp(-gap / spread)))
+    total = float(sum(scored))
+    if total <= 0.0:
+        return worlds                       # nothing matches: keep belief unchanged rather than wipe it
+    return tuple(World(s / total, w.rival_supply, w.demand, w.phase, w.support)
+                 for s, w in zip(scored, worlds))
+
+
 def weights_sum(path: Path | str | None = None) -> float:
     """The weights' total, for a caller that wants to state the evidence beside a plan."""
     worlds = load(path)

@@ -131,6 +131,10 @@ class Config:
     #: measured it (R005).
     risk_kappa: float = 0.0
 
+    #: Weight of the EXPECTED profit across the scenario worlds, beside the
+    #: pessimistic kappa term. 0.0 = today's behaviour, bit-identical: the
+    #: objective is then only the CVaR penalty, which is insurance, not portfolio.
+    risk_mean_weight: float = 0.0
     #: The tail CVaR averages over: `alpha` of the scenarios, so 0.10 means the
     #: worst tenth of the profit distribution. Rockafellar-Uryasev, so the LP
     #: needs `t` and one `u_s` per scenario and NO binary variable -- which is
