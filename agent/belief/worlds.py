@@ -21,6 +21,8 @@ from pathlib import Path
 
 import numpy as np
 
+from agent.belief.market import PRODUCTS
+
 #: The artifact ships beside the agent (AGENTS.md: everything the entry point loads lives inside
 #: `agent/`), so it is found relative to this file and never by an absolute path.
 ARTIFACT = Path(__file__).resolve().parents[1] / "artifact" / "scenario_worlds.npz"
@@ -51,6 +53,12 @@ def load(path: Path | str | None = None) -> tuple[World, ...]:
     if not file.exists():
         return ()
     with np.load(file) as data:
+        # The market reads its arrays in `PRODUCTS` order, so this artifact must be built in the
+        # same order or every good lands in the wrong column -- silently, since the shapes match.
+        # One definition of the order, checked where the file is opened, named in the error.
+        order = tuple(str(x) for x in data["crop"])
+        if order != tuple(PRODUCTS):
+            raise ValueError(f"{file.name}: crop order {order} is not the market's {tuple(PRODUCTS)}")
         supply = np.asarray(data["rival_supply"], dtype=np.float64)
         demand = np.asarray(data["demand"], dtype=np.float64)
         weights = np.asarray(data["weights"], dtype=np.float64)
