@@ -19,51 +19,81 @@
   "sha256_16": "7e422c81819ec565",
   "timing_weights": {
     "keyed_by": "agent identity, both seats pooled -- never by seat index",
-    "pool": "win rate >= 70% over >= 20 games (Majkel1337 78.6%/159, DSM 71.5%/137)",
-    "why": "the seat split hides it: by seat the wheat mean delay is 1.77 vs 1.75 (0.02 apart); by agent it runs 1.84 for a 45% agent down to 1.41 for a 72% one",
-    "measured_on": "partition 2026-09-19, 829 games",
+    "pool": "win rate >= 60% over >= 30 games, measured on the ten newest partitions (4 agents; a 70% cut leaves a single agent and a 159-game agent looked strong at 79% in one partition but is 57% over its 1342 games -- the label must come from volume)",
+    "measured_on": "partitions 2026-09-16 .. 2026-09-25, 4,542,369 harvest events",
     "weights": {
       "WHEAT": {
-        "harvests": 51666,
-        "mean_delay": 1.54,
-        "w_at_gate": 6.0,
-        "w_plus1": 47.0,
-        "w_plus2": 34.4,
-        "w_plus3": 12.6
+        "harvests": 403172,
+        "mean_delay": 1.7,
+        "w_at_gate": 5.9,
+        "w_plus1": 37.2,
+        "w_plus2": 37.9,
+        "w_plus3": 18.9
       },
       "STRAWBERRY": {
-        "harvests": 31667,
-        "mean_delay": 3.63,
-        "w_at_gate": 8.8,
-        "w_plus1": 16.0,
-        "w_plus2": 9.6,
-        "w_plus3": 65.6
+        "harvests": 249425,
+        "mean_delay": 3.66,
+        "w_at_gate": 8.4,
+        "w_plus1": 15.8,
+        "w_plus2": 10.2,
+        "w_plus3": 65.7
       },
       "CARROT": {
-        "harvests": 15119,
-        "mean_delay": 1.21,
-        "w_at_gate": 10.7,
-        "w_plus1": 57.4,
-        "w_plus2": 31.8,
+        "harvests": 132157,
+        "mean_delay": 1.35,
+        "w_at_gate": 6.6,
+        "w_plus1": 51.3,
+        "w_plus2": 42.0,
         "w_plus3": 0.0
       },
       "TOMATO": {
-        "harvests": 10058,
-        "mean_delay": 2.43,
-        "w_at_gate": 2.5,
-        "w_plus1": 22.7,
-        "w_plus2": 24.7,
-        "w_plus3": 50.2
+        "harvests": 70715,
+        "mean_delay": 2.4,
+        "w_at_gate": 3.2,
+        "w_plus1": 22.2,
+        "w_plus2": 25.7,
+        "w_plus3": 48.9
       },
       "MELON": {
-        "harvests": 3640,
-        "mean_delay": 0.11,
-        "w_at_gate": 88.0,
-        "w_plus1": 11.7,
-        "w_plus2": 0.1,
-        "w_plus3": 0.0
+        "harvests": 27473,
+        "mean_delay": 0.2,
+        "w_at_gate": 79.7,
+        "w_plus1": 17.9,
+        "w_plus2": 1.2,
+        "w_plus3": 0.8
       }
     },
-    "open": "the supply axis in this file is still seat-based; restricting it to the strong pool needs realised_supply.py to solve the inventory identity per seat, not per seat-pair"
+    "contrast_weak_half": {
+      "definition": "agents below 50% win rate, same partitions",
+      "weights": {
+        "WHEAT": {
+          "mean_delay": 1.9,
+          "w_at_gate": 4.7,
+          "w_plus2_or_more": 67.7
+        },
+        "STRAWBERRY": {
+          "mean_delay": 3.67,
+          "w_at_gate": 7.9,
+          "w_plus2_or_more": 75.7
+        },
+        "CARROT": {
+          "mean_delay": 1.41,
+          "w_at_gate": 8.3,
+          "w_plus2_or_more": 49.5
+        },
+        "TOMATO": {
+          "mean_delay": 2.32,
+          "w_at_gate": 5.2,
+          "w_plus2_or_more": 72.2
+        },
+        "MELON": {
+          "mean_delay": 0.4,
+          "w_at_gate": 63.8,
+          "w_plus2_or_more": 3.5
+        }
+      },
+      "direction": "slower in all five crops, so the signal is real, not noise"
+    },
+    "open": "the supply axis in this file is still seat-based; keying it by agent identity needs the inventory identity solved per partition and then filtered by the same pool"
   }
 }

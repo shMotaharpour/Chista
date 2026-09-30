@@ -1,13 +1,15 @@
-"""What each seat REALISED, from the city's own inventory -- computed inside DuckDB.
+"""What each seat REALISED, from the city's own inventory, per SEAT.
 
-`city_steps.inv_{9}` is the market's inventory: certain, not inferred. Over one step,
-    inv_g(t) - inv_g(t-1) = (our sells + their sells)_g - drain_g(t)
-so with our own sells known and the drain derived from the open shops, the rival's
-realised flow is the residual. That number is what the scenario axis needs; the logged
-`market_orders` rows are orders, and an order capped by an empty shed is not a sale.
+`city_steps.inv_{9}` is certain, so the flow identity
+    inv_g(t) - inv_g(t-1) = (our flow + their flow)_g - drain_g(t)
+gives one seat's realised flow as the residual. It is solved PER SEAT, not per seat-pair, because
+the planning axis has to be keyed by AGENT IDENTITY: the owner's agent plays both seats in the
+competition, so a seat index is not a definition of the opponent.
 
-Everything (lag, the shop baskets, the join) runs in SQL. Only the summary comes back.
-Rules are imported and interpolated into the query -- never retyped (R002).
+WHEAT and FERTILIZER are two-way goods -- a buy is quoted at the pre-trade inventory and a sale
+earns the post-trade one, so both enter with the same sign and only their NET is observable. That
+is why a wheat residual may legitimately be negative. The other seven can only be sold, so their
+flow is one-directional and non-negative, and the identity is held to that.
 """
 from __future__ import annotations
 
@@ -16,67 +18,54 @@ import sys
 
 import duckdb
 
-sys.path.insert(0, "/home/amirelite_ai/Chista/ChistaWRS")
+sys.path.insert(0, os.path.expanduser("~/Chista/ChistaWRS"))
 import agent.world.rules as R  # noqa: E402
 
-GOODS = ("WHEAT", "CARROT", "TOMATO", "STRAWBERRY", "MELON", "EGG", "MILK", "WOOL", "FERTILIZER")
+GOODS = ('WHEAT', 'CARROT', 'TOMATO', 'STRAWBERRY', 'MELON', 'EGG', 'MILK', 'WOOL', 'FERTILIZER')
+TWO_WAY = ('WHEAT', 'FERTILIZER')
+ONE_WAY = ('CARROT', 'TOMATO', 'STRAWBERRY', 'MELON', 'EGG', 'MILK', 'WOOL')
 INTERVAL = R.SHOP_SELL_INTERVAL_TURNS
-# the shop -> goods map, with the measured double-consumption of single-product shops
-baskets = [(s, g, (2 if len(gs) == 1 else 1))
-           for s, gs in R.SHOPS.items() for g in gs if g in GOODS]
-CENTRE = ", ".join(f"('{g}')" for g in R.TOWN_CENTER_PRODUCTS if g in GOODS)
-VALUES = ", ".join(f"('{s}', '{g}', {w})" for s, g, w in baskets)
+baskets = [(s, g, (2 if len(gs) == 1 else 1)) for s, gs in R.SHOPS.items() for g in gs if g in GOODS]
+CENTRE = tuple(g for g in R.TOWN_CENTER_PRODUCTS if g in GOODS)
 
-QUERY = f"""
-WITH inv AS (
-  SELECT episode_id, step, town_shops, {", ".join(f"inv_{g} AS {g}" for g in GOODS)},
-         {', '.join(f'inv_{g} - lag(inv_{g}) OVER w AS d_{g}' for g in GOODS)}
-  FROM read_parquet('{{part}}/city_steps.parquet')
-  WINDOW w AS (PARTITION BY episode_id ORDER BY step)
-),
-basket AS (SELECT * FROM (VALUES {VALUES}) AS t(shop, item, units)),
-centre AS (SELECT item FROM (VALUES {CENTRE}) AS t(item)),
-drain AS (
-  SELECT i.episode_id, i.step, b.item, sum(b.units) / {INTERVAL}.0 AS drain
-  FROM inv i
-  CROSS JOIN UNNEST(string_split(coalesce(i.town_shops, ''), ',')) AS u(shop)
-  JOIN basket b ON b.shop = u.shop
-  GROUP BY 1, 2, 3
-),
-centre_drain AS (
-  SELECT i.episode_id, i.step, c.item, 1.0 / {INTERVAL}.0 AS drain
-  FROM inv i CROSS JOIN centre c
-),
-ours AS (
-  SELECT episode_id, step, item, sum(qty) AS ours
-  FROM read_parquet('{{part}}/market_orders.parquet')
-  WHERE op = 'SELL' AND player = TRUE GROUP BY 1, 2, 3
-),
-theirs AS (
-  SELECT episode_id, step, item, sum(qty) AS logged
-  FROM read_parquet('{{part}}/market_orders.parquet')
-  WHERE op = 'SELL' AND player = FALSE GROUP BY 1, 2, 3
-),
-long AS (
-  {' UNION ALL '.join(
-      f"SELECT episode_id, step, (step / 24)::INT AS day, '{g}' AS item, d_{g} AS d_inv FROM inv"
-      for g in GOODS)}
-)
-SELECT l.episode_id, l.day, l.item,
-       sum(l.d_inv)                                       AS d_inv,
-       sum(coalesce(dr.drain, 0))                          AS drain,
-       sum(coalesce(o.ours, 0))                            AS ours,
-       sum(l.d_inv) + sum(coalesce(dr.drain, 0)) - sum(coalesce(o.ours, 0)) AS theirs_realised,
-       sum(coalesce(th.logged, 0))                         AS theirs_logged
-FROM long l
-LEFT JOIN (SELECT episode_id, step, item, sum(drain) AS drain FROM (
-             SELECT * FROM drain UNION ALL SELECT * FROM centre_drain)
-           GROUP BY 1, 2, 3) dr
-        ON dr.episode_id = l.episode_id AND dr.step = l.step AND dr.item = l.item
-LEFT JOIN ours   o  ON o.episode_id  = l.episode_id  AND o.step  = l.step  AND o.item  = l.item
-LEFT JOIN theirs th ON th.episode_id = l.episode_id  AND th.step = l.step AND th.item = l.item
-GROUP BY 1, 2, 3
-"""
+INV = ", ".join(f"inv_{g} AS {g}" for g in GOODS)
+DINV = ", ".join(f"inv_{g} - lag(inv_{g}) OVER w AS d_{g}" for g in GOODS)
+VALUES = ", ".join(f"({s!r}, {g!r}, {w})" for s, g, w in baskets)
+CENTRE_V = ", ".join(f"({g!r})" for g in CENTRE)
+LONG = " UNION ALL ".join(
+    f"SELECT episode_id, step, (step / 24)::INT AS day, {g!r} AS item, d_{g} AS d_inv FROM inv"
+    for g in GOODS)
+
+
+def seat_query(part: str, seat: str) -> str:
+    return f"""
+    WITH inv AS (SELECT episode_id, step, town_shops, {INV}, {DINV}
+                 FROM read_parquet('{part}/city_steps.parquet')
+                 WINDOW w AS (PARTITION BY episode_id ORDER BY step)),
+    basket AS (SELECT * FROM (VALUES {VALUES}) AS t(shop, item, units)),
+    centre AS (SELECT item FROM (VALUES {CENTRE_V}) AS t(item)),
+    drain AS (SELECT i.episode_id, i.step, b.item, sum(b.units) / {INTERVAL}.0 AS d
+              FROM inv i CROSS JOIN UNNEST(string_split(coalesce(i.town_shops, ''), ',')) AS u(shop)
+              JOIN basket b ON b.shop = u.shop GROUP BY 1, 2, 3),
+    centre_drain AS (SELECT i.episode_id, i.step, c.item, 1.0 / {INTERVAL}.0 AS d
+                     FROM inv i CROSS JOIN centre c),
+    ours AS (SELECT episode_id, step, item,
+                    sum(qty) FILTER (WHERE op = 'SELL')  AS sells,
+                    sum(qty) FILTER (WHERE op <> 'SELL') AS buys
+             FROM read_parquet('{part}/market_orders.parquet') WHERE player = {seat} GROUP BY 1, 2, 3),
+    long AS ({LONG})
+    SELECT l.episode_id, l.day, l.item,
+           sum(l.d_inv) + sum(coalesce(dr.d, 0)) -
+           CASE WHEN l.item IN {TWO_WAY!r}
+                THEN sum(coalesce(o.sells, 0) - coalesce(o.buys, 0))
+                ELSE sum(coalesce(o.sells, 0)) END        AS flow,
+           {seat} AS seat
+    FROM long l
+    LEFT JOIN (SELECT episode_id, step, item, sum(d) AS d FROM (
+                 SELECT * FROM drain UNION ALL SELECT * FROM centre_drain) GROUP BY 1, 2, 3) dr
+           ON dr.episode_id = l.episode_id AND dr.step = l.step AND dr.item = l.item
+    LEFT JOIN ours o ON o.episode_id = l.episode_id AND o.step = l.step AND o.item = l.item
+    GROUP BY 1, 2, 3"""
 
 
 def main() -> None:
@@ -86,19 +75,22 @@ def main() -> None:
     for st in ("SET memory_limit='2GB'", "SET threads=4", "SET temp_directory='/tmp/duckdb_swap'",
                "SET preserve_insertion_order=false"):
         con.execute(st)
-    con.execute(f"CREATE TABLE COLS AS {QUERY.format(part=part, CENTRE=CENTRE)}")
-    print("rows:", con.execute("SELECT count(*) FROM COLS").fetchone()[0])
+    # each seat query opens with WITH, so it is wrapped: a UNION ALL cannot follow CREATE ... AS WITH
+    parts = [f"SELECT * FROM ({seat_query(part, seat=bool_)})" for bool_ in ("TRUE", "FALSE")]
+    con.execute("CREATE TABLE FLOW AS " + " UNION ALL ".join(parts))
+    print("rows:", con.execute("SELECT count(*) FROM FLOW").fetchone()[0])
+    bad = con.execute(f"SELECT item, round(sum(flow), 0) AS f FROM FLOW "
+                      f"WHERE item IN {ONE_WAY!r} GROUP BY 1 HAVING sum(flow) < 0").fetchall()
+    if bad:
+        raise SystemExit(f"identity broken: a sell-only good came out negative: {bad}")
+    print("guard: the seven sell-only goods are non-negative; the two-way ones carry a sign")
     print(con.execute("""
-        SELECT item,
-               round(sum(d_inv), 0)        AS inv_change,
-               round(sum(drain), 0)        AS town_drain,
-               round(sum(ours), 0)         AS ours,
-               round(sum(theirs_realised), 0) AS theirs_realised,
-               round(sum(theirs_logged), 0)   AS theirs_logged,
-               round(100.0 * sum(theirs_realised) / nullif(sum(theirs_logged), 0), 1) AS pct_realised
-        FROM COLS GROUP BY 1 ORDER BY abs(sum(theirs_logged)) DESC""").fetchdf().to_string(index=False))
-    con.execute("COPY COLS TO '/tmp/scenario_axes/realised_supply.parquet' (FORMAT PARQUET)")
-    print("written /tmp/scenario_axes/realised_supply.parquet")
+        SELECT item, round(sum(flow) FILTER (WHERE seat) , 0) AS seat0_flow,
+               round(sum(flow) FILTER (WHERE NOT seat), 0) AS seat1_flow,
+               round(sum(abs(flow)), 0) AS abs_total
+        FROM FLOW GROUP BY 1 ORDER BY abs_total DESC""").fetchdf().to_string(index=False))
+    con.execute("COPY FLOW TO '/tmp/scenario_axes/realised_by_seat.parquet' (FORMAT PARQUET)")
+    print("written /tmp/scenario_axes/realised_by_seat.parquet")
 
 
 if __name__ == "__main__":
