@@ -570,7 +570,8 @@ def depth_coins_from(fc, item: str, day: int, quote: float, start_units: int,
 def _product_price_path(obs, days: int, p_flat: np.ndarray,
                         forecast_obj=None, supply=None,
                         rival_supply=None,
-                        cfg=None) -> tuple[np.ndarray, str]:
+                        cfg=None,
+                        high_out: list | None = None) -> tuple[np.ndarray, str]:
     """The product rows of `p`: the market forecast (#15), or flat quotes.
 
     F035: prices rise through the season, so the flat stand-in under-prices
@@ -725,12 +726,22 @@ def _product_price_path(obs, days: int, p_flat: np.ndarray,
         paths_high = _priced_paths(paths_high)
     except Exception as exc:                     # noqa: BLE001 - degrade
         return p_flat, f"flat stand-in (forecast failed: {type(exc).__name__})"
-    out = p_flat.copy()
-    for item, path in paths.items():
-        rid = RESOURCE_ID.get(item)
-        if rid is None or rid not in MARKET_IDS:
-            continue
-        out[:, rid] = [float(path[day]) for day in range(days)]
+    def _to_resource(paths: dict, base: np.ndarray) -> np.ndarray:
+        """`{item: (price, ...)}` -> the resource-row array, ONE definition."""
+        out = base.copy()
+        for item, path in paths.items():
+            rid = RESOURCE_ID.get(item)
+            if rid is None or rid not in MARKET_IDS:
+                continue
+            out[:, rid] = [float(path[day]) for day in range(days)]
+        return out
+
+    out = _to_resource(paths, p_flat)
+    if high_out is not None:
+        # The pessimistic band runs the same pipeline and returns through an
+        # explicit sink: no caller's contract changes, and none can read it by
+        # accident -- it is visible only to a caller that asked for it.
+        high_out.append(_to_resource(paths_high, p_flat))
     return out, f"market forecast (#15, unlock policy {fc.unlock_policy})"
 
 
