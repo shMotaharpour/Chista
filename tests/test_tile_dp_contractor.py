@@ -433,6 +433,65 @@ def test_pricing_many_distances_shares_only_the_distance_free_half() -> None:
     assert not np.array_equal(priced[0].values, priced[3].values)
 
 
+def test_batched_recovery_matches_each_distance_tile_for_tile() -> None:
+    """The one recovery walk equals the per-distance one, field for field.
+
+    `price_many` recovers every distance's plans in ONE pass, so a tile's rows are
+    addressed by its GLOBAL position in the concatenated walk while its curves are
+    addressed by its position inside its own group. Reading one with the other's
+    index is a silent defect — the recovered plan then points at another tile's
+    state or chain, the LP is offered a column the plan does not describe, and
+    nothing else in the field would say so. Hence the comparison is every field the
+    board publishes, against `price(...)` per distance, and the fixture carries
+    groups of DIFFERENT sizes (2, 1, 1 tiles) so the global-vs-group index split is
+    actually exercised.
+    """
+    graph = _graph()
+    p, w = _integer_duals()
+    contractor = TileContractor(graph, days=HORIZON_DAYS)
+    # two DIFFERENT states that provably exist: every state on an edge is in the
+    # graph's own key space, which a hand-built TileState is not (a planted state
+    # the graph never indexes raises in `state_id_of`).
+    candidates = [int(s) for s in graph.edge_next]
+    two: list[int] = []
+    for state in candidates:
+        if state not in two:
+            two.append(state)
+        if len(two) == 2:
+            break
+    groups = {
+        0: [two[0]],
+        2: [two[0], two[1]],
+        5: [two[1]],
+    }
+    assert sorted(len(v) for v in groups.values()) == [1, 1, 2], (
+        "the fixture must mix a multi-tile group with single-tile ones, or the "
+        "index split this guard covers is never reached")
+    assert groups[2][0] != groups[2][1], (
+        "the multi-tile group holds ONE state twice: two tiles of the same state "
+        "read the same row, so a global-vs-group index slip would stay invisible")
+
+    priced = contractor.price_many(p, w, groups)
+    for h, owned in groups.items():
+        board = priced[h]
+        reference = contractor.price(p, w, owned, travel_hours=h)
+        assert np.array_equal(board.values, reference.values), f"h={h}: values"
+        assert np.array_equal(board.rewards, reference.rewards), f"h={h}: rewards"
+        assert np.array_equal(board.columns, reference.columns), f"h={h}: columns"
+        assert np.array_equal(board.produce, reference.produce), f"h={h}: produce"
+        assert np.array_equal(board.tile_values, reference.tile_values), \
+            f"h={h}: tile values"
+        assert np.array_equal(board.per_day_cost, reference.per_day_cost), \
+            f"h={h}: per-day cost"
+        assert np.array_equal(board.per_day_produce, reference.per_day_produce), \
+            f"h={h}: per-day produce"
+        assert np.array_equal(board.per_day_entity, reference.per_day_entity), \
+            f"h={h}: per-day entity"
+        assert board.plans == reference.plans, f"h={h}: plans"
+        assert board.reduced_cost == reference.reduced_cost, f"h={h}: signal"
+        assert board.days == reference.days, f"h={h}: days"
+
+
 def test_budget_sweep_and_recovery() -> None:
     """Issue #11 §7: sweep ≤ 15 ms, 100 tile recoveries ≤ 5 ms.
 
