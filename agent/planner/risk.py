@@ -102,3 +102,28 @@ def cvar_of(profits: np.ndarray, alpha: float) -> float:
     if frac > 0.0 and k < n:
         tail += frac * p[k]
     return float(tail / a)
+
+
+def scenario_cost(cost: np.ndarray, col_sell_flat: np.ndarray,
+                  block_price: np.ndarray, block_price_high: np.ndarray
+                  ) -> np.ndarray:
+    """Two scenarios' objective vectors: the same plan, the sells repriced.
+
+    The bands differ in ONE place -- what the ladder pays for a sell block -- so
+    the pessimistic scenario is the plain objective with those entries replaced.
+    Nothing else in the vector moves, which is what makes the two scenarios the
+    same model read from two ends rather than two models.
+
+    `col_sell_flat` is the caller's own `col_sell(gi, d, b)` for every (good, day,
+    block), passed IN so this module needs no knowledge of the LP's layout; the
+    two price arrays are `(n_goods, days, tiers)` in the same order. A caller with
+    no second band passes the same array twice and gets two identical rows.
+    """
+    base = np.asarray(cost, dtype=np.float64)
+    out = np.vstack([base, base.copy()])
+    ix = np.asarray(col_sell_flat, dtype=np.int64).ravel()
+    hi = np.asarray(block_price_high, dtype=np.float64).ravel()
+    if ix.size != hi.size:
+        raise ValueError(f"col_sell_flat has {ix.size} entries, prices have {hi.size}")
+    out[1, ix] = -hi
+    return out
