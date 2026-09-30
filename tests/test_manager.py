@@ -183,7 +183,7 @@ def test_step_warms_same_lp_as_hour_zero():
     called_supply = called_args[3] if len(called_args) > 3 else called_kwargs.get("supply")
     assert called_supply is not None
     days = int(np.asarray(manager.contractor.days))
-    expected_hours = D.hours_for(getattr(manager.day, "hands", 0), days,
+    expected_hours = D.hours_for(getattr(manager.day, "offer", 0), days,
                                  manager.cfg.hours_overhead)
     assert np.allclose(called_supply.hours, expected_hours), "step() used 0-hands supply instead of day.hands"
 

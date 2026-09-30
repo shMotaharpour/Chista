@@ -2,7 +2,7 @@
 
 > **A record of the design at the time**, written on the branch that built it. The
 > tense below is that moment's ("this branch", "today"). The names it cites were
-> checked against the code: `Plan`, `ClassMix`, `ROW_NAMES`, `assign_tiles`,
+> checked against the code: `Plan`, `ClassMix`, `ROW_NAMES`, `assign_by_quota`,
 > `violations`, `demote_to_feasible`, `plan_from_board` and `max_solves` all exist,
 > and both `TODO(#12)` markers are STILL open in `columns.py` and `land.py` — so the
 > two rows it declines to measure are still declined, not stale.
@@ -17,7 +17,7 @@ the master to exist.
 Plan        # one DW column: per-day chain ids + per-day value in every row
 ClassMix    # one class: N_c tiles, its plans, their λ
 ROW_NAMES   # ("labour", "cash_out", "wheat_net", "fert_net", "stored")
-assign_tiles(tile_keys, mixes)      # λ -> one plan per tile   (issue §1)
+assign_by_quota(class_of_tile, mixes)   # λ -> one plan per tile   (issue §1)
 violations(choices, mixes, caps)    # the coupling-row check   (acceptance 1)
 demote_to_feasible(...)             # walk the rows, demote    (issue §1 repair)
 plan_from_board(board, i, ...)      # build a Plan from #11's output

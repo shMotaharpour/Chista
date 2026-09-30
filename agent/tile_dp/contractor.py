@@ -99,9 +99,15 @@ class TileContractor:
     slice check happen once per process instead of once per turn.
     """
 
-    def __init__(self, graph: TileGraph, days: int = HORIZON_DAYS) -> None:
+    def __init__(self, graph: TileGraph, days: int = HORIZON_DAYS,
+                 discount: float = 0.0) -> None:
         self.graph = graph
         self.days = int(days)
+        #: `(days,)`: the NPV factor of each day, ONCE (vectorised, no loop in
+        #: the sweep). 0.0 is a factor of 1 everywhere and is bit-identical.
+        self.discount = float(discount)
+        self._disc = np.asarray((1.0 / (1.0 + self.discount)) ** np.arange(self.days),
+                                dtype=DTYPE) if self.discount > 0.0 else None
         self.n_states = int(graph.n_states)
         self.edge_offsets = np.ascontiguousarray(graph.edge_offsets, dtype=np.intp)
         self.edge_next = np.ascontiguousarray(graph.edge_next, dtype=np.intp)
@@ -188,22 +194,28 @@ class TileContractor:
         return np.ascontiguousarray(arr, dtype=DTYPE)
 
     # ---- the kernel ---------------------------------------------------
-    def sweep(self, p, w, travel_hours: int = 0) -> tuple[np.ndarray, np.ndarray]:
+    def sweep(self, p, w, travel_hours: int = 0,
+              rent=None) -> tuple[np.ndarray, np.ndarray]:
         """Backward sweep: `(days+1, n_states)` values and per-day rewards."""
         _ec_int, ec = self._travel_edge_costs(travel_hours)
         return self._sweep(self._as_dual(p, "prices"), self._as_dual(w, "wages"), ec)
 
-    def _sweep(self, p: np.ndarray, w: np.ndarray, ec: np.ndarray | None = None
-               ) -> tuple[np.ndarray, np.ndarray]:
+    def _sweep(self, p: np.ndarray, w: np.ndarray, ec: np.ndarray | None = None,
+               rent=None) -> tuple[np.ndarray, np.ndarray]:
         ec = self.EC if ec is None else ec
         rewards = np.empty((self.days, int(self.edge_next.size)), dtype=DTYPE)
         for d in range(self.days - 1, -1, -1):
             # Produce and cost are priced by their own vector, in two passes. Folding them
             # into one wider matvec measures slower: the wider gemv loses to BLAS dispatch.
             rewards[d] = self.EP @ p[d] - ec @ w[d]
+            if rent is not None:
+                rewards[d] = rewards[d] - rent[d]
+            if self._disc is not None:
+                rewards[d] = rewards[d] * self._disc[d]
         return self._backward(rewards), rewards
 
-    def _base_rewards(self, p: np.ndarray, w: np.ndarray) -> np.ndarray:
+    def _base_rewards(self, p: np.ndarray, w: np.ndarray, rent=None
+                      ) -> np.ndarray:
         """`EP @ p[d] - EC @ w[d]` for every day: the sweep's distance-free half.
 
         The walk only ever lands on the LABOUR column of the worked edges
@@ -214,6 +226,13 @@ class TileContractor:
         rewards = np.empty((self.days, int(self.edge_next.size)), dtype=DTYPE)
         for d in range(self.days):
             rewards[d] = self.EP @ p[d] - self.EC @ w[d]
+            if rent is not None:
+                # Every day the tile is OURS pays: holding land costs whether or
+                # not anyone works it. LOCKED never enters this graph, so it is the
+                # only state without rent -- no empty/weed exception.
+                rewards[d] = rewards[d] - rent[d]
+            if self._disc is not None:
+                rewards[d] = rewards[d] * self._disc[d]
         return rewards
 
     def _sweep_from(self, base: np.ndarray, w: np.ndarray, travel_hours: int
@@ -296,6 +315,99 @@ class TileContractor:
                 V[0, np.asarray(owned, dtype=np.intp)].astype(np.float64),
                 per_day_cost, per_day_produce, entities_at)
 
+    def _recover_many(self, groups: Sequence[tuple]):
+        """`_recover` for every distance in ONE walk: all tiles in one day loop.
+
+        The recovery is sequential in the DAY (each day's state comes from the
+        previous day's choice), but not in the tile or in the distance: a round's
+        nine groups can walk together, so the day loop runs once instead of nine
+        times over nine-times-smaller arrays. Each tile carries its distance, and
+        its candidate row is gathered from that distance's rewards and values —
+        the same numbers `_recover` would read, in the same order (`groups` are
+        (values, rewards, owned, ec_int, travel_hours) per distance, and the tiles
+        keep the order they were given in).
+
+        The walk cost needs no stacked tables: a distance only ever adds to the
+        LABOUR column of the worked edges (`_travel_edge_costs`), so the chosen
+        edge's cost is the graph's own row with that one term added.
+        """
+        days = self.days
+        n_edges = int(self.edge_next.size)
+        parts, dist_of, hours_of = [], [], []
+        for i, (_V, _rewards, owned, _ec_int, hours) in enumerate(groups):
+            owned = np.asarray(owned, dtype=np.intp)
+            parts.append(owned)
+            dist_of.extend([i] * int(owned.size))
+            hours_of.extend([int(hours)] * int(owned.size))
+        dist_of = np.asarray(dist_of, dtype=np.intp)
+        hours_of = np.asarray(hours_of, dtype=np.int64)
+        tile_ids = [np.arange(part.size, dtype=np.intp) for part in parts]
+        offset = np.cumsum([0] + [int(p.size) for p in parts[:-1]])
+        lane = np.concatenate([ids + off for ids, off in zip(tile_ids, offset)]) \
+            if parts else np.zeros(0, dtype=np.intp)
+        n_tiles = int(lane.size)
+
+        out = []
+        if n_tiles == 0:
+            for _V, _rewards, owned, _ec_int, _hours in groups:
+                owned = np.asarray(owned, dtype=np.intp)
+                out.append((np.zeros((0, N_RESOURCE), dtype=np.int64),
+                            np.zeros((0, N_RESOURCE), dtype=np.int64), [],
+                            np.zeros(0, dtype=np.float64),
+                            np.zeros((0, days, N_RESOURCE), dtype=np.int64),
+                            np.zeros((0, days, N_RESOURCE), dtype=np.int64),
+                            np.zeros((0, days), dtype=np.int8)))
+            return out
+
+        V_all = np.stack([g[0] for g in groups])            # (n_dist, days+1, states)
+        R_all = np.stack([g[1] for g in groups])            # (n_dist, days, edges)
+        states = np.concatenate(parts).astype(np.intp)
+        per_day_cost = np.zeros((n_tiles, days, N_RESOURCE), dtype=np.int64)
+        per_day_produce = np.zeros_like(per_day_cost)
+        rows = np.empty((days, n_tiles), dtype=np.intp)
+        states_at = np.empty((days, n_tiles), dtype=np.intp)
+        entities_at = np.empty((n_tiles, days), dtype=np.int8)
+        for d in range(days):
+            starts = self.edge_starts[states]
+            sizes = self.edge_offsets[states + 1] - starts
+            block = np.cumsum(sizes) - sizes
+            edge_ix = np.repeat(starts, sizes) + (
+                np.arange(int(sizes.sum()), dtype=np.intp)
+                - np.repeat(block, sizes))
+            tile = np.repeat(lane, sizes)
+            group = dist_of[tile]
+            cand = (R_all[group, d, edge_ix]
+                    + V_all[group, d + 1, self.edge_next[edge_ix]])
+            best = np.maximum.reduceat(cand, block)
+            hits = np.flatnonzero(cand == best[tile])
+            chosen = edge_ix[hits[np.searchsorted(tile[hits], lane)]]
+            rows[d] = chosen
+            states_at[d] = states
+            entities_at[:, d] = self.graph.edge_entity[chosen]
+            cost = self.graph.edge_cost[chosen].astype(np.int64)
+            worked = cost[:, LABOR_ID] > 0
+            cost[worked, LABOR_ID] += hours_of[worked]
+            per_day_cost[:, d, :] = cost
+            per_day_produce[:, d, :] = self.graph.edge_produce[chosen]
+            states = self.edge_next[chosen]
+
+        chain = self.edge_chain[rows]
+        for i, (V, _rewards, owned, _ec_int, _hours) in enumerate(groups):
+            owned = np.asarray(owned, dtype=np.intp)
+            here = dist_of == i
+            costs = per_day_cost[here]
+            produces = per_day_produce[here]
+            entities = entities_at[here]
+            plan_rows = chain[:, here]
+            positions = np.flatnonzero(here)      # global tile index of each row
+            plans = [[(d, int(states_at[d, positions[j]]), int(plan_rows[d, j]))
+                      for d in range(days)] for j in range(positions.size)]
+            out.append((costs.sum(axis=1), produces.sum(axis=1), plans,
+                        V[0, owned].astype(np.float64) if owned.size
+                        else np.zeros(0, dtype=np.float64),
+                        costs, produces, entities))
+        return out
+
     def price(self, p, w, owned_states, travel_hours: int = 0) -> PricedBoard:
         """Price the board: one sweep for every owned tile, plus their columns.
 
@@ -307,8 +419,8 @@ class TileContractor:
         hours = int(travel_hours)
         return self.price_many(p, w, {hours: owned_states})[hours]
 
-    def price_many(self, p, w, owned_by_distance: dict[int, Sequence[int]]
-                   ) -> dict[int, PricedBoard]:
+    def price_many(self, p, w, owned_by_distance: dict[int, Sequence[int]],
+                   rent=None) -> dict[int, PricedBoard]:
         """Price every distance off ONE base sweep.
 
         A round prices one group per distinct distance, and each group's sweep
@@ -325,11 +437,13 @@ class TileContractor:
         """
         prices = self._as_dual(p, "prices")
         wages = self._as_dual(w, "wages")
-        base = self._base_rewards(prices, wages)
-        out: dict[int, PricedBoard] = {}
-        for raw_hours, states in owned_by_distance.items():
-            hours = int(raw_hours)
-            owned = np.asarray(list(states), dtype=np.int64)
+        # Distance-independent: charged ONCE in the shared base sweep, never per
+        # distance, and never inside `w` (the input-price matrix #142 pins).
+        base = self._base_rewards(prices, wages, rent=rent)
+        hours_list = [int(h) for h in owned_by_distance]
+        sweeps: list[tuple] = []
+        for hours in hours_list:
+            owned = np.asarray(list(owned_by_distance[hours]), dtype=np.int64)
             if owned.size:
                 if int(owned.min()) < 0 or int(owned.max()) >= self.n_states:
                     raise ValueError(
@@ -337,9 +451,14 @@ class TileContractor:
                         f"{int(owned.min())}..{int(owned.max())}")
             ec_int, _ec = self._travel_edge_costs(hours)
             V, rewards = self._sweep_from(base, wages, hours)
-            (columns, produced, plans, tile_values, per_day_cost,
-             per_day_produce, per_day_entity) = self._recover(V, rewards, owned,
-                                                              ec_int)
+            sweeps.append((V, rewards, owned, ec_int, hours))
+        # One recovery walk for every distance at once (the day loop is the
+        # sequential part; the tiles and the distances are not).
+        recovered = self._recover_many(sweeps)
+        out: dict[int, PricedBoard] = {}
+        for (V, rewards, owned, _ec_int, hours), (
+                columns, produced, plans, tile_values, per_day_cost,
+                per_day_produce, per_day_entity) in zip(sweeps, recovered):
             # With no owned tile there is no column and nothing to price; the
             # signal is defined as 0 rather than as the max of an empty set.
             out[hours] = PricedBoard(

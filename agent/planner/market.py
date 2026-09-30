@@ -13,6 +13,7 @@ for itself, and a seed counted nowhere is a PLANT the engine silently drops.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from itertools import zip_longest
 
 from agent.world.action_rules import SETTLE_RANK, SETTLE_RANK_DEFAULT
 from agent.world.rules import (ANIMAL_RULES, CROP_RULES,
@@ -246,9 +247,11 @@ def merge(sells: list, hires: list, buys: list, *,
     """One queue, in the engine's settle order, capped per turn.
 
     Sells keep the head of each row because the engine settles them before
-    hires and purchases (F032). Opening orders spill into later turns rather
-    than over the cap, and whatever still has no room is REPORTED — an order
-    the queue quietly forgot is a plan that silently does less than it says.
+    hires and purchases (F032). Then the day's BUYS, then the hires: the cap is
+    the number of slots a turn has, and the order that misses it is the order
+    that waits a turn — see the note at `opening`. Whatever still has no room is
+    REPORTED — an order the queue quietly forgot is a plan that silently does
+    less than it says.
     """
     rows = [[] for _ in range(turns)]
     if rank is not None and sells:
@@ -274,9 +277,23 @@ def merge(sells: list, hires: list, buys: list, *,
     # rival in their price and go LAST, where they cost nothing: the engine settles
     # atomic orders first WITHIN an index, so a hire queued last still settles in
     # the same turn.
-    competing = [list(o) for o in buys if o and str(o[0]) == "BUY_PRODUCT"]
-    quiet = [list(o) for o in buys if not (o and str(o[0]) == "BUY_PRODUCT")]
-    opening = competing + [list(o) for o in hires] + quiet
+    # THE CAP IS A SLOT RESOURCE, and the day needs every KIND of order in the
+    # first turns: a hand starts a turn later (F040), a seed that lands a turn
+    # late fires a PLANT a turn early and the engine drops it in silence (F047),
+    # and a market-priced buy takes an index where it shares the rival's quote.
+    # Filling by category starves whoever sits behind the cap, so the row is
+    # filled ROUND BY ROUND - one of each kind, then again, until a kind runs out.
+    # `zip_longest` is the round robin; the None filter drops what is exhausted.
+    kinds = (
+        [list(o) for o in buys if o and str(o[0]) == "BUY_PRODUCT"],
+        [list(o) for o in buys if o and str(o[0]) == "BUY_SEED"],
+        [list(o) for o in buys if o and str(o[0]) == "BUY_ANIMAL"],
+        [list(o) for o in buys if o and str(o[0]) not in
+         ("BUY_PRODUCT", "BUY_SEED", "BUY_ANIMAL")],
+        [list(o) for o in hires],
+    )
+    opening = [o for group in zip_longest(*[k for k in kinds if k])
+               for o in group if o is not None]
     for turn in range(turns):
         row = [list(o) for o in (sells[turn] if turn < len(sells) else [])]
         row.sort(key=lambda o: SETTLE_RANK.get(o[0] if o else "",
@@ -302,11 +319,11 @@ def build(obs, chains, *, hands: int, harvest_expected: int = 0,
     are read from and the rival's dated supply — and neither is this module's to
     invent. Without a rank the queue keeps belief's own order.
 
-    `wsr_check=False` lays the day out WITHOUT the hires. The HIRE orders ARE the
-    commitment — they spend the purse and put hands on the field — so a check must
-    not place them: the manager iterates on the check (wsr answers with its free
-    slots, or with how many hands short it is) and commits ONCE, with the hand
-    count wsr agreed to.
+    `wsr_check=False` marks the queue as the CHECK: it is not the one the caller
+    sends, and the manager iterates on it until wsr agrees, then commits once.
+    The LAYOUT is the same either way — the same hires taking the same slots — or
+    the check answers a question about a different day (see the note at the
+    `hire_orders` call).
     """
     private = obs.get("private", {}) if isinstance(obs, dict) else {}
     farms = obs.get("farms", []) if isinstance(obs, dict) else []
@@ -325,7 +342,15 @@ def build(obs, chains, *, hands: int, harvest_expected: int = 0,
     # The engine's own per-turn limit for THIS run (F031): the queue is built to
     # the cap the run actually settles, not to the transcribed default.
     cap = int(terms.max_orders_per_turn if cap is None else cap)
-    hires, hire_bill = hire_orders(hands if wsr_check else 0,
+    # The hires are laid out in BOTH modes, and `wsr_check` decides only whether
+    # the caller SENDS this queue. Dropping them from the check made its rows,
+    # its `bought_hours` and its `hire_hours` describe a day with empty slots the
+    # commit does not have: the buys took turns the real queue would spend on
+    # hires, so `available` promised a seed at turn 0 while the committed queue
+    # landed it at turn 1, and every PLANT that needed it fired a turn early and
+    # was refused in silence (F047). Measured on day 0: ten HIREs fill turn 0 and
+    # `BUY_SEED WHEAT 12` falls to turn 1.
+    hires, hire_bill = hire_orders(hands,
                                    int(farm.get("hires_today", 0)),
                                    int(terms.hand_cost_mult))
     bill += hire_bill

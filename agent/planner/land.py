@@ -1,5 +1,16 @@
 """The land-purchase outer loop (issue #13 §3).
 
+**SUPERSEDED by the integer decision solve.** This module was written when
+the master was an LP and land could not enter it; the loop enumerates one
+prefix step per candidate and re-solves, which prices nothing and so
+leaves the tiles blind to what a slot costs. `colgen` now carries the land
+decision as its own binaries inside the MIP (`world.rules.LAND_PRICES`,
+prefix order, one per quadrant-day) with the price charged in the
+cumulative cash rows and a row tying the tile count to 25 per quadrant, so
+the model decides WHEN, not this loop. Nothing on the day path calls it.
+Kept for its prefix arithmetic and its candidate vocabulary, which the
+tests use; it is not the decision any more.
+
 `BUY_LAND` is **prefix-locked**: quadrants open in a fixed order at fixed prices
 and a short purse refuses silently (F042), so the decision is not *which* land
 but *when* to take the next step of the prefix. That is one dimension, small

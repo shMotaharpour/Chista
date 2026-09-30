@@ -57,6 +57,14 @@ class DayFit:
     #: priced pool was enough. The number the manager decides on: hire them, lay
     #: less on the day, or accept a day that does not fit.
     short: int = 0
+    #: Tasks the route could not place at ALL, and where they stand, as
+    #: `(("NW", 3), ("SE", 1))`. `short` says how many hands were missing;
+    #: this says which part of the field lost its work, which is the whole
+    #: difference between "hire one more" and "lay less on the day". A task
+    #: absent from wsr's own route was not placed -- the same set its
+    #: `_repair_unplaced` works from -- so the read costs no wsr change.
+    left: int = 0
+    left_by_quadrant: tuple = ()
 
     @property
     def overhead(self) -> float:
@@ -194,18 +202,26 @@ def availability(obs, chains) -> dict:
                          dict(private.get("shed", {}) or {}))
 
 
-def fit(chains, *, hands: int, available: dict | None = None,
+def fit(chains, *, pool_ceiling: int, available: dict | None = None,
+        fixed_pool: bool = False,
         hire_times: tuple[int, ...] | None = None,
         beam: int | None = None,
         hours_committed: float = 0.0, warm=None) -> DayFit:
     """Hand the day to wsr and report what it made of it.
 
-    `hands` is the pool offered, all of them from hour 1 — a hand hired in turn
-    0 first acts at hour 1 (F040). Offering them all and letting the search
-    grow from the arithmetic floor is what keeps the cost predictable; asking
-    wsr to find the smallest pool ITSELF is a halving search and costs several
-    times a turn.
+    `pool_ceiling` is the most hands this day may use — the day layer's own
+    OFFER — and every one of them is on the field from hour 1 (a hand hired in
+    turn 0 first acts at hour 1, F040). wsr's names are the two ENDS of that
+    range: it is handed `hands=pool_floor` and `max_hands=pool_ceiling`, and
+    its own `_smallest_pool` halves the interval (O(log2 N), contracting the
+    ceiling to the hands the route actually used), which is both the cheap way
+    to ask and the only way to learn the answer is smaller than the offer.
+    There is no wall-clock deadline to pass —
+    wsr is bounded structurally by the task count and the beam width, so
+    identical inputs give bit-identical routes (agent/wsr/README.md, caller
+    guidelines 3 and 4).
     """
+    from agent.world.board import quadrant_of
     from agent.wsr import beam as B
     from agent.wsr import tasks as T
     from agent.wsr.emit import check_route
@@ -225,11 +241,28 @@ def fit(chains, *, hands: int, available: dict | None = None,
     # whole turn's order budget goes to hires, which the real queue does not.
     day = B.Day(chains=tuple(chains), available=available,
                 hire_times=(tuple(hire_times) if hire_times is not None
-                            else earliest_hire_times(hands)))
-    floor = max(0, B.lower_bound(day, tasks) - len(day.units))
+                            else earliest_hire_times(pool_ceiling)))
+    pool_floor = max(0, B.lower_bound(day, tasks) - len(day.units))
+    # `fixed_pool` asks ONE question -- "can this count carry the day" -- with no
+    # pool search at all: the count is the model's now, and `_smallest_pool`'s
+    # halving is the slow mode this caller does not need.
+    start = (pool_ceiling if fixed_pool
+             else min(pool_floor, pool_ceiling))
     result = B.search(day, tasks, beam=beam,
-                      hands=min(floor, hands), max_hands=hands, warm=warm)
+                      # wsr's own names: hands is the START, max_hands the CEILING.
+                      hands=start, max_hands=pool_ceiling, warm=warm)
 
+    # What the route left behind, and where. `tasks` is the array `search`
+    # just solved (built four lines up), so "not in the route" is exactly
+    # "not placed": the same test wsr's own repair pass makes.
+    placed_ids = {_tid for _turn, _tid, _worker in result.route}
+    left_ids = [tid for tid in tasks.ids if tid not in placed_ids]
+    by_id = {tid: i for i, tid in enumerate(tasks.ids)}
+    tally: dict[str, int] = {}
+    for tid in left_ids:
+        quad = quadrant_of(tuple(int(v) for v in tasks.cells[by_id[tid]]))
+        tally[quad] = tally.get(quad, 0) + 1
+    left_by_quadrant = tuple(sorted(tally.items()))
     hours = float(max((turn for turn, _t, _w in result.route), default=0) + 1) \
         * max(1, result.pool)
     if result.complete and check_route(day, tasks, result):
@@ -238,37 +271,39 @@ def fit(chains, *, hands: int, available: dict | None = None,
         # checked here rather than discovered inside `compile_route`).
         return DayFit(tuple(chains), len(result.route), tasks.n, result.pool,
                       False, hours, hours_committed, "unstable",
-                      spare=int(result.spare), floor=int(floor))
+                      spare=int(result.spare), floor=int(pool_floor),
+                      left=len(left_ids), left_by_quadrant=left_by_quadrant)
     reason = "" if result.complete else ("budget" if result.can_improve
                                          else "hours")
     return DayFit(tuple(chains), len(result.route), tasks.n, result.pool,
                   bool(result.complete), hours, hours_committed, reason,
-                  spare=int(result.spare), floor=int(floor))
+                  spare=int(result.spare), floor=int(pool_floor),
+                  left=len(left_ids), left_by_quadrant=left_by_quadrant)
 
 
-def hours_for(hands: int, days: int, overhead: float) -> np.ndarray:
-    """The labour a day holds with `hands` hired, per day of the horizon.
+def hours_for(hired: int, days: int, overhead: float) -> np.ndarray:
+    """The labour a day holds with `hired` hands, per day of the horizon.
 
-    `24·(1 + hands) − hands`: the farmer's full day plus one per hand, less the
+    `24·(1 + hired) − hired`: the farmer's full day plus one per hand, less the
     hour each hand loses to being hired (F040 — a hand hired in turn 0 first
     acts at hour 1). The overhead is #12's M3 placeholder for the walking a
     route does beyond what a column charges; the columns now carry the walk to
     the tile, so what is left is the walking BETWEEN them.
     """
-    gross = 24.0 * (1 + int(hands)) - int(hands)
+    gross = 24.0 * (1 + int(hired)) - int(hired)
     return np.full(days, gross * (1.0 - overhead))
 
 
-def hire_bill(hands: int, hires_today: int = 0,
+def hire_bill(hired: int, hires_today: int = 0,
               multiplier: int | None = None) -> int:
-    """What `hands` hires cost today. Fibonacci, and it resets nightly (F039).
+    """What `hired` hires cost today. Fibonacci, and it resets nightly (F039).
 
     One formula with the LP's: `rules.hire_cost(n, multiplier)`, where
     `multiplier` is the run's own `farmHandCostMult` when the caller resolved it.
     """
     from agent.world.rules import hire_cost
     return sum(hire_cost(int(hires_today) + i, multiplier)
-               for i in range(max(0, int(hands))))
+               for i in range(max(0, int(hired))))
 
 
 @dataclass(frozen=True)
@@ -281,7 +316,7 @@ class DayPlan:
     day: DayFit
     rounds: int = 1                # which solve this candidate came from
     overhead: float = 1.0          # the hours correction that was applied
-    hands: int = 0                 # hands this plan pays for
+    offer: int = 0                 # the offer it was priced for; `fitted.pool` is what it pays for
     net: float = 0.0               # objective less what the hands cost
     #: How many times the master was solved in total. `rounds` is the winner's
     #: own number and a later solve can lose to an earlier one, so the two are
@@ -297,12 +332,26 @@ def _better(candidate: "DayPlan", best: "DayPlan") -> bool:
             < abs(best.day.overhead - 1.0) - 1e-9)
 
 
+def scan_ceiling(offer: int, cap: int) -> int:
+    """The TOP of the pool scan: the day's estimate, never above the cap.
+
+    `min(offer, cap)`. The two numbers answer different questions -- `offer` is
+    what the day's work is estimated to need (the owner's regression, on the
+    chains of the day) and `cap` is the most hands the run is willing to
+    consider -- so taking the min keeps both honest: the estimate cannot blow the
+    scan up, and the cap cannot discard it. The inline pair this replaces read
+    `cap` AFTER overwriting it, so its condition was dead: the top was always
+    `cfg.max_hands` and a caller's estimate never reached the scan at all.
+    """
+    return max(0, min(int(offer), int(cap)))
+
+
 def plan(obs, contractor, supply, *, class_of_tile, iter_cap: int | None = None,
-         hands: int = 0,
+         offer: int = 0,
          terms: "EngineTerms | None" = None,
          rounds: int | None = None, tolerance: float | None = None,
          pool: list | None = None,
-         max_hands: int | None = None, w_warm=None,
+         cap: int | None = None, w_warm=None,
          forecast_obj=None, smoothing: float | None = None,
          cfg: "Config | None" = None) -> DayPlan:
     """Enumerate the pool of hands, and keep the day worth the most net of it.
@@ -364,8 +413,19 @@ def plan(obs, contractor, supply, *, class_of_tile, iter_cap: int | None = None,
     tolerance = (float(cfg.hours_tolerance) if tolerance is None
                  else float(tolerance))
     smoothing = float(cfg.smoothing if smoothing is None else smoothing)
-    max_hands = int(cfg.max_hands if max_hands is None else max_hands)
-    ceiling = int(hands if max_hands is None else max_hands)
+    cap = int(cfg.max_hands if cap is None else cap)
+    buys = bool(getattr(cfg, "buy_hands", False))
+    # When the MODEL buys the hands, the ladder's WIDTH (`cap`, 16 -- the
+    # Fibonacci ladder's own value) is the only bound on the day, and the
+    # manager's estimate is a HINT: the pool's seed and wsr's start. Letting
+    # the estimate CAP the day was the trap -- on an empty farm it says one
+    # hand, one hand cannot plant 19 tiles in 15.6 hours, and the ground stays
+    # empty because it was empty. The wage is inside the objective, so the
+    # count is bounded by VALUE: a hand is bought only when the work it
+    # enables pays the ladder. Without the model buying, the estimate still
+    # bounds the scan as before -- there is nothing to price the extra hands
+    # with in that path.
+    pool_ceiling = int(cap if buys else scan_ceiling(offer, cap))
     carried = list(pool or [])
     chosen: DayPlan | None = None
     # Every offer is solved, largest pool FIRST: more hands is where the value
@@ -373,8 +433,15 @@ def plan(obs, contractor, supply, *, class_of_tile, iter_cap: int | None = None,
     # caps the enumeration shorter than this keeps a good day instead of the
     # emptiest one. What this function no longer does is cut the walk short on a
     # clock: the offers are all priced and the best NET wins.
-    for offer in range(max(0, ceiling), -1, -1):
-        current = _solve_at(obs, contractor, supply, class_of_tile, offer,
+    if buys:
+        # The count is a DECISION inside the model now (colgen's hands block),
+        # so there is nothing to scan for: one solve per day, and the offer it
+        # is handed only seeds the pool and wsr's ceiling.
+        return _solve_at(obs, contractor, supply, class_of_tile, pool_ceiling,
+                         iter_cap, rounds, tolerance, carried,
+                         w_warm, forecast_obj, smoothing, cfg, terms)
+    for size in range(max(0, pool_ceiling), -1, -1):
+        current = _solve_at(obs, contractor, supply, class_of_tile, size,
                             iter_cap, rounds, tolerance, carried,
                             w_warm, forecast_obj, smoothing, cfg, terms)
         carried = list(current.master.pool)
@@ -383,7 +450,7 @@ def plan(obs, contractor, supply, *, class_of_tile, iter_cap: int | None = None,
     return chosen
 
 
-def _solve_at(obs, contractor, supply, class_of_tile, hands, iter_cap,
+def _solve_at(obs, contractor, supply, class_of_tile, offer, iter_cap,
               rounds, tolerance, pool, w_warm=None,
               forecast_obj=None, smoothing: float = 0.0,
               cfg: "Config | None" = None,
@@ -395,7 +462,7 @@ def _solve_at(obs, contractor, supply, class_of_tile, hands, iter_cap,
     cfg = Config() if cfg is None else cfg
     terms = EngineTerms.from_obs(obs) if terms is None else terms
     days = int(np.asarray(supply.hours).size)
-    hours = hours_for(hands, days, cfg.hours_overhead)
+    hours = hours_for(offer, days, cfg.hours_overhead)
     best: DayPlan | None = None
     applied = 1.0
     candidate: DayPlan | None = None
@@ -407,10 +474,30 @@ def _solve_at(obs, contractor, supply, class_of_tile, hands, iter_cap,
             wheat_feed_stock=supply.wheat_feed_stock, money=supply.money,
             quotes=supply.quotes, shed_stock=supply.shed_stock,
             shed_capacity=supply.shed_capacity)
+        buys = bool(getattr(cfg, "buy_hands", False))
         result = M.equilibrate(object(), obs, contractor, current,
                                w_warm=w_warm, iter_cap=iter_cap, pool=pool,
                                forecast_obj=forecast_obj,
-                               smoothing=smoothing, cfg=cfg)
+                               smoothing=smoothing, cfg=cfg,
+                               integral=bool(getattr(cfg, "day_integral", False)),
+                               buy_hands=buys,
+                               hand_mult=int(terms.hand_cost_mult))
+        if buys:
+            # The count is the MODEL's, read off the result the day layer
+            # holds. Reading it from `result.solve` was the bug: `equilibrate`
+            # returns a MasterResult, which has no `solve`, so the getattr fell
+            # through to None in silence and wsr was asked about the manager's
+            # offer instead of the number the model chose.
+            bought = getattr(result, "hands_bought", None)
+            if bought is not None and np.asarray(bought).size:
+                # The model's own count (C), but it never UNDERCUTS the
+                # estimate the manager already made (B): the regression's
+                # offer is a floor, so the model prices labour inside the
+                # objective and may still ask for more hands than the
+                # regression alone would name. C's season lost to B's by
+                # under-hiring -- 94,164 against 167,504 over three seeds
+                # -- and this is the one difference that evidence asks for.
+                offer = max(offer, max(0, int(round(float(np.asarray(bought)[0])))))
         mixes = M.to_mixes(result, contractor.days)
         choices = C.assign_by_quota(class_of_tile, mixes)
         choices = protect_at_risk_assignments(choices, mixes, obs)
@@ -435,7 +522,8 @@ def _solve_at(obs, contractor, supply, class_of_tile, hands, iter_cap,
             float(np.asarray(mixes[c.class_key].plans[c.plan_index]
                              .row("labour"))[0])
             for c in choices if c is not None)
-        fitted = fit(chains, hands=hands,
+        fitted = fit(chains, pool_ceiling=offer,
+                     fixed_pool=bool(getattr(cfg, "buy_hands", False)),
                      available=availability(obs, chains),
                      hours_committed=committed)
         if not fitted.complete and fitted.reason == "hours":
@@ -446,15 +534,33 @@ def _solve_at(obs, contractor, supply, class_of_tile, hands, iter_cap,
             # a time would buy the same answer for a search per step.
             #
             # "budget" is never re-asked: more hands do not buy more time.
-            fitted = replace(fitted, short=max(0, int(fitted.floor) - int(hands)))
-            # `Config.ask_rounds` is the cap, and it is the CONFIG's number, not
-            # a module constant beside it: zero means no re-ask at all.
-            if int(fitted.floor) > int(hands) and int(cfg.ask_rounds) > 0:
-                again = fit(chains, hands=int(fitted.floor),
+            fitted = replace(fitted, short=max(0, int(fitted.floor) - int(offer)))
+            # The re-ask is a capped CONVERGENCE, not a single shot: each round
+            # offers the count wsr's own floor named, and the loop stops when
+            # that number stops moving -- either the day is carried at the new
+            # count, or the count we would offer next is the one we just offered
+            # (a fixed point). `Config.ask_rounds` is the ROUND CAP it always
+            # claimed to be: zero still means `do not re-ask at all`, and it is
+            # the config's own number, not a module constant beside it.
+            #
+            # On this day's work the floor is a property of the TASKS, so the
+            # first round is also the last and the day's numbers are what they
+            # always were -- the cap is real now, and a corrective that can move
+            # the ask (laying less on the day, from `left`) has somewhere to live.
+            rounds_left = int(cfg.ask_rounds)
+            offered = int(offer)
+            while rounds_left > 0 and int(fitted.floor) > offered:
+                rounds_left -= 1
+                wanted = int(fitted.floor)
+                again = fit(chains, pool_ceiling=wanted,
                             available=availability(obs, chains),
                             hours_committed=committed)
-                if again.complete:
-                    fitted = again
+                if not again.complete and int(again.floor) <= wanted:
+                    break       # a bigger pool did not carry it: no round will
+                fitted = again
+                if wanted == offered:
+                    break       # the proposal repeated: this is the fixed point
+                offered = wanted
         # A complete answer needs no second ask for a leaner pool: the search
         # STARTS at the floor and grows (`min(floor, hands)`, day.py:150), so
         # `result.pool` already IS the least it carried the day with - offering 5
@@ -464,15 +570,24 @@ def _solve_at(obs, contractor, supply, class_of_tile, hands, iter_cap,
         # The bill follows the pool that actually carries the day (`fitted.pool`
         # is what `compile` hires, day.py:396), not the pool the master priced
         # with before the search had its say.
-        bill = hire_bill(int(fitted.pool),
-                         multiplier=terms.hand_cost_mult) * contractor.days
+        if bool(getattr(cfg, "buy_hands", False)):
+            # The hands block pays the Fibonacci bill INSIDE the objective, on
+            # every day it hires; charging it here as well bills the same coins
+            # twice, and `net` is the objective itself.
+            bill = 0
+        else:
+            bill = hire_bill(int(fitted.pool),
+                             multiplier=terms.hand_cost_mult) * contractor.days
         candidate = DayPlan(result, choices, mixes, fitted, spent, applied,
-                            solves=spent, hands=hands,
+                            solves=spent, offer=offer,
                             net=float(result.objective) - bill)
         if best is None or _better(candidate, best):
             best = candidate
-        best = DayPlan(best.master, best.choices, best.mixes, best.day,
-                       best.rounds, best.overhead, solves=spent)
+        # `solves` is the only field that may move: rebuilding the winner field
+        # by field dropped `hands` and `net` to their dataclass defaults (0 and
+        # 0.0), and this object is what `plan` ranks offers by and what the
+        # market side reads for the bill.
+        best = replace(best, solves=spent)
 
         # Each correction round re-solves from the pool the last one left, so
         # a second solve is cheap even when the first was not.
@@ -485,12 +600,12 @@ def _solve_at(obs, contractor, supply, class_of_tile, hands, iter_cap,
             # price the search's own stopping rule into the farm's day.
             return candidate
         applied *= max(1.0 + tolerance, float(fitted.overhead))
-        hours = hours_for(hands, days, cfg.hours_overhead) / applied
+        hours = hours_for(offer, days, cfg.hours_overhead) / applied
 
     return best if best is not None else candidate
 
 
-def compile(day_plan: "DayPlan", obs, *, hands: int | None = None,
+def compile(day_plan: "DayPlan", obs, *, hired: int | None = None,
             rival_supply: dict | None = None,
             terms: "EngineTerms | None" = None, model=None,
             activity: int | None = None,
@@ -513,7 +628,7 @@ def compile(day_plan: "DayPlan", obs, *, hands: int | None = None,
     from agent.wsr.emit import compile_route, to_plan
 
     fitted = day_plan.day
-    pool = int(fitted.pool if hands is None else hands)
+    pool = int(fitted.pool if hired is None else hired)
 
     master_sells = {}
     solve_sells = getattr(getattr(day_plan, "master", None), "sells", None)
@@ -571,9 +686,9 @@ def compile(day_plan: "DayPlan", obs, *, hands: int | None = None,
 
         return rank
 
-    def queue(harvest_expected: int, hands: int, wsr_check: bool,
+    def queue(harvest_expected: int, hired: int, wsr_check: bool,
               arrivals: dict | None = None):
-        built = K.build(obs, fitted.chains, hands=hands,
+        built = K.build(obs, fitted.chains, hands=hired,
                         harvest_expected=harvest_expected, terms=terms,
                         model=model, activity=activity,
                         forecast_obj=forecast_obj, wsr_check=wsr_check,
@@ -617,11 +732,30 @@ def compile(day_plan: "DayPlan", obs, *, hands: int | None = None,
             out[good] = max(int(out.get(good, 0)), int(hour))
         return out
 
-    def priced(hire_times):
-        """The day, the route and the queue it implies, from one set of hours."""
+    def priced(hire_times, warm=None):
+        """The day, the route and the queue it implies, from one set of hours.
+
+        `warm` is the route from a PREVIOUS call at the SAME pool. That is
+        the only place a warm start means anything here: wsr's warm row
+        carries the earlier route's own workers and `when`s, so it is legal
+        only while the hand count is unchanged and the tasks move up or
+        down. Change the pool and the row describes a day with different
+        hands (owner, 2026-09-27)."""
         day = B.Day(chains=tuple(fitted.chains), available=available,
                     hire_times=hire_times)
-        result = B.search(day, tasks, hands=pool, max_hands=pool)
+        result = B.search(day, tasks, hands=pool, max_hands=pool, warm=warm)
+        if warm is not None:
+            # A warm start is an optimization, and it is only legal while the
+            # day it was built for still holds: the warm row carries that route's
+            # own `when`/`who`, so a schedule the compiler refuses is a route
+            # wsr's `check_route` accepted and `compile_route` did not (measured:
+            # `d4_build_pasture on worker 0 at turn 0 ... only -2 are free`).
+            # Search again without it rather than lose the turn.
+            from agent.wsr.emit import check_route as _check
+            # `check_route` returns its COMPLAINTS: a non-empty list is a route
+            # the compiler will not take (`fit` reads it the same way).
+            if _check(day, tasks, result):
+                result = B.search(day, tasks, hands=pool, max_hands=pool)
         ops = compile_route(day, tasks, result, horizon=TURNS_PER_DAY)
         harvest = sum(int(units) for _hour, _item, units in ops.arrivals)
         return day, result, ops, harvest
@@ -638,6 +772,22 @@ def compile(day_plan: "DayPlan", obs, *, hands: int | None = None,
     hours = tuple(check.hire_hours) if check.hire_hours else earliest_hire_times(pool)
     day, result, ops, harvest = priced(hours)
 
+    # The tasks above were built with an `available` that knows the shelf and the
+    # queue's buys but NOT what the route itself carries in: a drop's hour only
+    # exists once a route exists. A good the day fetches after its own drop
+    # therefore reads as present at hour 0, the fetch is scheduled before the
+    # drop, and the engine refuses it without a word (F047). One re-price on the
+    # route's own timetable closes that hole; the second `ops` is the one both
+    # the tasks and the market below are built from, so the day the engine
+    # executes is priced against what that day will itself have moved.
+    merged = dict(available)
+    for good, hour in arrival_hours(ops).items():
+        merged[good] = min(int(merged.get(good, int(hour))), int(hour))
+    if merged != available:
+        available = merged
+        tasks = T.build(fitted.chains, available=available)
+        day, result, ops, harvest = priced(hours)
+
     # The plan is PRICED for `pool` hands and the search is held to exactly those: the market
     # hires what the day was costed with, and a route may leave some of them idle.
     market = queue(harvest, result.pool, wsr_check=True,
@@ -647,7 +797,9 @@ def compile(day_plan: "DayPlan", obs, *, hands: int | None = None,
         # the committed queue knows the real one, so if its hires land in other
         # hours the day is priced again on them. The invariant is that the day the
         # engine executes is the day the queue's own timetable priced.
-        again = priced(tuple(market.hire_hours))
+        # SAME pool, same tasks, the queue's hours: the one re-solve a warm
+        # start is for.
+        again = priced(tuple(market.hire_hours), warm=result)
         if again[1].complete:
             day, result, ops, harvest = again
             market = queue(harvest, result.pool, wsr_check=True,

@@ -1,0 +1,28 @@
+{
+  "name": "sell_price_caps",
+  "kind": "sell_price_caps",
+  "file": "sell_price_caps.npz",
+  "contract": "mean price the engine paid, per (good, day, demand bucket) of the town's own shop set; the bucket is offline_lab.build.opponent_pergood_eval:demand_from_row, the same key opponent_counts uses; weight = the episodes behind each cell, so a reader can refuse a cell it does not trust",
+  "engine": "a2278746",
+  "registry": null,
+  "stats": {
+    "goods": [
+      "WHEAT",
+      "CARROT",
+      "TOMATO",
+      "STRAWBERRY",
+      "MELON",
+      "EGG",
+      "MILK",
+      "WOOL",
+      "FERTILIZER"
+    ],
+    "days": 30,
+    "buckets": 32,
+    "groups": 522222,
+    "cells": 606,
+    "steps_behind_day0": 910008
+  },
+  "source": "offline_lab.build.price_caps:build",
+  "created_utc": "2026-09-28T22:50:38Z"
+}

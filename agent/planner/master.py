@@ -292,6 +292,27 @@ class MasterResult:
     objective: float              # LP objective at the final round
     rounds: int
     converged: bool               # `cg.certified` (the pricing certificate)
+    #: True when the DECISION solve was the MIP: `lam` is then integral and the
+    #: solve's own duals are zero placeholders, so every published price below
+    #: came from `lp_final` — the LP solve of the SAME matrix and the same pool,
+    #: which is the only side of a MIP that has marginals at all.
+    integral: bool = False
+    #: That LP solve, when it happened (`integral` only). The pricing certificate
+    #: and the gate "the MIP cannot beat its own relaxation" are both read here.
+    lp_final: object = None
+    #: (days,) the hands the model BOUGHT in the decision solve -- the labour
+    #: row's `delta` block -- or None when that block was off. The day layer
+    #: asks wsr about `round()` of the first day and hires exactly that; the
+    #: bill is already inside the objective, so no caller adds it again.
+    hands_bought: object = None
+    #: `colgen.MasterSolve.land_dual` -- per quadrant, what one more purchase of it
+    #: is worth, and `rent` -- what one more tile of room on each day is worth.
+    #: Both are LP row duals (a MIP publishes zeros), None when no land row ran.
+    land_dual: object = None
+    rent: object = None
+    #: `colgen.MasterSolve.rc_history[-1]` -- the worst reduced cost when the loop
+    #: stopped, i.e. the number `certified` was decided on. None when no round ran.
+    rc: object = None
     used_fallback: bool = False
     fallback_reason: str = ""
     p_source: str = ""            # where the product price path came from
@@ -321,7 +342,7 @@ class MasterResult:
     credit: np.ndarray = None
     defer_cap: np.ndarray = None
     #: The columns `lam` weights, and the classes they belong to. A mix is
-    #: useless without them: `columns.assign_tiles` has to know WHICH plan each
+    #: useless without them: `columns.assign_by_quota` has to know WHICH plan each
     #: weight is for, and re-pricing at the published duals gives a different
     #: board and a different answer.
     pool: list = field(default_factory=list)
@@ -397,7 +418,7 @@ def published_duals(w_coupling: np.ndarray, days: int,
     return np.maximum(out, 0.0)
 
 
-def _sell_cap(obs, days: int) -> np.ndarray:
+def _sell_cap(obs, days: int, risk_z: float = 0.0) -> tuple[np.ndarray, dict]:
     """`(1, len(PRODUCTS))`: how much the town will buy over the horizon.
 
     ONE number per good, because the town eats that much over the whole horizon
@@ -416,19 +437,25 @@ def _sell_cap(obs, days: int) -> np.ndarray:
     reporting a pricing failure it did not have. Without a rival the town's own
     drain IS the appetite: the rival's supply is a subtraction, not the model.
     """
-    from agent.belief.opponent import drain_forecast
+    from agent.belief.opponent import GOODS, drain_forecast
 
     horizon = max(1, int(days)) * TURNS_PER_DAY
-    drain, _sd = drain_forecast(obs, horizon)
+    drain, sd = drain_forecast(obs, horizon)
     total = np.asarray(drain, dtype=np.float64)[None, :len(PRODUCTS)]
+    # The SAME call's second moment, kept instead of discarded: `risk_z` sd of
+    # the drain falling short is the sale ladder walked `risk_z·sd` units up
+    # (belief's own `opponent.quantile_price_floor`). Zero is the mean model.
+    risk_pad = ({str(g): float(risk_z) * max(0.0, float(v))
+                 for g, v in zip(GOODS, np.asarray(sd, dtype=np.float64))}
+                if float(risk_z) > 0.0 else {})
     try:
         from agent.belief.rival_calendar import supply_curve
         rival = np.asarray(supply_curve(obs, PRODUCTS, days), dtype=np.float64)
     except Exception:                              # noqa: BLE001 - no rival
-        return np.maximum(total, 0.0)
+        return np.maximum(total, 0.0), risk_pad
     if rival.ndim == 2 and rival.shape[1] == total.shape[1]:
         total = total - rival.sum(axis=0)[None, :]
-    return np.maximum(total, 0.0)
+    return np.maximum(total, 0.0), risk_pad
 
 
 def _shed_capacity(obs) -> int:
@@ -515,8 +542,36 @@ def _validate_cost(cost: np.ndarray) -> None:
             "(chain costs are consumption vectors; the matrix is built wrong)")
 
 
+def depth_coins_from(fc, item: str, day: int, quote: float, start_units: int,
+                     units: int) -> float:
+    """The ladder's coins for `units`, walked from an inventory that pays `quote`.
+
+    `belief.depth.depth_coins` walks from the forecast's own (drained) inventory.
+    A sale that OFFSETS the drain has to be walked from the un-drained one, and
+    the only honest way to say that without a second price model is to ask the
+    engine's own quote function for the inventory that pays `quote` today.
+    """
+    from agent.belief.ladder import sell_coins
+    from agent.world.prices import price as _quote
+    # the engine's price is monotone in inventory: search the inventory that
+    # quotes `quote` today, then walk the ladder from there.
+    lo, hi = 0.0, 20000.0
+    for _ in range(40):
+        mid = 0.5 * (lo + hi)
+        if float(_quote(item, mid)) > float(quote):
+            lo = mid
+        else:
+            hi = mid
+    inv0 = int(hi)
+    return float(sell_coins(item, inv0, max(1, int(units)))
+                 - sell_coins(item, inv0, max(0, int(start_units))))
+
+
 def _product_price_path(obs, days: int, p_flat: np.ndarray,
-                        forecast_obj=None) -> tuple[np.ndarray, str]:
+                        forecast_obj=None, supply=None,
+                        rival_supply=None,
+                        cfg=None,
+                        high_out: list | None = None) -> tuple[np.ndarray, str]:
     """The product rows of `p`: the market forecast (#15), or flat quotes.
 
     F035: prices rise through the season, so the flat stand-in under-prices
@@ -535,8 +590,14 @@ def _product_price_path(obs, days: int, p_flat: np.ndarray,
         # A caller that already has this turn's forecast hands it in: the same
         # curve prices the master's objective and re-times the day's sells, and
         # building it twice was 1.1 + 1.4 ms of the turn.
+        # `belief.market.forecast` already takes the rival's supply as a DATED
+        # curve (`rival_calendar.supply_curve`, #205) -- and this call was not
+        # passing it, so the path the master priced every far day with carried
+        # the town's drain and NOBODY's supply: measured on the seed-33 board,
+        # MILK rose 160 -> 454 by day 29. The rival pours goods in too; with
+        # their curve (and ours) on top, the far days stop being free money.
         fc = (forecast_obj if forecast_obj is not None
-              else _forecast(obs, days=days))
+              else _forecast(obs, days=days, rival_supply=rival_supply))
         # Every row of `p` must be a day the season HAS, and the path is indexed
         # from the observation's own day (`price_paths(from_day=first_day)`), so
         # a forecast that covers the horizon puts day `days - 1` on the season's
@@ -550,15 +611,174 @@ def _product_price_path(obs, days: int, p_flat: np.ndarray,
             return p_flat, (f"flat stand-in (forecast covers "
                             f"{int(getattr(fc, 'days', 0))} of {days} days)")
         paths = price_paths(fc, days=days)
+        # The other end of the same walk: the rival at their ceiling, priced by
+        # the same pipeline below. Nothing consumes it yet -- the risk block in
+        # the master is the consumer, and until it lands this is per-turn work
+        # for no decision. It is here so the wire can be inspected in one
+        # place, and it cannot move a number while nothing reads it.
+        # The band is OPT-IN and must degrade. A forecast that cannot answer the
+        # pessimistic question leaves NO band rather than taking the whole price
+        # path down with it: without this guard a short forecast raised a
+        # TypeError inside the walk and the manager fell back to the flat
+        # stand-in -- one optional band, a whole day at the flat quote. (Measured:
+        # the guard does not move the day-0 result, 2083/6 tiles either way.)
+        try:
+            paths_high = price_paths(fc, days=days, high=True)
+        except Exception:                       # noqa: BLE001 - no band is a band
+            paths_high = None
+        # The path above is the forecast's OWN walk: the town drains and nobody
+        # sells. Our plan does sell, and a good we pour in is worth what the
+        # ladder pays for it AFTER our own supply -- `belief.depth.inventory_at`
+        # plus the engine's own price function, never a transcribed one (R002).
+        # `supply` is `{item: (units, ...)}` per day; without it, nothing changes.
+        # The gate alone opens the block: `supply` may be absent, in which case the
+        # declared default lot (`Config.sell_lot_default`) is what every good is
+        # priced as. Requiring a supply dict here made the default lot DEAD CODE.
+        def _ladder_priced(paths):
+            """`paths` re-priced through the ladder: ONE definition.
+
+            Both bands must see the same transform. The master prices a sale
+            on the ladder, so a band priced on the raw quote would be a
+            different model rather than the same one read from the other end.
+            """
+            supply = supply or {}
+            from agent.belief.depth import depth_coins
+            first = int(obs.get("day", 0)) if isinstance(obs, dict) else 0
+            # The DP plans against a price; the LP sells through the LADDER. A
+            # rising path (F035) makes holding the crop to the peak look best --
+            # and the peak is a price a LOT can never realise. So the price the
+            # contractor plans with is the ladder's OWN average for the lot the
+            # plan would sell that day (`depth_coins(lot)/lot`), which is the same
+            # curve the master prices the sale with. Measured on the seed-33 board,
+            # day 3: MILK quotes 175 but a 40-unit lot averages 126 (-28%); wheat
+            # 30 -> 26; far days move ~1% (a scarce market is nearly flat).
+            priced = {}
+            # No caller has told us the lot yet (the hand-off the day layer still
+            # owes): the SAFE default is the shed's own ceiling, the largest lot a
+            # day can physically put on the market. That is the conservative end of
+            # the ladder, and it is what stops a rising path from paying the PEAK
+            # price for a lot no peak can absorb. The measured own-supply lot
+            # replaces this as soon as the manager hands one in.
+            default_lot = float(getattr(cfg, "sell_lot_default", 0.0))
+            for item, path in paths.items():
+                units = np.asarray(supply.get(item, np.full(days, default_lot)),
+                                   dtype=np.float64)[:days]
+                # The drain is counted TWICE unless the sale line offsets it (#151
+                # point 2): the forecast's path rises because the town eats the
+                # stock -- but the units WE sell land in the same market, so on the
+                # days we sell, the inventory does not fall and the price does not
+                # rise. Our own sale is therefore priced on the UN-DRAINED quote,
+                # and the ladder is walked from there (our lot still pays its own
+                # depth). Measured: MILK's day-29 quote 471 -> the flat quote.
+                base_day = float(depth_coins(fc, item, first, 1))
+                priced[item] = tuple(
+                    float(depth_coins_from(fc, item, first, base_day, 1,
+                                           max(1, int(round(float(units[d]))))))
+                    / max(1.0, float(round(float(units[d])))) if units[d] > 0
+                    else float(path[d])
+                    for d in range(len(path)))
+            return paths
+
+        def _priced_paths(paths):
+            """The whole price pipeline, ONE definition, both bands.
+
+            The ladder re-price, the demand floor and the archive cap are
+            three transforms of the SAME dict. The pessimistic band has to
+            run through all three: a band that skipped one would be a
+            different model, not the same one read from the other end.
+            """
+            if int(getattr(cfg, "price_supply_rounds", 0)) > 0:
+                paths = _ladder_priced(paths)
+            # The risk floor (Config.price_risk_z): the far days are priced on the walk
+            # the town's demand is EXPECTED to make, and that expectation carries the
+            # shop unlocks' own spread -- which is as large as the demand itself, so a
+            # plan chosen on the mean is a plan that needs the good world to pay. The
+            # floor prices each day on the drain falling `z` sd short: risk as a price.
+            risk_z = float(getattr(cfg, "price_risk_z", 0.0))
+            if risk_z > 0.0 and isinstance(obs, dict):
+                from agent.belief.opponent import G_IX, drain_forecast, price_of
+                inventory = dict(obs.get("market", {}).get("inventory", {}) or {})
+                floors = {}
+                for d in range(days):
+                    mean_d, sd_d = drain_forecast(obs, (d + 1) * TURNS_PER_DAY)
+                    floors[d] = (mean_d, sd_d)
+                priced = {}
+                for item, path in paths.items():
+                    ix = G_IX.get(item)
+                    inv = float(inventory.get(item, 0.0))
+                    vals = []
+                    for d in range(len(path)):
+                        if ix is None or d not in floors:
+                            vals.append(float(path[d])); continue
+                        mean_d, sd_d = floors[d]
+                        floor = float(price_of(item, inv - float(mean_d[ix])
+                                               + risk_z * float(sd_d[ix])))
+                        vals.append(min(float(path[d]), floor))
+                    priced[item] = tuple(vals)
+                paths = priced
+                del priced
+            # The archive's ceiling (Config.price_cap_from_archive): a drain-only path
+            # has no shop demand in it, so it keeps rising after the shops have spoken
+            # and prices a far day above every world the engine ever ran. The cap reads
+            # the day's BEST demand bucket, never the current one, so the upside of an
+            # open shop survives.
+            if bool(getattr(cfg, "price_cap_from_archive", False)):
+                caps = _archive_day_caps()
+                paths = {item: tuple(
+                    min(float(v), float(caps[item][d]))
+                    if item in caps and d < len(caps[item]) and np.isfinite(caps[item][d])
+                    else float(v) for d, v in enumerate(path))
+                    for item, path in paths.items()}
+            return paths
+
+        paths = _priced_paths(paths)
+        if paths_high is not None:
+            paths_high = _priced_paths(paths_high)
     except Exception as exc:                     # noqa: BLE001 - degrade
         return p_flat, f"flat stand-in (forecast failed: {type(exc).__name__})"
-    out = p_flat.copy()
-    for item, path in paths.items():
-        rid = RESOURCE_ID.get(item)
-        if rid is None or rid not in MARKET_IDS:
-            continue
-        out[:, rid] = [float(path[day]) for day in range(days)]
+    def _to_resource(paths: dict, base: np.ndarray) -> np.ndarray:
+        """`{item: (price, ...)}` -> the resource-row array, ONE definition."""
+        out = base.copy()
+        for item, path in paths.items():
+            rid = RESOURCE_ID.get(item)
+            if rid is None or rid not in MARKET_IDS:
+                continue
+            out[:, rid] = [float(path[day]) for day in range(days)]
+        return out
+
+    out = _to_resource(paths, p_flat)
+    if high_out is not None:
+        # The pessimistic band runs the same pipeline and returns through an
+        # explicit sink: no caller's contract changes, and none can read it by
+        # accident -- it is visible only to a caller that asked for it.
+        high_out.append(_to_resource(paths_high, p_flat))
     return out, f"market forecast (#15, unlock policy {fc.unlock_policy})"
+
+
+
+#: The archive's per-day ceilings, loaded once: `{good: (days,)}`.
+_ARCHIVE_CAPS: list = [None]
+
+
+def _archive_day_caps() -> dict:
+    """The highest price any real shop set paid for a good on a day.
+
+    The artifact holds the mean price per (good, day, demand bucket) measured over the
+    store's episodes. A cap needs one number per day, and the safe one is the day's
+    BEST bucket: it bounds the hope -- the model may not price a far day above every
+    world the engine ever ran -- without bounding the upside, because a world that
+    really held the shops still paid what it paid. The bucket axis stays in the
+    artifact for the risk term that reads it next. A day the store never reached has
+    no cap and is left as the forecast wrote it.
+    """
+    if _ARCHIVE_CAPS[0] is None:
+        from agent.artifact import artifact_path
+        data = np.load(artifact_path("sell_price_caps", ".npz"), allow_pickle=True)
+        caps = np.asarray(data["caps"], dtype=np.float64)
+        goods = [str(g) for g in data["goods"]]
+        with np.errstate(all="ignore"):
+            _ARCHIVE_CAPS[0] = {g: np.nanmax(caps[i], axis=1) for i, g in enumerate(goods)}
+    return _ARCHIVE_CAPS[0]
 
 
 def _repriced_pool(pool, p_mkt: np.ndarray, days: int) -> list:
@@ -645,12 +865,16 @@ def priced_contractor(contractor, obs):
 def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
                 w_warm: np.ndarray | None = None,
                 iter_cap: int | None = None,
+                integral: bool = False,
+                land: int | None = None,
                 owned: list[int] | None = None,
                 pool: list | None = None,
                 forecast_obj=None,
                 smoothing: float = 0.0,
                 entry: bool = False,
-                cfg: "Config | None" = None) -> MasterResult:
+                cfg: "Config | None" = None,
+                buy_hands: bool = False,
+                hand_mult: int = 0) -> MasterResult:
     """Column generation over the tile classes; always publishable.
 
     One round is one Dantzig-Wolfe round (lesson 1.9): the LP solves over EVERY
@@ -698,8 +922,23 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
     p = p_mkt_full[:days]
     # #15: the product rows of `p` come from the market forecast (F035's
     # rising path); the flat stand-in is the documented fallback.
-    p, p_source = _product_price_path(obs, days, p, forecast_obj=forecast_obj)
+    rival_curve = None
+    if int(getattr(cfg, "price_supply_rounds", 0)) > 0:
+        try:
+            from agent.belief.rival_calendar import supply_curve as _rival_curve
+            rival_curve = np.asarray(_rival_curve(obs, tuple(PRODUCTS), days),
+                                     dtype=np.float64)
+        except Exception:                     # noqa: BLE001 - no rival to read
+            rival_curve = None
+    _band: list = []
+    p, p_source = _product_price_path(obs, days, p, forecast_obj=forecast_obj,
+                                      rival_supply=rival_curve, cfg=cfg,
+                                      high_out=_band)
     p_mkt = p[:, list(MARKET_IDS)]
+    # The pessimistic band, in the same rows and the same good order. `None`
+    # when the path degraded to flat quotes -- there is no second band to price
+    # against, and every consumer must then behave exactly as it did before.
+    p_mkt_high = _band[0][:, list(MARKET_IDS)] if _band else None
     # The engine-quote floor (see the publish rule in the docstring):
     # the stand-in wages ARE the engine's own prices for the inputs.
     w_floor = published_duals(w_stand_full[:days], days)[:, COUPLING_IDS]
@@ -872,7 +1111,12 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
         # One base sweep for every distance in the round, not one sweep each:
         # the distance only changes the walk on the labour column, so the gemv
         # over the graph is shared (`TileContractor.price_many`).
-        priced = contractor.price_many(p_eff, exact, groups)
+        # The slot's price, from the LP solve of the SAME matrix: an occupied tile
+        # pays the day's rent, a bare one pays nothing. None on a MIP solve (no
+        # marginals), which is why the LP is the one whose duals are read.
+        priced = contractor.price_many(p_eff, exact, groups,
+                                       rent=getattr(duals, "rent", None),
+)
         for dist, group in sorted(groups.items()):
             board_d = priced[int(dist)]
             cost_d = board_d.per_day_cost[:, :days, COUPLING_IDS].astype(np.float64)
@@ -910,6 +1154,10 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
             values.append(max(0.0, float(board.tile_values[i])))
         return np.asarray(values, dtype=np.float64), columns
 
+    # The town's appetite AND the drain's spread, from one call: the risk shave
+    # the ladder below is read with, and the cap the sell rows use further down.
+    sell_cap, risk_pad = _sell_cap(obs, days, float(getattr(cfg, "sell_risk_z", 0.0)))
+
     # The market's DEPTH, from belief's own ladder (`belief.depth.sell_blocks`):
     # what a lot fetches, per good per day, as blocks an LP can price. Built from
     # the SAME forecast the price path came from, so the curve and the path are
@@ -927,27 +1175,46 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
             # better than this number, never worse.
             _env_price, env_hour = day_envelope(forecast_obj, goods,
                                                 int(obs.get("day", 0)), days)
+            # The ladder is read from a market padded by the drain's own spread,
+            # in the caller's good order (the pad is keyed by NAME, so no order
+            # can silently misalign). An empty pad is the mean ladder.
+            pad = (np.array([float(risk_pad.get(g, 0.0)) for g in goods],
+                            dtype=np.float64) if risk_pad else None)
             depth = sell_blocks(forecast_obj, goods, int(obs.get("day", 0)),
                                 days, int(supply.shed_capacity),
-                                blocks=int(cfg.sell_blocks), hours=env_hour)
+                                blocks=int(cfg.sell_blocks), hours=env_hour,
+                                pad=pad)
+            # The band's own depth -- the same curve on the pessimistic market --
+            # built ONLY when the risk term is on: at kappa zero there is no second
+            # scenario, so the curve is never walked and nothing is paid. 'Off means
+            # absent, not idle', the same rule the splice follows.
+            depth_high = (sell_blocks(forecast_obj, goods, int(obs.get("day", 0)),
+                                      days, int(supply.shed_capacity),
+                                      blocks=int(cfg.sell_blocks), hours=env_hour,
+                                      pad=pad, high=True)
+                          if float(getattr(cfg, "risk_kappa", 0.0)) > 0.0 else None)
         except Exception:                       # noqa: BLE001 - the flat tier stands
             depth = None
 
+    depth_high: tuple[np.ndarray, np.ndarray] | None = None
     try:
         # The warm pool is priced at TODAY's product prices before it is used:
         # a column's revenue was computed on the board it was built on, and the
         # market path moves (see `_repriced_pool`).
         cg = colgen.generate(price, supply.hours, supply.money, counts, days,
                              N_COUPLING, idle, rounds=max(1, iter_cap),
-                             cfg=cfg,
+                             cfg=cfg, integral=integral,
                              shed=(supply.shed_stock, supply.shed_capacity),
                              prices=p_mkt,
+                             prices_high=p_mkt_high,
+                             depth_high=depth_high,
                              market=SELLABLE,
-                             sell_cap=_sell_cap(obs, days),
+                             sell_cap=sell_cap,
                              depth=depth,
                              entry=entry,
                              warm=_repriced_pool(pool, p_mkt, days),
-                             smoothing=smoothing)
+                             smoothing=smoothing,
+            buy_hands=buy_hands, hand_mult=hand_mult)
     except RuntimeError as exc:
         return _fallback(str(exc)[:200])
     except Exception as exc:                    # noqa: BLE001 - degraded, not dead
@@ -963,18 +1230,32 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
     result.stopped = cg.stopped
     result.history = list(cg.rc_history)
     if cg.solve is not None:
+        # Two sides of one matrix. The DECISION (what to do) is the solve's own;
+        # the PRICES (what a tile, a coin and a good are worth) can only come from
+        # an LP, because a MIP has no marginals — so when the decision solve was
+        # integral, every dual-derived field is read from the LP solve of the same
+        # pool and the zero placeholders never leave this function.
+        result.integral = bool(getattr(cg.solve, "integral", False))
+        result.lp_final = cg.lp_final if result.integral else None
+        dual_src = cg.lp_final if result.integral else cg.solve
         result.lam = cg.solve.lam
         result.objective = cg.solve.objective
         result.duals = state["w"]
-        result.mu = cg.solve.mu
-        result.sigma = cg.solve.sigma
-        result.cash_lp = cg.solve.cash
-        result.now = getattr(cg.solve, "now", None)
-        result.defer = getattr(cg.solve, "defer", None)
-        result.eta = getattr(cg.solve, "eta", None)
+        result.mu = dual_src.mu
+        result.sigma = dual_src.sigma
+        result.cash_lp = dual_src.cash
+        result.now = getattr(dual_src, "now", None)
+        result.defer = getattr(dual_src, "defer", None)
+        result.eta = getattr(dual_src, "eta", None)
         result.credit = credit_box[0]
-        result.defer_cap = getattr(cg.solve, "defer_cap", None)
+        result.defer_cap = getattr(dual_src, "defer_cap", None)
         result.sells = getattr(cg.solve, "sells", None)
+        result.hands_bought = getattr(cg.solve, "hands_bought", None)
+        result.land_bought = getattr(cg.solve, "land_bought", None)
+        result.land_dual = getattr(dual_src, "land_dual", None)
+        result.rent = getattr(dual_src, "rent", None)
+        _hist = getattr(cg.solve, "rc_history", None)
+        result.rc = float(_hist[-1]) if _hist else None
     converged = cg.certified
 
     # #87's dead-zone clamp, on the COUPLING dual before the publish map:

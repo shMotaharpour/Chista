@@ -108,35 +108,6 @@ class Choice:
     plan_index: int
 
 
-def assign_tiles(tile_keys: Sequence[int],
-                 mixes: dict[int, ClassMix]) -> list[Choice | None]:
-    """One plan per tile: the largest λ in the tile's own class (issue #13 §1).
-
-    `tile_keys` is the board in reading order (packed `TileState` keys, with
-    `LOCKED_KEY` for the quadrants we do not own). A LOCKED tile gets `None` and
-    never a plan: working one spends hours as a silent no-op (F042), and a plan
-    that reaches the dispatcher for a locked quadrant is invisible in the score
-    — which is why the issue asks for it as a regression test.
-
-    A key the master has no mix for is also `None`: pricing a class we never
-    solved would be a guess, and the caller can count the misses.
-    Deterministic by construction: the argmax takes the first maximum, so ties
-    fall to the lowest plan index.
-    """
-    choices: list[Choice | None] = []
-    for key in tile_keys:
-        if key == LOCKED_KEY:
-            choices.append(None)
-            continue
-        mix = mixes.get(int(key))
-        if mix is None or mix.count == 0:
-            choices.append(None)
-            continue
-        weights = np.asarray(mix.lam, dtype=np.float64)
-        choices.append(Choice(mix.class_key, int(np.argmax(weights))))
-    return choices
-
-
 def shed_distance(size: int | None = None) -> np.ndarray:
     """Manhattan steps from every cell to the nearest shed door, in reading order.
 
@@ -181,7 +152,7 @@ def assign_by_quota(class_of_tile: Sequence[int | None],
 
     The quota rule: plan `j` takes `floor(λ_j)` tiles, and the tiles left over
     go to the largest fractional parts. Deterministic — ties fall to the lowest
-    plan index, as `assign_tiles` promises — and it reproduces the LP's mix
+    plan index the argmax rule promises — and it reproduces the LP's mix
     exactly whenever the weights happen to be integral.
     """
     order: dict[int, list[int]] = {}
