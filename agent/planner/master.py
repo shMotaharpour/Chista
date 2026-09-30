@@ -1174,9 +1174,19 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
                                 days, int(supply.shed_capacity),
                                 blocks=int(cfg.sell_blocks), hours=env_hour,
                                 pad=pad)
+            # The band's own depth -- the same curve on the pessimistic market --
+            # built ONLY when the risk term is on: at kappa zero there is no second
+            # scenario, so the curve is never walked and nothing is paid. 'Off means
+            # absent, not idle', the same rule the splice follows.
+            depth_high = (sell_blocks(forecast_obj, goods, int(obs.get("day", 0)),
+                                      days, int(supply.shed_capacity),
+                                      blocks=int(cfg.sell_blocks), hours=env_hour,
+                                      pad=pad, high=True)
+                          if float(getattr(cfg, "risk_kappa", 0.0)) > 0.0 else None)
         except Exception:                       # noqa: BLE001 - the flat tier stands
             depth = None
 
+    depth_high: tuple[np.ndarray, np.ndarray] | None = None
     try:
         # The warm pool is priced at TODAY's product prices before it is used:
         # a column's revenue was computed on the board it was built on, and the
@@ -1187,6 +1197,7 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply,
                              shed=(supply.shed_stock, supply.shed_capacity),
                              prices=p_mkt,
                              prices_high=p_mkt_high,
+                             depth_high=depth_high,
                              market=SELLABLE,
                              sell_cap=sell_cap,
                              depth=depth,
