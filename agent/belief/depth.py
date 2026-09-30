@@ -324,7 +324,8 @@ def day_envelope(fc: MarketForecast, goods, first_day: int, days: int
 
 
 def cumulative_coins(fc: MarketForecast, good: str, day: int, cap: int,
-                     *, hour: int | None = None, pad: float = 0.0) -> np.ndarray:
+                     *, hour: int | None = None, pad: float = 0.0,
+                     high: bool = False) -> np.ndarray:
     """`(cap+1,)`: the ladder's own coins for 0..cap units, vectorised.
 
     The engine's ladder is the cumulative sum of the quote the price table gives
@@ -337,7 +338,7 @@ def cumulative_coins(fc: MarketForecast, good: str, day: int, cap: int,
     n = max(0, int(cap))
     if n == 0:
         return np.zeros(1, dtype=np.int64)
-    start = inventory_at(fc, good, day, hour) + int(pad)
+    start = inventory_at(fc, good, day, hour, high=high) + int(pad)
     marg = price_vec(good, start + np.arange(n, dtype=np.float64))
     return np.concatenate([[0], np.cumsum(np.asarray(marg, dtype=np.int64))])
 
