@@ -446,3 +446,62 @@ def harvestable_yield(crop: Crop | str, age: int, fertilised: bool = False,
         return 0
     interval = max(1, int(spec["interval"]))
     return min(cap, step * (1 + (elapsed - first) // interval))
+
+
+_MAX_AGE = 40
+#: The crop order every index in a window refers to (sorted, so it is stable).
+_CROP_ORDER = tuple(sorted(CROP_RULES))
+
+
+def _yield_table() -> "np.ndarray":
+    """`(n_crops, _MAX_AGE+1)`: `harvestable_yield` for every crop and age.
+
+    Built ONCE at import so the window is pure indexing afterwards -- a Python loop
+    per tile per turn is exactly what this table exists to avoid.
+    """
+    import numpy as _np
+
+    return _np.array([[harvestable_yield(c, a) for a in range(_MAX_AGE + 1)]
+                      for c in sorted(CROP_RULES)], dtype=_np.int16)
+
+
+def rival_window(yields, crops, ages, fertilised: bool = False):
+    """`(K, 9)`: what the rival's standing tiles can be CUT for, day by day.
+
+    `yields`/`crops`/`ages` are one entry per tile of their board, indexed by the
+    tile's slot in the field grid -- an index the engine keeps stable, so no
+    coordinates and no dictionary are needed to match a tile across turns. `crops`
+    holds indices into `_CROP_ORDER`; a negative index means "no crop" and is
+    skipped.
+
+    `K` is DATA-DRIVEN: the furthest day any standing tile is still waiting for its
+    gate, plus one. A fixed horizon would drop melon (origin 6) and strawberry
+    (10) out of the window entirely, and those are the slow crops whose timing we
+    most need to see.
+
+    The gather and the per-good sum are both single array operations: nothing here
+    loops over tiles.
+    """
+    import numpy as _np
+
+    n = len(yields)
+    if n == 0:
+        return _np.zeros((2, len(_CROP_ORDER)), dtype=_np.int32)
+    ages = _np.asarray(ages, dtype=_np.int32)
+    crops = _np.asarray(crops, dtype=_np.int32)
+    k = max(2, int(max(0, -int(ages.min()))) + 1)
+    ahead = ages[:, None] + _np.arange(k, dtype=_np.int32)[None, :]      # (n, K)
+    tab = _yield_table()
+    if fertilised:
+        tab = _np.array([[harvestable_yield(c, a, True) for a in range(_MAX_AGE + 1)]
+                         for c in sorted(CROP_RULES)], dtype=_np.int16)
+    ok = crops >= 0
+    reach = _np.zeros((n, k), dtype=_np.int32)
+    # The gather must not clip a NEGATIVE age onto age 0: that would read the gate's
+    # own value for a tile that is still waiting, inventing a harvest it cannot make.
+    gated = ahead[ok] >= 0                                               # the gate, kept as a mask
+    reach[ok] = _np.where(gated, tab[crops[ok][:, None], _np.clip(ahead[ok], 0, _MAX_AGE)], 0)
+    oh = _np.zeros((n, len(_CROP_ORDER)), dtype=_np.int32)
+    good_ix = _np.where(ok, crops, 0)
+    oh[_np.arange(n), good_ix] = ok                                      # one scatter
+    return reach.T @ oh                                                  # one matmul
