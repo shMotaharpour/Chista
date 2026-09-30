@@ -589,6 +589,14 @@ def price_paths(fc: MarketForecast, days: int | None = None,
     horizon = fc.days if days is None else max(1, int(days))
     wanted = PRODUCTS if items is None else tuple(items)
     start = int(fc.first_day) if from_day is None else int(from_day)
-    return {item: tuple(fc.price_of(item, start + d, high=high)
+    def _one(item: str, d: int) -> int:
+        # The mean path must issue the SAME call it always did. `high` is a
+        # capability, not an assumption: a forecast that does not know it -- the
+        # flat stand-in, belief's stubs -- is still a forecast, and widening the
+        # plain call broke every one of them ("_Path.price_of() got an unexpected
+        # keyword argument 'high'"), taking the whole mean path to the stand-in.
+        return fc.price_of(item, d, high=True) if high else fc.price_of(item, d)
+
+    return {item: tuple(_one(item, start + d)
                         for d in range(horizon))
             for item in wanted}
