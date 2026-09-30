@@ -176,6 +176,14 @@ class MarketForecast:
     #: the per-turn walk behind the day rows — what `hourly_prices` samples.
     #: (T+1, 9) inventories; row 0 is the snapshot, row j after turn j-1.
     walk_inventory: np.ndarray = field(default_factory=lambda: np.zeros((1, 1)))
+    #: The same walk priced from the OTHER end of the rival's estimate. When a
+    #: caller hands in a ceiling (their shed-level stock plus the harvest they
+    #: have not dropped), the rival term becomes that ceiling, so more supply
+    #: presses the price down: this is the pessimistic band of the same model,
+    #: not a second model. Left at zero means no ceiling was given and
+    #: `walk_inventory` is the only path -- the bit-identical case.
+    walk_inventory_high: np.ndarray = field(
+        default_factory=lambda: np.zeros((1, 1)))
     walk_step: int = 0
     unlock_policy: str = "mean"
     residual: Mapping[str, float] = field(default_factory=dict)
@@ -247,6 +255,7 @@ def forecast(obs: Any, *, days: int = 30,
              our_sells: Mapping[int, Mapping[str, int]] | None = None,
              residual: Mapping[str, float] | None = None,
              rival_supply: np.ndarray | None = None,
+             rival_ceiling: np.ndarray | None = None,
              rival_sells: Mapping[int, Mapping[str, int]] | None = None,
              unlock_policy: str = "mean",
              config: Any = None,
@@ -397,6 +406,22 @@ def forecast(obs: Any, *, days: int = 30,
     walk = inv0[None, :] + np.concatenate(
         [np.zeros((1, len(PRODUCTS))), np.cumsum(net, axis=0)], axis=0)
 
+    # The pessimistic band is the SAME arithmetic with the rival at the other
+    # end of their own estimate: their ceil replaces their floor and nothing
+    # else moves. One cumsum, no loop, and no work at all when the caller has
+    # no ceiling to give.
+    walk_high = walk
+    if rival_ceiling is not None:
+        high = np.asarray(rival_ceiling, dtype=np.float64)
+        if high.shape != (horizon, len(PRODUCTS)):
+            raise ValueError(
+                f"rival_ceiling: expected shape ({horizon}, {len(PRODUCTS)}), "
+                f"got {high.shape}")
+        rival_high = high[day_of_turn] / TURNS_PER_DAY
+        net_high = rival_high + our - drains
+        walk_high = inv0[None, :] + np.concatenate(
+            [np.zeros((1, len(PRODUCTS))), np.cumsum(net_high, axis=0)], axis=0)
+
     # the forecast's rows are DAY STARTS: row d = the walk after turn 24d - 1
     # (the engine's day-start observation), row 0 = the snapshot itself.
     # A mid-day forecast (step % 24 != 0) spends the first partial day first:
@@ -439,7 +464,7 @@ def forecast(obs: Any, *, days: int = 30,
     return MarketForecast(start_step=step, horizon_days=horizon,
                           first_day=first_day,
                           inventory=tuple(rows_inv), prices=tuple(rows_price),
-                          walk_inventory=walk, walk_step=step,
+                          walk_inventory=walk, walk_inventory_high=walk_high, walk_step=step,
                           unlock_policy=unlock_policy, residual=dict(res),
                           assumptions=tuple(assumptions))
 
