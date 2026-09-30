@@ -65,15 +65,25 @@ def _walk_row_of(fc: MarketForecast, day: int, hour: int) -> int:
 
 
 def inventory_at(fc: MarketForecast, item: str, day: int,
-                 hour: int | None = None) -> int:
-    """The market's inventory for `item` on that day (or at that hour)."""
-    if hour is None:
+                 hour: int | None = None, high: bool = False) -> int:
+    """The market's inventory for `item` on that day (or at that hour).
+
+    `high` reads the pessimistic band's walk: the same market with the rival at
+    their ceiling. With no band it IS the plain walk, so the flag costs one
+    identity check and returns the same number -- the bit-identical case every
+    band-aware reader here depends on.
+    """
+    band = high and fc.walk_inventory_high is not fc.walk_inventory
+    if hour is None and not band:
         return int(fc.inventory_of(item, day))
-    return int(_walk_rows(fc)[_walk_row_of(fc, day, hour)][_index(item)])
+    rows = fc.walk_inventory_high if band else _walk_rows(fc)
+    row = _walk_row_of(fc, day, 0 if hour is None else hour)
+    return int(rows[row][_index(item)])
 
 
 def depth_coins(fc: MarketForecast, item: str, day: int, units: int,
-                *, hour: int | None = None, pad: float = 0.0) -> int:
+                *, hour: int | None = None, pad: float = 0.0,
+                high: bool = False) -> int:
     """Coins `units` fetch selling into that day's (or hour's) inventory.
 
     The engine's own ladder, floor stall included — `ladder.sell_coins` is the
@@ -84,8 +94,8 @@ def depth_coins(fc: MarketForecast, item: str, day: int, units: int,
     `z·sd` units higher. Zero is the mean ladder, bit-identical to the model
     before this parameter existed.
     """
-    return int(sell_coins(item, inventory_at(fc, item, day, hour) + int(pad),
-                          max(0, int(units))))
+    return int(sell_coins(item, inventory_at(fc, item, day, hour, high=high)
+                          + int(pad), max(0, int(units))))
 
 
 def marginal_price(fc: MarketForecast, item: str, day: int, units: int,
