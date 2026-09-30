@@ -772,6 +772,22 @@ def compile(day_plan: "DayPlan", obs, *, hired: int | None = None,
     hours = tuple(check.hire_hours) if check.hire_hours else earliest_hire_times(pool)
     day, result, ops, harvest = priced(hours)
 
+    # The tasks above were built with an `available` that knows the shelf and the
+    # queue's buys but NOT what the route itself carries in: a drop's hour only
+    # exists once a route exists. A good the day fetches after its own drop
+    # therefore reads as present at hour 0, the fetch is scheduled before the
+    # drop, and the engine refuses it without a word (F047). One re-price on the
+    # route's own timetable closes that hole; the second `ops` is the one both
+    # the tasks and the market below are built from, so the day the engine
+    # executes is priced against what that day will itself have moved.
+    merged = dict(available)
+    for good, hour in arrival_hours(ops).items():
+        merged[good] = min(int(merged.get(good, int(hour))), int(hour))
+    if merged != available:
+        available = merged
+        tasks = T.build(fitted.chains, available=available)
+        day, result, ops, harvest = priced(hours)
+
     # The plan is PRICED for `pool` hands and the search is held to exactly those: the market
     # hires what the day was costed with, and a route may leave some of them idle.
     market = queue(harvest, result.pool, wsr_check=True,
