@@ -975,6 +975,13 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply, rival_history:
     # the bound.
     contractor = priced_contractor(contractor, obs)
     cfg = Config() if cfg is None else cfg
+    #: How many quadrants the land block offers, resolved HERE where the run's
+    #: own `cfg` is in hand, and handed to `generate` as an argument so the loop
+    #: and its decision solve build one matrix and the count never has a second
+    #: source. A caller that names `land` overrides the config; 0 keeps every
+    #: land row off.
+    if land is None:
+        land = int(getattr(cfg, "land_quadrants", 0)) or None
     iter_cap = int(cfg.iter_cap if iter_cap is None else iter_cap)
     days = int(contractor.days)
     p_mkt_full, w_stand_full = dual_stand_in(obs, cfg=cfg)
@@ -1265,6 +1272,7 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply, rival_history:
         cg = colgen.generate(price, supply.hours, supply.money, counts, days,
                              N_COUPLING, idle, rounds=max(1, iter_cap),
                              cfg=cfg, integral=integral,
+                             land=land,
                              shed=(supply.shed_stock, supply.shed_capacity),
                              prices=p_mkt,
                              prices_high=p_mkt_high,

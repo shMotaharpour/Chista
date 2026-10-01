@@ -70,6 +70,17 @@ class Agent:
         #: shipped, the committed defaults otherwise (never a mode).
         self.cfg = config if config is not None else Config.load()
         self.manager: Manager | None = None
+        #: The config object the manager was built FROM. Identity, not equality:
+        #: the run's config is built once, so the same object is the same run and
+        #: nothing is rebuilt mid-run — but a DIFFERENT object is a different
+        #: run (a test pinning a regime, a probe injecting a run's numbers), and
+        #: its numbers must be built INTO the machinery rather than left on the
+        #: shelf beside a manager still holding the old ones. That stale manager
+        #: is exactly how an injected config failed to reach the model: the land
+        #: count a test set on `AGENT.cfg` never left the object. `None` means
+        #: "no manager was built here" (a caller assigned one), and then nothing
+        #: is rebuilt: an injected manager is the caller's, not ours to replace.
+        self._manager_cfg: Config | None = None
         #: One entry per failed turn, newest last, capped so a broken season
         #: cannot grow the log without bound — and the days it happened on.
         self.failures: list[str] = []
@@ -87,8 +98,10 @@ class Agent:
         error: Exception | None = None
         raise_after: Exception | None = None
         try:
-            if self.manager is None:
+            if self.manager is None or (self._manager_cfg is not None
+                                        and self._manager_cfg is not self.cfg):
                 self.manager = Manager(self.cfg)
+                self._manager_cfg = self.cfg
             if hour == 0:
                 self.manager.observe(obs, config)
             else:

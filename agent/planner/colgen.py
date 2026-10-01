@@ -1346,6 +1346,7 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
              entry: bool = False,
              integral: bool = False,
              cfg: "Config | None" = None,
+             land: int | None = None,
              buy_hands: bool = False,
              hand_mult: int = 0) -> ColgenResult:
     """The loop: master over every column so far, price, add, repeat.
@@ -1378,6 +1379,15 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
     # index is an index into THIS board's classes and means nothing in another.
     result = ColgenResult(pool=list(idle_columns))
     cfg = Config() if cfg is None else cfg
+    #: How many of the engine's quadrants are BUYABLE. It travels as an ARGUMENT
+    #: from the caller that holds the run's config (`equilibrate`) and is never
+    #: re-read from a default in here: the loop's last solve and the decision
+    #: solve beside it are two halves of ONE matrix, and a count that reached
+    #: only one of them builds a farm the other cannot expand. A caller that
+    #: names no count (the direct/library callers) still gets the config's own,
+    #: and 0 turns every land row OFF -- the LP path that shipped.
+    land = (int(getattr(cfg, "land_quadrants", 0)) if land is None else int(land))
+    land = land or None
     rounds = int(cfg.iter_cap if rounds is None else rounds)
 
     #: How many columns the pool held when the loop's last solve ran. The loop
@@ -1418,7 +1428,7 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
             depth=depth, depth_high=depth_high, entry=entry, cfg=cfg,
             # The land rows belong to BOTH solves: the decision buys
             # quadrants and the LP beside it publishes what a slot is worth.
-            land=int(getattr(cfg, "land_quadrants", 0)) or None,
+            land=land,
             buy_hands=buy_hands, hand_mult=hand_mult)
         final = solver.solve(*args, **kwargs)
         if integral:
@@ -1495,7 +1505,7 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
             # The land rows belong to BOTH solves: the decision buys quadrants
             # and the LP beside it prices a slot. A matrix without them can only
             # price a farm that cannot expand, and then the rent is never read.
-            land=int(getattr(cfg, "land_quadrants", 0)) or None,
+            land=land,
             buy_hands=buy_hands, hand_mult=hand_mult)
         n_at_last_solve[0] = len(result.pool)
         result.rounds += 1  # solves taken; the pricing passes it fed are free
