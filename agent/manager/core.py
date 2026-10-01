@@ -227,17 +227,18 @@ class Manager:
         # of the season has nothing to estimate from and asks for none). The
         # HOURS the hands start at stay the hourly secretary's: `plan` prices the
         # day on the queue's own `hire_hours` (F040).
+        #
+        # The geometry is the board's OWN count of open quadrants (`master
+        # .owned_quadrants`), never a default of 1: this read was
+        # `farm.get("unlocked")` against an engine key named
+        # `unlocked_quadrants`, so it answered None on every board and the
+        # estimate priced a one-quadrant farm all season. Measured on the seed-33
+        # board: with NE bought on day 0, the same chains that ask for 3 hands on
+        # one quadrant ask for 5 on two.
         from agent.planner import hands as H
         _prev = (list(getattr(self.day.day, "chains", ()) or ())
                  if self.day is not None else [])
-        _quads = 1
-        try:
-            _unlocked = obs["farms"][int(obs.get("player", 0))].get("unlocked")
-            if _unlocked:
-                _quads = len(_unlocked)
-        except (KeyError, TypeError, IndexError):
-            _quads = 1
-        self.hand_estimate = H.estimate(_prev, _quads)
+        self.hand_estimate = H.estimate(_prev, M.owned_quadrants(obs))
         self.day = D.plan(obs, self.contractor, supply,
                           class_of_tile=class_of_tile,
                           offer=self.hand_estimate,

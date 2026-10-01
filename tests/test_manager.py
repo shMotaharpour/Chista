@@ -188,3 +188,44 @@ def test_step_warms_same_lp_as_hour_zero():
     assert np.allclose(called_supply.hours, expected_hours), "step() used 0-hands supply instead of day.hands"
 
 
+# --- the numbers it hands the day layer -----------------------------------
+
+def test_the_hand_estimate_is_asked_for_the_boards_own_geometry(monkeypatch):
+    """The estimate is a function of the OPEN quadrants, and that read was wrong.
+
+    The engine names them on `unlocked_quadrants`; the manager read `unlocked`,
+    which is not an engine key, so every board answered "one quadrant" and the
+    estimate priced a farm that never grew.
+
+    Measured on this board: day 0 (NW alone) asks for 3 hands, and the day after
+    NE is bought the geometry asks for 5 -- the same chains, priced on one
+    quadrant instead of two.
+    """
+    from agent.planner import hands as H
+    from offline_lab.fast_sim import FastSim
+
+    pass_action = {"farmer": ["PASS"], "hands": [], "market": []}
+    asked: list[int] = []
+    real = H.estimate
+
+    def spy(chains, quadrants: int = 1):
+        asked.append(quadrants)
+        return real(chains, quadrants)
+
+    monkeypatch.setattr(H, "estimate", spy)
+    sim = FastSim({"episodeSteps": 24 * 3 + 6, "seed": 33, "farmHandCostMult": 1})
+    manager = Manager(Config(master_rounds=2))
+    manager.observe(sim.observations(copy_state=False)[0], sim.configuration)
+    assert asked == [1], f"day 0 asked for {asked}"
+
+    sim.step([{"farmer": ["PASS"], "hands": [], "market": [["BUY_LAND"]]},
+              pass_action])
+    obs = sim.observations(copy_state=False)[0]
+    while int(obs["hour"]) != 0:
+        sim.step([pass_action, pass_action])
+        obs = sim.observations(copy_state=False)[0]
+    assert len(obs["farms"][0]["unlocked_quadrants"]) == 2
+    manager.observe(obs, sim.configuration)
+    assert asked[-1] == 2, f"the board opened 2 quadrants and the estimate was asked for {asked[-1]}"
+
+

@@ -988,7 +988,7 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply, rival_history:
     #: at these quadrants' own 25 tiles each, so the count comes off the board
     #: unless the caller names it -- 1 is the day-0 farm.
     if land_owned is None:
-        land_owned = _owned_quadrants(obs)
+        land_owned = owned_quadrants(obs)
     iter_cap = int(cfg.iter_cap if iter_cap is None else iter_cap)
     days = int(contractor.days)
     p_mkt_full, w_stand_full = dual_stand_in(obs, cfg=cfg)
@@ -1518,14 +1518,16 @@ def _owned_states(runtime, obs) -> list[int]:
             if int(k) != LOCKED_KEY and int(k) in graph.key_index]
 
 
-def _owned_quadrants(obs) -> int:
+def owned_quadrants(obs) -> int:
     """How many quadrants the farm has open, NW included (F042).
 
     The engine names them on the farm (`unlocked_quadrants`), and NW is open
     from the start, so 1 is the day-0 farm and each further name is one prefix
-    step taken. The count is what the land block needs to price the NEXT step
-    (`LAND_PRICES[count-1]`) and to size the tile tie (`25 x count`); a board
-    that cannot be read is answered as the day-0 farm rather than a guess.
+    step taken. Two readers depend on the count and they are the same number:
+    the land block prices the NEXT step (`LAND_PRICES[count-1]`) and sizes its
+    tile tie (`25 x count`), and the day's hand estimate is a function of the
+    geometry (`hands.estimate`). A board that cannot be read is answered as the
+    day-0 farm rather than a guess.
     """
     from agent.world.rules import LAND_PRICES
     try:
