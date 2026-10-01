@@ -146,3 +146,62 @@ def test_a_config_swapped_after_a_turn_reaches_the_next_manager() -> None:
     assert bought is not None and np.asarray(bought).shape[0] == quadrants, (
         f"land_bought is {None if bought is None else np.asarray(bought).shape} "
         f"after the config was swapped to {quadrants} quadrants")
+
+
+# ---------------------------------------------------- the prefix the farm owns
+
+def test_the_land_prefix_is_relative_to_the_quadrants_owned() -> None:
+    """NW is free and open (F042), so only the steps that are LEFT are buyable.
+
+    `land_block` is the one place the ladder is indexed. `land_owned=1` is the
+    day-0 farm (bit-identical to before); each further quadrant the farm owns
+    removes a step from the block and raises the tile tie by 25.
+    """
+    from agent.planner.colgen import land_block
+    from agent.world.rules import LAND_PRICES
+
+    n = len(LAND_PRICES)
+    assert land_block(4, 1) == (n, 0, 25.0)        # day-0 farm: all three steps
+    assert land_block(4, 2) == (n - 1, 1, 50.0)    # NE taken: SW and SE remain
+    assert land_block(4, 4) == (0, n, 100.0)       # the ladder is complete
+    assert land_block(2, 2) == (1, 1, 50.0)        # the request still clamps
+    assert land_block(0, 2) == (0, 1, 50.0)        # land off is no land rows
+
+
+def test_a_board_that_already_owns_a_quadrant_is_not_forced_to_buy() -> None:
+    """The tile tie starts at the tiles the farm owns, not at NW's 25 alone.
+
+    Measured on a day-1 board owning NW+NE (50 tiles): with the tie's constant
+    right-hand side of 25, `Sigma y >= 1` was mandatory and the model bought
+    quadrant NE's own column for 1000 -- the quadrant it already had, at the
+    price of the step before the one really next (SW, 2000).
+    """
+    from agent.manager.core import Manager
+
+    pass_action = {"farmer": ["PASS"], "hands": [], "market": []}
+    sim = FastSim({"episodeSteps": 24 * 3 + 6, "seed": 33, "farmHandCostMult": 1})
+    sim.step([{"farmer": ["PASS"], "hands": [], "market": [["BUY_LAND"]]},
+              pass_action])
+    obs = sim.observations(copy_state=False)[0]
+    while int(obs["hour"]) != 0:
+        sim.step([pass_action, pass_action])
+        obs = sim.observations(copy_state=False)[0]
+    owned = len(obs["farms"][0]["unlocked_quadrants"])
+    assert owned == 2, f"the engine opened {owned} quadrants, expected NW+NE"
+
+    quadrants = len(LAND_PRICES)
+    manager = Manager(replace(Config(), land_quadrants=quadrants,
+                              master_rounds=2, day_integral=True))
+    manager.observe(obs, sim.configuration)
+    master = manager.day.master
+    assert getattr(master, "fallback_reason", "") == "", master.fallback_reason
+    # The "one purchase each" rows left are SW and SE; NE's is gone.
+    remaining = min(quadrants, len(LAND_PRICES)) - (owned - 1)
+    assert master.land_dual is not None and len(master.land_dual) == remaining, (
+        f"the land block offers {None if master.land_dual is None else len(master.land_dual)} "
+        f"quadrants with {owned} owned, expected {remaining}")
+    # Nothing is forced: 50 owned tiles against a tie of 25*k is slack at k=2.
+    bought = getattr(master, "land_bought", None)
+    assert bought is not None and float(np.asarray(bought).sum()) == 0.0, (
+        "the model bought land on a board that already owns it: "
+        f"{np.asarray(bought)}")

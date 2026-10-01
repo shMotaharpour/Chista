@@ -285,6 +285,26 @@ def _extended_basis(basis, n_cols: int, n_rows: int):
     return out
 
 
+def land_block(land: int | None, land_owned: int = 1) -> tuple[int, int, float]:
+    """`(n_quadrant_binaries, first_step, tile_cap)` for the land block.
+
+    NW is the free first quadrant (F042, `world.rules.LAND_ORDER`): a farm that
+    owns `land_owned` quadrants has taken `land_owned - 1` prefix steps, so the
+    model may buy only the steps that are LEFT, at `LAND_PRICES[first_step:]`,
+    and its tile tie starts from the 25 tiles of each quadrant already open.
+
+    Every count here is the engine's own: the ladder's length and its prices are
+    `world.rules`, and the 25 tiles a quadrant brings are the engine's. A model
+    indexed at step zero whatever the board said bought an unlocked quadrant at
+    the previous step's price -- measured on a day-1 board owning NW+NE, it
+    "bought NE" for 1000 while the live ladder's next step was SW at 2000.
+    """
+    taken = max(0, int(land_owned) - 1)
+    nq = (0 if not land
+          else max(0, min(int(land), len(LAND_PRICES)) - taken))
+    return nq, taken, 25.0 * max(1, int(land_owned))
+
+
 class MasterLP:
     """The master's LP, kept across a day's rounds so its basis carries.
 
@@ -342,6 +362,7 @@ class MasterLP:
               entry: bool = False,
               integral: bool = False,
               land: int | None = None,
+              land_owned: int = 1,
               cfg: "Config | None" = None,
               buy_hands: bool = False,
               hand_mult: int = 0) -> MasterSolve:
@@ -372,13 +393,21 @@ class MasterLP:
         and it is CHARGED the sale it lost or dumping is the LP's cheapest way
         out of every constraint.
 
-        `land=k` adds the first `k` of the engine's quadrants as BUYABLE
-        (`world.rules.LAND_PRICES`, prefix order): one binary per (quadrant, day)
-        for the day it is bought, `<= 1` per quadrant, the purchase price charged
-        on that day inside the cumulative cash rows (that IS the saving decision:
-        the purse must cover it from that day onward), and one row that ties the
-        total tile count to `25 x (1 + purchases)`. Off by default so the LP path
-        is the matrix that shipped.
+        `land=k` adds the engine's quadrants as BUYABLE (`world.rules.LAND_ORDER`
+        prefix order): one binary per (quadrant, day) for the day it is bought,
+        `<= 1` per quadrant, the purchase price charged on that day inside the
+        cumulative cash rows (that IS the saving decision: the purse must cover it
+        from that day onward), and one row per day that ties the total tile count
+        to `25 x (1 + purchases)`.
+
+        **The prefix is relative to what the farm owns.** NW is the free first
+        quadrant (F042), so `land_owned=k` means k quadrants are already open: the
+        binaries are the REMAINING steps only, priced `LAND_PRICES[k-1:]`, and the
+        tile tie starts at `25 x k` instead of 25. A model that always began at
+        step zero re-bought an unlocked quadrant at the previous step's price on
+        any board past the first purchase. `land_owned=1` is the day-0 farm and is
+        bit-identical to the previous behaviour. Off by default so the LP path is
+        the matrix that shipped.
 
         `integral=True` hands the SAME matrix to HiGHS as a MIP: the `lambda`
         columns become integer (a column is a tile COUNT, and half a tile is not a
@@ -469,7 +498,12 @@ class MasterLP:
         now0 = waste0 + items * days
         defer0 = now0 + items * days
         land0 = defer0 + items * days if entry else now0
-        nq = 0 if not land else min(int(land), len(LAND_PRICES))
+        #: The prefix steps the farm has ALREADY taken, and the block that is
+        #: left of the ladder: NW is the free first quadrant (F042), so a farm
+        #: owning k quadrants may only buy the REMAINING steps, at
+        #: `LAND_PRICES[k-1:]`, and its tile tie starts from the 25 tiles of
+        #: every quadrant already open. See `land_block`.
+        nq, land_first, land_tiles = land_block(land, land_owned)
         land_width = nq * days
         # Every optional block's width is declared HERE, before any row or cost
         # vector is allocated. A block that APPENDS to them leaves the vectors
@@ -702,7 +736,8 @@ class MasterLP:
                 A_c = np.hstack([A_c, np.zeros((days, n_cols - A_c.shape[1]))])
             cols = np.arange(land_width)
             d_of = cols % days
-            price_of = np.asarray(LAND_PRICES[:nq], dtype=np.float64)[cols // days]
+            price_of = np.asarray(LAND_PRICES[land_first:land_first + nq],
+                                  dtype=np.float64)[cols // days]
             pay = np.where(np.arange(days)[:, None] >= d_of[None, :],
                            price_of[None, :], 0.0)
             A_c[:, land0:land0 + land_width] += pay
@@ -867,7 +902,7 @@ class MasterLP:
             np.zeros(items * days if entry else 0),        # split: equality
             np.concatenate([np.ones(nq),
                             np.zeros(max(0, nq - 1)),
-                            np.full(days, 25.0)]) if nq else np.zeros(0),
+                            np.full(days, land_tiles)]) if nq else np.zeros(0),
             target,                                       # A_e, the class rows
             np.full(n_scen, np.inf) if risk_cols else np.zeros(0)])
         lp.sense_ = _highspy._core.ObjSense.kMinimize
@@ -1347,6 +1382,7 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
              integral: bool = False,
              cfg: "Config | None" = None,
              land: int | None = None,
+             land_owned: int = 1,
              buy_hands: bool = False,
              hand_mult: int = 0) -> ColgenResult:
     """The loop: master over every column so far, price, add, repeat.
@@ -1429,6 +1465,7 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
             # The land rows belong to BOTH solves: the decision buys
             # quadrants and the LP beside it publishes what a slot is worth.
             land=land,
+            land_owned=land_owned,
             buy_hands=buy_hands, hand_mult=hand_mult)
         final = solver.solve(*args, **kwargs)
         if integral:
@@ -1506,6 +1543,7 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
             # and the LP beside it prices a slot. A matrix without them can only
             # price a farm that cannot expand, and then the rent is never read.
             land=land,
+            land_owned=land_owned,
             buy_hands=buy_hands, hand_mult=hand_mult)
         n_at_last_solve[0] = len(result.pool)
         result.rounds += 1  # solves taken; the pricing passes it fed are free

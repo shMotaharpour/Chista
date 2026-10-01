@@ -90,8 +90,11 @@ class Config:
     #: the LP path this project has always run.
     day_integral: bool = False
     #: How many of the engine's quadrants the day may BUY (`world.rules.LAND_PRICES`,
-    #: prefix order), one binary per (quadrant, day). 0 keeps every land row off, so
-    #: no land is purchasable and the model sees only the quadrants it already owns.
+    #: prefix order), one binary per (quadrant, day). NW is free and open from the
+    #: start (F042), so only the ladder's three steps are ever buyable: k is clamped
+    #: to `len(LAND_PRICES)`, and the steps the farm has ALREADY taken are not
+    #: offered again. 0 keeps every land row off, so no land is purchasable and the
+    #: model sees only the quadrants it already owns.
     land_quadrants: int = 0
     #: The LP loop's own cap when a caller asks for no specific number (the
     #: library default; the manager always asks for `master_rounds`). 8 is the

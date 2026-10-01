@@ -926,6 +926,7 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply, rival_history:
                 iter_cap: int | None = None,
                 integral: bool = False,
                 land: int | None = None,
+                land_owned: int | None = None,
                 owned: list[int] | None = None,
                 pool: list | None = None,
                 forecast_obj=None,
@@ -982,6 +983,12 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply, rival_history:
     #: land row off.
     if land is None:
         land = int(getattr(cfg, "land_quadrants", 0)) or None
+    #: How many quadrants the FARM already owns, NW included (F042). The prefix
+    #: the model may buy is what is LEFT of the ladder and the tile tie starts
+    #: at these quadrants' own 25 tiles each, so the count comes off the board
+    #: unless the caller names it -- 1 is the day-0 farm.
+    if land_owned is None:
+        land_owned = _owned_quadrants(obs)
     iter_cap = int(cfg.iter_cap if iter_cap is None else iter_cap)
     days = int(contractor.days)
     p_mkt_full, w_stand_full = dual_stand_in(obs, cfg=cfg)
@@ -1273,6 +1280,7 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply, rival_history:
                              N_COUPLING, idle, rounds=max(1, iter_cap),
                              cfg=cfg, integral=integral,
                              land=land,
+                             land_owned=land_owned,
                              shed=(supply.shed_stock, supply.shed_capacity),
                              prices=p_mkt,
                              prices_high=p_mkt_high,
@@ -1508,3 +1516,21 @@ def _owned_states(runtime, obs) -> list[int]:
     keys = np.asarray(view.me.keys).reshape(-1)
     return [int(graph.key_index[int(k)]) for k in keys
             if int(k) != LOCKED_KEY and int(k) in graph.key_index]
+
+
+def _owned_quadrants(obs) -> int:
+    """How many quadrants the farm has open, NW included (F042).
+
+    The engine names them on the farm (`unlocked_quadrants`), and NW is open
+    from the start, so 1 is the day-0 farm and each further name is one prefix
+    step taken. The count is what the land block needs to price the NEXT step
+    (`LAND_PRICES[count-1]`) and to size the tile tie (`25 x count`); a board
+    that cannot be read is answered as the day-0 farm rather than a guess.
+    """
+    from agent.world.rules import LAND_PRICES
+    try:
+        farm = obs["farms"][int(obs.get("player", 0))]
+        names = farm.get("unlocked_quadrants") or ()
+        return max(1, min(len(names), len(LAND_PRICES) + 1))
+    except (KeyError, TypeError, IndexError, ValueError):
+        return 1
