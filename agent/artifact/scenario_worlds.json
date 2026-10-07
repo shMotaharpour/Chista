@@ -1,0 +1,99 @@
+{
+  "artifact": "scenario_worlds.npz",
+  "built_by": "offline_lab/build/scenario_worlds.py",
+  "source": "kaggriculture-episodes-analyses: per-game-day tables; the rival axis comes from offline_lab/build/realised_supply.py, which solves the city inventory identity (inv_g(t) - inv_g(t-1) = our_sells + their_sells - drain_g) in DuckDB",
+  "source_partitions": [
+    "2026-09-19",
+    "2026-09-25"
+  ],
+  "arrays": {
+    "rival_supply": "float32 (W, 31, 9) units their harvesting puts on the market, by day",
+    "demand": "float32 (W, 31, 9) the town's appetite, by day",
+    "weights": "float32 (W,) share of the archive each world stands for, sums to 1.0",
+    "crop": "<U10 (9,) the good order every array uses",
+    "phase0/phase1": "int8 (W,) the day window the world was cut from (0-9 / 10-14 / 15+)",
+    "support": "int32 (W,) game-days behind the world: its evidence"
+  },
+  "prices": "deliberately NOT stored: a world becomes prices only through the agent's own _priced_paths, so there is one definition of a price path, not two",
+  "measured": "realised/logged supply runs 25% (WHEAT, the shed caps hardest) to 83% (STRAWBERRY) over 829 games; orders are not sales",
+  "sha256_16": "7e422c81819ec565",
+  "timing_weights": {
+    "keyed_by": "agent identity, both seats pooled -- never by seat index",
+    "pool": "win rate >= 60% over >= 30 games, measured on the ten newest partitions (4 agents; a 70% cut leaves a single agent and a 159-game agent looked strong at 79% in one partition but is 57% over its 1342 games -- the label must come from volume)",
+    "measured_on": "partitions 2026-09-16 .. 2026-09-25, 4,542,369 harvest events",
+    "weights": {
+      "WHEAT": {
+        "harvests": 403172,
+        "mean_delay": 1.7,
+        "w_at_gate": 5.9,
+        "w_plus1": 37.2,
+        "w_plus2": 37.9,
+        "w_plus3": 18.9
+      },
+      "STRAWBERRY": {
+        "harvests": 249425,
+        "mean_delay": 3.66,
+        "w_at_gate": 8.4,
+        "w_plus1": 15.8,
+        "w_plus2": 10.2,
+        "w_plus3": 65.7
+      },
+      "CARROT": {
+        "harvests": 132157,
+        "mean_delay": 1.35,
+        "w_at_gate": 6.6,
+        "w_plus1": 51.3,
+        "w_plus2": 42.0,
+        "w_plus3": 0.0
+      },
+      "TOMATO": {
+        "harvests": 70715,
+        "mean_delay": 2.4,
+        "w_at_gate": 3.2,
+        "w_plus1": 22.2,
+        "w_plus2": 25.7,
+        "w_plus3": 48.9
+      },
+      "MELON": {
+        "harvests": 27473,
+        "mean_delay": 0.2,
+        "w_at_gate": 79.7,
+        "w_plus1": 17.9,
+        "w_plus2": 1.2,
+        "w_plus3": 0.8
+      }
+    },
+    "contrast_weak_half": {
+      "definition": "agents below 50% win rate, same partitions",
+      "weights": {
+        "WHEAT": {
+          "mean_delay": 1.9,
+          "w_at_gate": 4.7,
+          "w_plus2_or_more": 67.7
+        },
+        "STRAWBERRY": {
+          "mean_delay": 3.67,
+          "w_at_gate": 7.9,
+          "w_plus2_or_more": 75.7
+        },
+        "CARROT": {
+          "mean_delay": 1.41,
+          "w_at_gate": 8.3,
+          "w_plus2_or_more": 49.5
+        },
+        "TOMATO": {
+          "mean_delay": 2.32,
+          "w_at_gate": 5.2,
+          "w_plus2_or_more": 72.2
+        },
+        "MELON": {
+          "mean_delay": 0.4,
+          "w_at_gate": 63.8,
+          "w_plus2_or_more": 3.5
+        }
+      },
+      "direction": "slower in all five crops, so the signal is real, not noise"
+    },
+    "open": "the supply axis in this file is still seat-based; keying it by agent identity needs the inventory identity solved per partition and then filtered by the same pool"
+  }
+}

@@ -27,6 +27,12 @@ from typing import Any
 
 import numpy as np
 
+from agent.tile_dp.tile_state import decode_tile
+from agent.world.tile import _CROP_ORDER
+
+#: Crop name -> the index every rival-window column refers to.
+_CROP_INDEX = {c: i for i, c in enumerate(_CROP_ORDER)}
+
 from agent.world.model import PRODUCTS
 from agent.world.rules import (ANIMAL_RULES, LAND_PRICES, SHED_ACCESS,
                                SHED_CAPACITY,
@@ -164,6 +170,39 @@ class MarketTracker:
                 if isinstance(tile, dict):
                     out[(x, y)] = (int(tile.get("yield_units", 0)), tile_item(tile))
         return out
+
+    def rival_tiles(self, obs: Any, farm: Any):
+        """The rival's board as THREE arrays: yields, crop indices, ages.
+
+        ONE reader for every consumer of their land. `_board_of` keeps a raw dict
+        and re-derives `yield_units` by hand, which is how `age` went missing -- the
+        field is read once here, through the same `decode_tile` the rest of the
+        agent uses, so a window, a ceiling and a harvest inference cannot disagree
+        about what a tile is.
+
+        The index in these arrays is the tile's slot in the field grid, which the
+        engine keeps stable: that index IS the tile's identity, so nothing needs
+        coordinates or a dictionary to match a tile across turns. A tile with no
+        crop gets index -1 and is skipped by the consumers.
+
+        Values are `int16`/`int8`: a few dozen units and five crops.
+        """
+        day = int(obs.get("day", 0)) if isinstance(obs, dict) else 0
+        ys: list[int] = []
+        cs: list[int] = []
+        ags: list[int] = []
+        for row in field_of(farm, "tiles", []) or []:
+            for tile in row:
+                if not isinstance(tile, dict):
+                    continue
+                st = decode_tile(tile, day)
+                crop = getattr(st, "crop", None)
+                ys.append(int(getattr(st, "yield_units", 0) or 0))
+                cs.append(_CROP_INDEX.get(getattr(crop, "name", None), -1))
+                ags.append(int(getattr(st, "age", 0) or 0))
+        return (np.fromiter(ys, np.int16, len(ys)),
+                np.fromiter(cs, np.int8, len(cs)),
+                np.fromiter(ags, np.int16, len(ags)))
 
     def note_our_action(self, action: dict, obs: Any) -> None:
         """Record what our action really produced.

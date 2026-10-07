@@ -330,6 +330,11 @@ class MasterLP:
               shed_capacity: float = 0.0,
               prices: np.ndarray | None = None,
               prices_high: np.ndarray | None = None,
+              # The scenario set: [(weight, prices (days, 9))]. When present these ARE the
+              # scenarios -- one mechanism, not two -- and they replace the
+              # [prices, prices_high] pair rather than sitting beside it. The name is the one
+              # this file already uses everywhere else: n_scen, scenario_cost, risk_rows.
+              world_scenarios: list[tuple[float, np.ndarray]] | None = None,
               market: tuple[int, ...] = (),
               sell_cap: np.ndarray | None = None,
               depth: tuple[np.ndarray, np.ndarray] | None = None,
@@ -477,7 +482,7 @@ class MasterLP:
         # every line below is a no-op, which is what keeps kappa=0 bit-identical.
         risk_kappa = float(getattr(cfg, "risk_kappa", 0.0))
         risk_alpha = max(1e-6, float(getattr(cfg, "risk_alpha", 0.10)))
-        n_scen = 2
+        n_scen = len(world_scenarios) if world_scenarios else 2
         risk_cols = (1 + n_scen) if (risk_kappa > 0.0 and items) else 0
         n_cols = hands0 + hands_width + risk_cols
 
@@ -792,6 +797,11 @@ class MasterLP:
             sell_ix = np.array([[[col_sell(gi, d, b) for b in range(tiers)]
                                  for d in range(days)] for gi in range(n_goods)],
                                dtype=np.int64)
+            if world_scenarios:
+                # one mechanism: these ARE the scenarios, each with its own weighted price path.
+                # The name is the artifact's own -- agent/artifact/scenario_worlds.npz.
+                block_price = np.stack([np.asarray(s_[1]) for s_ in world_scenarios])
+                block_price_high = None
             scen_cost = (scenario_cost(cost, sell_ix, block_price, block_price_high)
                          if block_price_high is not None else np.vstack([cost, cost]))
             t_ix = n_cols - risk_cols
@@ -803,6 +813,14 @@ class MasterLP:
             # Unbounded".
             cost[t_ix] = risk_kappa
             cost[t_ix + 1:] = risk_kappa / (risk_alpha * n_scen)
+            # Expected profit across the SAME scenarios, as a reward (negated, because this LP
+            # minimises). With the default weight of 0 nothing is added and kappa=0 stays
+            # bit-identical; with a positive weight the objective becomes
+            # `mean(profit) - kappa * worst(profit)`, which is a portfolio decision -- long and
+            # short horizons both get their expected value -- instead of pure insurance.
+            w_mean = float(getattr(cfg, "risk_mean_weight", 0.0))
+            if w_mean:
+                cost[:t_ix] = cost[:t_ix] - w_mean * scen_cost[:, :t_ix].mean(axis=0)
             # `u_s + t + profit_s >= 0` with `profit_s = -scen_cost_s . x`: t is
             # FREE and each u_s is non-negative, and the row sits AFTER A_e so
             # `mu` (read as marg[n_ineq:mu_end]) never swallows it.
@@ -1320,6 +1338,7 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
              smoothing: float = 0.0, shed: tuple | None = None,
              prices: np.ndarray | None = None,
              prices_high: np.ndarray | None = None,
+             world_scenarios: list[tuple[float, np.ndarray]] | None = None,
              market: tuple[int, ...] = (),
              sell_cap: np.ndarray | None = None,
              depth: tuple[np.ndarray, np.ndarray] | None = None,
@@ -1394,7 +1413,8 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
         kwargs = dict(
             shed_stock=None if shed is None else shed[0],
             shed_capacity=0.0 if shed is None else float(shed[1]),
-            prices=prices, prices_high=prices_high, market=market, sell_cap=sell_cap,
+            prices=prices, prices_high=prices_high, world_scenarios=world_scenarios,
+            market=market, sell_cap=sell_cap,
             depth=depth, depth_high=depth_high, entry=entry, cfg=cfg,
             # The land rows belong to BOTH solves: the decision buys
             # quadrants and the LP beside it publishes what a slot is worth.
@@ -1471,6 +1491,7 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
             shed_capacity=0.0 if shed is None else float(shed[1]),
             prices=prices, market=market, sell_cap=sell_cap,
             depth=depth, depth_high=depth_high, entry=entry, cfg=cfg,
+            world_scenarios=world_scenarios,
             # The land rows belong to BOTH solves: the decision buys quadrants
             # and the LP beside it prices a slot. A matrix without them can only
             # price a farm that cannot expand, and then the rent is never read.
