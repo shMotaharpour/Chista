@@ -70,14 +70,18 @@ _REAL = {}
 
 def _one_tile(runtime, obs):
     from agent.planner import columns as C
-    states = _REAL["states"](runtime, obs)
-    distances = _REAL["distances"](obs, C.shed_distance())
-    here = [i for i, d in enumerate(distances) if int(d) == 0]
-    return [states[here[0]]] if here else states[:1]
+    # `equilibrate` calls `board_tiles(obs, graph)`: inside this stub the
+    # first argument IS the real observation and the second the TileGraph.
+    tiles = _REAL["board_tiles"](runtime, obs)
+    distances = _REAL["distances"](runtime, C.shed_distance())
+    priced = [(i, t[0] if isinstance(t, tuple) else t)
+              for i, t in enumerate(tiles) if t is not None]
+    here = [i for i, _t in priced if int(distances[i]) == 0]
+    return [priced[here[0]][1]] if here else [priced[0][1]]
 
 
 def _only_here(obs, steps):
-    return [0]
+    return [0] * sum(1 for t in _REAL.get("last_tiles", []) if t is not None)
 
 
 def _board_class_map(self, obs, of_tile):
@@ -99,18 +103,21 @@ def _solve_one_tile(obs, supply, horizon, *, depth: bool):
     from agent.tile_dp.contractor import TileContractor
     from agent.planner.inputs import GRAPH_PATH
     from agent.tile_dp.graph import TileGraph
-    _REAL.setdefault("states", M._owned_states)
+    _REAL.setdefault("board_tiles", M.board_tiles)
     _REAL.setdefault("distances", M._owned_distances)
     _REAL.setdefault("class_of_tile", MC.Manager._class_of_tile)
-    contractor = TileContractor(TileGraph.load(GRAPH_PATH), days=horizon)
+    graph = TileGraph.load(GRAPH_PATH)
+    _REAL["last_tiles"] = M.board_tiles(obs, graph)
+    contractor = TileContractor(graph, days=horizon)
     fc = forecast(obs, days=horizon) if depth else None
-    M._owned_states, M._owned_distances = _one_tile, _only_here
+    M.board_tiles = _one_tile
+    M._owned_distances = lambda obs, steps: [0]
     MC.Manager._class_of_tile = _board_class_map
     try:
         res = M.equilibrate(object(), obs, contractor, supply,
                             iter_cap=Config().master_rounds, forecast_obj=fc)
     finally:
-        M._owned_states = _REAL["states"]
+        M.board_tiles = _REAL["board_tiles"]
         M._owned_distances = _REAL["distances"]
         MC.Manager._class_of_tile = _REAL["class_of_tile"]
     return res, fc

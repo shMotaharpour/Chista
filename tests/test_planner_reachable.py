@@ -212,7 +212,9 @@ def test_the_master_accumulates_columns_and_mixes_them():
         f"only {int((lam > 1e-6).sum())} columns carry weight: the master is "
         f"scaling one plan, not combining several")
     reps, counts, of_tile = result.classes
-    assert len(of_tile) == 25 and int(counts.sum()) == 25
+    # The quadrant-keyed universe prices every tile of every quadrant
+    # (100), each mapped through of_tile; unpriceable positions answer -1.
+    assert len(of_tile) == 100 and int(counts.sum()) == 100
 
 
 def test_the_certificate_is_reachable_on_a_real_board():
@@ -336,13 +338,14 @@ def test_travel_is_charged_and_the_far_tiles_are_left_alone():
     assert result.certified, result.stopped
 
     reps, _counts, _of_tile = result.classes
-    assert all(isinstance(r, tuple) and len(r) == 2 for r in reps), (
+    assert all(isinstance(r, tuple) and len(r) >= 2 for r in reps), (
         "a class must carry its distance, or its column cannot price the walk")
-    assert len({d for _s, d in reps}) > 1, (
+    dist_of = (lambda r: r[2] if len(r) == 3 else r[1])
+    assert len({dist_of(r) for r in reps}) > 1, (
         "one distance band on a 25-tile quadrant: the classes are not banded")
 
     lam = np.asarray(result.lam, dtype=float)
-    worked = {reps[c.cls][1] for j, c in enumerate(result.pool)
+    worked = {dist_of(reps[c.cls]) for j, c in enumerate(result.pool)
               if j < lam.size and lam[j] > 1e-6 and c.revenue > 0.0}
     assert worked, "nothing was committed at all"
     assert max(worked) <= min(d for _s, d in reps) + 4, (
