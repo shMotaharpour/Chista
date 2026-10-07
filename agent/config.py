@@ -76,14 +76,23 @@ class Config:
     never_raise: bool = False
 
     # --- the master (the column-generation solve) -------------------------
-    #: Column-generation rounds per solve, and the round count is a DECISION, not
-    #: a race with the clock: consulting the clock between rounds made two runs of
-    #: the same seed disagree (18,312 against 28,890 with every RNG in our code
-    #: seeded and the threads pinned to one). One is what this tree has been run
-    #: and measured at; with the clock out of the loop the cap is the only stop
-    #: besides the reduced-cost certificate, so raising it is a policy decision to
-    #: take on a measurement.
-    master_rounds: int = 1
+        #: Column-generation rounds per solve, and the round count is a DECISION, not a
+    #: race with the clock
+#: with the clock: consulting the clock between rounds made two runs of one seed
+#: disagree. The day's objective is monotone in the rounds and the wall cost is
+#: linear in them, so the cap trades a measured objective for time -- a cap that is
+#: too low throws the objective away, because every round prices the pool again
+#: against the duals the last round produced.
+    master_rounds: int = 2
+    #: Solve the day as the integer program it is: `colgen.solve(integral=True)`.
+    #: The LP relaxation lets a class's weight be fractional, so a plan can be
+    #: half-committed and the tile counts a fraction of what they claim. False is
+    #: the LP path this project has always run.
+    day_integral: bool = False
+    #: How many of the engine's quadrants the day may BUY (`world.rules.LAND_PRICES`,
+    #: prefix order), one binary per (quadrant, day). 0 keeps every land row off, so
+    #: no land is purchasable and the model sees only the quadrants it already owns.
+    land_quadrants: int = 0
     #: The LP loop's own cap when a caller asks for no specific number (the
     #: library default; the manager always asks for `master_rounds`). 8 is the
     #: measured oscillation budget: the full loop's cost is the contractor's
@@ -97,6 +106,77 @@ class Config:
     #: blocks price the same curve more finely and cost one column block each
     #: (5 blocks x 9 goods x 30 days = 1,350 columns of the model).
     sell_blocks: int = 5
+    #: How many sd of the town drain to price a sale against, on top of the
+    #: forecast's own inventory (`belief.opponent.quantile_price_floor`, the same
+    #: `z`): 0.0 is the mean ladder the model has always used, and any positive
+    #: value prices the curve from a fuller market, which is the conservative
+    #: direction. The owner's ruling: risk must be priced as a price.
+    sell_risk_z: float = 0.0
+
+    #: The cash tail's weight in the master's objective (#111). The objective
+    #: becomes `(1 - kappa) * mean + kappa * low`, which is a convex combination
+    #: of the mean profit and its CVaR: at three equal-weight scenarios the mean
+    #: of the worst third IS the low band, so kappa = 0 is today's behaviour and
+    #: kappa = 1 is the worst case. Priced in the objective, never as a row --
+    #: the owner's ruling, and the reason the term is a weight rather than a
+    #: constraint.
+    #: The R-U weight on the worst scenario. The DEFAULT is 0 -- the mean model,
+    #: bit-identical to the behaviour before this block existed -- because a
+    #: default is what every caller who says nothing gets, and the suites are such
+    #: callers: with a non-zero default, 18 tests that assert mean-regime facts
+    #: silently changed regime, and five of them inherited it through a shared
+    #: `AGENT.cfg` set by an earlier test. The regime is a RUN decision, so the
+    #: working arm sets it where it runs (`risk_kappa=0.5`, no data behind the
+    #: value yet) and this field stays the honest zero until the 6-seed arm has
+    #: measured it (R005).
+    risk_kappa: float = 0.0
+
+    #: The tail CVaR averages over: `alpha` of the scenarios, so 0.10 means the
+    #: worst tenth of the profit distribution. Rockafellar-Uryasev, so the LP
+    #: needs `t` and one `u_s` per scenario and NO binary variable -- which is
+    #: the whole reason CVaR and not VaR is the one that fits here.
+    risk_alpha: float = 0.10
+    #: How many rounds of pricing carry OUR OWN planned supply. Measured with 1
+    #: (seed 33, 10 days, vs v3-agent): the day-value/realised-coins correlation
+    #: went -0.428 -> +0.045, and the season 93,315 -> 101,925 over three seeds
+    #: (33: 16,025 -> 27,155; 7: 46,789 -> 31,275; 5: 30,501 -> 43,495). Two of
+    #: three seeds improved and one lost a third, so the default stays 0 and this
+    #: is a swappable choice until a wider seed set settles it.
+    #: path the forecast builds on its own walk (the town's drain only), which
+    #: under-prices nothing and over-prices every far day: measured on the
+    #: seed-33 board, MILK's day-20 quote reads 202 coins while the ladder pays
+    #: far less for the units we plan to pour in that day. A positive value
+    #: re-prices each day against `market inventory + our supply`, which is the
+    #: price the sale would actually face.
+    price_supply_rounds: int = 0
+    #: The lot the day's sale is priced as, when the caller has not handed in
+    #: one yet (units per good per day). 0 keeps every price at its own quote;
+    #: a positive value prices the sale through the ladder for a lot that size,
+    #: which is the counterweight to F035's rising path: a big lot never fetches
+    #: the peak. The shed's capacity is the conservative choice.
+    sell_lot_default: float = 0.0
+    #: The daily discount rate on the tile DP's own cash flows (net present value).
+    #: 0.0 keeps today's behaviour. The literature's tool for mixing fast- and
+    #: slow-payback work is a RATE, not a truncation: the taper that zeroed prices
+    #: in ten days measured worse than not tapering at all, and worse the sharper it
+    #: got (over three seeds against the strong rival: 101,925 at off, 95,117 at
+    #: five days, 73,692 at ten, 40,553 at fifteen), while a rate discounts every
+    #: cash flow -- the costs it delays included -- and is the same NPV the
+    #: capital-budgeting and cash-flow-duration frameworks use.
+    discount_rate: float = 0.0
+    #: Cap a sale price by what the engine really paid (agent/artifact/
+    #: sell_price_caps): a drain-only forecast keeps rising past the day the
+    #: season's shops have decided, so the plan is priced against a price nobody
+    #: paid. The cap is the day's BEST demand bucket, so the upside of an open
+    #: shop survives and only the hope above every real world goes. False keeps
+    #: the shipped model exact.
+    price_cap_from_archive: bool = False
+    #: Price the PLAN on the bad day, not the average one: the sale path is floored
+    #: at `z` standard deviations of the town's own drain (`drain_forecast`
+    #: owns those two moments, exactly, without sampling). Risk as a price --
+    #: the mean-CVaR objective of #111 in the form the ladder already speaks.
+    #: 0.0 keeps the shipped model exact.
+    price_risk_z: float = 0.0
     #: What a unit sold BEYOND the town's own appetite fetches, as a fraction of
     #: the day's price. That tier is the legacy two-tier model, used when the
     #: caller hands in no depth curve; with a curve the ladder's own blocks carry
@@ -118,8 +198,8 @@ class Config:
     #: 35,772 a 1e-6-absolute test was refusing to certify on the pricer's own
     #: rounding (measured: the loop stalled on rc 2.24e-4 and certified the SAME
     #: objective, 35,772.2194, once the tolerance was read as `1e-6 * |objective|`).
-    rc_tol: float = 1e-6
-    rc_rel_tol: float = 1e-6
+    rc_tol: float = 1e-3
+    rc_rel_tol: float = 1e-3
 
     # --- the labour model the rows price ------------------------------------
     #: The labour row's travel/carry overhead: `H_d = 24*(1 + hands) - hands`, times
@@ -135,20 +215,26 @@ class Config:
     labour_dead_edge: float = 145.0
 
     # --- the day ------------------------------------------------------------
-    #: The largest hand pool the day layer may offer.
+    #: The most hands the day layer will even SCAN (`day.scan_ceiling`). The
+    #: estimate it competes with is the manager's own (`planner/hands.py`), and
+    #: the scan's top is `min(estimate, this)`.
     #:
-    #: One, measured. Three seasons at each setting, medians:
-    #:
-    #:     idle edges off, 1 hand   32,045      off, 4 hands    5,148
-    #:     idle edges on,  1 hand   35,697      on,  4 hands   22,988
-    #:
-    #: More hands is worth five times the plan to the LP and less than nothing
-    #: on the board, because the day the master commits is re-derived every
-    #: morning and more capacity means more of it is undone. Raising this is
-    #: the FIRST thing to try once a plan survives the night (#79's commitment
-    #: work) — it is capped low because the churn is not fixed, not because
-    #: hiring is bad.
+    #: One, and NOT a measured preference: the table that used to justify it (a
+    #: season at 1 hand against 4: 32,045/35,697 against 5,148/22,988) was
+    #: taken on a manager and belief layer that have since been replaced, so it
+    #: is retired as a basis rather than re-quoted. What that table was about --
+    #: a committed day being re-derived every morning, so more capacity undoes
+    #: more of it -- is still the open question (#79), and the value must be
+    #: chosen again on a fresh measurement, or by the model itself once the
+    #: hands are bought inside the MILP instead of scanned for.
     max_hands: int = 1
+    #: Whether the MODEL buys the day's labour -- the `delta` columns of the
+    #: labour row, priced by `world.rules.hire_cost` -- instead of the day
+    #: layer scanning hand counts and paying the bill outside the matrix.
+    #: OFF until a season on the frozen trees says otherwise: with it off the
+    #: matrix is exactly the one that shipped (the flag reaches `solve` through
+    #: `equilibrate`, and the block only exists when it is on).
+    buy_hands: bool = False
     #: Master solves one `plan` may spend correcting the hours it committed.
     fit_rounds: int = 2
     #: The step the hours correction takes when the day did NOT fit: each round

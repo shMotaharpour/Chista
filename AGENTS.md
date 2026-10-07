@@ -163,12 +163,11 @@ submission-path checks the owner asks for by name.
 
 This repo carries a knowledge graph of its own code and docs, built with
 `graphify` (a uv tool: `uv tool install graphifyy`; the interpreter it runs is
-recorded in `graphify-out/.graphify_python`). Its outputs are TRACKED here, not
-gitignored: `graphify-out/graph.json`, `graph.html` (opens without a server) and
-`GRAPH_REPORT.md`. Rebuild or extend with `graphify <repo> --code-only` (code
-only — the doc pass wants an LLM key) and `--update` to fold the docs back in
-from the cache; the rebuildable parts (`cache/`, dated backups, the raw
-`.graphify_*` intermediates) stay gitignored.
+recorded in `graphify-out/.graphify_python`). `graphify-out/` is gitignored: the graph is a local index, and one
+`graphify <repo> --code-only` rebuild brings it up to the working tree,
+re-extracting only what changed. It writes `graph.json`, `graph.html` (opens
+without a server) and `GRAPH_REPORT.md`; `--update` folds the docs back in from
+the cache, and the doc pass wants an LLM key.
 
 The rule: for a debugging question — what calls this, what does a change here
 ripple into, which layer owns this name — read the graph FIRST and grep second.

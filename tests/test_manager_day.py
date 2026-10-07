@@ -54,7 +54,7 @@ def test_the_day_the_master_commits_can_actually_be_walked(board):
     """End to end: a certified LP mix, rounded, and carried by real workers."""
     obs, contractor, supply, class_of_tile = board
     result = D.plan(obs, contractor, supply, class_of_tile=class_of_tile,
-                    iter_cap=200, hands=4)
+                    iter_cap=200, offer=4)
 
     assert result.master.certified, result.master.stopped
     assert result.day.chains, "the master committed nothing at all"
@@ -76,7 +76,7 @@ def test_the_committed_tiles_are_the_ones_beside_the_shed(board):
     """
     obs, contractor, supply, class_of_tile = board
     result = D.plan(obs, contractor, supply, class_of_tile=class_of_tile,
-                    iter_cap=200, hands=0, max_hands=2)
+                    iter_cap=200, offer=0, cap=2)
     steps = C.shed_distance()
     from agent.world.rules import BOARD_SIZE
 
@@ -100,7 +100,7 @@ def test_a_declined_tile_is_not_a_dropped_one(board):
     """
     obs, contractor, supply, class_of_tile = board
     result = D.plan(obs, contractor, supply, class_of_tile=class_of_tile,
-                    iter_cap=200, hands=4)
+                    iter_cap=200, offer=4)
     assigned = sum(1 for c in result.choices if c is not None)
     assert len(result.day.chains) <= assigned
     for _cell, ops, _entity in result.day.chains:
@@ -110,9 +110,24 @@ def test_a_declined_tile_is_not_a_dropped_one(board):
             f"chain must be left out, not padded into one")
 
 
+def test_the_scan_top_is_the_estimate_and_never_above_the_cap():
+    """`min(offer, cap)` -- neither end may swallow the other.
+
+    The pair this replaced overwrote `cap` and then tested it for `None`, so the
+    condition was dead and the scan's top was ALWAYS `cfg.max_hands`: an
+    estimate of twelve met a scan that never reached twelve, and the manager's
+    own number was thrown away without a word. R007: change the `min` below to a
+    `max` (or give the cap the last word) and this goes red.
+    """
+    assert D.scan_ceiling(3, 8) == 3, "the estimate must bind below the cap"
+    assert D.scan_ceiling(8, 3) == 3, "the cap must bind below the estimate"
+    assert D.scan_ceiling(0, 1) == 0, "zero is an offer: the farmer walks alone"
+    assert D.scan_ceiling(-2, 4) == 0, "a scan never starts below zero"
+
+
 def test_an_empty_day_fits_and_says_so():
     """No chains is a legal day, and it may not be reported as a failure."""
-    fitted = D.fit((), hands=3, hours_committed=0.0)
+    fitted = D.fit((), pool_ceiling=3, hours_committed=0.0)
     assert fitted.complete and fitted.tasks == 0 and fitted.reason == ""
     assert fitted.overhead == 1.0, (
         "no work is not an overhead of infinity, nor a division by zero")
@@ -134,7 +149,7 @@ def test_the_hours_only_ever_come_down(board):
     """
     obs, contractor, supply, class_of_tile = board
     result = D.plan(obs, contractor, supply, class_of_tile=class_of_tile,
-                    iter_cap=200, hands=4)
+                    iter_cap=200, offer=4)
     assert result.day.complete
     assert result.overhead == 1.0, (
         f"the supply was corrected by {result.overhead:.3f}x on a day that "

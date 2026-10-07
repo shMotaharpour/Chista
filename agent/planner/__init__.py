@@ -21,7 +21,7 @@ are measurable, but neither is computed here and no run claims them.
 """
 
 from agent.planner.columns import (Choice, ClassMix, DAYS, Plan, ROW_NAMES,
-                             Violation, assign_tiles, counts,
+                             Violation, counts,
                              demote_to_feasible, plan_from_board,
                              rounded_value, row_use, violations)
 from agent.planner.land import (Candidate, LandPlanner, LandResult, best_land,
@@ -34,7 +34,7 @@ from agent.planner.repair import (Drop, RepairResult, land_step_price, order_cos
 
 __all__ = [
     "Choice", "ClassMix", "Plan", "Violation", "ROW_NAMES", "DAYS",
-    "assign_tiles", "counts", "row_use", "violations", "rounded_value",
+    "counts", "row_use", "violations", "rounded_value",
     "demote_to_feasible", "plan_from_board",
     "Candidate", "LandPlanner", "LandResult", "best_land", "candidates",
     "prefix_cost",

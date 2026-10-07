@@ -9,9 +9,9 @@ The day: fourteen wheat tiles, PLANT+WATER, more than the farmer can walk alone.
 
 What is asserted:
 
-    fit(hands=0) searches the farmer alone: pool 0, and the route names worker 0 only
+    fit(pool_ceiling=0) searches the farmer alone: pool 0, and the route names worker 0 only
     compile(hands=0) writes one unit and hires nobody
-    fit(hands=2) is still allowed its two hands
+    fit(pool_ceiling=2) is still allowed its two hands
     Day(hands=k) starts its hands at the engine's own hours, ten a turn
 """
 from __future__ import annotations
@@ -33,27 +33,77 @@ OBS = {"player": 0, "hour": 0, "day": 0,
        "farms": [{"hires_today": 0}], "market": {"prices": {}}}
 
 
+def test_the_day_reports_which_work_it_could_not_place_and_where():
+    """`left`/`left_by_quadrant`: the evidence the manager's three correctives need.
+
+    `short` says how many hands were missing; this says which tasks the route could
+    not place at all, and where they stand -- the difference between "hire one more"
+    and "lay less on the day". On this fixture the farmer alone carries 14 of 28
+    (all of them in NW), one hand leaves exactly one behind, and three hands leave
+    none. R007: derive the left set from anything but the route's own task ids and
+    these counts stop matching what the route placed.
+    """
+    alone = D.fit(CHAINS, pool_ceiling=0, available=AVAILABLE)
+    assert (alone.placed, alone.left) == (14, 14), (
+        f"the farmer alone: placed {alone.placed}, left {alone.left}")
+    assert alone.left_by_quadrant == (("NW", 14),), alone.left_by_quadrant
+
+    one = D.fit(CHAINS, pool_ceiling=1, available=AVAILABLE)
+    assert (one.placed, one.left) == (27, 1), (one.placed, one.left)
+
+    carried = D.fit(CHAINS, pool_ceiling=3, available=AVAILABLE)
+    assert carried.complete and carried.left == 0, (carried.complete, carried.left)
+    assert carried.left_by_quadrant == ()
+
+
+def test_a_fixed_pool_asks_wsr_one_question_with_no_pool_search(monkeypatch):
+    """`fixed_pool=True` hands wsr `hands == max_hands`: one question, one search.
+
+    The range form (`hands=min(floor, offer)`, `max_hands=offer`) is what makes
+    wsr run its `_smallest_pool` halving -- several full searches per call. Once
+    the count is the MODEL's, the caller must not pay for that search: it asks
+    "can this count carry the day" and nothing else. R007: pass `hands=start`
+    with the range again and the assertion below goes red.
+    """
+    seen = {}
+
+    def spy(day, tasks, **kw):
+        seen.update(kw)
+        return _search(day, tasks, **kw)
+
+    from agent.wsr import beam as B                                       # noqa: PLC0415
+    from agent.planner import day as D                                    # noqa: PLC0415
+
+    _search = B.search
+    monkeypatch.setattr(B, "search", spy)
+    D.fit(CHAINS, pool_ceiling=3, available=AVAILABLE, fixed_pool=True)
+
+    assert seen["hands"] == 3 and seen["max_hands"] == 3, (
+        f"a fixed pool asks one question: hands {seen.get('hands')}, "
+        f"max_hands {seen.get('max_hands')}")
+
+
 def test_the_premise_the_farmer_alone_cannot_carry_this_day() -> None:
-    fitted = D.fit(CHAINS, hands=0, available=AVAILABLE)
+    fitted = D.fit(CHAINS, pool_ceiling=0, available=AVAILABLE)
     assert not fitted.complete, "the day fits the farmer alone, so it cannot show a hand appearing"
 
 
 def test_fit_with_no_hands_searches_the_farmer_alone() -> None:
-    fitted = D.fit(CHAINS, hands=0, available=AVAILABLE)
+    fitted = D.fit(CHAINS, pool_ceiling=0, available=AVAILABLE)
     assert fitted.pool == 0, (
         f"the master priced no hands and the day layer searched with {fitted.pool}: a hand the "
         f"market never hires")
 
 
 def test_fit_is_still_allowed_the_hands_it_was_offered() -> None:
-    fitted = D.fit(CHAINS, hands=2, available=AVAILABLE)
+    fitted = D.fit(CHAINS, pool_ceiling=2, available=AVAILABLE)
     assert 1 <= fitted.pool <= 2, f"two hands were offered and the search used {fitted.pool}"
 
 
 def test_compile_with_no_hands_writes_one_unit_and_hires_nobody() -> None:
     fitted = D.DayFit(CHAINS, 0, 28, 0, True, 0.0, 0.0)
-    plan = D.DayPlan(master=None, choices=[], mixes={}, day=fitted, rounds=1, overhead=1.0, hands=0)
-    out = D.compile(plan, OBS, hands=0)
+    plan = D.DayPlan(master=None, choices=[], mixes={}, day=fitted, rounds=1, overhead=1.0, offer=0)
+    out = D.compile(plan, OBS, hired=0)
     assert len(out["units"]) == 1, f"a plan with no hands wrote {len(out['units'])} units"
     hires = [o for row in out["market"] for o in row if o and o[0] == "HIRE"]
     assert not hires, f"a plan with no hands hires {len(hires)}"
@@ -90,7 +140,7 @@ def test_a_complete_day_reports_the_hands_it_needs_not_the_offer() -> None:
     """
     from agent.planner import day as D
 
-    fitted = D.fit(CHAINS, hands=5, available=AVAILABLE)
+    fitted = D.fit(CHAINS, pool_ceiling=5, available=AVAILABLE)
     assert fitted.complete, fitted.reason
     assert fitted.pool < 5, "the answer echoed the offer instead of the need"
     assert 0 <= fitted.floor <= fitted.pool, (fitted.floor, fitted.pool)
@@ -105,8 +155,8 @@ def test_the_day_takes_the_secretarys_hours_when_it_has_them() -> None:
     """
     from agent.planner import day as D
 
-    given = D.fit(CHAINS, hands=2, available=AVAILABLE, hire_times=(5, 5))
-    bound = D.fit(CHAINS, hands=2, available=AVAILABLE)
+    given = D.fit(CHAINS, pool_ceiling=2, available=AVAILABLE, hire_times=(5, 5))
+    bound = D.fit(CHAINS, pool_ceiling=2, available=AVAILABLE)
     # The claim is that the input REACHES the search, so the observable is that
     # the day is not the same day: hands that start at hour 5 walk a different
     # day from hands that start at hour 1. Equal numbers here would mean the

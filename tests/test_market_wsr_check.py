@@ -20,15 +20,36 @@ def _hires(rows) -> int:
     return sum(1 for hour in rows for o in hour if o and o[0] == "HIRE")
 
 
-def test_a_check_lays_the_day_out_without_the_hires() -> None:
+def test_a_check_lays_the_day_out_with_the_hire_SLOTS() -> None:
+    """The check and the commit are the same day; they differ in who is sent.
+
+    A check that dropped the hires answered a question about a day with empty
+    slots: its buys kept turns the committed queue spends on hires, and the
+    timetable built from it promised inputs a turn before they land (F047's
+    silent refusals). The layout is the day's market in both modes.
+    """
     obs = _obs()
     check = K.build(obs, (), hands=3, wsr_check=False)
     commit = K.build(obs, (), hands=3, wsr_check=True)
-    assert _hires(check.rows) == 0, "a check committed hires"
+    assert _hires(check.rows) == 3, "the check does not lay out the day's hires"
     assert _hires(commit.rows) == 3, _hires(commit.rows)
-    # NOT a bill assertion: `HAND_COST_MULT = 0` (rules.hire_cost) makes the hire
-    # bill zero until the planner is given a labour-cost model, so the two bills
-    # are equal by the owner's order and would say nothing about the flag.
+    assert check.rows == commit.rows, "the check and the commit disagree on the day"
+
+
+def test_the_check_and_the_commit_land_the_same_turn_for_a_buy() -> None:
+    """The guard for the fix: a buy's hour may not depend on the flag.
+
+    Ten orders fill turn 0, so with the hires in the layout the day's seed buy
+    lands in turn 1 in BOTH queues. Dropping the hires from the check again puts
+    it in turn 0 there and this fails.
+    """
+    obs = _obs()
+    check = K.build(obs, (), hands=10, wsr_check=False)
+    commit = K.build(obs, (), hands=10, wsr_check=True)
+    assert check.bought_hours == commit.bought_hours, (check.bought_hours,
+                                                       commit.bought_hours)
+    assert check.hire_hours == commit.hire_hours, (check.hire_hours,
+                                                  commit.hire_hours)
 
 
 def test_zero_hands_commits_nobody() -> None:
@@ -100,7 +121,10 @@ def test_a_competing_buy_is_queued_before_a_hire() -> None:
     hires = [["HIRE"]]
     buys = [["BUY_PRODUCT", "WHEAT", 2], ["BUY_SEED", "MELON", 1]]
     rows, _dropped = merge(sells, hires, buys, cap=10, turns=3)
-    assert [o[0] for o in rows[1]] == ["BUY_PRODUCT", "HIRE", "BUY_SEED"], rows[1]
+    # The day's buys ahead of the hires: a slot spent on a hire is a slot the
+    # seed does not get, and a seed that lands a turn late fires its PLANT early
+    # and the engine refuses it without a word (F047).
+    assert [o[0] for o in rows[1]] == ["BUY_PRODUCT", "BUY_SEED", "HIRE"], rows[1]
 
 
 def test_the_rank_orders_the_sells_within_a_turn() -> None:

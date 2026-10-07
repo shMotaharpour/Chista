@@ -176,6 +176,14 @@ class MarketForecast:
     #: the per-turn walk behind the day rows — what `hourly_prices` samples.
     #: (T+1, 9) inventories; row 0 is the snapshot, row j after turn j-1.
     walk_inventory: np.ndarray = field(default_factory=lambda: np.zeros((1, 1)))
+    #: The same walk priced from the OTHER end of the rival's estimate. When a
+    #: caller hands in a ceiling (their shed-level stock plus the harvest they
+    #: have not dropped), the rival term becomes that ceiling, so more supply
+    #: presses the price down: this is the pessimistic band of the same model,
+    #: not a second model. Left at zero means no ceiling was given and
+    #: `walk_inventory` is the only path -- the bit-identical case.
+    walk_inventory_high: np.ndarray = field(
+        default_factory=lambda: np.zeros((1, 1)))
     walk_step: int = 0
     unlock_policy: str = "mean"
     residual: Mapping[str, float] = field(default_factory=dict)
@@ -195,8 +203,22 @@ class MarketForecast:
     def inventory_of(self, item: str, day: int) -> int:
         return self._row(day)[_PROD_INDEX[item]]
 
-    def price_of(self, item: str, day: int) -> int:
-        return self.prices[self._index(day)][_PROD_INDEX[item]]
+    def price_of(self, item: str, day: int, high: bool = False) -> int:
+        """The day's price for `item`; `high` reads the pessimistic band.
+
+        One table, two bands: with no ceiling the high walk IS the plain one
+        (`forecast` binds them to the same array), so `high` returns the same
+        number and costs one identity check. With a ceiling the band's own
+        inventory row is priced through the engine's own `price_of`, which is
+        what keeps the two bands the same model rather than two models.
+        """
+        i = self._index(day)
+        if not high or self.walk_inventory_high is self.walk_inventory:
+            return self.prices[i][_PROD_INDEX[item]]
+        from agent.world.prices import price_of as _engine_price
+        gi = _PROD_INDEX[item]
+        row = self.walk_inventory_high[i * TURNS_PER_DAY]
+        return int(_engine_price(item, float(row[gi])))
 
     #: The tests' name for the same read (PR #61's test_market_layer calls
     #: `.price(item, day)`); one forecast, two spellings, no second table.
@@ -247,6 +269,7 @@ def forecast(obs: Any, *, days: int = 30,
              our_sells: Mapping[int, Mapping[str, int]] | None = None,
              residual: Mapping[str, float] | None = None,
              rival_supply: np.ndarray | None = None,
+             rival_ceiling: np.ndarray | None = None,
              rival_sells: Mapping[int, Mapping[str, int]] | None = None,
              unlock_policy: str = "mean",
              config: Any = None,
@@ -397,6 +420,22 @@ def forecast(obs: Any, *, days: int = 30,
     walk = inv0[None, :] + np.concatenate(
         [np.zeros((1, len(PRODUCTS))), np.cumsum(net, axis=0)], axis=0)
 
+    # The pessimistic band is the SAME arithmetic with the rival at the other
+    # end of their own estimate: their ceil replaces their floor and nothing
+    # else moves. One cumsum, no loop, and no work at all when the caller has
+    # no ceiling to give.
+    walk_high = walk
+    if rival_ceiling is not None:
+        high = np.asarray(rival_ceiling, dtype=np.float64)
+        if high.shape != (horizon, len(PRODUCTS)):
+            raise ValueError(
+                f"rival_ceiling: expected shape ({horizon}, {len(PRODUCTS)}), "
+                f"got {high.shape}")
+        rival_high = high[day_of_turn] / TURNS_PER_DAY
+        net_high = rival_high + our - drains
+        walk_high = inv0[None, :] + np.concatenate(
+            [np.zeros((1, len(PRODUCTS))), np.cumsum(net_high, axis=0)], axis=0)
+
     # the forecast's rows are DAY STARTS: row d = the walk after turn 24d - 1
     # (the engine's day-start observation), row 0 = the snapshot itself.
     # A mid-day forecast (step % 24 != 0) spends the first partial day first:
@@ -439,7 +478,7 @@ def forecast(obs: Any, *, days: int = 30,
     return MarketForecast(start_step=step, horizon_days=horizon,
                           first_day=first_day,
                           inventory=tuple(rows_inv), prices=tuple(rows_price),
-                          walk_inventory=walk, walk_step=step,
+                          walk_inventory=walk, walk_inventory_high=walk_high, walk_step=step,
                           unlock_policy=unlock_policy, residual=dict(res),
                           assumptions=tuple(assumptions))
 
@@ -537,6 +576,7 @@ def hourly_prices(fc: MarketForecast, days: int | None = None,
 def price_paths(fc: MarketForecast, days: int | None = None,
                 items: Iterable[str] | None = None,
                 from_day: int | None = None,
+                high: bool = False,
                 ) -> dict[str, tuple[int, ...]]:
     """`{item: (price, ...)}` for the horizon — what feeds the master's `p_d`.
 
@@ -549,5 +589,14 @@ def price_paths(fc: MarketForecast, days: int | None = None,
     horizon = fc.days if days is None else max(1, int(days))
     wanted = PRODUCTS if items is None else tuple(items)
     start = int(fc.first_day) if from_day is None else int(from_day)
-    return {item: tuple(fc.price_of(item, start + d) for d in range(horizon))
+    def _one(item: str, d: int) -> int:
+        # The mean path must issue the SAME call it always did. `high` is a
+        # capability, not an assumption: a forecast that does not know it -- the
+        # flat stand-in, belief's stubs -- is still a forecast, and widening the
+        # plain call broke every one of them ("_Path.price_of() got an unexpected
+        # keyword argument 'high'"), taking the whole mean path to the stand-in.
+        return fc.price_of(item, d, high=True) if high else fc.price_of(item, d)
+
+    return {item: tuple(_one(item, start + d)
+                        for d in range(horizon))
             for item in wanted}

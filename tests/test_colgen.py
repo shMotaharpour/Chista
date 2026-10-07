@@ -92,6 +92,43 @@ def _pricer(counts, flip=False):
     return price
 
 
+def test_the_model_buys_the_labour_it_needs_and_pays_the_ladder_for_it():
+    """The hands block: absent labour is infeasible, bought labour is priced.
+
+    A 20-hour tile on a 15.6-hour budget cannot be walked by the farmer alone, so
+    the block is what makes such a day reachable at all -- and the price it pays
+    must be the Fibonacci ladder's own, rung by rung. R007: build the rungs with
+    `np.diff` (which makes the first rung free) and the mult-1 assertion below
+    reads 100.0000 instead of 99.0000; grow `n_cols` after the rows exist and the
+    assembly raises.
+    """
+    from agent.config import Config                                   # noqa: PLC0415
+    from agent.planner.colgen import Column, MasterLP                 # noqa: PLC0415
+
+    cfg = Config()
+    days = 1
+    col = Column(cls=0, cost=np.array([[20.0]]), spend=np.zeros(days),
+                 earn=np.zeros(days), revenue=100.0)
+    hours = np.array([15.6])
+
+    with pytest.raises(RuntimeError):
+        MasterLP().solve([col], np.array([1]), hours, 3000.0, days, 1, cfg=cfg)
+
+    free = MasterLP().solve([col], np.array([1]), hours, 3000.0, days, 1,
+                            cfg=cfg, buy_hands=True, hand_mult=0)
+    assert free.objective == pytest.approx(100.0), (
+        "with free hands the day must be worth its own revenue")
+
+    for mult, want in ((1, 99.0), (4, 96.0)):
+        res = MasterLP().solve([col], np.array([1]), hours, 3000.0, days, 1,
+                               cfg=cfg, buy_hands=True, hand_mult=mult,
+                               integral=True)
+        assert res.objective == pytest.approx(want), (
+            f"mult {mult}: the model must pay the ladder, not less")
+        assert int(np.asarray(res.hands_bought)[0]) == 1, (
+            "a whole hand is what a day can hire; the MIP must say one")
+
+
 def test_the_cash_rows_are_the_loop_they_replaced():
     """`cash_rows` collapses a per-(column, day) loop into two `cumsum`s.
 

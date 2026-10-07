@@ -113,7 +113,8 @@ class Manager:
         self.cfg = config or Config.load()
         self.graph = graph if graph is not None else _load_graph()
         self.keys = frozenset(self.graph.key_index)
-        self.contractor = _contractor(self.graph, HORIZON_DAYS)
+        self.contractor = _contractor(self.graph, HORIZON_DAYS,
+                                      float(getattr(self.cfg, "discount_rate", 0.0)))
         self.steps = C.shed_distance()
         self.pool: list = []            # columns carried between days
         #: The last solve's mix, in `pool` order — what the day roll prunes on.
@@ -171,7 +172,8 @@ class Manager:
         day = int(obs.get("day", 0)) if isinstance(obs, dict) else 0
         days = M.season_horizon(obs)
         if int(self.contractor.days) != days:
-            self.contractor = _contractor(self.graph, days)
+            self.contractor = _contractor(self.graph, days,
+                                          float(getattr(self.cfg, "discount_rate", 0.0)))
         if self.pool_day is None:                 # nothing carried yet
             self.pool_day = day
             return
@@ -220,9 +222,25 @@ class Manager:
         # out here: `D.plan` reads them (round caps, hands, the hours overhead,
         # the smoothing) so a measurement injects one object and nothing has a
         # second copy of a decision.
+        # The day's hand count is the owner's estimate off the chains the LAST
+        # turn produced (a day's chains need a solve to exist, so the first turn
+        # of the season has nothing to estimate from and asks for none). The
+        # HOURS the hands start at stay the hourly secretary's: `plan` prices the
+        # day on the queue's own `hire_hours` (F040).
+        from agent.planner import hands as H
+        _prev = (list(getattr(self.day.day, "chains", ()) or ())
+                 if self.day is not None else [])
+        _quads = 1
+        try:
+            _unlocked = obs["farms"][int(obs.get("player", 0))].get("unlocked")
+            if _unlocked:
+                _quads = len(_unlocked)
+        except (KeyError, TypeError, IndexError):
+            _quads = 1
+        self.hand_estimate = H.estimate(_prev, _quads)
         self.day = D.plan(obs, self.contractor, supply,
                           class_of_tile=class_of_tile,
-                          hands=0,
+                          offer=self.hand_estimate,
                           pool=self.pool,
                           forecast_obj=self.forecast_obj,
                           cfg=self.cfg)
@@ -232,7 +250,7 @@ class Manager:
         self.certified = bool(self.day.master.certified)
         self._project_own_sells()
         self._watch(obs)
-        self.plan = D.compile(self.day, obs, hands=self.day.hands,
+        self.plan = D.compile(self.day, obs, hired=self.day.offer,
                               terms=self.terms, model=self.opponent,
                               activity=self._activity(),
                               forecast_obj=self.forecast_obj,
@@ -268,6 +286,7 @@ class Manager:
             return forecast(obs, days=horizon, config=terms,
                             our_sells=self.own_sells or None,
                             rival_supply=self._rival_supply(obs, horizon),
+                            rival_ceiling=self._rival_ceiling(obs, horizon),
                             rival_sells=self._rival_hours(obs, horizon) or None)
         except Exception:                      # noqa: BLE001 - belief is optional
             return None
@@ -344,6 +363,35 @@ class Manager:
             from agent.belief.rival_calendar import supply_curve
             return supply_curve(obs, tuple(PRODUCTS), horizon)
         except Exception:                      # noqa: BLE001 - the flat path stands
+            return None
+
+    def _rival_ceiling(self, obs, horizon):
+        """The other end of the same calendar: what they COULD put on the market.
+
+        `_rival_supply` reads their board as a guarantee (an event on the first
+        day the good certainly exists, at the minimum it certainly carries), and
+        a plan that takes that floor for the whole truth prices its own sales
+        against a rival who never carries more. The ceiling is the same walk
+        with `expected=True` (the fertilised hints their own board implies) plus
+        what the tracker already holds for TODAY -- their shed-level stock and
+        the harvest they have not dropped, both computed every turn and, until
+        now, read by nobody (`MarketTracker.rival_ceiling`).
+
+        The current stock lands on row 0 only: it is a quantity they hold now,
+        not a schedule of future ones, and spreading it forward would invent
+        production their board does not show. None on any failure, which is the
+        floor-only path the plan has always taken.
+        """
+        try:
+            from agent.belief.market import PRODUCTS
+            from agent.belief.rival_calendar import supply_curve
+            high = supply_curve(obs, tuple(PRODUCTS), horizon, expected=True)
+            tracker = getattr(self, "tracker", None)
+            if tracker is not None and high.size:
+                high[0] = high[0] + np.asarray(tracker.rival_ceiling(),
+                                               dtype=np.float64)
+            return high
+        except Exception:                      # noqa: BLE001 - the floor stands
             return None
 
     def _project_own_sells(self) -> None:
@@ -438,10 +486,10 @@ class Manager:
         if self.obs is None or self.certified:
             return self.certified
         days = int(np.asarray(self.contractor.days))
-        hands = getattr(self.day, "hands", 0) if self.day is not None else 0
+        hired = getattr(self.day, "offer", 0) if self.day is not None else 0
         supply = M.supply_from_obs(self.obs, self.cfg)
-        if hands > 0:
-            hours = D.hours_for(hands, days, self.cfg.hours_overhead)
+        if hired > 0:
+            hours = D.hours_for(hired, days, self.cfg.hours_overhead)
             supply = M.CouplingSupply(
                 hours=hours, seed_stock=supply.seed_stock,
                 animal_stock=supply.animal_stock, fert_stock=supply.fert_stock,
@@ -492,7 +540,7 @@ def _load_graph():
     return TileGraph.load(GRAPH_PATH)
 
 
-def _contractor(graph, days: int):
+def _contractor(graph, days: int, discount: float = 0.0):
     """The tile DP's pricing oracle, cast over the graph already in hand.
 
     `days` is the horizon the sweep runs over, so it changes with the day
@@ -502,4 +550,4 @@ def _contractor(graph, days: int):
     that never changes.
     """
     from agent.tile_dp.contractor import TileContractor
-    return TileContractor(graph, days=days)
+    return TileContractor(graph, days=days, discount=discount)

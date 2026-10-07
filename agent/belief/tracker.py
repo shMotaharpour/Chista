@@ -287,6 +287,24 @@ class MarketTracker:
             return np.zeros(len(GOODS))
         return self.records[turn_index].rival_sales
 
+    def rival_ceiling(self) -> np.ndarray:
+        """What the rival could still put on the market today: their shed-level
+        estimate plus the harvest they have not dropped yet.
+
+        `rival_stock` is the shed-level estimate (capped at SHED_CAP) and
+        `rival_bag` is the harvest carried but unsold -- their own docstrings
+        name the second a LOWER bound. Both are computed every turn and, until
+        now, read by nobody. The dated calendar the forecast consumes is a FLOOR
+        by construction (an event sits on the first day the good certainly
+        exists, carrying the minimum it certainly carries), so a plan that reads
+        the floor as the whole truth prices its own sales against a rival who
+        never has more than that. This is the other end of the same estimate:
+        one number per good, no new computation, and `None`-free because both
+        arrays start at zero.
+        """
+        return np.asarray(self.rival_stock + self.rival_bag,
+                          dtype=np.float64).copy()
+
     def activity_bucket(self, step: int, window: int = 24) -> int:
         """The rival's own sell bucket over the last `window` turns.
 

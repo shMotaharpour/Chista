@@ -99,9 +99,15 @@ class TileContractor:
     slice check happen once per process instead of once per turn.
     """
 
-    def __init__(self, graph: TileGraph, days: int = HORIZON_DAYS) -> None:
+    def __init__(self, graph: TileGraph, days: int = HORIZON_DAYS,
+                 discount: float = 0.0) -> None:
         self.graph = graph
         self.days = int(days)
+        #: `(days,)`: the NPV factor of each day, ONCE (vectorised, no loop in
+        #: the sweep). 0.0 is a factor of 1 everywhere and is bit-identical.
+        self.discount = float(discount)
+        self._disc = np.asarray((1.0 / (1.0 + self.discount)) ** np.arange(self.days),
+                                dtype=DTYPE) if self.discount > 0.0 else None
         self.n_states = int(graph.n_states)
         self.edge_offsets = np.ascontiguousarray(graph.edge_offsets, dtype=np.intp)
         self.edge_next = np.ascontiguousarray(graph.edge_next, dtype=np.intp)
@@ -188,22 +194,28 @@ class TileContractor:
         return np.ascontiguousarray(arr, dtype=DTYPE)
 
     # ---- the kernel ---------------------------------------------------
-    def sweep(self, p, w, travel_hours: int = 0) -> tuple[np.ndarray, np.ndarray]:
+    def sweep(self, p, w, travel_hours: int = 0,
+              rent=None) -> tuple[np.ndarray, np.ndarray]:
         """Backward sweep: `(days+1, n_states)` values and per-day rewards."""
         _ec_int, ec = self._travel_edge_costs(travel_hours)
         return self._sweep(self._as_dual(p, "prices"), self._as_dual(w, "wages"), ec)
 
-    def _sweep(self, p: np.ndarray, w: np.ndarray, ec: np.ndarray | None = None
-               ) -> tuple[np.ndarray, np.ndarray]:
+    def _sweep(self, p: np.ndarray, w: np.ndarray, ec: np.ndarray | None = None,
+               rent=None) -> tuple[np.ndarray, np.ndarray]:
         ec = self.EC if ec is None else ec
         rewards = np.empty((self.days, int(self.edge_next.size)), dtype=DTYPE)
         for d in range(self.days - 1, -1, -1):
             # Produce and cost are priced by their own vector, in two passes. Folding them
             # into one wider matvec measures slower: the wider gemv loses to BLAS dispatch.
             rewards[d] = self.EP @ p[d] - ec @ w[d]
+            if rent is not None:
+                rewards[d] = rewards[d] - rent[d]
+            if self._disc is not None:
+                rewards[d] = rewards[d] * self._disc[d]
         return self._backward(rewards), rewards
 
-    def _base_rewards(self, p: np.ndarray, w: np.ndarray) -> np.ndarray:
+    def _base_rewards(self, p: np.ndarray, w: np.ndarray, rent=None
+                      ) -> np.ndarray:
         """`EP @ p[d] - EC @ w[d]` for every day: the sweep's distance-free half.
 
         The walk only ever lands on the LABOUR column of the worked edges
@@ -214,6 +226,13 @@ class TileContractor:
         rewards = np.empty((self.days, int(self.edge_next.size)), dtype=DTYPE)
         for d in range(self.days):
             rewards[d] = self.EP @ p[d] - self.EC @ w[d]
+            if rent is not None:
+                # Every day the tile is OURS pays: holding land costs whether or
+                # not anyone works it. LOCKED never enters this graph, so it is the
+                # only state without rent -- no empty/weed exception.
+                rewards[d] = rewards[d] - rent[d]
+            if self._disc is not None:
+                rewards[d] = rewards[d] * self._disc[d]
         return rewards
 
     def _sweep_from(self, base: np.ndarray, w: np.ndarray, travel_hours: int
@@ -400,8 +419,8 @@ class TileContractor:
         hours = int(travel_hours)
         return self.price_many(p, w, {hours: owned_states})[hours]
 
-    def price_many(self, p, w, owned_by_distance: dict[int, Sequence[int]]
-                   ) -> dict[int, PricedBoard]:
+    def price_many(self, p, w, owned_by_distance: dict[int, Sequence[int]],
+                   rent=None) -> dict[int, PricedBoard]:
         """Price every distance off ONE base sweep.
 
         A round prices one group per distinct distance, and each group's sweep
@@ -418,7 +437,9 @@ class TileContractor:
         """
         prices = self._as_dual(p, "prices")
         wages = self._as_dual(w, "wages")
-        base = self._base_rewards(prices, wages)
+        # Distance-independent: charged ONCE in the shared base sweep, never per
+        # distance, and never inside `w` (the input-price matrix #142 pins).
+        base = self._base_rewards(prices, wages, rent=rent)
         hours_list = [int(h) for h in owned_by_distance]
         sweeps: list[tuple] = []
         for hours in hours_list:
