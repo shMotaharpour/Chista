@@ -89,6 +89,12 @@ class Config:
     #: half-committed and the tile counts a fraction of what they claim. False is
     #: the LP path this project has always run.
     day_integral: bool = False
+    #: The relative gap the DECISION MIP may stop at (`HiGHS mip_rel_gap`):
+    #: the incumbent is then within this fraction of the true integer optimum.
+    #: None/0 solves to proven optimality -- measured 3,131 s on the day-0
+    #: board over the full pool and 2 s over the LP-supported columns; the
+    #: supported-column cap plus a 1% gap is the fast regime the owner named.
+    mip_gap: float = 0.01
     #: How many of the engine's quadrants the day may BUY (`world.rules.LAND_PRICES`,
     #: prefix order), one binary per (quadrant, day). NW is free and open from the
     #: start (F042), so only the ladder's three steps are ever buyable: k is clamped
