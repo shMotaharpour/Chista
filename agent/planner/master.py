@@ -305,6 +305,10 @@ class MasterResult:
     #: asks wsr about `round()` of the first day and hires exactly that; the
     #: bill is already inside the objective, so no caller adds it again.
     hands_bought: object = None
+    #: (nq, days) the quadrants the decision solve bought, one row per entry of
+    #: `rules.LAND_ORDER`, 1 in the day column of the purchase -- or None when
+    #: the land rows were off. Read off the decision solve's own y values.
+    land_bought: object = None
     #: `colgen.MasterSolve.land_dual` -- per quadrant, what one more purchase of it
     #: is worth, and `rent` -- what one more tile of room on each day is worth.
     #: Both are LP row duals (a MIP publishes zeros), None when no land row ran.
@@ -933,6 +937,7 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply, rival_history:
                 smoothing: float = 0.0,
                 entry: bool = False,
                 cfg: "Config | None" = None,
+                mip_gap: float | None = None,
                 buy_hands: bool = False,
                 hand_mult: int = 0) -> MasterResult:
     """Column generation over the tile classes; always publishable.
@@ -1356,6 +1361,7 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply, rival_history:
                              land=land,
                              land_owned=land_owned,
                              class_starts=class_starts,
+                             mip_gap=mip_gap,
                              shed=(supply.shed_stock, supply.shed_capacity),
                              prices=p_mkt,
                              prices_high=p_mkt_high,

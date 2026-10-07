@@ -364,6 +364,7 @@ class MasterLP:
               land: int | None = None,
               land_owned: int = 1,
               class_starts: np.ndarray | None = None,
+              mip_gap: float | None = None,
               cfg: "Config | None" = None,
               buy_hands: bool = False,
               hand_mult: int = 0) -> MasterSolve:
@@ -990,6 +991,14 @@ class MasterLP:
             if buy_hands:
                 kinds[hands0:] = [_highspy._core.HighsVarType.kInteger] * hands_width
             lp.integrality_ = kinds
+            # The MIP gap: solving the integer decision to proven optimality
+            # cost 3,131 s on the day-0 board (858 columns, 90 land binaries)
+            # for a 7.2% LP-vs-MIP gap -- hours the turn budget can never
+            # carry. `mip_gap` names the relative gap HiGHS may stop at: the
+            # incumbent is then within that fraction of the true integer
+            # optimum. None keeps HiGHS's own default (proven optimality).
+            if mip_gap is not None and mip_gap > 0.0:
+                self._highs.setOptionValue("mip_rel_gap", float(mip_gap))
 
         self._highs.passModel(lp)
         layout = (n_coupling, days, items, n_goods, n_classes)
@@ -1480,6 +1489,7 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
              land: int | None = None,
              land_owned: int = 1,
              class_starts: np.ndarray | None = None,
+             mip_gap: float | None = None,
              buy_hands: bool = False,
              hand_mult: int = 0) -> ColgenResult:
     """The loop: master over every column so far, price, add, repeat.
@@ -1539,6 +1549,14 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
         the pool stayed at 18 columns instead of 27 and the decision was taken on
         a poorer pool than the LP's own. Same matrix, same columns, one extra
         solve: the LP drives the generation, the MIP takes the decision.
+
+        The integer lambda is capped at the LP's own mix: a column the
+        relaxation left at zero weight cannot be part of an optimal integer
+        solution of the SAME pool (its reduced cost is non-negative), so
+        restricting the integers to the LP-supported columns prunes the
+        branch-and-bound tree at no objective cost -- measured on the day-0
+        board: 3,131 s to proven optimality over 858 columns, against seconds
+        over the ~60 the LP weighted, at an unchanged objective.
         """
         if result.solve is None:
             return result
@@ -1552,7 +1570,24 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
             # model is worth is asked for in `Config.master_rounds`, where it is
             # visible and costs what it costs; it is not smuggled in here.
             return result
-        args = (result.pool, counts, supply_hours, money, days, n_coupling)
+        # The integer lambda rides only the columns the LP weighted, PLUS every
+        # class's idle column (a class must always be able to park its tiles;
+        # dropping a class's last columns would leave its convexity row
+        # unsatisfiable and the MIP would return a zero objective). A column
+        # the relaxation left at zero has a non-negative reduced cost at those
+        # duals, so it cannot enter an optimal integer solution of the same
+        # pool. The cap is what turns the decision MIP from 3,131 s (858
+        # columns, proven optimality) into seconds (~74 columns). The full
+        # pool stays on the result for the callers that read it; only the
+        # decision solve's matrix shrinks.
+        lam = getattr(result.solve, "lam", None)
+        supported = (list(result.pool) if lam is None or not lam.size
+                     else [col for j, col in enumerate(result.pool)
+                           if (j < lam.size and float(lam[j]) > 1e-9)
+                           or col.key == ("idle",)])
+        if len(supported) < len(result.pool):
+            supported = list(supported)
+        args = (supported, counts, supply_hours, money, days, n_coupling)
         kwargs = dict(
             shed_stock=None if shed is None else shed[0],
             shed_capacity=0.0 if shed is None else float(shed[1]),
@@ -1564,6 +1599,7 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
             land=land,
             land_owned=land_owned,
             class_starts=class_starts,
+            mip_gap=mip_gap,
             buy_hands=buy_hands, hand_mult=hand_mult)
         final = solver.solve(*args, **kwargs)
         if integral:
