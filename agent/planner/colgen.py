@@ -1356,6 +1356,11 @@ def classes_of(owned: list, distances: list[int] | None = None
     index: dict[tuple, int] = {}
     of_tile: list[int] = []
     for i, entry in enumerate(owned):
+        if entry is None:
+            # An unpriceable position (an unmodelled state, #152): it takes no
+            # class and consumes no distance, keeping later tiles aligned.
+            of_tile.append(-1)
+            continue
         if isinstance(entry, tuple):
             state, quad = int(entry[0]), int(entry[1])
         else:
@@ -1368,7 +1373,8 @@ def classes_of(owned: list, distances: list[int] | None = None
         of_tile.append(index[key])
     counts = np.zeros(len(reps), dtype=np.int64)
     for c in of_tile:
-        counts[c] += 1
+        if c >= 0:
+            counts[c] += 1
     return reps, counts, of_tile
 
 
