@@ -121,8 +121,8 @@ def test_unmodelled_tile_does_not_shift_classes_of_subsequent_tiles():
     obs = copy.deepcopy(env.state[0].observation)
     manager = Manager()
 
-    # Base line: all 25 tiles modelled
-    owned0 = M._owned_states(object(), obs)
+    # Base line: all 100 tiles modelled
+    owned0 = M.board_tiles(obs, manager.graph)
     dists0 = M._owned_distances(obs, manager.steps)
     _, _, of_tile0 = classes_of(owned0, dists0)
     normal = manager._class_of_tile(obs, of_tile0)
@@ -131,9 +131,14 @@ def test_unmodelled_tile_does_not_shift_classes_of_subsequent_tiles():
     obs["farms"][0]["tiles"][0][2] = {
         "kind": "PLANT", "crop": "WHEAT", "planted_day": 0, "yield_units": 2
     }
-    owned1 = M._owned_states(object(), obs)
-    dists1 = M._owned_distances(obs, manager.steps)
+    owned1 = M.board_tiles(obs, manager.graph)
+    all_dists1 = M._owned_distances(obs, manager.steps)
+    dists1 = [d for t, d in zip(owned1, all_dists1) if t is not None]
+    owned1 = [t for t in owned1 if t is not None]
     reps1, _, of_tile1 = classes_of(owned1, dists1)
+    # The unmodelled position is spliced out of the tile->class walk: rebuild
+    # it with None at tile 2 so the alignment test below is honest.
+    of_tile1 = of_tile1[:2] + [None] + of_tile1[2:]
     shifted = manager._class_of_tile(obs, of_tile1)
 
     # Tile (0, 2) must be None because its state is not modelled
@@ -148,6 +153,10 @@ def test_unmodelled_tile_does_not_shift_classes_of_subsequent_tiles():
     assert reps1[shifted[44]] == (0, int(manager.steps[44])), (
         f"tile 44 class shifted: got {reps1[shifted[44]]}, expected (0, {manager.steps[44]})"
     )
+    # A locked tile (row 5) has its own class now: the quadrant joined the key
+    assert shifted[75] is not None, "a locked quadrant's tile lost its class"
+    assert len(reps1[shifted[75]]) == 3, (
+        f"a locked tile's class must carry the quadrant: {reps1[shifted[75]]}")
 
 
 def test_step_warms_same_lp_as_hour_zero():

@@ -1034,7 +1034,7 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply, rival_history:
         return result
 
     if owned is None:
-        owned = _owned_states(runtime, obs)
+        owned = board_tiles(obs, _shipped_graph())
     # Fallback trigger 1: linprog was not importable. The module still
     # imports (guarded import above); the publish degrades to the warm
     # prices and SAYS so.
@@ -1053,6 +1053,17 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply, rival_history:
                           spend=np.zeros(days), earn=np.zeros(days),
                           revenue=0.0, cls_key=tuple(reps[c]), key=("idle",))
             for c in range(len(reps))]
+    # Every class's START DAY (the owner's land model, 2026-10): 0 for a tile
+    # of an OPEN quadrant, and for a still-locked one the day after its
+    # quadrant is bought. A class priced at start k works nothing and pays
+    # nothing before k (`price` hands the contractor the unlock channel), and
+    # the master's start-day rows (`class_starts`) let the LP weight its
+    # working columns exactly when the purchase sits at k-1.
+    owned_quads = owned_quadrants(obs) if isinstance(obs, dict) else 1
+    class_starts = np.asarray(
+        [0 if (len(rep) < 3 or int(rep[0]) < owned_quads)
+         else int(rep[0]) - owned_quads + 1
+         for rep in reps], dtype=np.int64)
 
     w_cur = w_lag
     #: The produce credit the pricing closure handed the tiles on its LAST call:
@@ -1170,18 +1181,37 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply, rival_history:
         # One board per distinct DISTANCE, not per state: the walk is charged on
         # the labour column of every worked day, so it has to be inside the DP's
         # own objective (`TileContractor._travel_edge_costs`), and a class is
-        # (state, distance) — so the classes sharing a distance share a sweep.
-        # Classes that differ only in state now run one sweep each, and that is
-        # the price of an exact subproblem: with the walk added AFTER the argmax
-        # the DP optimises one objective while the master prices another, so the
-        # value is not the class's best dual-priced plan, the reduced-cost test
-        # is no longer about this LP, and the bound can come out below the
-        # objective it bounds (measured: 33,765.5 against 34,008.8).
+        # (quadrant, state, distance) — so the classes sharing a distance share
+        # a sweep. Classes that differ only in state now run one sweep each,
+        # and that is the price of an exact subproblem: with the walk added
+        # AFTER the argmax the DP optimises one objective while the master
+        # prices another, so the value is not the class's best dual-priced
+        # plan, the reduced-cost test is no longer about this LP, and the
+        # bound can come out below the objective it bounds (measured: 33,765.5
+        # against 34,008.8).
+        #
+        # The QUADRANT is not a DP input: three bare tiles at the same distance
+        # in three quadrants walk the same graph. What separates them is WHEN
+        # their plan may start working — a locked quadrant's tiles start on the
+        # day after their quadrant is bought — and that is the contractor's own
+        # unlock channel (`b55bf4e`): a tile with unlock day k works nothing and
+        # pays nothing before k. Every class of a locked quadrant is priced at
+        # EVERY start day the horizon offers; the start-day rows in the master
+        # (`MasterLP.solve`) are what pick the day and charge the purchase.
         groups: dict[int, list[int]] = {}
-        for state_id, dist in reps:
+        starts: list[int] = []                     # per class: its start day
+        for c, rep in enumerate(reps):
+            quad, state_id, dist = (rep if len(rep) == 3 else (0, rep[0], rep[1]))
             group = groups.setdefault(int(dist), [])
             if int(state_id) not in group:
                 group.append(int(state_id))
+            # The class's START DAY: read off `class_starts`, the one place it
+            # is computed (0 = works from today). The tile walks the SAME
+            # sweep as its state at the same distance — the unlock channel
+            # only masks the days before the start — so one priced board per
+            # distance serves every class on it, exactly as it did before the
+            # quadrant joined the key.
+            starts.append(int(class_starts[c]) if c < len(class_starts) else 0)
         boards: dict[int, tuple] = {}
         # One base sweep for every distance in the round, not one sweep each:
         # the distance only changes the walk on the labour column, so the gemv
@@ -1204,29 +1234,73 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply, rival_history:
                             cost_d, earn_d, spend_d)
 
         columns, values = [], []
-        for c, (state_id, dist) in enumerate(reps):
+        for c, rep in enumerate(reps):
+            quad, state_id, dist = (rep if len(rep) == 3
+                                    else (0, rep[0], rep[1]))
+            start = int(starts[c]) if c < len(starts) else 0
             board, at, cost, earn, spend = boards[int(dist)]
             i = at[int(state_id)]
-            # The walk is already in `cost`: it was charged before the DP chose,
-            # so this is the class's best dual-priced plan and not the best plan
-            # at prices nobody pays.
-            hours = cost[i].copy()
+            # The unlock channel is per TILE, and this class's tiles start on
+            # `start`: the board the sweep recovered carries every state of the
+            # distance unlocked at 0, so the class's own plan is re-walked with
+            # its start masked in — days < start stay no-op and free, from
+            # `start` on it is the DP's own argmax (`TileContractor.price`
+            # with `unlock_days`, the `b55bf4e` rule). Zero starts reuse the
+            # sweep as it stands.
+            if start > 0:
+                board = contractor.price(
+                    p_eff, exact, [i], travel_hours=int(dist),
+                    unlock_days=[start])
+                # `COUPLING_IDS` selects the coupling columns; the cost must
+                # come out (days, n_coupling) like the sweep's `cost[i]`, so
+                # index the day axis FIRST and let the column list stay last.
+                hours_full = np.asarray(
+                    board.per_day_cost[0], dtype=np.float64)[:days][:, COUPLING_IDS]
+                _validate_cost(hours_full)
+                produce_full = np.asarray(
+                    board.per_day_produce[0, :days, :], dtype=np.float64)
+                # `p_mkt` is (days, n_goods) in MARKET order; slice the same
+                # columns off the produce so the multiply is (days, 9) x
+                # (days, 9) — the outer list(MARKET_IDS) indexing above is a
+                # (n_goods, days) gather and misbroadcasts (the (9,20) x
+                # (20,9) failure).
+                earn_full = (produce_full[:, list(MARKET_IDS)]
+                             * p_mkt[:days]).sum(axis=1)
+                spend_full, _ = column_cash(board, supply, days)
+                spend_full = spend_full[0]
+                hours = hours_full
+                produce_out = board.per_day_produce[0, :days, :]
+                plans_out = tuple(board.plans[0]) if board.plans else ()
+                entities_out = _entities(board, 0, days)
+                value_out = max(0.0, float(board.tile_values[0]))
+            else:
+                # The walk is already in `cost`: it was charged before the DP
+                # chose, so this is the class's best dual-priced plan and not
+                # the best plan at prices nobody pays.
+                hours = cost[i].copy()
+                produce_out = board.per_day_produce[i, :days, :]
+                plans_out = (tuple(board.plans[i])
+                             if i < len(board.plans) else ())
+                entities_out = _entities(board, i, days)
+                value_out = max(0.0, float(board.tile_values[i]))
+                earn_full = earn[i]
+                spend_full = spend[i]
             columns.append(colgen.Column(
-                cls=c, cls_key=(state_id, dist),
-                cost=hours, spend=spend[i], earn=earn[i],
-                revenue=float(earn[i].sum()),
-                produce=board.per_day_produce[i, :days, :],
-                chains=tuple(board.plans[i]) if i < len(board.plans) else (),
-                entities=_entities(board, i, days),
-                key=colgen.column_key(board, i, days)))
+                cls=c, cls_key=rep if len(rep) == 3 else (state_id, dist),
+                cost=hours, spend=spend_full, earn=earn_full,
+                revenue=float(np.asarray(earn_full).sum()),
+                produce=produce_out,
+                chains=plans_out,
+                entities=entities_out,
+                key=colgen.column_key(board, 0 if start > 0 else i, days)))
             # The value is the class's own dual-priced value: revenue, less the
             # coupling duals (labour, the walk included), less the cash the plan
             # ties up. The floor is a belt rather than a correction now: the idle
             # column is worth exactly 0 and every class has it, so the DP cannot
             # return less than nothing.
-            cash_use = float((ahead[:days] * spend[i][:days]).sum()
-                             - (later[:days] * earn[i][:days]).sum())
-            values.append(max(0.0, float(board.tile_values[i])))
+            cash_use = float((ahead[:days] * np.asarray(spend_full)[:days]).sum()
+                             - (later[:days] * np.asarray(earn_full)[:days]).sum())
+            values.append(value_out)
         return np.asarray(values, dtype=np.float64), columns
 
     # The town's appetite AND the drain's spread, from one call: the risk shave
@@ -1281,6 +1355,7 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply, rival_history:
                              cfg=cfg, integral=integral,
                              land=land,
                              land_owned=land_owned,
+                             class_starts=class_starts,
                              shed=(supply.shed_stock, supply.shed_capacity),
                              prices=p_mkt,
                              prices_high=p_mkt_high,
@@ -1296,6 +1371,9 @@ def equilibrate(runtime, obs, contractor, supply: CouplingSupply, rival_history:
     except RuntimeError as exc:
         return _fallback(str(exc)[:200])
     except Exception as exc:                    # noqa: BLE001 - degraded, not dead
+        if __import__("os").environ.get("CHISTA_DEBUG_PRICING"):
+            import traceback
+            traceback.print_exc()
         return _fallback(f"pricing failed: {type(exc).__name__}: {exc}")
 
     w_cur = state["w"]
@@ -1470,18 +1548,19 @@ def _entities(board, tile: int, days: int) -> tuple:
 
 
 def _owned_distances(obs, steps: np.ndarray) -> list[int]:
-    """Steps to the nearest shed door for every owned tile, in `owned` order.
+    """Steps to the nearest shed door for every board tile, in board order.
 
-    Walks the board exactly as `_owned_states` does, so the two lists line up
-    by construction rather than by a comment promising they do.
+    Walks the board exactly as `board_tiles` does, so the two lists line up
+    by construction rather than by a comment promising they do — including
+    the LOCKED tiles, whose columns the master prices from their unlock day
+    and whose walk is the same bare-tile walk.
     """
-    from agent.obs import LOCKED_KEY, decode_world
+    from agent.obs import decode_world
     graph = _shipped_graph()
     view = decode_world(obs, at_day_start=True,
                         graph_keys=frozenset(graph.key_index))
     keys = np.asarray(view.me.keys).reshape(-1)
-    return [int(steps[i]) for i, k in enumerate(keys)
-            if int(k) != LOCKED_KEY and int(k) in graph.key_index]
+    return [int(steps[i]) for i in range(keys.size)]
 
 
 _GRAPH = None
@@ -1496,8 +1575,70 @@ def _shipped_graph():
     return _GRAPH
 
 
+QUADRANTS: tuple[str, ...] = ("NW", "NE", "SW", "SE")
+#: The quadrant a class key carries: NW is 0 and open from the start (F042),
+#: the buyable ones follow `world.rules.LAND_ORDER`'s prefix.
+
+
+def _quadrant_index(cell, board_size: int) -> int:
+    """The quadrant of a board position, as an index into `QUADRANTS`.
+
+    The engine's own `_quadrant_of` (`kaggriculture.py:127-129`): N/S by `y`,
+    W/E by `x`, the board stored `tiles[y][x]`. One index space for the class
+    keys and the land rows, derived from the geometry and never from an
+    observation value (R002).
+    """
+    from agent.world.board import quadrant_of
+
+    return QUADRANTS.index(quadrant_of(cell, board_size))
+
+
+def board_tiles(obs, graph, board_size: int = 10) -> list[tuple[int, int] | None]:
+    """Every tile of every quadrant, as `(state, quadrant)` for `classes_of`.
+
+    The engine names the quadrants on the farm (`unlocked_quadrants`, NW free
+    and open from the start) and fixes their geometry on the board
+    (`world.board.quadrant_of`). The master's class universe is EVERY tile of
+    EVERY quadrant — the open ones priced from the state they carry, the
+    locked ones from the bare state they become the day their quadrant is
+    bought (F042: the graph has no locked state at all) — each with its
+    quadrant, so the tile counts and the start-day rows are per quadrant and
+    three bare tiles in three quadrants never pool into one class.
+
+    A locked tile's bare state is `graph`'s root: the day-0 empty tile every
+    state grows from (`test_contractor_unlock.BARE`), read off the graph
+    instead of a constant.
+    """
+    from agent.obs import LOCKED_KEY, decode_world
+
+    view = decode_world(obs, at_day_start=True,
+                        graph_keys=frozenset(graph.key_index))
+    keys = np.asarray(view.me.keys).reshape(-1)
+    bare = None
+    for packed, sid in graph.key_index.items():
+        if sid == 0:
+            bare = int(packed)
+            break
+    out: list = []
+    for i, k in enumerate(keys):
+        quad = _quadrant_index((i % board_size, i // board_size), board_size)
+        if int(k) != LOCKED_KEY and int(k) in graph.key_index:
+            out.append((int(graph.key_index[int(k)]), quad))
+            continue
+        # LOCKED takes the bare state; an unmodelled key (decode remapped it,
+        # #152) answers None — the day layer leaves that position unplanned.
+        out.append((int(graph.key_index[bare]) if bare is not None else 0, quad)
+                   if int(k) == LOCKED_KEY else None)
+    return out
+
+
 def _owned_states(runtime, obs) -> list[int]:
-    """The graph state ids of the tiles we own, via #32's decode."""
+    """The graph state ids of the tiles we own, via #32's decode.
+
+    Kept for the callers that price only the OPEN farm (the labour dead-zone
+    probe, the depth fixtures); the master's own universe is `board_tiles`,
+    which prices the locked quadrants too. A LOCKED tile is not ours (F042).
+    """
     from agent.obs import decode_world
     from agent.obs import LOCKED_KEY
     # The graph is cast once per PROCESS, here. It used to be cached on the

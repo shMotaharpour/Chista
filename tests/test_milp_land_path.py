@@ -7,10 +7,14 @@ than two quadrants, and the quadrants the solve bought never crossed the
 boundary to the caller. Each one left the same quiet signature -- an empty pool
 and an objective of zero -- and each one passed every test in the repository.
 
-The guard below is the one that would have gone red: it drives a day-0 board
-with the integer solve ON and land buyable, and asserts the three things those
-defects emptied. `fallback_reason` is asserted FIRST and by name, because a
-fallback is how the path reports a failure it survived.
+The guards below are the ones that would have gone red. They run on a SHORT
+horizon (a three-day `episodeSteps` shrinks the day-0 contractor through
+`Manager._roll_day`), which is a real board and a real MIP at a fraction of
+the season solve's size -- the land decision is a day-0 question and the
+guards keep it seconds, not minutes.
+
+`fallback_reason` is asserted FIRST and by name, because a fallback is how
+the path reports a failure it survived.
 """
 
 from __future__ import annotations
@@ -24,9 +28,15 @@ from agent.main import AGENT
 from agent.world.rules import LAND_PRICES
 from offline_lab.fast_sim import FastSim
 
+#: A three-day season: the day-0 horizon is three days, so the MIP's sweeps
+#: and its branch-and-bound both stay small while every row the season board
+#: carries is still in the matrix.
+SHORT_EPISODE = {"episodeSteps": 24 * 3 + 6, "seed": 33,
+                 "farmHandCostMult": 1}
+
 
 def _day_zero(config: Config):
-    sim = FastSim({"episodeSteps": 24 * 3 + 6, "seed": 33, "farmHandCostMult": 1})
+    sim = FastSim(SHORT_EPISODE)
     obs = sim.observations(copy_state=False)[0]
     AGENT.cfg = config
     AGENT(obs, sim.configuration)
@@ -55,7 +65,7 @@ def _fresh_day_zero(config: Config):
     """A NEW agent, so `config` is the one its manager is CONSTRUCTED with."""
     from agent.main import Agent
 
-    sim = FastSim({"episodeSteps": 24 * 3 + 6, "seed": 33, "farmHandCostMult": 1})
+    sim = FastSim(SHORT_EPISODE)
     obs = sim.observations(copy_state=False)[0]
     agent = Agent(config)
     agent(obs, sim.configuration)
@@ -128,7 +138,7 @@ def test_a_config_swapped_after_a_turn_reaches_the_next_manager() -> None:
     OLD numbers -- measured: `AGENT.cfg = ...(land_quadrants=4)` after one turn
     still built no land rows, and `land_bought` stayed None.
     """
-    sim = FastSim({"episodeSteps": 24 * 3 + 6, "seed": 33, "farmHandCostMult": 1})
+    sim = FastSim(SHORT_EPISODE)
     obs = sim.observations(copy_state=False)[0]
     AGENT.cfg = replace(Config(), master_rounds=2, day_integral=True,
                         land_quadrants=0)
@@ -179,7 +189,7 @@ def test_a_board_that_already_owns_a_quadrant_is_not_forced_to_buy() -> None:
     from agent.manager.core import Manager
 
     pass_action = {"farmer": ["PASS"], "hands": [], "market": []}
-    sim = FastSim({"episodeSteps": 24 * 3 + 6, "seed": 33, "farmHandCostMult": 1})
+    sim = FastSim(SHORT_EPISODE)
     sim.step([{"farmer": ["PASS"], "hands": [], "market": [["BUY_LAND"]]},
               pass_action])
     obs = sim.observations(copy_state=False)[0]
@@ -205,3 +215,75 @@ def test_a_board_that_already_owns_a_quadrant_is_not_forced_to_buy() -> None:
     assert bought is not None and float(np.asarray(bought).sum()) == 0.0, (
         "the model bought land on a board that already owns it: "
         f"{np.asarray(bought)}")
+
+
+# ------------------------------------------------------- the land DECISION
+
+def test_a_rich_purse_buys_the_prefix_early() -> None:
+    """Land costs coins against the score: with a deep purse the model buys.
+
+    Measured on the seed-33 day-0 board at 100,000 coins: NE on day 0 (1000),
+    SW on day 1 (2000), SE on day 2 (4000) -- the prefix taken as early as
+    the ladder's own order allows, on a three-day horizon the purchases land
+    on their earliest legal days within it.
+
+    The guard that made this testable found the defect first: the start-day
+    rows carried the old tie's right-hand side of 25, so working a locked
+    quadrant was FREE and the model bought nothing at any purse.
+    """
+    from agent.manager.core import Manager
+
+    sim = FastSim(SHORT_EPISODE)
+    obs = sim.observations(copy_state=False)[0]
+    manager = Manager(replace(Config(), land_quadrants=len(LAND_PRICES),
+                              master_rounds=4, day_integral=True))
+    # The purse is the board's own money; the engine starts the farm at 3000
+    # and this guard names the deep-purse regime the owner ordered, so the
+    # observation's money is raised to it before the solve reads it.
+    obs = dict(obs)
+    obs["farms"] = [dict(obs["farms"][0])] + list(obs["farms"][1:])
+    obs["farms"][0]["money"] = 100000
+    manager.observe(obs, sim.configuration)
+    master = manager.day.master
+    assert getattr(master, "fallback_reason", "") == "", master.fallback_reason
+    bought = getattr(master, "land_bought", None)
+    assert bought is not None, "the deep-purse run built no land block"
+    b = np.asarray(bought)
+    assert float(b.sum()) == 3.0, (
+        f"the deep purse bought {float(b.sum())} of 3 quadrants: {b}")
+    # The prefix order, one step a day, from day 0.
+    cells = [(int(q), int(d)) for q, d in zip(*np.nonzero(b))]
+    assert cells == [(0, 0), (1, 1), (2, 2)], (
+        f"the prefix was taken out of order or off-schedule: {cells}")
+
+
+def test_the_start_day_rows_right_hand_side_is_what_makes_land_cost() -> None:
+    """R007: the start-day row's right-hand side is what makes land cost.
+
+    With the old right-hand side of 25 the row read `lambda - 25*y <= 25`,
+    which 25 tiles satisfy at y = 0 -- working a locked quadrant needed no
+    purchase, and at every purse the model bought nothing (measured:
+    land_bought empty at 100,000 coins). Re-introduce that right-hand side
+    and the deep-purse guard above goes red on the same board; the failure
+    text was "the deep purse bought 0.0 of 3 quadrants".
+    """
+    from agent.manager.core import Manager
+    from agent.planner import colgen
+
+    sim = FastSim(SHORT_EPISODE)
+    obs = sim.observations(copy_state=False)[0]
+    manager = Manager(replace(Config(), land_quadrants=len(LAND_PRICES),
+                              master_rounds=4, day_integral=True))
+    obs = dict(obs)
+    obs["farms"] = [dict(obs["farms"][0])] + list(obs["farms"][1:])
+    obs["farms"][0]["money"] = 100000
+    manager.observe(obs, sim.configuration)
+    assert float(np.asarray(manager.day.master.land_bought).sum()) == 3.0, (
+        "the healthy path stopped buying; this guard's premise is stale")
+    # The invariant the fix established, read at the one place it is set:
+    # every start-day row's upper bound is 0 -- `lambda <= 25*y` -- never the
+    # old tie's 25.
+    src = open("agent/planner/colgen.py", encoding="utf-8").read()
+    assert "np.zeros(nq * days)]) if nq else np.zeros(0)," in src, (
+        "the start-day rows' right-hand side drifted off 0: working a locked "
+        "quadrant would be free again and the model would never buy")
