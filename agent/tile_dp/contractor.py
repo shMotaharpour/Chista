@@ -23,6 +23,18 @@ Two contracts come with the graph:
 
 Cost and production are two matrices and are never netted: they are priced by different
 vectors (`produce` at prices, `cost` at wages).
+
+A **LOCKED** tile is one more case, and it is not a second graph. The lock belongs
+to the tile, not to the tile graph: the graph only ever knows the quadrants that
+start open (F042; a locked tile is not in `graph.key_index` at all), so the
+contractor takes the fact as an input. Per tile it accepts an **unlock day** `k`:
+on every day `d < k` the tile is unavailable, works nothing and is free — its
+plan day carries the NO_ACTION chain and zero coefficients — and from day `k` on
+it is priced exactly like an empty tile off the same graph edges (at `k` the
+tile is bare land, so the walk starts from the graph's bare-tile state), with the
+value `V[k, s]`: what an empty tile is worth from the day it exists, not from
+day 0. `unlock_day = 0` — and the whole argument left unset — is "unlocked now"
+and is bit-identical to the behaviour before this rule existed.
 """
 
 from __future__ import annotations
@@ -34,6 +46,7 @@ import numpy as np
 
 from agent.world.rules import TURNS_PER_DAY
 from agent.world.model import N_RESOURCE, RESOURCE_ID, RES_LABOR
+from agent.tile_dp.chains import NO_ACTION, chain_id_of
 from agent.tile_dp.graph import TileGraph
 
 # The season's days. Shed goods at the end are worth nothing: there is no liquidation, so
@@ -324,8 +337,18 @@ class TileContractor:
         times over nine-times-smaller arrays. Each tile carries its distance, and
         its candidate row is gathered from that distance's rewards and values —
         the same numbers `_recover` would read, in the same order (`groups` are
-        (values, rewards, owned, ec_int, travel_hours) per distance, and the tiles
-        keep the order they were given in).
+        (values, rewards, owned, ec_int, travel_hours[, unlock]) per distance, and
+        the tiles keep the order they were given in).
+
+        `unlock` is the per-tile unlock day, aligned with `owned` (absent/None =
+        every tile unlocked now, the pre-lock behaviour). A tile whose unlock day
+        is `k` is no-op and free on days `d < k`: its chosen rows are ignored, its
+        per-day coefficients stay zero and its state does not advance until `k`,
+        from which day it walks the graph like the empty tile it is (the owner's
+        lock rule — see the module docstring). Such a day's plan entry is that day
+        with the tile's unlock-day state and the NO_ACTION chain, so the plan's
+        first worked day is `k` and `columns` — the per-day sums — starts working
+        on the tile on day `k`.
 
         The walk cost needs no stacked tables: a distance only ever adds to the
         LABOUR column of the worked edges (`_travel_edge_costs`), so the chosen
@@ -333,12 +356,17 @@ class TileContractor:
         """
         days = self.days
         n_edges = int(self.edge_next.size)
-        parts, dist_of, hours_of = [], [], []
-        for i, (_V, _rewards, owned, _ec_int, hours) in enumerate(groups):
+        parts, dist_of, hours_of, unlock_parts = [], [], [], []
+        for i, group in enumerate(groups):
+            _V, _rewards, owned, _ec_int, hours = group[:5]
+            unlock = group[5] if len(group) > 5 else None
             owned = np.asarray(owned, dtype=np.intp)
             parts.append(owned)
             dist_of.extend([i] * int(owned.size))
             hours_of.extend([int(hours)] * int(owned.size))
+            unlock_parts.append(np.zeros(owned.size, dtype=np.intp)
+                                if unlock is None
+                                else np.asarray(unlock, dtype=np.intp))
         dist_of = np.asarray(dist_of, dtype=np.intp)
         hours_of = np.asarray(hours_of, dtype=np.int64)
         tile_ids = [np.arange(part.size, dtype=np.intp) for part in parts]
@@ -346,10 +374,18 @@ class TileContractor:
         lane = np.concatenate([ids + off for ids, off in zip(tile_ids, offset)]) \
             if parts else np.zeros(0, dtype=np.intp)
         n_tiles = int(lane.size)
+        unlock_of = (np.concatenate(unlock_parts) if unlock_parts
+                     else np.zeros(0, dtype=np.intp))
+        # `(days, n_tiles)` bool: True where the tile is still locked that day.
+        locked = np.arange(days, dtype=np.intp)[:, None] < unlock_of[None, :]
+        # The lock channel is DARK unless a caller hands in a positive unlock day,
+        # so the default path below is literally the pre-lock arithmetic.
+        locked_any = bool(locked.any())
+        noop_chain = chain_id_of(NO_ACTION) if locked_any else 0
 
         out = []
         if n_tiles == 0:
-            for _V, _rewards, owned, _ec_int, _hours in groups:
+            for _V, _rewards, owned, _ec_int, _hours in (g[:5] for g in groups):
                 owned = np.asarray(owned, dtype=np.intp)
                 out.append((np.zeros((0, N_RESOURCE), dtype=np.int64),
                             np.zeros((0, N_RESOURCE), dtype=np.int64), [],
@@ -383,16 +419,37 @@ class TileContractor:
             chosen = edge_ix[hits[np.searchsorted(tile[hits], lane)]]
             rows[d] = chosen
             states_at[d] = states
-            entities_at[:, d] = self.graph.edge_entity[chosen]
+            entities = self.graph.edge_entity[chosen]
             cost = self.graph.edge_cost[chosen].astype(np.int64)
             worked = cost[:, LABOR_ID] > 0
             cost[worked, LABOR_ID] += hours_of[worked]
-            per_day_cost[:, d, :] = cost
-            per_day_produce[:, d, :] = self.graph.edge_produce[chosen]
-            states = self.edge_next[chosen]
+            produced = self.graph.edge_produce[chosen]
+            if locked_any:
+                # A tile still locked today is no worker and no money: its chosen
+                # edge is ignored, it produces and consumes nothing, it names no
+                # entity, and it does not advance (only unlocks on day k).
+                active = ~locked[d]
+                cost = np.where(active[:, None], cost, 0)
+                produced = np.where(active[:, None], produced, 0)
+                entities = np.where(active, entities, 0)
+                per_day_cost[:, d, :] = cost
+                per_day_produce[:, d, :] = produced
+                entities_at[:, d] = entities
+                states = np.where(active, self.edge_next[chosen], states)
+            else:
+                # The pre-lock path, literally: no mask, no `where`, no copy.
+                per_day_cost[:, d, :] = cost
+                per_day_produce[:, d, :] = produced
+                entities_at[:, d] = entities
+                states = self.edge_next[chosen]
 
         chain = self.edge_chain[rows]
-        for i, (V, _rewards, owned, _ec_int, _hours) in enumerate(groups):
+        if locked_any:
+            # The locked prefix is the NO_ACTION chain: "the tile simply goes on
+            # to the next day" (chains.NO_ACTION), on its unlock-day state.
+            chain = np.where(locked, noop_chain, chain)
+        for i, group in enumerate(groups):
+            V, _rewards, owned, _ec_int, _hours = group[:5]
             owned = np.asarray(owned, dtype=np.intp)
             here = dist_of == i
             costs = per_day_cost[here]
@@ -402,25 +459,67 @@ class TileContractor:
             positions = np.flatnonzero(here)      # global tile index of each row
             plans = [[(d, int(states_at[d, positions[j]]), int(plan_rows[d, j]))
                       for d in range(days)] for j in range(positions.size)]
+            # The class's value is V at the day the tile EXISTS: 0 for a tile
+            # unlocked now (bit-identical to V[0, owned]), its unlock day for a
+            # locked one. For a locked tile V[k, s] already carries the discount
+            # of every day from k on, so it is the day-0 NPV of the plan.
+            values = (V[unlock_of[here], owned].astype(np.float64)
+                      if owned.size else np.zeros(0, dtype=np.float64))
             out.append((costs.sum(axis=1), produces.sum(axis=1), plans,
-                        V[0, owned].astype(np.float64) if owned.size
-                        else np.zeros(0, dtype=np.float64),
-                        costs, produces, entities))
+                        values, costs, produces, entities))
         return out
 
-    def price(self, p, w, owned_states, travel_hours: int = 0) -> PricedBoard:
+    def price(self, p, w, owned_states, travel_hours: int = 0,
+              unlock_days=None) -> PricedBoard:
         """Price the board: one sweep for every owned tile, plus their columns.
 
         `owned_states` are graph state ids, one per tile we own. `travel_hours` is
         the walk this group of tiles pays on every day it is worked, charged on
         the labour column BEFORE the argmax (see `_travel_edge_costs`): a caller
         that prices tiles at different distances passes each group its own.
+
+        `unlock_days` is one unlock day per tile in `owned_states`, in the same
+        order; None (and every 0 in it) is the pre-lock behaviour. A tile with
+        unlock day `k` works nothing and is free on days `d < k` and is priced as
+        the empty tile it is from day `k` on — see `price_many`.
         """
         hours = int(travel_hours)
-        return self.price_many(p, w, {hours: owned_states})[hours]
+        by_distance = {hours: unlock_days} if unlock_days is not None else None
+        return self.price_many(p, w, {hours: owned_states},
+                               unlock_by_distance=by_distance)[hours]
+
+    def _unlock_days(self, unlock_by_distance, hours: int, n_owned: int):
+        """One distance's per-tile unlock days, validated (None = all unlocked now).
+
+        The length is checked against `owned`: the two are one list each, in the
+        same order, so a mismatch is a caller bug and not a tile that is somehow
+        unlocked. A day outside `0..days` is refused for the same reason — 0 is
+        "unlocked today", `days` is "never inside the horizon", and anything else
+        would silently price a different season.
+        """
+        if unlock_by_distance is None:
+            return None
+        if int(hours) not in unlock_by_distance:
+            raise ValueError(
+                f"unlock_by_distance has no entry for distance {hours}: a caller "
+                "that gives unlock days gives them for every distance it prices, "
+                "so a forgotten distance cannot pass as an unlocked one")
+        raw = np.asarray(list(unlock_by_distance[int(hours)]), dtype=np.intp)
+        if raw.size != n_owned:
+            raise ValueError(
+                f"distance {hours}: {n_owned} owned tiles but {raw.size} unlock "
+                "days; the two lists are aligned one-to-one")
+        if raw.size and (int(raw.min()) < 0 or int(raw.max()) > self.days):
+            raise ValueError(
+                f"distance {hours}: unlock days {int(raw.min())}..{int(raw.max())} "
+                f"outside 0..{self.days} (0 = unlocked today, {self.days} = "
+                "never inside the horizon)")
+        return raw
 
     def price_many(self, p, w, owned_by_distance: dict[int, Sequence[int]],
-                   rent=None) -> dict[int, PricedBoard]:
+                   rent=None,
+                   unlock_by_distance: dict[int, Sequence[int]] | None = None
+                   ) -> dict[int, PricedBoard]:
         """Price every distance off ONE base sweep.
 
         A round prices one group per distinct distance, and each group's sweep
@@ -434,6 +533,18 @@ class TileContractor:
         plus the day loop. The result is the same sweep `price` returns for that
         distance: `tests/test_tile_dp_contractor.py` pins them against each
         other, term by term.
+
+        `unlock_by_distance` is optional and PER TILE: `unlock_by_distance[h]` is
+        the unlock day of each tile in `owned_by_distance[h]`, in the same order,
+        and every priced distance must have an entry (0 = unlocked today). A tile
+        with unlock day `k` works nothing and pays nothing on days `d < k`, and
+        from day `k` on is priced from the state it was given — for a tile that
+        was locked that state is the graph's bare-tile state, i.e. the tile is
+        treated as empty land from `k` (the owner's design: the lock belongs to
+        the tile, not to the graph, and the day the tile reaches `k` it is an
+        empty tile built from the graph and the duals). The whole argument left
+        None is "everything unlocked now", bit-identical to the pre-lock
+        behaviour.
         """
         prices = self._as_dual(p, "prices")
         wages = self._as_dual(w, "wages")
@@ -449,14 +560,15 @@ class TileContractor:
                     raise ValueError(
                         f"owned state id out of range 0..{self.n_states - 1}: "
                         f"{int(owned.min())}..{int(owned.max())}")
+            unlocks = self._unlock_days(unlock_by_distance, hours, int(owned.size))
             ec_int, _ec = self._travel_edge_costs(hours)
             V, rewards = self._sweep_from(base, wages, hours)
-            sweeps.append((V, rewards, owned, ec_int, hours))
+            sweeps.append((V, rewards, owned, ec_int, hours, unlocks))
         # One recovery walk for every distance at once (the day loop is the
         # sequential part; the tiles and the distances are not).
         recovered = self._recover_many(sweeps)
         out: dict[int, PricedBoard] = {}
-        for (V, rewards, owned, _ec_int, hours), (
+        for (V, rewards, owned, _ec_int, hours, _unlocks), (
                 columns, produced, plans, tile_values, per_day_cost,
                 per_day_produce, per_day_entity) in zip(sweeps, recovered):
             # With no owned tile there is no column and nothing to price; the
@@ -472,11 +584,16 @@ class TileContractor:
 
 
 def price_board(graph: TileGraph, p, w, owned_states: Sequence[int],
-                days: int = HORIZON_DAYS, travel_hours: int = 0) -> PricedBoard:
+                days: int = HORIZON_DAYS, travel_hours: int = 0,
+                unlock_days: Sequence[int] | None = None) -> PricedBoard:
     """One pricing call: the sweep plus the recovered columns.
 
     Builds a `TileContractor`, so the casts pay once per call; a caller pricing every turn
     should hold the contractor instead.
+
+    `unlock_days` is one unlock day per tile in `owned_states` (None or all-zero
+    is the pre-lock behaviour); see `TileContractor.price_many` for the rule.
     """
     return TileContractor(graph, days=days).price(p, w, owned_states,
-                                                  travel_hours=travel_hours)
+                                                  travel_hours=travel_hours,
+                                                  unlock_days=unlock_days)

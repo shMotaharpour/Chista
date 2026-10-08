@@ -203,7 +203,7 @@ class Manager:
         # is not, and `_forecast` sizes its walk from the horizon.
         self._roll_day(obs)
         supply = M.supply_from_obs(obs, self.cfg)
-        owned = M._owned_states(object(), obs)
+        owned = M.board_tiles(obs, self.graph)
         _reps, _counts, of_tile = classes_of(
             owned, M._owned_distances(obs, self.steps))
         class_of_tile = self._class_of_tile(obs, of_tile)
@@ -227,17 +227,18 @@ class Manager:
         # of the season has nothing to estimate from and asks for none). The
         # HOURS the hands start at stay the hourly secretary's: `plan` prices the
         # day on the queue's own `hire_hours` (F040).
+        #
+        # The geometry is the board's OWN count of open quadrants (`master
+        # .owned_quadrants`), never a default of 1: this read was
+        # `farm.get("unlocked")` against an engine key named
+        # `unlocked_quadrants`, so it answered None on every board and the
+        # estimate priced a one-quadrant farm all season. Measured on the seed-33
+        # board: with NE bought on day 0, the same chains that ask for 3 hands on
+        # one quadrant ask for 5 on two.
         from agent.planner import hands as H
         _prev = (list(getattr(self.day.day, "chains", ()) or ())
                  if self.day is not None else [])
-        _quads = 1
-        try:
-            _unlocked = obs["farms"][int(obs.get("player", 0))].get("unlocked")
-            if _unlocked:
-                _quads = len(_unlocked)
-        except (KeyError, TypeError, IndexError):
-            _quads = 1
-        self.hand_estimate = H.estimate(_prev, _quads)
+        self.hand_estimate = H.estimate(_prev, M.owned_quadrants(obs))
         self.day = D.plan(obs, self.contractor, supply,
                           class_of_tile=class_of_tile,
                           offer=self.hand_estimate,
@@ -520,20 +521,22 @@ class Manager:
 
     # -- the board --------------------------------------------------------
     def _class_of_tile(self, obs, of_tile) -> list:
-        """The class index of every board position, None where nothing is planned.
+        """The class index of every board position, None only where unpriceable.
 
-        `of_tile` covers the tiles the master priced, in board order; the rest
-        of the board is a quadrant we have not bought (F042) and has no class.
-        Tiles with states outside the graph get None and do not consume from
-        `walker`, keeping subsequent tiles aligned with their own classes (#152).
+        `of_tile` covers EVERY board tile in board order (`master.board_tiles`
+        prices the locked quadrants too), so the walk consumes one entry per
+        position — the quadrant check from the one-class-farm days is gone: a
+        LOCKED tile has its own class now. What still answers None is a
+        decoded key outside the graph (an unmodelled state, #152), which
+        board_tiles already mapped to the bare state; the distinction the day
+        layer needs is "planned" vs "not", and the quota rounding works off
+        the class indices alone.
         """
         from agent.obs import LOCKED_KEY, decode_world
         view = decode_world(obs, at_day_start=True, graph_keys=self.keys)
         walker = iter(of_tile)
         return [next(walker, None)
-                if int(k) != LOCKED_KEY and int(k) in self.keys
-                else None
-                for k in np.asarray(view.me.keys).reshape(-1)]
+                for _k in np.asarray(view.me.keys).reshape(-1)]
 
 
 def _load_graph():

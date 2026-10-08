@@ -285,6 +285,26 @@ def _extended_basis(basis, n_cols: int, n_rows: int):
     return out
 
 
+def land_block(land: int | None, land_owned: int = 1) -> tuple[int, int, float]:
+    """`(n_quadrant_binaries, first_step, tile_cap)` for the land block.
+
+    NW is the free first quadrant (F042, `world.rules.LAND_ORDER`): a farm that
+    owns `land_owned` quadrants has taken `land_owned - 1` prefix steps, so the
+    model may buy only the steps that are LEFT, at `LAND_PRICES[first_step:]`,
+    and its tile tie starts from the 25 tiles of each quadrant already open.
+
+    Every count here is the engine's own: the ladder's length and its prices are
+    `world.rules`, and the 25 tiles a quadrant brings are the engine's. A model
+    indexed at step zero whatever the board said bought an unlocked quadrant at
+    the previous step's price -- measured on a day-1 board owning NW+NE, it
+    "bought NE" for 1000 while the live ladder's next step was SW at 2000.
+    """
+    taken = max(0, int(land_owned) - 1)
+    nq = (0 if not land
+          else max(0, min(int(land), len(LAND_PRICES)) - taken))
+    return nq, taken, 25.0 * max(1, int(land_owned))
+
+
 class MasterLP:
     """The master's LP, kept across a day's rounds so its basis carries.
 
@@ -342,6 +362,9 @@ class MasterLP:
               entry: bool = False,
               integral: bool = False,
               land: int | None = None,
+              land_owned: int = 1,
+              class_starts: np.ndarray | None = None,
+              mip_gap: float | None = None,
               cfg: "Config | None" = None,
               buy_hands: bool = False,
               hand_mult: int = 0) -> MasterSolve:
@@ -372,13 +395,21 @@ class MasterLP:
         and it is CHARGED the sale it lost or dumping is the LP's cheapest way
         out of every constraint.
 
-        `land=k` adds the first `k` of the engine's quadrants as BUYABLE
-        (`world.rules.LAND_PRICES`, prefix order): one binary per (quadrant, day)
-        for the day it is bought, `<= 1` per quadrant, the purchase price charged
-        on that day inside the cumulative cash rows (that IS the saving decision:
-        the purse must cover it from that day onward), and one row that ties the
-        total tile count to `25 x (1 + purchases)`. Off by default so the LP path
-        is the matrix that shipped.
+        `land=k` adds the engine's quadrants as BUYABLE (`world.rules.LAND_ORDER`
+        prefix order): one binary per (quadrant, day) for the day it is bought,
+        `<= 1` per quadrant, the purchase price charged on that day inside the
+        cumulative cash rows (that IS the saving decision: the purse must cover it
+        from that day onward), and one row per day that ties the total tile count
+        to `25 x (1 + purchases)`.
+
+        **The prefix is relative to what the farm owns.** NW is the free first
+        quadrant (F042), so `land_owned=k` means k quadrants are already open: the
+        binaries are the REMAINING steps only, priced `LAND_PRICES[k-1:]`, and the
+        tile tie starts at `25 x k` instead of 25. A model that always began at
+        step zero re-bought an unlocked quadrant at the previous step's price on
+        any board past the first purchase. `land_owned=1` is the day-0 farm and is
+        bit-identical to the previous behaviour. Off by default so the LP path is
+        the matrix that shipped.
 
         `integral=True` hands the SAME matrix to HiGHS as a MIP: the `lambda`
         columns become integer (a column is a tile COUNT, and half a tile is not a
@@ -469,7 +500,15 @@ class MasterLP:
         now0 = waste0 + items * days
         defer0 = now0 + items * days
         land0 = defer0 + items * days if entry else now0
-        nq = 0 if not land else min(int(land), len(LAND_PRICES))
+        #: The prefix steps the farm has ALREADY taken, and the block that is
+        #: left of the ladder: NW is the free first quadrant (F042), so a farm
+        #: owning k quadrants may only buy the REMAINING steps, at
+        #: `LAND_PRICES[k-1:]`. `land_tiles` is retired with the old single
+        #: tile tie: the owner's model (2026-10) is per quadrant -- each
+        #: quadrant's own 25 tiles are assigned from day 0, and the start-day
+        #: rows below are what tie a column's start to the purchase. See
+        #: `land_block`.
+        nq, land_first, _land_tiles = land_block(land, land_owned)
         land_width = nq * days
         # Every optional block's width is declared HERE, before any row or cost
         # vector is allocated. A block that APPENDS to them leaves the vectors
@@ -702,17 +741,44 @@ class MasterLP:
                 A_c = np.hstack([A_c, np.zeros((days, n_cols - A_c.shape[1]))])
             cols = np.arange(land_width)
             d_of = cols % days
-            price_of = np.asarray(LAND_PRICES[:nq], dtype=np.float64)[cols // days]
+            price_of = np.asarray(LAND_PRICES[land_first:land_first + nq],
+                                  dtype=np.float64)[cols // days]
             pay = np.where(np.arange(days)[:, None] >= d_of[None, :],
                            price_of[None, :], 0.0)
             A_c[:, land0:land0 + land_width] += pay
-            # Rows: `sum_d y_q <= 1` (one purchase each), the prefix order the
-            # engine enforces (`sum y_q <= sum y_{q-1}`), and the tile tie.
-            # ONE cap row per DAY: a quadrant bought on day k brings its 25 tiles
-            # from day k, never from day 0. A single season-wide row let a purchase
-            # on the last day pay for tiles worked on the first, which is why the
-            # model could not see what buying EARLY is worth.
-            n_land_rows = nq + (nq - 1) + days
+            # THE PRICE IS IN THE OBJECTIVE TOO (the owner's ruling, 2026-10):
+            # the score is the final money, so a coin spent on land is a coin
+            # lost — the cash rows keep only the TIMING (the purse must cover
+            # it from the buy day onward). The coefficient sits on the BUY
+            # day itself, the same day the cash rows start charging it.
+            # `price_of` is per (quadrant, day) cell of the block; the block's
+            # own layout is q*days + d, so the price repeats per day within a
+            # quadrant: (nq, days) -> (nq*days,) in the block's own order.
+            cost[land0:land0 + land_width] = np.repeat(
+                np.asarray(LAND_PRICES[land_first:land_first + nq],
+                           dtype=np.float64), days)
+            # Rows. The block that shipped tied the whole farm's tile count to
+            # `25 x purchases`; the owner's model (2026-10) is per quadrant and
+            # ties a column's START to the purchase:
+            #
+            #   (1) sum_d y[q,d] <= 1                    one buy per quadrant
+            #   (2) sum_d y[q,d] <= sum_d y[q-1,d]       prefix order, per day
+            #   (3) sum_j lambda[j in q, start=k] <= 25 * y[q, k-1]
+            #       a plan may WORK from its start day k only when the
+            #       quadrant was bought the day before (k = buy + 1); k = 0
+            #       needs no buy (the quadrant is open from the start)
+            #   (4) sum_{k,p} lambda[q,k,p] = 25         every tile planned
+            #       (this stays the CONVEXITY row: its right-hand side is the
+            #       quadrant's 25 tiles, and every tile of the class is
+            #       assigned from day 0 — locked quadrants included)
+            #
+            # A column belongs to its class (quadrant, state, distance); the
+            # `starts` argument says which day each class's plan may first
+            # work. Class c with start s: its lambda columns enter row (3) of
+            # quadrant `quad_of[c]` at the y[q, s-1] column. The always-idle
+            # column of every class is exempt (key == ("idle",)): holding a
+            # tile needs no purchase — working it does.
+            n_land_rows = nq + (nq - 1) + (nq * days)
             L_rows = np.zeros((n_land_rows, n_cols))
             L_rows[np.arange(nq)[:, None],
                    land0 + np.arange(nq)[:, None] * days
@@ -727,15 +793,38 @@ class MasterLP:
                 L_rows[qq[:, None] + nq - 1,
                        land0 + (qq[:, None] - 1) * days
                        + np.arange(days)[None, :]] = -1.0
-            tile_rows = np.arange(nq + (nq - 1), n_land_rows)
-            L_rows[tile_rows, :n] = 1.0
-            if nq:
-                cols = (land0 + np.arange(nq)[None, :, None] * days
-                        + np.arange(days)[None, None, :])
-                cum = (np.arange(days)[:, None, None]
-                       >= np.arange(days)[None, None, :])
-                L_rows[tile_rows[:, None, None],
-                       np.broadcast_to(cols, (days, nq, days))] = np.where(cum, -25.0, 0.0)
+            # Row (3), one row per (quadrant, start day). `class_starts` is the
+            # per-class start day the caller hands in (`None` = the shipped
+            # behaviour). The row sums over EVERY working column of the
+            # class — a class holds many plans (the pool grows by plan), and
+            # a cap of 25 per COLUMN would let five plans take 125 tiles of
+            # a quadrant bought once (measured: the warm pool's weighted
+            # columns of one class reached 5, and the warm objective then
+            # sat 9.8 coins ABOVE the cold run's on the same board).
+            if class_starts is not None:
+                work_rows = np.arange(nq + (nq - 1), n_land_rows)
+                for j, col in enumerate(pool):
+                    if col.cls_key in (None, ()) or len(col.cls_key) < 3:
+                        continue          # a legacy column: no quadrant, no row
+                    if col.key == ("idle",):
+                        continue          # holding a tile is free
+                    quad = int(col.cls_key[0])
+                    if quad == 0 or quad > nq:
+                        continue          # NW is open; the row does not apply
+                    start = int(class_starts[col.cls])
+                    if start < 1 or start > days:
+                        continue          # an open tile: row (3) does not bind
+                    # row index: nq + (nq-1) + (quad-1)*days + (start-1)
+                    r = work_rows[0] + (quad - 1) * days + (start - 1)
+                    L_rows[r, j] += 1.0
+                # one -25 per row, on the binary that buys the quadrant the
+                # day before (added once, after the per-column pass)
+                for quad in range(1, nq + 1):
+                    for start in range(1, days + 1):
+                        r = work_rows[0] + (quad - 1) * days + (start - 1)
+                        if L_rows[r, :n].any():
+                            L_rows[r, land0 + (quad - 1) * days
+                                   + (start - 1)] = -25.0
             upper[land0:land0 + land_width] = 1.0     # one binary per (quadrant, day)
         if buy_hands:
             # --- the day's hands, as columns the model BUYS -------------------
@@ -865,9 +954,20 @@ class MasterLP:
             np.full(days, float(shed_capacity)),
             appetite_rhs,
             np.zeros(items * days if entry else 0),        # split: equality
+            # (1) one purchase per quadrant, (2) prefix per day, and (3) the
+            # start-day rows: a class's working lambda is capped at 25 times
+            # the binary that bought its quadrant the day before. The RIGHT
+            # side is 0 -- a plan that starts on day k needs the purchase at
+            # k-1; without it, lambda of that start must be 0 exactly. The
+            # idle column is exempt (its class still has the row, with no
+            # coefficient on it), so every tile stays assigned without a buy.
+            # (The old single tile tie carried 25 here; its semantics were
+            # `capacity - purchases`, not `lambda <= 25*y` -- carrying the 25
+            # over made working a locked quadrant free, which is why the
+            # model never bought: it did not have to.)
             np.concatenate([np.ones(nq),
                             np.zeros(max(0, nq - 1)),
-                            np.full(days, 25.0)]) if nq else np.zeros(0),
+                            np.zeros(nq * days)]) if nq else np.zeros(0),
             target,                                       # A_e, the class rows
             np.full(n_scen, np.inf) if risk_cols else np.zeros(0)])
         lp.sense_ = _highspy._core.ObjSense.kMinimize
@@ -891,6 +991,14 @@ class MasterLP:
             if buy_hands:
                 kinds[hands0:] = [_highspy._core.HighsVarType.kInteger] * hands_width
             lp.integrality_ = kinds
+            # The MIP gap: solving the integer decision to proven optimality
+            # cost 3,131 s on the day-0 board (858 columns, 90 land binaries)
+            # for a 7.2% LP-vs-MIP gap -- hours the turn budget can never
+            # carry. `mip_gap` names the relative gap HiGHS may stop at: the
+            # incumbent is then within that fraction of the true integer
+            # optimum. None keeps HiGHS's own default (proven optimality).
+            if mip_gap is not None and mip_gap > 0.0:
+                self._highs.setOptionValue("mip_rel_gap", float(mip_gap))
 
         self._highs.passModel(lp)
         layout = (n_coupling, days, items, n_goods, n_classes)
@@ -987,7 +1095,14 @@ class MasterLP:
             # One dual per ROW: the first nq rows are the one-purchase rows, and a
             # row is a number, not a day vector.
             land_dual = (_lnd[:nq] if nq else None)
-            rent = (_lnd[land_rows - days:] if (nq and days) else None)
+            # The rent now comes from the START-DAY rows (one per quadrant per
+            # day): their dual is what one more working tile-slot of that
+            # quadrant on that day is worth, i.e. the price the tiles pay for
+            # occupying land their quadrant had to be bought for. The shape
+            # stays (days,) -- the mean over the buyable quadrants -- which is
+            # what the pricing reads (`_base_rewards` subtracts it per day).
+            rent = (_lnd[nq + max(0, nq - 1):].reshape(nq, days).mean(axis=0)
+                    if (nq and days) else None)
         # The R-U rows sit after A_e, so the class duals end where A_e ends:
         # without the explicit end, `mu` would read a scenario dual as a class
         # price -- the positional-offset failure the layout's own comment warns of.
@@ -1002,9 +1117,9 @@ class MasterLP:
         mu_end = rows.shape[0] - (n_scen if risk_cols else 0)
         mu = np.asarray(marg[n_ineq:mu_end], dtype=np.float64)
         values = np.asarray(solution.col_value, dtype=np.float64)
-        # What the master decided to SELL is the SUM of the tiers: they are two
-        # prices for one sale, not two sales, and a caller that read only the
-        # first would see a farm that never sells past the town's appetite.
+        # The LP's own land decision: the y column values. `land_bought` was
+        # MIP-only before; the LP path publishes it too now so the caller can
+        # read fractional purchases and the land block can be audited.
         sells = np.zeros((n_goods, days), dtype=np.float64)
         for b in range(tiers):
             start = n + b * half
@@ -1014,6 +1129,8 @@ class MasterLP:
                  if entry else None)
         return MasterSolve(lam=values[:n], y=y, cash=cash, mu=mu, integral=False,
                            land_dual=land_dual, rent=rent,
+                           land_bought=(values[land0:land0 + land_width]
+                                        .reshape(nq, days) if nq else None),
                            objective=-float(self._highs.getObjectiveValue()),
                            sigma=sigma, tau=tau, rho=rho,
                            appetite=appetite_rhs, sells=sells,
@@ -1212,9 +1329,9 @@ class ColgenResult:
         return (self.bound - self.solve.objective) / abs(self.bound)
 
 
-def classes_of(owned: list[int], distances: list[int] | None = None
-               ) -> tuple[list[tuple[int, int]], np.ndarray, list[int]]:
-    """`owned` state ids -> (class keys, counts, tile→class).
+def classes_of(owned: list, distances: list[int] | None = None
+               ) -> tuple[list[tuple], np.ndarray, list[int]]:
+    """The board's tiles -> (class keys, counts, tile→class).
 
     A class used to be a graph state alone. It is `(state, distance to the
     nearest shed door)`, because the contractor prices a state and a WORKER
@@ -1229,21 +1346,44 @@ def classes_of(owned: list[int], distances: list[int] | None = None
     again — which is the only thing that makes a column honest, because a
     column is what every tile of its class runs.
 
+    **The QUADRANT is in the key** (the owner's land model, 2026-10): every
+    quadrant has its own 25 tiles from day 0 and its own columns, so three
+    bare tiles at the same distance in three quadrants are three classes and
+    never one — the land block's start-day rows are per quadrant and a class
+    shared across quadrants would pool tiles a purchase cannot separate. An
+    `owned` entry is either `(state, quadrant_index)` — `world.rules
+    .LAND_ORDER` prefixed by NW, so NW is 0 and the buyable ones follow — or
+    a bare state id, which is quadrant 0 (the callers that predate the
+    quadrant: hand-built fixtures, unit tests). A key stays a 2-tuple while
+    every quadrant is 0, so the day-roll key arithmetic and the warm-pool
+    matching keep working unchanged on a one-quadrant board.
+
     `distances` is per owned tile, in the same order. None keeps the old
     state-only classes, which is what a caller with no board means.
     """
-    reps: list[tuple[int, int]] = []
-    index: dict[tuple[int, int], int] = {}
+    reps: list[tuple] = []
+    index: dict[tuple, int] = {}
     of_tile: list[int] = []
-    for i, state in enumerate(owned):
-        key = (int(state), int(distances[i]) if distances is not None else 0)
+    for i, entry in enumerate(owned):
+        if entry is None:
+            # An unpriceable position (an unmodelled state, #152): it takes no
+            # class and consumes no distance, keeping later tiles aligned.
+            of_tile.append(-1)
+            continue
+        if isinstance(entry, tuple):
+            state, quad = int(entry[0]), int(entry[1])
+        else:
+            state, quad = int(entry), 0
+        dist = int(distances[i]) if distances is not None else 0
+        key = (state, dist) if quad == 0 else (quad, state, dist)
         if key not in index:
             index[key] = len(reps)
             reps.append(key)
         of_tile.append(index[key])
     counts = np.zeros(len(reps), dtype=np.int64)
     for c in of_tile:
-        counts[c] += 1
+        if c >= 0:
+            counts[c] += 1
     return reps, counts, of_tile
 
 
@@ -1346,6 +1486,10 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
              entry: bool = False,
              integral: bool = False,
              cfg: "Config | None" = None,
+             land: int | None = None,
+             land_owned: int = 1,
+             class_starts: np.ndarray | None = None,
+             mip_gap: float | None = None,
              buy_hands: bool = False,
              hand_mult: int = 0) -> ColgenResult:
     """The loop: master over every column so far, price, add, repeat.
@@ -1378,6 +1522,15 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
     # index is an index into THIS board's classes and means nothing in another.
     result = ColgenResult(pool=list(idle_columns))
     cfg = Config() if cfg is None else cfg
+    #: How many of the engine's quadrants are BUYABLE. It travels as an ARGUMENT
+    #: from the caller that holds the run's config (`equilibrate`) and is never
+    #: re-read from a default in here: the loop's last solve and the decision
+    #: solve beside it are two halves of ONE matrix, and a count that reached
+    #: only one of them builds a farm the other cannot expand. A caller that
+    #: names no count (the direct/library callers) still gets the config's own,
+    #: and 0 turns every land row OFF -- the LP path that shipped.
+    land = (int(getattr(cfg, "land_quadrants", 0)) if land is None else int(land))
+    land = land or None
     rounds = int(cfg.iter_cap if rounds is None else rounds)
 
     #: How many columns the pool held when the loop's last solve ran. The loop
@@ -1396,6 +1549,14 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
         the pool stayed at 18 columns instead of 27 and the decision was taken on
         a poorer pool than the LP's own. Same matrix, same columns, one extra
         solve: the LP drives the generation, the MIP takes the decision.
+
+        The integer lambda is capped at the LP's own mix: a column the
+        relaxation left at zero weight cannot be part of an optimal integer
+        solution of the SAME pool (its reduced cost is non-negative), so
+        restricting the integers to the LP-supported columns prunes the
+        branch-and-bound tree at no objective cost -- measured on the day-0
+        board: 3,131 s to proven optimality over 858 columns, against seconds
+        over the ~60 the LP weighted, at an unchanged objective.
         """
         if result.solve is None:
             return result
@@ -1409,7 +1570,24 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
             # model is worth is asked for in `Config.master_rounds`, where it is
             # visible and costs what it costs; it is not smuggled in here.
             return result
-        args = (result.pool, counts, supply_hours, money, days, n_coupling)
+        # The integer lambda rides only the columns the LP weighted, PLUS every
+        # class's idle column (a class must always be able to park its tiles;
+        # dropping a class's last columns would leave its convexity row
+        # unsatisfiable and the MIP would return a zero objective). A column
+        # the relaxation left at zero has a non-negative reduced cost at those
+        # duals, so it cannot enter an optimal integer solution of the same
+        # pool. The cap is what turns the decision MIP from 3,131 s (858
+        # columns, proven optimality) into seconds (~74 columns). The full
+        # pool stays on the result for the callers that read it; only the
+        # decision solve's matrix shrinks.
+        lam = getattr(result.solve, "lam", None)
+        supported = (list(result.pool) if lam is None or not lam.size
+                     else [col for j, col in enumerate(result.pool)
+                           if (j < lam.size and float(lam[j]) > 1e-9)
+                           or col.key == ("idle",)])
+        if len(supported) < len(result.pool):
+            supported = list(supported)
+        args = (supported, counts, supply_hours, money, days, n_coupling)
         kwargs = dict(
             shed_stock=None if shed is None else shed[0],
             shed_capacity=0.0 if shed is None else float(shed[1]),
@@ -1418,7 +1596,10 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
             depth=depth, depth_high=depth_high, entry=entry, cfg=cfg,
             # The land rows belong to BOTH solves: the decision buys
             # quadrants and the LP beside it publishes what a slot is worth.
-            land=int(getattr(cfg, "land_quadrants", 0)) or None,
+            land=land,
+            land_owned=land_owned,
+            class_starts=class_starts,
+            mip_gap=mip_gap,
             buy_hands=buy_hands, hand_mult=hand_mult)
         final = solver.solve(*args, **kwargs)
         if integral:
@@ -1495,7 +1676,9 @@ def generate(price, supply_hours, money, counts, days, n_coupling,
             # The land rows belong to BOTH solves: the decision buys quadrants
             # and the LP beside it prices a slot. A matrix without them can only
             # price a farm that cannot expand, and then the rent is never read.
-            land=int(getattr(cfg, "land_quadrants", 0)) or None,
+            land=land,
+            land_owned=land_owned,
+            class_starts=class_starts,
             buy_hands=buy_hands, hand_mult=hand_mult)
         n_at_last_solve[0] = len(result.pool)
         result.rounds += 1  # solves taken; the pricing passes it fed are free

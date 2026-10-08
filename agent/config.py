@@ -89,9 +89,18 @@ class Config:
     #: half-committed and the tile counts a fraction of what they claim. False is
     #: the LP path this project has always run.
     day_integral: bool = False
+    #: The relative gap the DECISION MIP may stop at (`HiGHS mip_rel_gap`):
+    #: the incumbent is then within this fraction of the true integer optimum.
+    #: None/0 solves to proven optimality -- measured 3,131 s on the day-0
+    #: board over the full pool and 2 s over the LP-supported columns; the
+    #: supported-column cap plus a 1% gap is the fast regime the owner named.
+    mip_gap: float = 0.01
     #: How many of the engine's quadrants the day may BUY (`world.rules.LAND_PRICES`,
-    #: prefix order), one binary per (quadrant, day). 0 keeps every land row off, so
-    #: no land is purchasable and the model sees only the quadrants it already owns.
+    #: prefix order), one binary per (quadrant, day). NW is free and open from the
+    #: start (F042), so only the ladder's three steps are ever buyable: k is clamped
+    #: to `len(LAND_PRICES)`, and the steps the farm has ALREADY taken are not
+    #: offered again. 0 keeps every land row off, so no land is purchasable and the
+    #: model sees only the quadrants it already owns.
     land_quadrants: int = 0
     #: The LP loop's own cap when a caller asks for no specific number (the
     #: library default; the manager always asks for `master_rounds`). 8 is the
@@ -231,7 +240,7 @@ class Config:
     #: more of it -- is still the open question (#79), and the value must be
     #: chosen again on a fresh measurement, or by the model itself once the
     #: hands are bought inside the MILP instead of scanned for.
-    max_hands: int = 1
+    max_hands: int = 16
     #: Whether the MODEL buys the day's labour -- the `delta` columns of the
     #: labour row, priced by `world.rules.hire_cost` -- instead of the day
     #: layer scanning hand counts and paying the bill outside the matrix.

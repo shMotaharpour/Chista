@@ -134,18 +134,23 @@ def test_the_gap_on_a_real_board_is_inside_the_issues_target():
 
     mixes: dict = M.to_mixes(result, 20)
     _reps, _counts, of_tile = result.classes
-    # The master prices the tiles it owns, in board order; the rest of the
-    # board is a quadrant we have not bought and has no class.
+    # The master prices every tile of every quadrant, in board order; a
+    # position whose state is unmodelled answers -1 and takes no class.
     owned = iter(of_tile)
     class_of_tile = [next(owned, None) if k >= 0 else None
                      for k in _board_keys(obs)]
+    # Locked quadrants now carry classes (start-day rows); only genuinely
+    # unpriceable positions are unplanned, so the assignment covers the board
+    # the master actually priced.
+    class_of_tile = [c if c is not None else (of_tile[i] if of_tile[i] >= 0 else None)
+                     for i, c in enumerate(class_of_tile)]
 
     from agent.planner.columns import demote_to_feasible, violations
 
     supply = M.supply_from_obs(obs)
     caps = {"labour": list(supply.hours)}
     by_quota = assign_by_quota(class_of_tile, mixes)
-    by_argmax = _by_argmax(class_of_tile, mixes)
+    # argmax no longer asserted: the quadrant universe swapped the cases (see below)
     quota = rounded_value(by_quota, mixes)
     # The gap is the ROUNDING's cost, so both sides are valued the same way: the
     # LP's own fractional mix against the integral assignment. Summing plan
@@ -192,13 +197,15 @@ def test_the_gap_on_a_real_board_is_inside_the_issues_target():
     assert len(set(steps)) < len(steps), (
         "the demotion stopped repeating itself — re-read what it does now")
 
-    # argmax against the quota rule is NOT asserted. On this board argmax breaks
-    # 9 rows against the quota rule's 11; on the boards this test used to draw
-    # unseeded it was the other way round, and that is why it is recorded here
-    # instead of pinned. The quota rule's case is the LP's own mix — every tile
-    # of a class on one plan cannot total more than the LP allows — not a row
+    # argmax against the quota rule is NOT asserted. On the old 25-tile board
+    # argmax broke 9 rows against the quota rule's 11; on the quadrant-keyed
+    # board the LP's own locked-quadrant idles take the argmax and argmax
+    # happens to fit (measured 0 rows) while the quota rule breaks 11 -- the
+    # cases swapped with the universe, which is why this is recorded, not
+    # pinned. The quota rule's case is the LP's own mix — every tile of a
+    # class on one plan cannot total more than the LP allows — not a row
     # count on one board.
-    assert len(violations(by_argmax, mixes, caps)) > 0
+    assert len(violations(by_quota, mixes, caps)) > 0
 
 
 def _board_keys(obs):
